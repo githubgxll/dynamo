@@ -12,7 +12,7 @@ Default checks:
 - System resources (OS, CPU, memory, GPU)
 - Container/host context (execution context, /dev/shm sizing, selected env)
 - Development tools (Cargo/Rust, Maturin, Python)
-- LLM frameworks (vllm, sglang, tensorrt_llm)
+- LLM frameworks (vllm, sglang)
 - Dynamo runtime and framework components
 - Installation status and component availability
 
@@ -89,7 +89,6 @@ System info (hostname=jensen-linux, IP=10.111.122.133)
       ├─ ✅ dingo.frontend  $HOME/dynamo/dingo/frontend/__init__.py
       ├─ ✅ dynamo.llama_cpp $HOME/dynamo/components/src/dynamo/llama_cpp/__init__.py
       ├─ ✅ dynamo.sglang    $HOME/dynamo/components/src/dynamo/sglang/__init__.py
-      ├─ ✅ dynamo.trtllm    $HOME/dynamo/components/src/dynamo/trtllm/__init__.py
       └─ ✅ dynamo.vllm      $HOME/dynamo/components/src/dynamo/vllm/__init__.py
 
 Additional output with --thorough-check:
@@ -145,7 +144,7 @@ Options:
     --runtime-check-only          Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers
                                   and validate ai-dynamo packages (ai-dynamo-runtime and ai-dynamo)
     --no-gpu-check                Skip GPU detection and information collection (useful for environments without GPU access)
-    --no-framework-check          Skip LLM framework package checks (vllm, sglang, tensorrt_llm)
+    --no-framework-check          Skip LLM framework package checks (vllm, sglang)
 """
 
 import datetime
@@ -2512,7 +2511,7 @@ class FrameworkInfo(NodeInfo):
         if no_framework_check:
             # Why: In some environments (CI, minimal runtime containers) we may want to
             # validate the Dynamo install without requiring a framework/engine package
-            # (vllm/sglang/tensorrt_llm) to be present.
+            # (vllm/sglang) to be present.
             self.desc = "skipped (--no-framework-check)"
             return
 
@@ -2520,7 +2519,6 @@ class FrameworkInfo(NodeInfo):
         frameworks_to_check = [
             ("vllm", "vLLM"),
             ("sglang", "Sglang"),
-            ("tensorrt_llm", "tensorRT LLM"),
         ]
 
         frameworks_found = 0
@@ -2543,7 +2541,6 @@ class FrameworkInfo(NodeInfo):
             except Exception:
                 # Try alternative package names
                 alt_names = {
-                    "tensorrt_llm": "tensorrt-llm",
                     "sglang": "sglang",
                     "vllm": "vllm",
                 }
@@ -2563,7 +2560,6 @@ class FrameworkInfo(NodeInfo):
             exec_names = {
                 "vllm": "vllm",
                 "sglang": "sglang",
-                "tensorrt_llm": "trtllm-build",
             }
             if module_name in exec_names:
                 exec_path_raw = shutil.which(exec_names[module_name])
@@ -3096,7 +3092,6 @@ class DynamoFrameworkInfo(NodeInfo):
                 "dingo.frontend",
                 "dynamo.vllm",
                 "dynamo.sglang",
-                "dynamo.trtllm",
             ]
 
         # Find where each component actually is and add them
@@ -3499,7 +3494,7 @@ def main():
         "--no-framework-check",
         dest="no_framework_check",
         action="store_true",
-        help="Skip LLM framework package checks (vllm, sglang, tensorrt_llm)",
+        help="Skip LLM framework package checks (vllm, sglang)",
     )
     args = parser.parse_args()
 

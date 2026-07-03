@@ -695,30 +695,6 @@ def test_parity_vllm_legacy_wrapper_matches_shared():
     assert wrapper_top == direct_top
 
 
-@pytest.mark.trtllm
-def test_parity_trtllm_legacy_wrapper_matches_shared():
-    pytest.importorskip(
-        "tensorrt_llm", reason="TRT-LLM not installed", exc_type=ImportError
-    )
-    from dynamo.trtllm.request_handlers.handler_base import HandlerBase
-
-    output = SimpleNamespace(
-        token_ids=[11, 12],
-        logprobs=[
-            {11: _logprob(-0.1), 110: _logprob(-1.1)},
-            # Selected token missing — exercises the fallback flag.
-            {99: _logprob(-9.9)},
-        ],
-    )
-
-    wrapper_lp, wrapper_top = HandlerBase._extract_logprobs(output, 0)
-    direct_lp, direct_top = extract_from_completion_output(
-        output, 0, fallback_to_first_on_missing=True, include_bytes=False
-    )
-    assert wrapper_lp == direct_lp
-    assert wrapper_top == direct_top
-
-
 @pytest.mark.sglang
 def test_parity_sglang_legacy_extract_wrapper_matches_shared():
     pytest.importorskip("sglang", reason="SGLang not installed", exc_type=ImportError)

@@ -16,8 +16,7 @@ two taxonomies cover different surfaces:
 | `dingo/frontend/tests/FRONTEND_CASES.md` | Chat-processor layer: request preprocessing, output assembly, error surface, worker plumbing | `FRONTEND.*` |
 
 Backends covered by this taxonomy: **vllm** (`prepost.py` + `vllm_processor.py`)
-and **sglang** (`sglang_prepost.py` + `sglang_processor.py`). trtllm has its
-own architecture under `components/src/dynamo/trtllm/` and is out of scope here.
+and **sglang** (`sglang_prepost.py` + `sglang_processor.py`).
 
 ## Quick reference
 

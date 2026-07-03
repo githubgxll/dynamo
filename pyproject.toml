@@ -46,11 +46,6 @@ keywords = ["llm", "genai", "inference", "nvidia", "distributed", "dynamo"]
 Repository = "https://github.com/ai-dynamo/dynamo.git"
 
 [project.optional-dependencies]
-trtllm =[
-    "uvloop",
-    "tensorrt-llm==1.3.0rc19",
-]
-
 vllm = [
     "uvloop",
     "nixl[cu13]==1.1.0",
@@ -82,7 +77,6 @@ mocker = [
 
 [project.entry-points.pytest11]
 vllm_tests = "dynamo.vllm.tests.conftest"
-trtllm_tests = "dynamo.trtllm.tests.conftest"
 sglang_tests = "dynamo.sglang.tests.conftest"
 
 [dependency-groups]
@@ -273,8 +267,8 @@ markers = [
     "requested_vllm_kv_cache_bytes(N): exact KV cache bytes for vLLM (skips memory profiling). Sets _PROFILE_PYTEST_KV_CACHE_BYTES. Most deterministic method for parallel execution",
     "requested_sglang_kv_tokens(N): max KV cache tokens for SGLang parallel execution. Sets _OVERRIDE_SGLANG_MAX_TOTAL_TOKENS to cap --max-total-tokens and prevent over-allocation",
     "requested_sglang_vram_gib(N): max VRAM in GiB for SGLang parallel execution. Use for non-text workloads (video/image diffusion) where token-based control doesn't apply",
-    "requested_trtllm_kv_tokens(N): max KV cache tokens for TensorRT-LLM parallel execution. Sets _PROFILE_OVERRIDE_TRTLLM_MAX_TOTAL_TOKENS to cap KvCacheConfig.max_tokens via --override-engine-args",
-    "requested_trtllm_vram_gib(N): max VRAM in GiB for TensorRT-LLM parallel execution. Sets _PROFILE_OVERRIDE_TRTLLM_MAX_GPU_TOTAL_BYTES to cap KvCacheConfig.max_gpu_total_bytes via --override-engine-args. Use for non-text workloads (video/image diffusion)",
+    "requested_trtllm_kv_tokens(N): compatibility marker for removed TensorRT-LLM tests",
+    "requested_trtllm_vram_gib(N): compatibility marker for removed TensorRT-LLM tests",
     "e2e: marks tests as end-to-end tests",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
@@ -284,7 +278,7 @@ markers = [
     "none: marks tests that do not require a framework-specific runtime",
     "core: marks tests that exercise core/runtime functionality",
     "vllm: marks tests as requiring vllm",
-    "trtllm: marks tests as requiring trtllm",
+    "trtllm: compatibility marker for removed TensorRT-LLM tests",
     "sglang: marks tests as requiring sglang",
     "lmcache: marks tests as requiring lmcache",
     "multimodal: marks tests as multimodal (image/video) tests",
@@ -300,7 +294,7 @@ markers = [
     "k8s: marks tests as requiring Kubernetes",
     "fault_tolerance: marks tests as fault tolerance tests",
     "deploy: marks tests as deployment tests",
-    "framework_only: marks standard framework deployment tests (vllm, sglang, trtllm)",
+    "framework_only: marks standard framework deployment tests (vllm, sglang)",
     "framework_with_gaie: marks tests for GAIE (Gateway API Inference Extension) deployment",
     "dynamocheckpoint: marks tests for the DynamoCheckpoint controller deploy path",
     "unified: marks unified-backend e2e tests (LLMEngine ABC + Worker, DEP #8251)",

@@ -7,11 +7,9 @@
 export DYNAMO_HOME=${DYNAMO_HOME:-"/workspace"}
 NUM_WORKERS=8
 MODEL_PATH="deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-ENGINE_CONFIG_PATH="$DYNAMO_HOME/examples/backends/trtllm/engine_configs/deepseek-r1-distill-llama-8b"
 TENSOR_PARALLEL_SIZE=1
 DATA_PARALLEL_SIZE=1
 USE_MOCKERS=false
-USE_TRTLLM=false
 MODE="agg"  # Options: agg (default), decode, prefill
 BASE_GPU_OFFSET=0
 REASONING=""
@@ -40,10 +38,6 @@ while [[ $# -gt 0 ]]; do
             USE_MOCKERS=true
             shift
             ;;
-        --trtllm)
-            USE_TRTLLM=true
-            shift
-            ;;
         --prefill)
             MODE="prefill"
             shift
@@ -66,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             break
             ;;
         *)
-            # Collect all other arguments as vLLM/mocker/trtllm arguments
+            # Collect all other arguments as vLLM/mocker arguments
             EXTRA_ARGS+=("$1")
             shift
             ;;
@@ -76,9 +70,8 @@ done
 # Validate that only one engine type is selected
 ENGINE_COUNT=0
 [ "$USE_MOCKERS" = true ] && ((ENGINE_COUNT++))
-[ "$USE_TRTLLM" = true ] && ((ENGINE_COUNT++))
 if [ "$ENGINE_COUNT" -gt 1 ]; then
-    echo "Error: Only one engine type (--mockers, --trtllm, or default vLLM) can be specified"
+    echo "Error: Only one engine type (--mockers or default vLLM) can be specified"
     exit 1
 fi
 
@@ -88,21 +81,6 @@ if [ ${#EXTRA_ARGS[@]} -eq 0 ]; then
         # Default args for mocker engine (only block-size needed as others are defaults)
         EXTRA_ARGS=(
             "--block-size" "64"
-        )
-    elif [ "$USE_TRTLLM" = true ]; then
-        # Default args for TensorRT-LLM engine using predefined YAML configs
-        # Config files located at: $ENGINE_CONFIG_PATH/{agg,decode,prefill}.yaml
-        if [ "$MODE" = "prefill" ]; then
-            ENGINE_CONFIG="$ENGINE_CONFIG_PATH/prefill.yaml"
-        elif [ "$MODE" = "decode" ]; then
-            ENGINE_CONFIG="$ENGINE_CONFIG_PATH/decode.yaml"
-        else
-            ENGINE_CONFIG="$ENGINE_CONFIG_PATH/agg.yaml"
-        fi
-
-        EXTRA_ARGS=(
-            "--extra-engine-args" "$ENGINE_CONFIG"
-            "--publish-kv-events"
         )
     else
         # Default args for vLLM engine (explicitly include block-size)
@@ -143,8 +121,6 @@ LAST_GPU=$((BASE_GPU_OFFSET + TOTAL_GPUS_NEEDED - 1))
 echo "Configuration:"
 if [ "$USE_MOCKERS" = true ]; then
     ENGINE_TYPE="Mocker"
-elif [ "$USE_TRTLLM" = true ]; then
-    ENGINE_TYPE="TensorRT-LLM"
 else
     ENGINE_TYPE="vLLM"
 fi
@@ -206,7 +182,7 @@ if [ "$USE_MOCKERS" = true ]; then
     PIDS+=($!)
     echo "Started mocker with $NUM_WORKERS workers (PID: $!)"
 else
-    # For vLLM and TensorRT-LLM, use the original loop to launch separate processes
+    # For vLLM, use the original loop to launch separate processes
     for i in $(seq 1 $NUM_WORKERS); do
         {
             MODE_CAPITALIZED=$(echo "$MODE" | sed 's/\(.\)/\U\1/')
@@ -231,48 +207,28 @@ else
                 done
             fi
 
-            if [ "$USE_TRTLLM" = true ]; then
-                echo "[$MODE_CAPITALIZED Worker-$i] Using GPUs: $GPU_DEVICES"
-                # Run TensorRT-LLM engine
-                TRTLLM_ARGS=()
-                TRTLLM_ARGS+=("--model-path" "$MODEL_PATH")
-                TRTLLM_ARGS+=("--tensor-parallel-size" "$TENSOR_PARALLEL_SIZE")
-                if [ "$MODE" != "agg" ]; then
-                    TRTLLM_ARGS+=("--disaggregation-mode" "$MODE")
-                fi
-                TRTLLM_ARGS+=("${EXTRA_ARGS[@]}")
-
-                exec env CUDA_VISIBLE_DEVICES=$GPU_DEVICES trtllm-llmapi-launch python3 -m dynamo.trtllm \
-                    "${TRTLLM_ARGS[@]}"
-            else
-                echo "[$MODE_CAPITALIZED Worker-$i] Using GPUs: $GPU_DEVICES"
-                # Run vLLM engine with PYTHONHASHSEED=0 for deterministic event IDs in KV-aware routing
-                VLLM_ARGS=()
-                VLLM_ARGS+=("--model" "$MODEL_PATH")
-                VLLM_ARGS+=("--tensor-parallel-size" "$TENSOR_PARALLEL_SIZE")
-                if [ "$DATA_PARALLEL_SIZE" -gt 1 ]; then
-                    VLLM_ARGS+=("--data-parallel-size" "$DATA_PARALLEL_SIZE")
-                fi
-                if [ "$MODE" = "prefill" ]; then
-                    VLLM_ARGS+=("--disaggregation-mode" "prefill")
-                elif [ "$MODE" = "decode" ]; then
-                    VLLM_ARGS+=("--disaggregation-mode" "decode")
-                fi
-                VLLM_ARGS+=("${EXTRA_ARGS[@]}")
-
-                VLLM_ARGS+=("--kv-events-config" "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:$((20080 + i))\",\"enable_kv_cache_events\":true}")
-                exec env PYTHONHASHSEED=0 CUDA_VISIBLE_DEVICES=$GPU_DEVICES VLLM_NIXL_SIDE_CHANNEL_PORT=$((20096 + i)) python3 -m dynamo.vllm \
-                    "${VLLM_ARGS[@]}"
+            echo "[$MODE_CAPITALIZED Worker-$i] Using GPUs: $GPU_DEVICES"
+            # Run vLLM engine with PYTHONHASHSEED=0 for deterministic event IDs in KV-aware routing
+            VLLM_ARGS=()
+            VLLM_ARGS+=("--model" "$MODEL_PATH")
+            VLLM_ARGS+=("--tensor-parallel-size" "$TENSOR_PARALLEL_SIZE")
+            if [ "$DATA_PARALLEL_SIZE" -gt 1 ]; then
+                VLLM_ARGS+=("--data-parallel-size" "$DATA_PARALLEL_SIZE")
             fi
+            if [ "$MODE" = "prefill" ]; then
+                VLLM_ARGS+=("--disaggregation-mode" "prefill")
+            elif [ "$MODE" = "decode" ]; then
+                VLLM_ARGS+=("--disaggregation-mode" "decode")
+            fi
+            VLLM_ARGS+=("${EXTRA_ARGS[@]}")
+
+            VLLM_ARGS+=("--kv-events-config" "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:$((20080 + i))\",\"enable_kv_cache_events\":true}")
+            exec env PYTHONHASHSEED=0 CUDA_VISIBLE_DEVICES=$GPU_DEVICES VLLM_NIXL_SIDE_CHANNEL_PORT=$((20096 + i)) python3 -m dynamo.vllm \
+                "${VLLM_ARGS[@]}"
         } &
         PIDS+=($!)
         echo "Started $MODE worker $i (PID: $!)"
 
-        # Add delay between TensorRT-LLM worker launches to avoid MPI initialization conflicts
-        if [ "$USE_TRTLLM" = true ] && [ "$i" -lt "$NUM_WORKERS" ]; then
-            echo "Waiting 2 seconds before launching next TensorRT-LLM worker..."
-            sleep 2
-        fi
     done
 fi
 

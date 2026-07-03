@@ -62,7 +62,7 @@ from dynamo.profiler.utils.profiler_status import ProfilerStatus, write_profiler
 
 logger = logging.getLogger(__name__)
 
-_CONCRETE_BACKENDS = ["trtllm", "sglang", "vllm"]
+_CONCRETE_BACKENDS = ["sglang", "vllm"]
 
 
 def _apply_tolerations_to_final_config(final_config: Any, tolerations: list) -> Any:

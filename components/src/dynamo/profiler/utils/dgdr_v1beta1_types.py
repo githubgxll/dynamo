@@ -80,7 +80,6 @@ class GPUSKUType(str, Enum):
 class BackendType(str, Enum):
     Auto = "auto"
     Sglang = "sglang"
-    Trtllm = "trtllm"
     Vllm = "vllm"
 
 

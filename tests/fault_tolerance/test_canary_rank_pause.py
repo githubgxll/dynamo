@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Canary detects rank-pause hangs across {trtllm, vllm, sglang} x {agg, disagg-prefill, disagg-decode}.
+"""Canary detects rank-pause hangs across {vllm, sglang} x {agg, disagg-prefill, disagg-decode}.
 
 To also validate that canary adds signal (vs. always failing), set
 DYN_HEALTH_CHECK_ENABLED=false and re-run one scenario locally: /health
@@ -23,7 +23,6 @@ import pytest
 import requests
 
 from tests.serve.test_sglang import sglang_configs
-from tests.serve.test_trtllm import trtllm_configs
 from tests.serve.test_vllm import vllm_configs
 from tests.utils.engine_process import EngineProcess
 
@@ -34,13 +33,11 @@ RESUME_RECOVER_BUDGET_S = 30
 STARTUP_READY_BUDGET_S = 120
 
 _RANK_PATTERNS: dict[str, tuple[str, ...]] = {
-    "trtllm": ("mpi4py.futures.server", "TRTLLM:EngineCore", "tensorrt_llm"),
     "vllm": ("VLLM::EngineCore", "EngineCoreProc"),
     "sglang": ("sglang::scheduler",),
 }
 
 _CONFIGS_BY_BACKEND = {
-    "trtllm": trtllm_configs,
     "vllm": vllm_configs,
     "sglang": sglang_configs,
 }
@@ -80,7 +77,7 @@ def _scenarios_for(backend: str) -> list:
 
 
 SCENARIOS = [
-    p for backend in ("trtllm", "vllm", "sglang") for p in _scenarios_for(backend)
+    p for backend in ("vllm", "sglang") for p in _scenarios_for(backend)
 ]
 
 

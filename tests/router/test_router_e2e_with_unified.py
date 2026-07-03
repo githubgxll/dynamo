@@ -6,13 +6,13 @@
 ``dynamo.common.backend`` abstraction.
 
 Each backend's existing legacy entrypoint already has e2e router tests in
-``test_router_e2e_with_{vllm,sglang,trtllm}.py``. This file mirrors a
+``test_router_e2e_with_{vllm,sglang}.py``. This file mirrors a
 focused subset of those tests against the unified entrypoint instead, so
 the new ABC + ``Worker``-driven publishers are validated against the same
 router/frontend stack the legacy path is gated on.
 
 The unified entrypoints share their CLI arg parser with the legacy path
-(see ``dynamo.{vllm,sglang,trtllm}.args.parse_args``). The only difference
+(see ``dynamo.{vllm,sglang}.args.parse_args``). The only difference
 between the legacy and unified runs is the launched Python module, so each
 ``Unified*Process`` is a thin subclass that swaps that one token in every
 worker process's ``command`` list.
@@ -28,12 +28,6 @@ import pytest
 from tests.router.e2e_harness import run_basic_router_test, run_router_decisions_test
 from tests.router.test_router_e2e_with_sglang import MODEL_NAME as SGLANG_MODEL_NAME
 from tests.router.test_router_e2e_with_sglang import SGLANG_ARGS, SGLangProcess
-from tests.router.test_router_e2e_with_trtllm import MODEL_NAME as TRTLLM_MODEL_NAME
-from tests.router.test_router_e2e_with_trtllm import (
-    TRTLLM_ARGS,
-    TRTLLM_BLOCK_SIZE,
-    TRTLLMProcess,
-)
 from tests.router.test_router_e2e_with_vllm import BLOCK_SIZE as VLLM_BLOCK_SIZE
 from tests.router.test_router_e2e_with_vllm import MODEL_NAME as VLLM_MODEL_NAME
 from tests.router.test_router_e2e_with_vllm import VLLM_ARGS, VLLMProcess
@@ -92,37 +86,6 @@ class UnifiedSGLangProcess(SGLangProcess):
 
     process_name = "Unified SGLang worker"
     cleanup_name = "Unified SGLang worker resources"
-
-
-class UnifiedTRTLLMProcess(TRTLLMProcess):
-    """TRT-LLM workers launched via ``dynamo.trtllm.unified_main``.
-
-    Overrides the worker component from ``tensorrt_llm`` (legacy default) to
-    ``backend`` so all three unified backends share one component naming
-    convention. Legacy ``test_router_e2e_with_trtllm.py`` is untouched.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        _swap_module(
-            self.worker_processes, "dynamo.trtllm", "dynamo.trtllm.unified_main"
-        )
-        new_endpoint = f"dyn://{self.namespace}.backend.generate"
-        endpoint_args = ["--endpoint", new_endpoint]
-        for process in self.worker_processes:
-            if any(
-                tok == "--endpoint" or tok.startswith("--endpoint=")
-                for tok in process.command
-            ):
-                raise RuntimeError(
-                    f"expected legacy command to omit --endpoint; got {process.command!r}"
-                )
-            process.command.extend(endpoint_args)
-        self.component_name = "backend"
-        self.endpoint = new_endpoint
-
-    process_name = "Unified TRT-LLM worker"
-    cleanup_name = "Unified TRT-LLM worker resources"
 
 
 # --------------------------------------------------------------------------- #
@@ -345,112 +308,3 @@ def test_unified_sglang_router_decisions_dp(
         extra_process_kwargs={"data_parallel_size": 2},
     )
 
-
-# --------------------------------------------------------------------------- #
-# TRT-LLM unified-path tests
-# --------------------------------------------------------------------------- #
-#
-# TRT-LLM is the only backend where the unified path is a meaningful
-# behavioural change rather than a refactor: the legacy path drives
-# `get_kv_cache_events_async` from the asyncio loop, while the unified
-# path uses a `PushSource` and runs the polling on a dedicated thread.
-# These tests stand the path up end-to-end against a real engine.
-
-
-@pytest.mark.pre_merge
-@pytest.mark.gpu_1
-@pytest.mark.trtllm
-@pytest.mark.model(TRTLLM_MODEL_NAME)
-@pytest.mark.profiled_vram_gib(7.8)
-@pytest.mark.requested_trtllm_kv_tokens(2592)
-@pytest.mark.timeout(600)
-@pytest.mark.parametrize("request_plane", ["tcp"], indirect=True)
-def test_unified_trtllm_kv_router_basic(
-    request,
-    runtime_services_dynamic_ports,
-    predownload_models,
-    request_plane,
-) -> None:
-    """End-to-end smoke against the TRT-LLM unified entrypoint. Verifies
-    that ``PushSource.on_ready`` correctly hands the publisher to the
-    engine's polling thread and that ``publish_stored``/``publish_removed``
-    reach the router via NATS."""
-    run_basic_router_test(
-        engine_process_cls=UnifiedTRTLLMProcess,
-        engine_args_name="trtllm_args",
-        engine_args=TRTLLM_ARGS,
-        num_workers=2,
-        single_gpu=True,
-        request=request,
-        request_plane=request_plane,
-        block_size=TRTLLM_BLOCK_SIZE,
-        model_name=TRTLLM_MODEL_NAME,
-    )
-
-
-@pytest.mark.pre_merge
-@pytest.mark.gpu_1
-@pytest.mark.trtllm
-@pytest.mark.model(TRTLLM_MODEL_NAME)
-@pytest.mark.profiled_vram_gib(7.8)
-@pytest.mark.requested_trtllm_kv_tokens(2592)
-@pytest.mark.timeout(600)
-@pytest.mark.parametrize("request_plane", ["tcp"], indirect=True)
-def test_unified_trtllm_router_decisions_multiple_workers(
-    request,
-    runtime_services_dynamic_ports,
-    predownload_models,
-    request_plane,
-) -> None:
-    """Prefix-reuse correctness on the TRT-LLM unified path. The polling
-    thread + `_dispatch_kv_event` must produce the same router-visible
-    events as the legacy `_publish_kv_cache_events_task` for the router's
-    overlap scoring to agree."""
-    run_router_decisions_test(
-        engine_process_cls=UnifiedTRTLLMProcess,
-        engine_args_name="trtllm_args",
-        engine_args=TRTLLM_ARGS,
-        request=request,
-        request_plane=request_plane,
-        model_name=TRTLLM_MODEL_NAME,
-        block_size=TRTLLM_BLOCK_SIZE,
-        component_name="backend",
-        num_workers=2,
-        single_gpu=True,
-        test_dp_rank=False,
-    )
-
-
-@pytest.mark.gpu_2
-@pytest.mark.nightly
-@pytest.mark.trtllm
-@pytest.mark.model(TRTLLM_MODEL_NAME)
-@pytest.mark.timeout(600)
-@pytest.mark.parametrize("request_plane", ["tcp"], indirect=True)
-def test_unified_trtllm_router_decisions_attention_dp(
-    request,
-    runtime_services_dynamic_ports,
-    predownload_models,
-    set_ucx_tls_no_mm,
-    request_plane,
-) -> None:
-    """Attention-DP routing: one TRT-LLM worker with attention_dp_size=2.
-    Exercises `EngineConfig.data_parallel_size` and per-rank `PushSource`
-    + `worker_kv_indexer_query_dp{N}` registration on the unified path."""
-    run_router_decisions_test(
-        engine_process_cls=UnifiedTRTLLMProcess,
-        engine_args_name="trtllm_args",
-        engine_args={
-            **TRTLLM_ARGS,
-            "enable_attention_dp": True,
-            "tensor_parallel_size": 2,
-        },
-        request=request,
-        request_plane=request_plane,
-        model_name=TRTLLM_MODEL_NAME,
-        block_size=TRTLLM_BLOCK_SIZE,
-        component_name="backend",
-        num_workers=1,
-        single_gpu=False,
-        test_dp_rank=True,
-    )

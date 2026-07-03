@@ -1,7 +1,7 @@
 # CI Filter Patterns - See FILTERS.md for documentation
 #
 # Filters that trigger CI jobs:
-#   core     -> dynamo build-test, all backend builds (vllm/sglang/trtllm)
+#   core     -> dynamo build-test, all backend builds (vllm/sglang)
 #   operator -> operator build and test
 #   snapshot -> snapshot-agent build and test
 #   power_agent -> power-agent image build
@@ -9,7 +9,6 @@
 #   planner  -> dynamo build-test
 #   vllm     -> vllm build and test
 #   sglang   -> sglang build and test
-#   trtllm   -> trtllm build and test
 #   frontend -> frontend EPP image build, dynamo build-test
 #   benchmarks -> dynamo build-test (runs tests/benchmarks/** pytest suite)
 #   efa      -> all framework EFA runtime image builds (changes to container/templates/aws.Dockerfile)
@@ -66,10 +65,6 @@ ignore:
   - 'container/dev/**'
   - 'container/templates/local_dev.Dockerfile'
   - 'container/templates/dev.Dockerfile'
-  # Removed by trtllm upstream-base migration; claim here so changed-files
-  # validation passes on the deletion diff without triggering trtllm CI.
-  - 'container/build_trtllm_wheel.sh'
-  - 'container/deps/trtllm/**'
   - 'scripts/dco_check.py'
 
 ci: &ci
@@ -174,14 +169,6 @@ sglang:
   - 'components/src/dynamo/sglang/**'
   - 'container/templates/sglang_*'
   - 'container/deps/sglang/**'
-  - '!**/*.md'
-  - '!**/*.rst'
-
-trtllm:
-  - 'container/deps/requirements.trtllm.txt'
-  - 'examples/backends/trtllm/**'
-  - 'components/src/dynamo/trtllm/**'
-  - 'container/templates/trtllm_*'
   - '!**/*.md'
   - '!**/*.rst'
 

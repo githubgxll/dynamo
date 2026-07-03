@@ -44,7 +44,7 @@ def parse_args():
         "--framework",
         type=str,
         default="vllm",
-        choices=["dynamo", "vllm", "sglang", "trtllm"],
+        choices=["dynamo", "vllm", "sglang"],
         help="Dockerfile framework to use",
     )
 
@@ -109,17 +109,6 @@ def validate_args(args):
                 "base",
             ],
             "cuda_version": ["13.0"],
-        },
-        "trtllm": {
-            "device": ["cuda"],
-            "target": [
-                "runtime",
-                "dev",
-                "local-dev",
-                "wheel_builder",
-                "base",
-            ],
-            "cuda_version": ["13.1"],
         },
         "sglang": {
             "device": ["cuda", "xpu"],

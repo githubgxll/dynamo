@@ -36,9 +36,6 @@ backend::sglang:
 backend::trtllm:
   - changed-files:
       - any-glob-to-any-file:
-          - components/src/dynamo/trtllm/**
-          - container/templates/trtllm_runtime.Dockerfile
-          - examples/backends/trtllm/**
 
 # Component labels
 router:
@@ -108,6 +105,3 @@ multimodal:
           - components/src/dynamo/vllm/multimodal_utils/**
           - components/src/dynamo/sglang/init_multimodal.py
           - components/src/dynamo/sglang/request_handlers/multimodal/**
-          - components/src/dynamo/trtllm/encode_helper.py
-          - components/src/dynamo/trtllm/multimodal/**
-          - components/src/dynamo/trtllm/multimodal_processor.py

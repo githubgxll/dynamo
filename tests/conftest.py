@@ -646,7 +646,6 @@ def pytest_collection_modifyitems(config, items):
     _check_sglang_mm_hashes_present(items)
     # Auto-skip tests marked with a framework marker when the framework is not installed
     framework_markers = {
-        "trtllm": "tensorrt_llm",
         "vllm": "vllm",
         "sglang": "sglang",
         "kvbm": "kvbm",
