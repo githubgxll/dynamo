@@ -171,7 +171,7 @@ Values you will see in the `dynamo_component` label on `dynamo_component_*` seri
 
 | Value | Meaning |
 |-------|---------|
-| `router` | The standalone KV router (`python -m dynamo.router`). |
+| `router` | The standalone KV router (`python -m dingo.router`). |
 | `Planner` | The planner component (`python -m dynamo.planner`). Note the capital `P`. |
 | `prefill` | The prefill worker in disaggregated serving (all backends). |
 | `backend` | The decode worker in disaggregated serving for all backends, **and** the combined worker for vLLM in aggregated mode. |
@@ -375,7 +375,7 @@ Not all metrics appear in every deployment. The chart below shows which metric g
 
 #### Router Request Metrics (`dynamo_component_router_*`)
 
-Histograms and counters for aggregate request-level statistics. Eagerly registered via `from_component()` with the DRT `MetricsRegistry` hierarchy. On the frontend, exposed at `/metrics` on the HTTP port (default 8000) via the `drt_metrics` bridge. On the standalone router (`python -m dynamo.router`), exposed on `DYN_SYSTEM_PORT` when set. Populated per-request when `--router-mode kv` is active; registered with zero values in non-KV modes.
+Histograms and counters for aggregate request-level statistics. Eagerly registered via `from_component()` with the DRT `MetricsRegistry` hierarchy. On the frontend, exposed at `/metrics` on the HTTP port (default 8000) via the `drt_metrics` bridge. On the standalone router (`python -m dingo.router`), exposed on `DYN_SYSTEM_PORT` when set. Populated per-request when `--router-mode kv` is active; registered with zero values in non-KV modes.
 
 All metrics carry the standard hierarchy labels (`dynamo_namespace`, `dynamo_component`, `dynamo_endpoint`).
 

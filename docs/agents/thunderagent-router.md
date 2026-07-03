@@ -64,7 +64,7 @@ Pause/resume is driven by per-worker utilization — the program working set as 
 
 > **Constraint:** `pause-target <= pause-threshold`. The service rejects configs that violate it (along with `0 <= resume-hysteresis <= pause-threshold` and `0 <= soft-demote-threshold <= pause-threshold`).
 
-All `KvRouter` flags from `dynamo.router` (`--router-temperature`, `--use-kv-events`, `--router-track-output-blocks`, …) are also accepted and forwarded. See the [folder README](../../components/src/dynamo/thunderagent_router/README.md) for the remaining service flags (`--endpoint`, `--model-name`, `--model-path`, tool-call and reasoning parsers).
+All `KvRouter` flags from `dingo.router` (`--router-temperature`, `--use-kv-events`, `--router-track-output-blocks`, …) are also accepted and forwarded. See the [folder README](../../components/src/dynamo/thunderagent_router/README.md) for the remaining service flags (`--endpoint`, `--model-name`, `--model-path`, tool-call and reasoning parsers).
 
 ## Architecture
 

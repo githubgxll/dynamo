@@ -9,7 +9,7 @@
 //!   Registered on the frontend's own `prometheus::Registry` (default port 8000).
 //!   Populated by `KvWorkerMonitor` in the frontend when receiving ActiveLoad events.
 //!   - Frontend (aggregated and disaggregated): available on default port 8000
-//!   - Standalone router (`python -m dynamo.router`): not created (frontend-only)
+//!   - Standalone router (`python -m dingo.router`): not created (frontend-only)
 //!
 //! - [`RoutingOverheadMetrics`]: Per-request routing phase latency histograms.
 //!   Registered on the frontend's own `prometheus::Registry` (default port 8000).
@@ -27,7 +27,7 @@
 //!     on default port 8000, but never populated since KvPushRouter is not used)
 //!   - Frontend, KV mode (aggregated and disaggregated): available on default port
 //!     8000 via the `drt_metrics` bridge, populated per-request
-//!   - Standalone router (`python -m dynamo.router`): available on `DYN_SYSTEM_PORT`
+//!   - Standalone router (`python -m dingo.router`): available on `DYN_SYSTEM_PORT`
 //!     when set (default is `-1`, disabled), populated per-request
 //!
 //! - [`KvPublisherMetrics`]: Worker-local KV event publisher and ZMQ relay counters.
@@ -579,7 +579,7 @@ impl RoutingOverheadMetrics {
 /// - **Frontend, KV mode (aggregated and disaggregated)**: Available on the
 ///   frontend's `/metrics` endpoint (default port 8000) via the `drt_metrics`
 ///   bridge, populated per-request.
-/// - **Standalone router** (`python -m dynamo.router`): Available on the system
+/// - **Standalone router** (`python -m dingo.router`): Available on the system
 ///   status server when `DYN_SYSTEM_PORT` is set, populated per-request.
 ///
 /// # When these metrics are created

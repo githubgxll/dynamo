@@ -33,7 +33,7 @@ python -m dingo.frontend --router-mode kv --http-port 8000
 
 ### 独立 Router
 
-你也可以将 KV router 作为独立服务运行（不使用 Dynamo frontend）。更多详细信息请参阅 [Standalone Router component](https://github.com/ai-dynamo/dynamo/tree/main/components/src/dynamo/router/)。
+你也可以将 KV router 作为独立服务运行（不使用 Dynamo frontend）。更多详细信息请参阅 [Standalone Router component](https://github.com/ai-dynamo/dynamo/tree/main/dingo/router/)。
 
 有关部署模式和快速开始步骤，请参阅 [Router Guide](router-guide.md)。有关 CLI 参数和调优指南，请参阅 [Configuration and Tuning](router-configuration.md)。有关 A/B 基准测试，请参阅 [KV Router A/B Benchmarking Guide](../../benchmarks/kv-router-ab-testing.md)。
 

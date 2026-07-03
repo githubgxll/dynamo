@@ -45,7 +45,7 @@ logic but do not share the same serialization, RPC, or process boundaries.
      -> worker
    ```
 
-   Examples: `python -m dynamo.router` and
+   Examples: `python -m dingo.router` and
    `python -m dynamo.thunderagent_router`. These own a binding-level
    `KvRouter` in another process.
 

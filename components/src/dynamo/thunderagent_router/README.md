@@ -59,7 +59,7 @@ python -m dingo.frontend --router-mode round-robin --router-reset-states
 The control-loop knobs (`--pause-threshold`, `--pause-target`,
 `--resume-hysteresis`, `--scheduler-interval-seconds`, …) and their defaults are
 documented in [docs/agents/thunderagent-router.md](/docs/agents/thunderagent-router.md#utilization-driven-control-loop).
-All `KvRouter` flags from `dynamo.router` (`--router-temperature`,
+All `KvRouter` flags from `dingo.router` (`--router-temperature`,
 `--use-kv-events`, `--router-track-output-blocks`, …) are also accepted and
 forwarded.
 

@@ -246,10 +246,10 @@ class FrontendArgGroup(ArgGroup):
             arg_type=pathlib.Path,
         )
 
-        # Router options (shared with dynamo.router)
+        # Router options (shared with dingo.router)
         RouterArgGroup().add_arguments(parser)
 
-        # KV router options (shared with dynamo.router)
+        # KV router options (shared with dingo.router)
         KvRouterArgGroup().add_arguments(parser)
         AicPerfArgGroup().add_arguments(parser)
 

@@ -16,7 +16,7 @@ This component is **fully configurable** and works with any Dynamo backend (vLLM
 ### Command Line
 
 ```bash
-python -m dynamo.router \
+python -m dingo.router \
     --endpoint dynamo.prefill.generate \
     --router-block-size 64 \
     --no-router-track-active-blocks
@@ -57,7 +57,7 @@ python -m dingo.frontend \
     --router-kv-overlap-score-credit 0  # Pure load balancing for decode
 
 # Start standalone router for prefill workers
-python -m dynamo.router \
+python -m dingo.router \
     --endpoint dynamo.prefill.generate \
     --router-block-size 64 \
     --no-router-track-active-blocks

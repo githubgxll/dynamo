@@ -60,8 +60,8 @@ def _is_session_final(request: dict[str, Any]) -> bool:
 
 
 def _wrap_preprocessed_request(request: dict[str, Any]) -> dict[str, Any]:
-    # Duplicated from dynamo.router/__main__.py since neither package exports
-    # it. TODO(idhanani): file follow-up to lift this into dynamo.router as a
+    # Duplicated from dingo.router/__main__.py since neither package exports
+    # it. TODO(idhanani): file follow-up to lift this into dingo.router as a
     # shared helper before the field list drifts.
     routing = request.get("routing")
     dp_rank = request.get("dp_rank")

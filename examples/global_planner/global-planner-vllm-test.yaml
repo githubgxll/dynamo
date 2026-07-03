@@ -181,7 +181,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.router
+            - dingo.router
           args:
             - --endpoint
             - ${K8S_NAMESPACE}-gp-prefill-0.prefill.generate
@@ -256,7 +256,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.router
+            - dingo.router
           args:
             - --endpoint
             - ${K8S_NAMESPACE}-gp-prefill-1.prefill.generate
@@ -331,7 +331,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.router
+            - dingo.router
           args:
             - --endpoint
             - ${K8S_NAMESPACE}-gp-decode-0.backend.generate

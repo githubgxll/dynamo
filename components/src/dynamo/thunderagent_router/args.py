@@ -10,7 +10,7 @@ from typing import Optional
 
 from dynamo.common.configuration.arg_group import ArgGroup
 from dynamo.common.configuration.utils import add_argument
-from dynamo.router.args import (
+from dingo.router.args import (
     DynamoRouterArgGroup,
     DynamoRouterConfig,
     build_aic_perf_config,

@@ -4,7 +4,7 @@
 """Shared KV router configuration ArgGroup.
 
 Defines the shared KvRouterConfig parameters once so that both
-``dingo.frontend`` and ``dynamo.router`` can reuse them without duplication.
+``dingo.frontend`` and ``dingo.router`` can reuse them without duplication.
 Field names on ``KvRouterConfigBase`` match the ``KvRouterConfig`` Python
 constructor kwargs 1:1, so ``kv_router_kwargs()`` returns a dict that can be
 unpacked directly into ``KvRouterConfig(**config.kv_router_kwargs())``.

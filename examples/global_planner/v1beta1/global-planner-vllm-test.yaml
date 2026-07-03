@@ -184,7 +184,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.router
+          - dingo.router
           env:
           - name: DYN_SYSTEM_PORT
             value: "9090"
@@ -265,7 +265,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.router
+          - dingo.router
           env:
           - name: DYN_SYSTEM_PORT
             value: "9090"
@@ -347,7 +347,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.router
+          - dingo.router
           env:
           - name: DYN_SYSTEM_PORT
             value: "9090"

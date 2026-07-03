@@ -4,7 +4,7 @@
 """
 Standalone KV Router Service
 
-Usage: python -m dynamo.router --endpoint <namespace.component.endpoint> [args]
+Usage: python -m dingo.router --endpoint <namespace.component.endpoint> [args]
 
 This service provides a standalone KV-aware router for any set of workers
 in a Dynamo deployment. It can be used for disaggregated serving (e.g., routing
@@ -19,12 +19,12 @@ from typing import Optional
 import uvloop
 
 from dynamo.llm import AicPerfConfig, KvRouter, KvRouterConfig
-from dynamo.router.args import (
+from dingo.router.args import (
     DynamoRouterConfig,
     build_aic_perf_config,
     build_kv_router_config,
 )
-from dynamo.router.args import parse_args as parse_router_args
+from dingo.router.args import parse_args as parse_router_args
 from dynamo.runtime import Client, DistributedRuntime, dynamo_worker
 from dynamo.runtime.logging import configure_dynamo_logging
 

@@ -9,7 +9,7 @@ This page covers day-2 operational topics for router deployments. For flags and 
 
 ## Serving Multiple Router Replicas
 
-For improved fault tolerance, you can launch multiple frontend-plus-router replicas. If multiple `dingo.frontend` processes share the same host or network namespace, give each instance a different HTTP port. In Kubernetes or on separate hosts, replicas can usually reuse the same container port. Alternatively, you can deploy the router separately as the standalone `python -m dynamo.router` service.
+For improved fault tolerance, you can launch multiple frontend-plus-router replicas. If multiple `dingo.frontend` processes share the same host or network namespace, give each instance a different HTTP port. In Kubernetes or on separate hosts, replicas can usually reuse the same container port. Alternatively, you can deploy the router separately as the standalone `python -m dingo.router` service.
 
 ## Router State Management
 
@@ -87,7 +87,7 @@ With replica sync enabled, a new router still starts with zero active-block know
 
 ## Dynamo-Native Remote Indexer
 
-For Dynamo-native deployments, the remote indexer is served by `dingo.frontend` or `dynamo.router`, not by `dynamo.indexer`.
+For Dynamo-native deployments, the remote indexer is served by `dingo.frontend` or `dingo.router`, not by `dynamo.indexer`.
 
 - Use `--serve-indexer` on router or frontend replicas that should expose `kv_indexer_query` from the worker component.
 - Use `--use-remote-indexer` on consumer routers or frontends that should query that served endpoint instead of maintaining a local overlap indexer.
