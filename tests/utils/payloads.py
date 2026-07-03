@@ -522,8 +522,7 @@ class CachedTokensChatPayload(ChatPayload):
         try:
             text = requests.get(url, timeout=5).text
         except requests.RequestException as e:
-            # Narrow to HTTP/network errors per .ai/python-guidelines.md:
-            # we expect transient endpoint flakes here (timeout, connection
+            # We expect transient endpoint flakes here (timeout, connection
             # refused while the frontend is still binding /metrics) and
             # the strong gate has its own `is None` guard. Programming
             # errors propagate so they surface at test-time instead of

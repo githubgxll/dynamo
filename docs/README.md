@@ -39,20 +39,11 @@ branch based on `main`). The sync workflow copies changes to
 - [Version Management](#version-management)
 - [How Publishing Works](#how-publishing-works)
 - [Common Tasks](#common-tasks)
-- [Claude Code Skills](#claude-code-skills)
 
 ---
 
-## Claude Code Skills
 
-A single Claude Code skill automates common docs tasks. Invoke it as a slash
-command in Claude Code (e.g., `/dynamo-docs`) — the skill walks through
-the full workflow: creating, editing, or removing the markdown file, updating
-the navigation in `docs/index.yml`, and running `fern check` to validate.
 
-| Skill | Description |
-|-------|-------------|
-| [dynamo-docs](../.agents/skills/dynamo-docs/SKILL.md) | Add, update, move, or remove a docs page |
 
 ---
 

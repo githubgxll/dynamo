@@ -167,7 +167,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=(
             "Path to a pre-populated HuggingFace cache (read-only safe). "
             "Enables HF_HUB_OFFLINE mode and skips predownload fixtures. "
-            "See .ai/pytest-guidelines.md for full details."
+            "Use this when tests must avoid network model downloads."
         ),
     )
 
