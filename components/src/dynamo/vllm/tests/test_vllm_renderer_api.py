@@ -6,8 +6,8 @@
 Unit tests to verify vLLM renderer API compatibility.
 
 These tests lock the vLLM API surface used by:
-- components/src/dynamo/frontend/vllm_processor.py
-- components/src/dynamo/frontend/prepost.py
+- dingo/frontend/vllm_processor.py
+- dingo/frontend/prepost.py
 
 If vLLM changes these APIs, these tests should fail early during upgrade.
 """
@@ -90,8 +90,8 @@ class TestVllmRendererApi:
         assert not missing, (
             "ChatCompletionRequest fields changed!\n"
             f"Missing required fields: {missing}\n"
-            "Update components/src/dynamo/frontend/prepost.py and "
-            "components/src/dynamo/frontend/vllm_processor.py to match new vLLM API."
+            "Update dingo/frontend/prepost.py and "
+            "dingo/frontend/vllm_processor.py to match new vLLM API."
         )
 
     def test_chat_completion_request_model_validate_contract(self):
@@ -130,7 +130,7 @@ class TestVllmRendererApi:
         assert not missing, (
             "DeltaToolCall fields changed!\n"
             f"Missing required fields: {missing}\n"
-            "Update tool-call merge logic in components/src/dynamo/frontend/prepost.py"
+            "Update tool-call merge logic in dingo/frontend/prepost.py"
         )
 
     def test_delta_message_fields(self):
@@ -152,7 +152,7 @@ class TestVllmRendererApi:
             "DeltaMessage fields changed!\n"
             f"Missing required fields: {missing}\n"
             "Update streaming post-processing logic in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
 
     def test_sampling_params_annotations_and_output_kind(self):
@@ -195,7 +195,7 @@ class TestVllmRendererApi:
             "SamplingParams annotations changed!\n"
             f"Missing required fields: {missing}\n"
             "Update sampling field projection in "
-            "components/src/dynamo/frontend/vllm_processor.py"
+            "dingo/frontend/vllm_processor.py"
         )
 
         assert RequestOutputKind.DELTA.name == "DELTA"
@@ -226,7 +226,7 @@ class TestVllmRendererApi:
             "TokensPrompt shape changed!\n"
             f"Missing keys: {missing}\n"
             "Update prompt construction in "
-            "components/src/dynamo/frontend/vllm_processor.py"
+            "dingo/frontend/vllm_processor.py"
         )
 
     def test_input_processor_method_signatures(self):
@@ -260,7 +260,7 @@ class TestVllmRendererApi:
         assert list(assign_request_id_sig.parameters) == ["request"], (
             "InputProcessor.assign_request_id signature changed; "
             "update request-id assignment in "
-            "components/src/dynamo/frontend/vllm_processor.py"
+            "dingo/frontend/vllm_processor.py"
         )
 
     def test_input_processor_attributes(self):
@@ -275,13 +275,13 @@ class TestVllmRendererApi:
         assert "self.renderer" in init_source, (
             "InputProcessor.__init__ no longer initializes 'renderer'; "
             "update preprocess_chat_request call in "
-            "components/src/dynamo/frontend/vllm_processor.py"
+            "dingo/frontend/vllm_processor.py"
         )
 
         assert hasattr(InputProcessor, "get_tokenizer"), (
             "InputProcessor no longer has 'get_tokenizer' method; "
             "update EngineFactory in "
-            "components/src/dynamo/frontend/vllm_processor.py"
+            "dingo/frontend/vllm_processor.py"
         )
         assert callable(
             getattr(InputProcessor, "get_tokenizer")
@@ -300,7 +300,7 @@ class TestVllmRendererApi:
         init_params = list(init_sig.parameters)
         assert init_params[:3] == ["self", "tokenizer", "log_stats"], (
             "OutputProcessor.__init__ signature changed; "
-            "update construction in components/src/dynamo/frontend/vllm_processor.py"
+            "update construction in dingo/frontend/vllm_processor.py"
         )
         assert "stream_interval" in init_params
 
@@ -318,7 +318,7 @@ class TestVllmRendererApi:
         process_outputs_params = list(process_outputs_sig.parameters)
         assert process_outputs_params[:2] == ["self", "engine_core_outputs"], (
             "OutputProcessor.process_outputs signature changed; "
-            "update processing in components/src/dynamo/frontend/vllm_processor.py"
+            "update processing in dingo/frontend/vllm_processor.py"
         )
 
         abort_requests_sig = inspect.signature(OutputProcessor.abort_requests)
@@ -348,7 +348,7 @@ class TestVllmRendererApi:
         init_source = inspect.getsource(OutputProcessor.__init__)
         assert "request_states" in init_source, (
             "OutputProcessor.__init__ no longer initializes 'request_states'; "
-            "update cleanup logic in components/src/dynamo/frontend/vllm_processor.py"
+            "update cleanup logic in dingo/frontend/vllm_processor.py"
         )
 
     def test_engine_core_struct_contract(self):
@@ -397,7 +397,7 @@ class TestVllmRendererApi:
             "EngineCoreRequest fields changed!\n"
             f"Expected variants: {valid_request_fields}\n"
             f"Actual:          {actual_request_fields}\n"
-            "Update request construction in components/src/dynamo/frontend/vllm_processor.py"
+            "Update request construction in dingo/frontend/vllm_processor.py"
         )
 
         base_output_fields = (
@@ -454,7 +454,7 @@ class TestVllmRendererApi:
             "EngineCoreOutput fields changed!\n"
             f"Expected variants: {valid_output_fields}\n"
             f"Actual:          {actual_output_fields}\n"
-            "Update output mapping in components/src/dynamo/frontend/vllm_processor.py"
+            "Update output mapping in dingo/frontend/vllm_processor.py"
         )
 
         req_config = getattr(EngineCoreRequest, "__struct_config__", None)
@@ -523,11 +523,11 @@ class TestVllmRendererApi:
 
         assert list(tool_parser_sig.parameters) == ["name"], (
             "ToolParserManager.get_tool_parser signature changed; "
-            "update EngineFactory in components/src/dynamo/frontend/vllm_processor.py"
+            "update EngineFactory in dingo/frontend/vllm_processor.py"
         )
         assert list(reasoning_parser_sig.parameters) == ["name"], (
             "ReasoningParserManager.get_reasoning_parser signature changed; "
-            "update EngineFactory in components/src/dynamo/frontend/vllm_processor.py"
+            "update EngineFactory in dingo/frontend/vllm_processor.py"
         )
 
     def test_tool_parser_method_signatures(self):
@@ -540,7 +540,7 @@ class TestVllmRendererApi:
         assert hasattr(ToolParser, "adjust_request"), (
             "ToolParser no longer has 'adjust_request'; "
             "update preprocess_chat_request in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
         adjust_sig = inspect.signature(ToolParser.adjust_request)
         adjust_params = list(adjust_sig.parameters)
@@ -552,7 +552,7 @@ class TestVllmRendererApi:
         assert hasattr(ToolParser, "extract_tool_calls_streaming"), (
             "ToolParser no longer has 'extract_tool_calls_streaming'; "
             "update StreamingPostProcessor in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
         extract_sig = inspect.signature(ToolParser.extract_tool_calls_streaming)
         extract_params = list(extract_sig.parameters)
@@ -582,7 +582,7 @@ class TestVllmRendererApi:
         assert hasattr(ReasoningParser, "extract_reasoning_streaming"), (
             "ReasoningParser no longer has 'extract_reasoning_streaming'; "
             "update StreamingPostProcessor in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
         extract_sig = inspect.signature(ReasoningParser.extract_reasoning_streaming)
         extract_params = list(extract_sig.parameters)
@@ -603,7 +603,7 @@ class TestVllmRendererApi:
         assert hasattr(ReasoningParser, "is_reasoning_end_streaming"), (
             "ReasoningParser no longer has 'is_reasoning_end_streaming'; "
             "update StreamingPostProcessor in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
         end_sig = inspect.signature(ReasoningParser.is_reasoning_end_streaming)
         end_params = list(end_sig.parameters)
@@ -615,7 +615,7 @@ class TestVllmRendererApi:
         assert hasattr(ReasoningParser, "extract_reasoning"), (
             "ReasoningParser no longer has 'extract_reasoning'; "
             "update StreamingPostProcessor in "
-            "components/src/dynamo/frontend/prepost.py"
+            "dingo/frontend/prepost.py"
         )
         batch_sig = inspect.signature(ReasoningParser.extract_reasoning)
         batch_params = list(batch_sig.parameters)

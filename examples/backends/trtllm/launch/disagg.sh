@@ -57,9 +57,9 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Disaggregated Serving (2 GPUs)" "$MODEL_PATH" "$HTTP_PORT"
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Prevent port collisions: prefill and decode each run their own
 # system-status-server, so DYN_SYSTEM_PORT (which would be shared) is dropped

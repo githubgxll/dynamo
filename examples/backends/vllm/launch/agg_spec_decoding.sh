@@ -14,7 +14,7 @@ print_launch_banner "Launching Speculative Decoding (1 GPU)" "$MODEL" "$HTTP_POR
 # ---------------------------
 # 1. Frontend (Ingress)
 # ---------------------------
-python -m dynamo.frontend --http-port="$HTTP_PORT" &
+python -m dingo.frontend --http-port="$HTTP_PORT" &
 
 
 # ---------------------------

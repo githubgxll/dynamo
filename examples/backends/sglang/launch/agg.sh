@@ -67,9 +67,9 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated Serving" "$MODEL" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # run worker with metrics enabled
 WORKER_MODULE="dynamo.sglang"

@@ -132,7 +132,7 @@ class LLMServerManager:
         self.dynamo_frontend_cmd = [
             "python3",
             "-m",
-            "dynamo.frontend",
+            "dingo.frontend",
             "--router-mode",
             router_mode,
             "--http-port",

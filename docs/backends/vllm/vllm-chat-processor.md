@@ -23,7 +23,7 @@ If the parser you need is missing from the Rust preprocessor, consider [opening 
 
 ```bash
 # Frontend with vLLM processor, tool calling, and reasoning
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --router-mode kv \
   --dyn-chat-processor vllm \
   --enable-auto-tool-choice \
@@ -59,7 +59,7 @@ These arguments are passed to the **frontend** (not the worker) when using `--dy
 The processor supports all vLLM tool call formats. Pass `--tool-call-parser` (and typically `--enable-auto-tool-choice`) on the frontend:
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --dyn-chat-processor vllm \
   --enable-auto-tool-choice \
   --tool-call-parser hermes
@@ -118,7 +118,7 @@ Response:
 For models that produce chain-of-thought reasoning (e.g., Qwen3, DeepSeek-R1), pass `--reasoning-parser`:
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --dyn-chat-processor vllm \
   --reasoning-parser qwen3
 ```

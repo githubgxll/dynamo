@@ -26,8 +26,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner --multimodal "Launching Disaggregated Multimodal E/P/D (8 GPUs)" "$MODEL_PATH" "$HTTP_PORT"
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # run encode worker
 CUDA_VISIBLE_DEVICES=$ENCODE_CUDA_VISIBLE_DEVICES python3 -m dynamo.trtllm \

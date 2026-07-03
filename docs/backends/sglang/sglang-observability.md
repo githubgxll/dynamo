@@ -37,7 +37,7 @@ Launch a frontend and SGLang backend to test metrics:
 
 ```bash
 # Start frontend (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-$ python -m dynamo.frontend
+$ python -m dingo.frontend
 
 # Enable system metrics server on port 8081
 $ DYN_SYSTEM_PORT=8081 python -m dynamo.sglang --model <model_name> --enable-metrics
@@ -308,7 +308,7 @@ export OTEL_EXPORT_ENABLED=true
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4317
 
 # Frontend
-OTEL_SERVICE_NAME=dynamo-frontend python -m dynamo.frontend &
+OTEL_SERVICE_NAME=dynamo-frontend python -m dingo.frontend &
 
 # SGLang worker with tracing
 OTEL_SERVICE_NAME=dynamo-worker-sglang \

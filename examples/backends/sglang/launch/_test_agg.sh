@@ -98,7 +98,7 @@ print_launch_banner "Launching Test-Aggregated + KV Router (2 GPUs, full observa
 cat <<EOF
 
 Topology:
-  - 2 SGLang workers (1 GPU each, tp=1) behind dynamo.frontend KV router
+  - 2 SGLang workers (1 GPU each, tp=1) behind dingo.frontend KV router
   - frontend: --router-mode kv$([ "$APPROX_MODE" = true ] && echo " --no-kv-events" || echo "  (KV events ON)")
   - worker metrics: \$DYN_SYSTEM_PORT_WORKER1=\${DYN_SYSTEM_PORT_WORKER1:-8081}, \$DYN_SYSTEM_PORT_WORKER2=\${DYN_SYSTEM_PORT_WORKER2:-8082}
 
@@ -120,7 +120,7 @@ if [ "$APPROX_MODE" = true ]; then
     FRONTEND_ARGS+=(--no-kv-events)
 fi
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend "${FRONTEND_ARGS[@]}" &
+python3 -m dingo.frontend "${FRONTEND_ARGS[@]}" &
 
 # Per-worker KV events config (only when not in approx mode)
 KV_EVENTS_ARGS_1=()

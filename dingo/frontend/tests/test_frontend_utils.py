@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from dynamo.frontend.utils import (
+from dingo.frontend.utils import (
     handle_engine_error,
     make_backend_error,
     make_internal_error,

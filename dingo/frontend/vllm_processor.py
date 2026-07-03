@@ -35,7 +35,7 @@ from dynamo.common.multimodal.mm_kwargs_transfer import (
 )
 from dynamo.common.multimodal.routing_utils import build_mm_routing_info_from_features
 from dynamo.common.utils import nvtx_utils as _nvtx
-from dynamo.frontend.frontend_args import FrontendConfig
+from dingo.frontend.frontend_args import FrontendConfig
 from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
 
 from .prepost import StreamingPostProcessor, preprocess_chat_request

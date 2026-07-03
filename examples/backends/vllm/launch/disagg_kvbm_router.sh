@@ -17,8 +17,8 @@ source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 print_launch_banner "Launching Disaggregated + KVBM + KV Routing (4 GPUs)" "$MODEL" "$HTTP_PORT"
 
 
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend \
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend \
     --router-mode kv \
     --router-reset-states &
 

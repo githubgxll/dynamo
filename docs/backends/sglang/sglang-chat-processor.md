@@ -23,7 +23,7 @@ If the parser you need is missing from the Rust preprocessor, consider [opening 
 
 ```bash
 # Frontend with SGLang processor, tool calling, and reasoning
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --router-mode kv \
   --dyn-chat-processor sglang \
   --tool-call-parser hermes \
@@ -58,7 +58,7 @@ These arguments are passed to the **frontend** (not the worker) when using `--dy
 The processor supports all SGLang tool call formats. Pass `--tool-call-parser` on the frontend:
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --dyn-chat-processor sglang \
   --tool-call-parser hermes
 ```
@@ -116,7 +116,7 @@ Response:
 For models that produce chain-of-thought reasoning (e.g., Qwen3, DeepSeek-R1), pass `--reasoning-parser`:
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --dyn-chat-processor sglang \
   --reasoning-parser qwen3
 ```
@@ -130,11 +130,11 @@ The parser separates think tag content into the `reasoning_content` field and re
 ```diff
   # Before (deprecated)
 - python -m dynamo.sglang --model-path <model> --use-sglang-tokenizer
-- python -m dynamo.frontend
+- python -m dingo.frontend
 
   # After
   python -m dynamo.sglang --model-path <model>
-+ python -m dynamo.frontend --dyn-chat-processor sglang
++ python -m dingo.frontend --dyn-chat-processor sglang
 ```
 
 Key differences:

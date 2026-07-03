@@ -84,8 +84,8 @@ print_curl_footer <<CURL
 CURL
 
 # Start frontend with Rust OpenAIPreprocessor
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # ---- Per-model defaults ----
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"

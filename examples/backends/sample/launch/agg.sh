@@ -41,7 +41,7 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Sample Aggregated Serving" "$MODEL_NAME" "$HTTP_PORT"
 
 # run frontend
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # run sample worker
 python3 -m dynamo.common.backend.sample_main \

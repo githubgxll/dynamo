@@ -54,7 +54,7 @@ spec:
           command:
           - python
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           env:
           - name: DYN_DISCOVERY_BACKEND
             value: kubernetes

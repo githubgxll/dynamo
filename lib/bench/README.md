@@ -39,7 +39,7 @@ python -m dynamo.vllm \
   --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B
 
 # Terminal 2 — frontend with KV router
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --router-mode kv \
   --http-port 8000
 ```

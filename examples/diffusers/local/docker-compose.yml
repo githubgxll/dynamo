@@ -42,7 +42,7 @@ services:
     image: dynamo-fastvideo-diffusers:latest
     restart: on-failure
     command: >
-      python -m dynamo.frontend
+      python -m dingo.frontend
         --http-port 8000
         --discovery-backend file
     environment:

@@ -16,7 +16,7 @@ The Dynamo KV Router intelligently routes requests by evaluating their computati
 To launch the Dynamo frontend with the KV Router:
 
 ```bash
-python -m dynamo.frontend --router-mode kv --http-port 8000
+python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 For Kubernetes, set `DYN_ROUTER_MODE=kv` on the Frontend service. For event-driven KV state, configure backend workers to publish KV cache events using the backend-specific flags described in [Router Operations](router-operations.md#additional-notes). Use `--no-router-kv-events` only when you want approximate cache-state prediction.

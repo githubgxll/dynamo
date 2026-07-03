@@ -86,7 +86,7 @@ System info (hostname=jensen-linux, IP=10.111.122.133)
    │  ├─ ✅ dynamo.llm               $HOME/dynamo/lib/bindings/python/src/dynamo/llm/__init__.py
    │  └─ ✅ dynamo.runtime           $HOME/dynamo/lib/bindings/python/src/dynamo/runtime/__init__.py
    └─ ✅ Framework components: ai-dynamo 0.5.0
-      ├─ ✅ dynamo.frontend  $HOME/dynamo/components/src/dynamo/frontend/__init__.py
+      ├─ ✅ dingo.frontend  $HOME/dynamo/dingo/frontend/__init__.py
       ├─ ✅ dynamo.llama_cpp $HOME/dynamo/components/src/dynamo/llama_cpp/__init__.py
       ├─ ✅ dynamo.sglang    $HOME/dynamo/components/src/dynamo/sglang/__init__.py
       ├─ ✅ dynamo.trtllm    $HOME/dynamo/components/src/dynamo/trtllm/__init__.py
@@ -3093,7 +3093,7 @@ class DynamoFrameworkInfo(NodeInfo):
         if self.runtime_check and not components:
             # Try common framework components even if not discovered
             components = [
-                "dynamo.frontend",
+                "dingo.frontend",
                 "dynamo.vllm",
                 "dynamo.sglang",
                 "dynamo.trtllm",
@@ -3168,7 +3168,7 @@ class DynamoFrameworkInfo(NodeInfo):
 
         Returns:
             List of framework component module names
-            Example: ['dynamo.frontend', 'dynamo.planner', 'dynamo.vllm', 'dynamo.sglang']
+            Example: ['dingo.frontend', 'dynamo.planner', 'dynamo.vllm', 'dynamo.sglang']
 
         Note: Scans components/src/dynamo/... directory for modules with __init__.py files.
         """
@@ -3176,6 +3176,12 @@ class DynamoFrameworkInfo(NodeInfo):
 
         if not workspace_dir:
             return components
+
+        dingo_frontend_path = os.path.join(
+            workspace_dir, "dingo", "frontend", "__init__.py"
+        )
+        if os.path.exists(dingo_frontend_path):
+            components.append("dingo.frontend")
 
         # Scan the components/src/dynamo/... Python directory for __init__.py files
         components_path = os.path.join(workspace_dir, "components", "src", "dynamo")

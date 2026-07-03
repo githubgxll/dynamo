@@ -145,7 +145,7 @@ done
 echo "=== Starting frontend (KV router, MM-aware routing) ==="
 env "${COMMON_ENV[@]}" \
     "DYN_LOG=${DYN_LOG_VAL}" \
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "${HTTP_PORT}" \
     --router-mode kv \
     --kv-cache-block-size "${BLOCK_SIZE}" &

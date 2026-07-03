@@ -29,8 +29,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner --multimodal "Launching Aggregated Multimodal Serving" "$MODEL_PATH" "$HTTP_PORT"
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend --router-mode kv &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend --router-mode kv &
 
 # run worker
 python3 -m dynamo.trtllm \

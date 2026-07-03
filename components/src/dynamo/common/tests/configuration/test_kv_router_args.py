@@ -14,7 +14,7 @@ from dynamo.common.configuration.groups.kv_router_args import (
     KvRouterArgGroup,
     KvRouterConfigBase,
 )
-from dynamo.frontend.frontend_args import FrontendArgGroup, FrontendConfig
+from dingo.frontend.frontend_args import FrontendArgGroup, FrontendConfig
 
 pytestmark = [pytest.mark.pre_merge, pytest.mark.unit, pytest.mark.gpu_0]
 

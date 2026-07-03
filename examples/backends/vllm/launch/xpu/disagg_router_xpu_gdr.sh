@@ -23,7 +23,7 @@ export UCX_TLS=ib,rc,ze_copy
 # Start frontend with KV routing
 # The frontend will automatically detect prefill workers and activate an internal prefill router
 # edit --router-mode to random / round-robin / kv
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --http-port 8000 \
     --router-reset-states &

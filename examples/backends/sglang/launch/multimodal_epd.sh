@@ -141,8 +141,8 @@ fi
 print_launch_banner --multimodal "Launching Multimodal E/PD ($GPU_LABEL)" "$MODEL_NAME" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU..."

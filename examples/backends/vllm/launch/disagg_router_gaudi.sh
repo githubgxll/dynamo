@@ -27,7 +27,7 @@ print_launch_banner "Launching Disaggregated + KV Routing on Gaudi (4 HPUs)" "$M
 # Start frontend with KV routing
 # The frontend will automatically detect prefill workers and activate an internal prefill router
 # edit --router-mode to random / round-robin / kv
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --http-port "$HTTP_PORT" \
     --router-reset-states &

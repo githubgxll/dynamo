@@ -164,7 +164,7 @@ class FrontendProcess(ManagedProcess):
             command=[
                 "python3",
                 "-m",
-                "dynamo.frontend",
+                "dingo.frontend",
                 "--http-port",
                 str(frontend_port),
                 "--dyn-chat-processor",
@@ -181,7 +181,7 @@ class FrontendProcess(ManagedProcess):
                 (f"http://localhost:{frontend_port}/v1/models", check_models_api)
             ],
             timeout=240,
-            straggler_commands=["-m dynamo.frontend"],
+            straggler_commands=["-m dingo.frontend"],
             log_dir=_prepare_log_dir(request, f"vllm-mm-frontend-{transfer_mode}"),
             **_COMMON_PROCESS_KWARGS,
         )

@@ -1274,7 +1274,7 @@ def num_system_ports(request) -> int:
 def dynamo_dynamic_ports(num_system_ports) -> Generator[ServicePorts, None, None]:
     """Allocate per-test ports for Dynamo deployments.
 
-    - frontend_port: OpenAI-compatible HTTP/gRPC ingress (dynamo.frontend)
+    - frontend_port: OpenAI-compatible HTTP/gRPC ingress (dingo.frontend)
     - system_ports: List of worker metrics/system ports (configurable count via num_system_ports)
     - kv_event_port: ZMQ port for vLLM KV event publishing (avoids collisions under xdist)
     """

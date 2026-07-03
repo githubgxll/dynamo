@@ -39,7 +39,7 @@ curl -s -X POST http://localhost:${HTTP_PORT}/v1/images/generations \\
 CURL
 
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 FRONTEND_PID=$!
 
 sleep 2

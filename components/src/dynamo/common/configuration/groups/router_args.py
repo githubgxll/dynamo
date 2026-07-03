@@ -4,7 +4,7 @@
 """Shared router configuration ArgGroup.
 
 Defines the router configuration parameters once so that both
-``dynamo.frontend`` and other components can reuse them without duplication.
+``dingo.frontend`` and other components can reuse them without duplication.
 Field names on ``RouterConfigBase`` match the ``RouterConfig`` Python
 constructor kwargs 1:1 (for the non-positional args), so ``router_kwargs()``
 returns a dict that can be unpacked into

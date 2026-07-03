@@ -13,8 +13,8 @@ print_launch_banner "Launching Disaggregated Serving + FlexKV (2 GPUs)" "$MODEL"
 
 
 # Run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # Run decode worker without FlexKV
 CUDA_VISIBLE_DEVICES=0 python -m dynamo.vllm --model $MODEL --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &

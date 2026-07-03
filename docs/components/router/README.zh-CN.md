@@ -15,7 +15,7 @@ Dynamo KV Router 通过评估不同 worker 上的计算成本来智能地路由�
 我们可以通过 Dynamo frontend 使用 KV Router：
 
 ```bash
-python -m dynamo.frontend --router-mode kv --http-port 8000
+python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 对于 Kubernetes，请在 Frontend service 上设置 `DYN_ROUTER_MODE=kv`。对于事件驱动的 KV 状态，请使用 [Router Operations](router-operations.md#additional-notes) 中描述的后端专用 flag，配置 backend worker 发布 KV cache 事件。仅当你希望使用近似的 cache 状态预测时，才使用 `--no-router-kv-events`。

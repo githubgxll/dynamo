@@ -942,7 +942,7 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     failures = {
         "frontend": [
             TerminateProcessFailure(
-                30, ["Frontend"], "SIGINT", process_name="dynamo.frontend"
+                30, ["Frontend"], "SIGINT", process_name="dingo.frontend"
             )
         ],
         "frontend_pod": [DeletePodFailure(30, ["Frontend"])],

@@ -39,7 +39,7 @@ The Dynamo Frontend is the API gateway for serving LLM inference requests. It pr
 ### HTTP Frontend
 
 ```bash
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 ```
 
 This starts an OpenAI-compatible HTTP server with integrated pre/post processing and routing. Backends are auto-discovered when they call `register_model`.
@@ -53,7 +53,7 @@ If the model is not available on Hugging Face, such as a private or customized m
 ### KServe gRPC Frontend
 
 ```bash
-python -m dynamo.frontend --kserve-grpc-server
+python -m dingo.frontend --kserve-grpc-server
 ```
 
 See the [Frontend Guide](frontend-guide.md) for KServe-specific configuration and message formats.
@@ -75,7 +75,7 @@ spec:
           command:
             - python
             - -m
-            - dynamo.frontend
+            - dingo.frontend
             - --http-port
             - "8000"
 ```

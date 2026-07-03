@@ -158,7 +158,7 @@ extraPodSpec:
       - /bin/sh
       - -c
     args:
-      - "python3 -m dynamo.frontend --router-mode kv --router-temperature 0.5 --http-port 8000"
+      - "python3 -m dingo.frontend --router-mode kv --router-temperature 0.5 --http-port 8000"
 ```
 
 **Recommendation:** Use environment variables for easier configuration management and consistency with Dynamo's K8s patterns.

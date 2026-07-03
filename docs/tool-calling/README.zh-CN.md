@@ -74,7 +74,7 @@ python -m dynamo.<backend> --help
 python -m dynamo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
 
 # 启动 frontend
-python -m dynamo.frontend
+python -m dingo.frontend
 ```
 
 ### 工具调用请求示例

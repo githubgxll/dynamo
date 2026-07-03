@@ -126,7 +126,7 @@ spec:
         mainContainer:
           image: <your-image>
           command: ["/bin/sh", "-c"]
-          args: ["python3 -m dynamo.frontend --router-mode round-robin --http-port 8000"]
+          args: ["python3 -m dingo.frontend --router-mode round-robin --http-port 8000"]
           env:
             - name: DYN_TOKENIZER
               value: "default"

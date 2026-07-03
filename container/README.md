@@ -456,7 +456,7 @@ dev/sanity_check.py
 
 # 4. Run inference (requires both frontend and backend)
 # Start frontend
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Start backend (vLLM example)
 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --gpu-memory-utilization 0.20 &
@@ -485,7 +485,7 @@ sudo chown -R dynamo:0 /opt/miniforge3/envs/sglang
 cargo build --locked --features dynamo-llm/block-manager --workspace
 # 3a. ai_dynamo_runtime (Rust bindings: dynamo._core)
 cd lib/bindings/python && maturin develop --uv && cd -
-# 3b. ai-dynamo (Python namespace packages: dynamo.frontend, dynamo.sglang, ...)
+# 3b. ai-dynamo (Python namespace packages: dingo.frontend, dynamo.sglang, ...)
 uv pip install --no-deps -e /workspace
 # 3c. NIXL python bindings (C++ libs are already baked in at /opt/intel/intel_nixl;
 #     local-dev intentionally skips installing the wheel into the env)
@@ -499,7 +499,7 @@ nats-server -js &
 etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://0.0.0.0:2379 --data-dir /tmp/etcd &
 
 # 6. Run inference (frontend + SGLang XPU backend)
-python -m dynamo.frontend &
+python -m dingo.frontend &
 python -m dynamo.sglang --model Qwen/Qwen3-0.6B --mem-fraction-static 0.20 &
 ```
 
@@ -553,7 +553,7 @@ dev/sanity_check.py --runtime-check-only
 python -m pytest tests/
 
 # 7. (Optional) Start frontend and backend for interactive testing
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Start worker backend (choose one framework):
 # vLLM

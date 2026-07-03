@@ -13,8 +13,8 @@ print_launch_banner "Launching Disaggregated Serving + LMCache (2 GPUs)" "$MODEL
 
 
 # run ingress with KV router
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend --router-mode kv &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend --router-mode kv &
 
 # run decode worker on GPU 0, without enabling LMCache
 CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model "$MODEL" &

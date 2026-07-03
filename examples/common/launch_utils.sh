@@ -61,7 +61,7 @@ EXAMPLE_PROMPT_VISUAL="A golden retriever riding a skateboard through a neon-lit
 #   from child processes (OOM, Python exceptions, etc.) still propagate.
 #
 # Usage:
-#   python -m dynamo.frontend &
+#   python -m dingo.frontend &
 #   python -m dynamo.vllm --model "$MODEL" &
 #   wait_any_exit
 

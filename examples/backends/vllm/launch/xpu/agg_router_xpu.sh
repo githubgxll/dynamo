@@ -21,8 +21,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated + KV Routing (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
 # run frontend + KV router
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend \
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend \
     --router-mode kv \
     --router-reset-states &
 

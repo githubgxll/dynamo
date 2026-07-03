@@ -87,7 +87,7 @@ parser exists for this format.
 python -m dynamo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
 
 # launch frontend worker
-python -m dynamo.frontend
+python -m dingo.frontend
 ```
 
 ### Tool Calling Request Example

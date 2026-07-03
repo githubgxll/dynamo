@@ -181,7 +181,7 @@ uv pip install -e .
 #### 8. 验证构建
 
 ```bash
-python3 -m dynamo.frontend --help
+python3 -m dingo.frontend --help
 ```
 
 > [!TIP]

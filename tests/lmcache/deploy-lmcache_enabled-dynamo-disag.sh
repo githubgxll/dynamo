@@ -27,7 +27,7 @@ echo "   Mode: Disaggregated (prefill + decode workers) + LMCache"
 echo "   !! Remember to kill the old dynamo processes otherwise the port will be busy !!"
 echo "🔧 Starting dynamo disaggregated serving with LMCache enabled..."
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model $MODEL_URL --disaggregation-mode decode &
 

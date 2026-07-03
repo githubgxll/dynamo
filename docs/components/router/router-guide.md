@@ -19,7 +19,7 @@ The router can be deployed using [Python / CLI](#python--cli-deployment), [Kuber
 To launch the Dynamo frontend with the KV Router:
 
 ```bash
-python -m dynamo.frontend --router-mode kv --http-port 8000
+python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 This command:
@@ -47,7 +47,7 @@ Backend workers register themselves using the `register_model` API. For accurate
 | `--serve-indexer` | `false` | Serve the Dynamo-native remote indexer from this frontend/router on the worker component |
 | `--use-remote-indexer` | `false` | Query the worker component's served remote indexer instead of maintaining a local overlap indexer |
 
-For all available options: `python -m dynamo.frontend --help`
+For all available options: `python -m dingo.frontend --help`
 
 For detailed configuration options and tuning parameters, see [Configuration and Tuning](router-configuration.md). For candidate eligibility rules, see [Router Filtering](router-filtering.md). For how the router models prefill and decode load in the cost function, see [Routing Concepts](router-concepts.md#active-load-modeling).
 
@@ -102,7 +102,7 @@ You can also run the KV router as a standalone service (without the Dynamo front
 
 | Deployment | Process | Metrics Port | Use Case |
 |------------|---------|--------------|----------|
-| **Frontend-embedded** | `python -m dynamo.frontend --router-mode kv` | Frontend HTTP port (default 8000) | Standard deployment; router runs inside the frontend process |
+| **Frontend-embedded** | `python -m dingo.frontend --router-mode kv` | Frontend HTTP port (default 8000) | Standard deployment; router runs inside the frontend process |
 | **Standalone** | `python -m dynamo.router` | `DYN_SYSTEM_PORT` (if set) | Multi-tier architectures, advanced disaggregated prefill routing, custom pipelines |
 
 The standalone router does not include the HTTP frontend (no `/v1/chat/completions` endpoint). It exposes only the `RouterRequestMetrics` via the system status server. See the [Standalone Router README](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/router/README.md).
@@ -113,13 +113,13 @@ The Dynamo router can be deployed in several configurations. The table below sho
 
 | Mode | Command | Routing Logic | KV Events | Topology | Use Case |
 |------|---------|---------------|-----------|----------|----------|
-| **Frontend + Round-Robin** | `python -m dynamo.frontend --router-mode round-robin` | Cycles through workers | None | Aggregated | Simplest baseline; no KV awareness |
-| **Frontend + Random** | `python -m dynamo.frontend --router-mode random` | Random worker selection | None | Aggregated | Stateless load balancing |
-| **Frontend + KV (Aggregated)** | `python -m dynamo.frontend --router-mode kv` | KV cache overlap + load | NATS Core / JetStream / ZMQ / Approx | Aggregated | Production single-pool serving with cache reuse |
-| **Frontend + KV (Disaggregated)** | `python -m dynamo.frontend --router-mode kv` with prefill + decode workers | KV cache overlap + load | NATS Core / JetStream / ZMQ / Approx | Disaggregated (prefill + decode pools) | Separate prefill/decode for large-scale serving |
-| **Frontend + Least-Loaded** | `python -m dynamo.frontend --router-mode least-loaded` | Fewest active connections | None | Aggregated or disaggregated fallback | Simple load-aware balancing without KV awareness |
-| **Frontend + Device-Aware Weighted** | `python -m dynamo.frontend --router-mode device-aware-weighted` | Device-aware budget + least-loaded within selected device group | None | Aggregated or disaggregated fallback | Heterogeneous fleet balancing (CPU/non-CPU); degenerates to least-loaded when only one device class is present |
-| **Frontend + Direct** | `python -m dynamo.frontend --router-mode direct` | Worker ID from request hints | None | Aggregated | External orchestrator (e.g., EPP/GAIE) selects workers |
+| **Frontend + Round-Robin** | `python -m dingo.frontend --router-mode round-robin` | Cycles through workers | None | Aggregated | Simplest baseline; no KV awareness |
+| **Frontend + Random** | `python -m dingo.frontend --router-mode random` | Random worker selection | None | Aggregated | Stateless load balancing |
+| **Frontend + KV (Aggregated)** | `python -m dingo.frontend --router-mode kv` | KV cache overlap + load | NATS Core / JetStream / ZMQ / Approx | Aggregated | Production single-pool serving with cache reuse |
+| **Frontend + KV (Disaggregated)** | `python -m dingo.frontend --router-mode kv` with prefill + decode workers | KV cache overlap + load | NATS Core / JetStream / ZMQ / Approx | Disaggregated (prefill + decode pools) | Separate prefill/decode for large-scale serving |
+| **Frontend + Least-Loaded** | `python -m dingo.frontend --router-mode least-loaded` | Fewest active connections | None | Aggregated or disaggregated fallback | Simple load-aware balancing without KV awareness |
+| **Frontend + Device-Aware Weighted** | `python -m dingo.frontend --router-mode device-aware-weighted` | Device-aware budget + least-loaded within selected device group | None | Aggregated or disaggregated fallback | Heterogeneous fleet balancing (CPU/non-CPU); degenerates to least-loaded when only one device class is present |
+| **Frontend + Direct** | `python -m dingo.frontend --router-mode direct` | Worker ID from request hints | None | Aggregated | External orchestrator (e.g., EPP/GAIE) selects workers |
 | **Standalone Router** | `python -m dynamo.router` | KV cache overlap + load | NATS Core / JetStream / ZMQ | Any | Routing without the HTTP frontend (multi-tier, custom pipelines) |
 
 ### Routing Modes (`--router-mode`)

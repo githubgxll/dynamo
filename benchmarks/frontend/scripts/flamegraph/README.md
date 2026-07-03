@@ -16,7 +16,7 @@ Scripts for generating CPU, off-CPU, and differential flame graph SVGs from the 
 
 ```bash
 # Get the frontend PID from a running capture
-FRONTEND_PID=$(pgrep -f "dynamo.frontend" | head -1)
+FRONTEND_PID=$(pgrep -f "dingo.frontend" | head -1)
 
 # CPU flame graph (30s sample)
 ./cpu_flamegraph.sh --pid $FRONTEND_PID --duration 30

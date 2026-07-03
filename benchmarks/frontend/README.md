@@ -43,7 +43,7 @@ Local mode starts a mocker backend and frontend process on the current machine, 
 
 **Prerequisites:**
 
-- `dynamo.mocker` and `dynamo.frontend` installed (from the Dynamo repo)
+- `dynamo.mocker` and `dingo.frontend` installed (from the Dynamo repo)
 - `aiperf` installed and on `$PATH`
 - A HuggingFace model accessible locally (default: `Qwen/Qwen3-0.6B`)
 

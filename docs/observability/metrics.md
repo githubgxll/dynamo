@@ -36,7 +36,7 @@ Launch a frontend and vLLM backend to test metrics:
 
 ```bash
 # Start frontend (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-$ python -m dynamo.frontend
+$ python -m dingo.frontend
 
 # Enable backend worker's system metrics on port 8081
 $ DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B  \
@@ -167,7 +167,7 @@ Backend `dynamo_component_*` series carry two groups of labels: the ones the Dyn
 
 #### Component Names
 
-Values you will see in the `dynamo_component` label on `dynamo_component_*` series. The HTTP frontend (`python -m dynamo.frontend`) is **not** in this list — it exposes its own `dynamo_frontend_*` metric family, not `dynamo_component_*`.
+Values you will see in the `dynamo_component` label on `dynamo_component_*` series. The HTTP frontend (`python -m dingo.frontend`) is **not** in this list — it exposes its own `dynamo_frontend_*` metric family, not `dynamo_component_*`.
 
 | Value | Meaning |
 |-------|---------|
@@ -215,7 +215,7 @@ Some components expose additional metrics specific to their functionality:
 
 **Important:** The frontend and backend workers are separate components that expose metrics on different ports. See [Backend Component Metrics](#backend-component-metrics) for backend metrics.
 
-The Dynamo HTTP Frontend (`python -m dynamo.frontend`) exposes `dynamo_frontend_*` metrics on port 8000 by default (configurable via `--http-port` or `DYN_HTTP_PORT`) at the `/metrics` endpoint. Most metrics include `model` labels containing the model name:
+The Dynamo HTTP Frontend (`python -m dingo.frontend`) exposes `dynamo_frontend_*` metrics on port 8000 by default (configurable via `--http-port` or `DYN_HTTP_PORT`) at the `/metrics` endpoint. Most metrics include `model` labels containing the model name:
 
 - `dynamo_frontend_active_requests`: Number of requests currently being handled by the frontend, from HTTP handler entry until the response stream completes (gauge). This is the top-level in-flight count with no stage breakdown.
 - `dynamo_frontend_stage_requests`: Number of requests currently in a given frontend pipeline stage (gauge, labels: `stage`, `phase`). See [Stage and phase labels](#stage-and-phase-labels) below.

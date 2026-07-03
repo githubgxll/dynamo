@@ -78,7 +78,7 @@ python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B \
     --kv-events-config '{"publisher":"nats","topic":"kv-events","enable_kv_cache_events":true}'
 
 # Start frontend -- it subscribes to events from NATS automatically
-python3 -m dynamo.frontend --router-mode kv
+python3 -m dingo.frontend --router-mode kv
 ```
 
 ## ZMQ Transport
@@ -99,7 +99,7 @@ python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B \
   --kv-events-config '{"publisher":"zmq","endpoint":"tcp://*:20080","enable_kv_cache_events":true}'
 
 # Start frontend -- discovers workers and connects directly
-python3 -m dynamo.frontend --router-mode kv
+python3 -m dingo.frontend --router-mode kv
 ```
 
 ## Disabling the Event Plane
@@ -107,7 +107,7 @@ python3 -m dynamo.frontend --router-mode kv
 If you do not need KV-aware routing, you can disable the event plane entirely:
 
 ```bash
-python3 -m dynamo.frontend --router-mode kv --no-router-kv-events
+python3 -m dingo.frontend --router-mode kv --no-router-kv-events
 ```
 
 With `--no-router-kv-events`:

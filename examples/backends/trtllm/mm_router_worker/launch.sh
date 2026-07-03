@@ -92,7 +92,7 @@ sleep 5
 # Use NATS request plane to match MM Router
 echo ""
 echo "=== Starting Frontend ==="
-DYN_REQUEST_PLANE=nats python -m dynamo.frontend \
+DYN_REQUEST_PLANE=nats python -m dingo.frontend \
     --http-port "$HTTP_PORT" \
     --router-mode round-robin \
     2>&1 | sed "s/^/[frontend] /" &

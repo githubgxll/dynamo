@@ -186,7 +186,7 @@ echo "  Encode worker → CUDA_VISIBLE_DEVICES=${ENCODE_CUDA_VISIBLE_DEVICES}"
 echo "  PD worker     → CUDA_VISIBLE_DEVICES=${PD_CUDA_VISIBLE_DEVICES}"
 
 # Frontend
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Encode worker (vision encoder on GPU 0)
 echo "[Phase 2] Starting Encode worker on GPU ${ENCODE_CUDA_VISIBLE_DEVICES} ..."

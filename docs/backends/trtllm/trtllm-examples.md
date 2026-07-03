@@ -30,7 +30,7 @@ docker compose -f dev/docker-compose.yml up -d
 </Note>
 
 <Tip>
-Each launch script runs the frontend and worker(s) in a single terminal. You can run each command separately in different terminals for testing. Each shell script simply runs `python3 -m dynamo.frontend <args>` to start up the ingress and `python3 -m dynamo.trtllm <args>` to start up the workers.
+Each launch script runs the frontend and worker(s) in a single terminal. You can run each command separately in different terminals for testing. Each shell script simply runs `python3 -m dingo.frontend <args>` to start up the ingress and `python3 -m dynamo.trtllm <args>` to start up the workers.
 </Tip>
 
 For detailed information about KV-aware routing behavior, see [Routing Concepts](../../components/router/router-concepts.md). For deployment modes, see the [Router Guide](../../components/router/router-guide.md).
@@ -110,5 +110,5 @@ For complete Kubernetes deployment instructions, configurations, and troubleshoo
 See the [client](../sglang/README.md#testing-the-deployment) section to learn how to send requests to the deployment.
 
 <Note>
-To send a request to a multi-node deployment, target the node which is running `python3 -m dynamo.frontend <args>`.
+To send a request to a multi-node deployment, target the node which is running `python3 -m dingo.frontend <args>`.
 </Note>

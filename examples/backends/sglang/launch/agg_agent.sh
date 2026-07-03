@@ -59,7 +59,7 @@ print_launch_banner "Launching Aggregated Agent Serving" "$MODEL" "$HTTP_PORT"
 echo "Request trace output: $DYN_REQUEST_TRACE_OUTPUT_PATH"
 
 # Frontend with KV routing and state reset
-python3 -m dynamo.frontend \
+python3 -m dingo.frontend \
   --router-mode kv \
   --router-reset-states \
   --enable-anthropic-api &

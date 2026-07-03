@@ -133,7 +133,7 @@ the Gateway API setup, supported features, and configuration.
 docker run --gpus all --network host --rm -it nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.2.1
 
 # Inside the container — start frontend and worker
-python3 -m dynamo.frontend --http-port 8000 --discovery-backend file > /dev/null 2>&1 &
+python3 -m dingo.frontend --http-port 8000 --discovery-backend file > /dev/null 2>&1 &
 python3 -m dynamo.sglang --model-path Qwen/Qwen3-0.6B --discovery-backend file &
 
 # Send a request

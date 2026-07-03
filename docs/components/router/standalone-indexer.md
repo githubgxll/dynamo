@@ -16,7 +16,7 @@ The standalone KV indexer (`python -m dynamo.indexer`) is a lightweight service 
 
 This is distinct from the [Standalone Router](../../../components/src/dynamo/router/README.md), which is a full routing service. The standalone indexer provides only the indexing and query layer without routing logic.
 
-For Dynamo-native remote indexing, use `--serve-indexer` on `dynamo.frontend` or `dynamo.router` and `--use-remote-indexer` on consumers instead. That request-plane service reuses the router's existing event ingestion and recovery machinery; it is not implemented by `dynamo.indexer`.
+For Dynamo-native remote indexing, use `--serve-indexer` on `dingo.frontend` or `dynamo.router` and `--use-remote-indexer` on consumers instead. That request-plane service reuses the router's existing event ingestion and recovery machinery; it is not implemented by `dynamo.indexer`.
 
 The HTTP API follows the [Mooncake KV Indexer RFC](https://github.com/kvcache-ai/Mooncake/issues/1403) conventions.
 

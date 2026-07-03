@@ -63,7 +63,7 @@ print_curl_footer <<CURL
 CURL
 
 # run frontend
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # run video diffusion worker
 python3 -m dynamo.trtllm \

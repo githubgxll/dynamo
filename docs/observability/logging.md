@@ -62,7 +62,7 @@ export DYN_LOGGING_JSONL=true
 export DYN_LOG=debug
 
 # Start your Dynamo components (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-python -m dynamo.frontend &
+python -m dingo.frontend &
 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
 ```
 
@@ -133,7 +133,7 @@ export DYN_LOGGING_JSONL=true
 export DYN_LOG=debug  # Set to debug to see detailed trace logs
 
 # Start your Dynamo components (e.g., frontend and worker) (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-python -m dynamo.frontend &
+python -m dingo.frontend &
 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
 ```
 

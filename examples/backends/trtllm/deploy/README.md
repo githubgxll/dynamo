@@ -227,7 +227,7 @@ TensorRT-LLM workers are configured through command-line arguments in the deploy
 
 Send a test request to verify your deployment. See the [client section](../../../../docs/backends/vllm/README.md#client) for detailed instructions.
 
-**Note:** For multi-node deployments, target the node running `python3 -m dynamo.frontend <args>`.
+**Note:** For multi-node deployments, target the node running `python3 -m dingo.frontend <args>`.
 
 ## Model Configuration
 

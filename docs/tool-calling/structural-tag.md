@@ -39,7 +39,7 @@ python -m dynamo.sglang \
   --dyn-enable-structural-tag
 
 # Launch frontend
-python -m dynamo.frontend
+python -m dingo.frontend
 ```
 
 Eligible tool-calling requests will now use xgrammar structural tags for guided

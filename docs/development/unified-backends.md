@@ -700,7 +700,7 @@ pip install -e .
 my-backend --model-name Qwen/Qwen3-0.6B --namespace dynamo
 
 # In another shell, start the Dynamo frontend:
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 ```
 
 Then send a request:
@@ -1545,7 +1545,7 @@ cargo build --release
     --endpoint generate
 
 # In another shell, start the Python frontend from the dynamo repo:
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 ```
 
 Then send a request:

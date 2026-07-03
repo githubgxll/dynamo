@@ -106,7 +106,7 @@ The following failure types are defined in `scenarios.py`:
 | Failure Name                  | Description                                        | Injection Method              | Applicable Backends |
 |-------------------------------|----------------------------------------------------|-------------------------------|---------------------|
 | `none`                        | No failure injection (baseline).                   | N/A                           | All                 |
-| `frontend`                    | Terminate frontend process.                        | `SIGINT` to `dynamo.frontend` | All                 |
+| `frontend`                    | Terminate frontend process.                        | `SIGINT` to `dingo.frontend` | All                 |
 | `frontend_pod`                | Delete frontend pod.                               | Kubernetes API pod deletion   | All                 |
 | `decode_worker`               | Terminate decode worker process.                   | `SIGKILL` to `dynamo.<backend>` | All                 |
 | `decode_worker_pod`           | Delete decode worker pod.                          | Kubernetes API pod deletion   | All                 |

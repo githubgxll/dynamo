@@ -1,6 +1,6 @@
 # Frontend Configuration Boundary
 
-`dynamo.frontend` parses CLI arguments and environment defaults into
+`dingo.frontend` parses CLI arguments and environment defaults into
 `FrontendConfig`. After that point, treat `FrontendConfig` as the source of
 truth for frontend-owned settings.
 

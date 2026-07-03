@@ -162,7 +162,7 @@ spec:
             - /bin/sh
             - -c
           args:
-            - python3 -m dynamo.frontend --router-mode kv --http-port 8000
+            - python3 -m dingo.frontend --router-mode kv --http-port 8000
           env:
             - name: ETCD_ENDPOINTS
               value: http://kimi-k25-tokenspeed-etcd:2379

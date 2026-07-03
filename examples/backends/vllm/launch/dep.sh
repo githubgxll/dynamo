@@ -15,8 +15,8 @@ print_launch_banner "Launching Data Parallel / Expert Parallelism (4 GPUs)" "$MO
 
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend --router-mode kv &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend --router-mode kv &
 
 # Data Parallel Attention / Expert Parallelism
 # Routing to DP workers managed by Dynamo

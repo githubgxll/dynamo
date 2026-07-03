@@ -92,4 +92,4 @@ spec:
       extraPodSpec:
         mainContainer:
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:latest
-          # command: ["python3", "-m", "dynamo.frontend"]
+          # command: ["python3", "-m", "dingo.frontend"]

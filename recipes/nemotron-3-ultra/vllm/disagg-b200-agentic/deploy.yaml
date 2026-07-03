@@ -89,9 +89,9 @@ spec:
                     --http-host 0.0.0.0
                     --http-port 8000
                   )
-                  printf '%q ' python3 -m dynamo.frontend "${frontend_args[@]}" >"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend_command.txt"
+                  printf '%q ' python3 -m dingo.frontend "${frontend_args[@]}" >"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend_command.txt"
                   printf '\n' >>"${LOG_DIR:-/tmp/nemotron-ultra}/status/vllm_frontend_command.txt"
-                  exec python3 -m dynamo.frontend "${frontend_args[@]}"
+                  exec python3 -m dingo.frontend "${frontend_args[@]}"
               ports:
                 - name: http
                   containerPort: 8000

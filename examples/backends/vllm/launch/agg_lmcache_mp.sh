@@ -43,7 +43,7 @@ curl -sf "http://localhost:$LMCACHE_HTTP_PORT/healthcheck" >/dev/null 2>&1 || {
   exit 1
 }
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
   python -m dynamo.vllm --model "$MODEL" --enforce-eager \

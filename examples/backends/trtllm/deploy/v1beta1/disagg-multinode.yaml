@@ -91,7 +91,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           image: my-registry/tensorrtllm-runtime:my-tag
           name: main
           volumeMounts:

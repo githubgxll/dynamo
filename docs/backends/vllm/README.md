@@ -111,7 +111,7 @@ frontend, then launch the Rust worker in another terminal:
 ```bash
 docker compose -f dev/docker-compose.yml up -d
 
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 ```
 
 ```bash

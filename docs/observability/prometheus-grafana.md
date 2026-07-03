@@ -37,7 +37,7 @@ Start frontend and worker (a simple single GPU example):
 
 ```bash
 # Start frontend (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Start vLLM worker with metrics enabled on port 8081
 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager

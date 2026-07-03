@@ -46,7 +46,7 @@ When all workers exceed their configured busy thresholds, new requests receive a
 Configure busy thresholds when starting the frontend. `--admission-control token-capacity` is required to activate the thresholds; the default (`none`) leaves them disabled. For decode-block rejection, start the frontend in KV router mode so the worker load metrics path is active.
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --admission-control token-capacity \
     --router-mode kv \
     --active-decode-blocks-threshold 0.85 \
@@ -292,7 +292,7 @@ To disable request rejection entirely:
 
 ```bash
 # Simply don't set the threshold arguments
-python -m dynamo.frontend
+python -m dingo.frontend
 ```
 
 Without thresholds configured, all requests are accepted regardless of worker load.

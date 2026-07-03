@@ -64,7 +64,7 @@ class TRTLLMProcess(ManagedEngineProcessMixin):
     The key difference: dynamo.trtllm automatically handles:
     - HTTP API serving
     - KV cache event publishing
-    - Integration with dynamo.frontend router
+    - Integration with dingo.frontend router
     """
 
     def __init__(

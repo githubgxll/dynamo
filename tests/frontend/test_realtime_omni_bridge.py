@@ -4,7 +4,7 @@
 """
 End-to-end realtime WebSocket test for the vLLM-Omni realtime bridge.
 
-A launched ``dynamo.frontend`` discovers a mock-Omni realtime worker (the real
+A launched ``dingo.frontend`` discovers a mock-Omni realtime worker (the real
 ``RealtimeOmniHandler`` backed by a fake AsyncOmni that echoes audio) and
 installs a typed realtime PushRouter to it. A WebSocket client connects to
 ``/v1/realtime``, drives OpenAI Realtime client events, and asserts the

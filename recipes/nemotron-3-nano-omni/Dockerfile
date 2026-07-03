@@ -25,7 +25,7 @@ USER root
 
 ARG DYNAMO_VERSION
 
-# ai-dynamo Python package (dynamo.frontend, dynamo.vllm, ...) installed with
+# ai-dynamo Python package (dingo.frontend, dynamo.vllm, ...) installed with
 # --no-deps so that:
 #   - the base image's vLLM 0.20 / torch / cuda stack is preserved (otherwise
 #     pip would try to re-install vllm[flashinfer,otel,runai]==0.20.0 which is

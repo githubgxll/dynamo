@@ -52,7 +52,7 @@ python -m dynamo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connect
 
 ```bash
 # Terminal 1: Start frontend
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Terminal 2: Start vLLM worker with FlexKV
 DYNAMO_USE_FLEXKV=1 \
@@ -66,7 +66,7 @@ For multi-worker deployments with KV-aware routing to maximize cache reuse:
 
 ```bash
 # Terminal 1: Start frontend with KV router
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --router-reset-states &
 
@@ -108,7 +108,7 @@ FlexKV can be used with disaggregated prefill/decode serving. The prefill worker
 
 ```bash
 # Terminal 1: Start frontend
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Terminal 2: Decode worker (without FlexKV)
 CUDA_VISIBLE_DEVICES=0 python -m dynamo.vllm --model Qwen/Qwen3-0.6B \

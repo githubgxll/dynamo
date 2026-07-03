@@ -18,7 +18,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.frontend
+            - dingo.frontend
             - --http-port
             - "8000"
             - --kv-cache-block-size

@@ -11,7 +11,7 @@ logic but do not share the same serialization, RPC, or process boundaries.
 1. **Integrated Rust frontend**
 
    ```
-   dynamo.frontend
+   dingo.frontend
      -> Rust OpenAIPreprocessor
      -> in-process Rust KvPushRouter / KvRouter
      -> worker
@@ -21,10 +21,10 @@ logic but do not share the same serialization, RPC, or process boundaries.
    `--router-mode kv` uses an in-process Rust router. There is no router RPC
    hop.
 
-2. **Python chat processor inside `dynamo.frontend`**
+2. **Python chat processor inside `dingo.frontend`**
 
    ```
-   dynamo.frontend
+   dingo.frontend
      -> Python VllmProcessor or SglangProcessor
      -> PyO3 RoutedEngine
      -> in-process Rust KvPushRouter / KvRouter

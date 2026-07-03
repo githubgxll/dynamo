@@ -76,7 +76,7 @@ export DYN_TCP_RPC_HOST=0.0.0.0  # Default host
 # export DYN_TCP_RPC_PORT=9999   # Optional: specify a fixed port
 
 # Run your Dynamo service
-DYN_REQUEST_PLANE=tcp python -m dynamo.frontend --http-port=8000 &
+DYN_REQUEST_PLANE=tcp python -m dingo.frontend --http-port=8000 &
 DYN_REQUEST_PLANE=tcp python -m dynamo.vllm --model Qwen/Qwen3-0.6B
 ```
 
@@ -112,7 +112,7 @@ NATS provides durable jetstream messaging for request plane and can be used for 
 export DYN_REQUEST_PLANE=nats
 
 # Run your Dynamo service
-DYN_REQUEST_PLANE=nats python -m dynamo.frontend --http-port=8000 &
+DYN_REQUEST_PLANE=nats python -m dingo.frontend --http-port=8000 &
 DYN_REQUEST_PLANE=nats python -m dynamo.vllm --model Qwen/Qwen3-0.6B
 ```
 

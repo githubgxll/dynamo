@@ -42,8 +42,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner --multimodal "Launching Multimodal E/PD" "$MODEL_PATH" "$HTTP_PORT"
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # run encode worker (vision encoder on GPU 0) with metrics on port 8081
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \

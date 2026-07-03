@@ -5,7 +5,7 @@
 # Minimal Dynamo frontend image built from source.
 #
 # Build context MUST be the dynamo workspace root (see docker-compose.yml).
-# Produces an image that runs `python -m dynamo.frontend`.
+# Produces an image that runs `python -m dingo.frontend`.
 
 FROM python:3.12-slim-bookworm AS builder
 
@@ -52,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /tmp/wheels /tmp/wheels
 COPY --from=builder /build/pyproject.toml /build/hatch_build.py /build/README.md /build/LICENSE /app/
 COPY --from=builder /build/components /app/components
+COPY --from=builder /build/dingo /app/dingo
 
 WORKDIR /app
 
@@ -59,4 +60,4 @@ RUN pip install --no-cache-dir /tmp/wheels/*.whl \
     && pip install --no-cache-dir . \
     && rm -rf /tmp/wheels
 
-ENTRYPOINT ["python", "-m", "dynamo.frontend"]
+ENTRYPOINT ["python", "-m", "dingo.frontend"]

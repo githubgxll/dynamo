@@ -103,7 +103,7 @@ spec:
           # Nemotron-H on TRT-LLM has block reuse disabled, so KV-overlap
           # routing does not provide a real cache reuse benefit.
           args:
-          - python3 -m dynamo.frontend --router-mode round-robin --http-port 8000
+          - python3 -m dingo.frontend --router-mode round-robin --http-port 8000
           command:
           - /bin/sh
           - -c

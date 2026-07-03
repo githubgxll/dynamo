@@ -229,7 +229,7 @@ def test_sglang_tool_model_dump():
 
 def test_preprocess_result_picklability():
     """Verify SglangPreprocessWorkerResult survives pickle round-trip."""
-    from dynamo.frontend.sglang_processor import SglangPreprocessWorkerResult
+    from dingo.frontend.sglang_processor import SglangPreprocessWorkerResult
 
     result = SglangPreprocessWorkerResult(
         prompt_token_ids=[1, 2, 3],

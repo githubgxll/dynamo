@@ -29,8 +29,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated Serving + Metrics" "$MODEL_PATH" "$HTTP_PORT"
 
 # Run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # Run worker
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \

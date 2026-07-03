@@ -273,7 +273,7 @@ for f in $(seq 1 "${NUM_FRONTENDS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_LOG=debug" \
         "DYN_SYSTEM_PORT=${FE_SYSTEM_PORT}" \
-        python -m dynamo.frontend \
+        python -m dingo.frontend \
             --http-port "${FE_HTTP_PORT}" \
             --dyn-chat-processor vllm \
             --router-mode kv \

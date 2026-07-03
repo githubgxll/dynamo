@@ -28,7 +28,7 @@ func (f *FrontendDefaults) GetBaseContainer(context ComponentContext) (corev1.Co
 
 	// Set default command and args
 	container.Command = []string{"python3"}
-	container.Args = []string{"-m", "dynamo.frontend"}
+	container.Args = []string{"-m", "dingo.frontend"}
 
 	// Add HTTP port
 	container.Ports = []corev1.ContainerPort{

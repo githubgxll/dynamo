@@ -25,7 +25,7 @@ if HAS_VLLM:
     from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
     from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
-    from dynamo.frontend.prepost import StreamingPostProcessor
+    from dingo.frontend.prepost import StreamingPostProcessor
 else:
     # Fake some types so that `pre-commit` passes
     class CompletionOutput:

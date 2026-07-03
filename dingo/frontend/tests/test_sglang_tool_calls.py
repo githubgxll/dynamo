@@ -19,7 +19,7 @@ from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
-from dynamo.frontend.sglang_prepost import SglangStreamingPostProcessor
+from dingo.frontend.sglang_prepost import SglangStreamingPostProcessor
 
 # Needs sglang packages (gpu_1 container), but does not allocate GPU VRAM.
 pytestmark = [

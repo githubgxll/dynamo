@@ -60,7 +60,7 @@ print_launch_banner --multimodal "Launching Disaggregated Multimodal P/D ($GPU_L
 
 # Start frontend
 echo "Starting frontend..."
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 EXTRA_ARGS=""
 PD_EXTRA_ARGS=""

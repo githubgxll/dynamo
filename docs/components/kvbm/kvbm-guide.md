@@ -155,7 +155,7 @@ kv_connector_config:
 EOF
 
 # Start dynamo frontend
-python3 -m dynamo.frontend --http-port 8000 &
+python3 -m dingo.frontend --http-port 8000 &
 
 # Serve the model with KVBM
 python3 -m dynamo.trtllm \
@@ -200,7 +200,7 @@ python -m dynamo.sglang \
   --hicache-storage-backend nixl
 
 # In a separate terminal, start the frontend
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 
 # Send a test request
 curl localhost:8000/v1/chat/completions \
@@ -531,7 +531,7 @@ container/run.sh --image dynamo:latest-vllm-local-dev -it --mount-workspace --us
 export PATH=/opt/nvidia/nsight-systems/2025.5.1/bin:$PATH
 
 # example usage of nsys: delay 30 seconds and then capture 60 seconds
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 DYN_KVBM_CPU_CACHE_GB=10 \
 nsys profile -o /tmp/kvbm-nsys --trace-fork-before-exec=true --cuda-graph-trace=node --delay 30 --duration 60 \

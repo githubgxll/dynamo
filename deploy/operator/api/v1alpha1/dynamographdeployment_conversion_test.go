@@ -1091,7 +1091,7 @@ func TestDGD_RoundTrip_FrontendSidecar(t *testing.T) {
 								{
 									Name:  "sidecar-frontend",
 									Image: "dynamo-frontend:latest",
-									Args:  []string{"-m", "dynamo.frontend"},
+									Args:  []string{"-m", "dingo.frontend"},
 								},
 							},
 						},
@@ -1515,7 +1515,7 @@ func TestDGD_FromV1alpha1_FrontendSidecarFullRoundTrip(t *testing.T) {
 					ComponentType: "epp",
 					FrontendSidecar: &FrontendSidecarSpec{
 						Image:         "dynamo-frontend:1.2.3",
-						Args:          []string{"-m", "dynamo.frontend", "--router-mode", "direct"},
+						Args:          []string{"-m", "dingo.frontend", "--router-mode", "direct"},
 						EnvFromSecret: &secret,
 						Envs: []corev1.EnvVar{
 							{Name: "FRONTEND_FLAG", Value: annotationTrue},

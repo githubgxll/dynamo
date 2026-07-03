@@ -45,7 +45,7 @@ def start_frontend():
     cmd = [
         "python",
         "-m",
-        "dynamo.frontend",
+        "dingo.frontend",
         "--http-port",
         str(PORT),
     ]

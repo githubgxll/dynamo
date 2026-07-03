@@ -38,7 +38,7 @@ ${FRONTEND_IMAGE_PULL_SECRETS_BLOCK}
             - /bin/sh
             - -c
           args:
-            - python3 -m dynamo.frontend --router-mode ${ROUTER_MODE} --http-port ${FRONTEND_PORT}
+            - python3 -m dingo.frontend --router-mode ${ROUTER_MODE} --http-port ${FRONTEND_PORT}
           env:
             - name: DYN_TOKENIZER
               value: "${DYN_TOKENIZER}"

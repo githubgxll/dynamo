@@ -144,7 +144,7 @@ Much of this prose is now drafted by agents. Edit it so it does not read that wa
   paths, and env vars (`DYN_*`) in backticks.
 
 ```bash
-python3 -m dynamo.frontend --router-mode kv
+python3 -m dingo.frontend --router-mode kv
 ```
 
 - **Diagrams** use ` ```mermaid ` blocks. **Images** live under `docs/assets/img/` with descriptive

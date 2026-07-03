@@ -117,6 +117,7 @@ path = "hatch_build.py"
 [tool.hatch.build.targets.wheel]
 packages = [
     "components/src/dynamo",
+    "dingo",
 ]
 
 [tool.hatch.metadata]
@@ -150,7 +151,7 @@ line_length = 88
 balanced_wrapping = true
 indent = "    "
 skip = ["build"]
-known_first_party = ["dynamo", "deploy"]
+known_first_party = ["dynamo", "dingo", "deploy"]
 # isort may confuse what is 1st or 3rd library. e.g.
 # when dynamo/vllm/omni/xx.py import vllm, local isort may treat this `vllm` as first
 # party heuristically. This causes local sort differs from GitHub sort and pre-commit
@@ -330,7 +331,7 @@ indent-width = 4
 # Configure it so that developers can use "go-to-definition", "hover types" and other
 # features.
 [tool.basedpyright]
-extraPaths = ["components/src", "lib/bindings/python/src"]
+extraPaths = ["components/src", "lib/bindings/python/src", "."]
 # This is for external dependencies.
 venvPath = "."
 venv = ".venv"

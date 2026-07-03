@@ -10,7 +10,7 @@ sends ``image_url``, so placeholders never rendered.
 
 import pytest
 
-from dynamo.frontend.sglang_prepost import (
+from dingo.frontend.sglang_prepost import (
     _normalize_messages_for_template,
     preprocess_chat_request,
 )

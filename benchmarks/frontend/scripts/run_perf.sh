@@ -15,7 +15,7 @@
 # Output: artifacts/obs_YYYYMMDD_HHMMSS/ with subdirs for each data source.
 #
 # Prerequisites:
-#   - dynamo.mocker and dynamo.frontend installed
+#   - dynamo.mocker and dingo.frontend installed
 #   - aiperf installed
 #   - Optional: nsys, perf, bpftrace, flamegraph tools (auto-detected)
 
@@ -462,7 +462,7 @@ if [[ "$HAS_NSYS" == true ]]; then
         --cpuctxsw=none \
         --output="${OUTPUT_DIR}/nsys/frontend" \
         --force-overwrite=true \
-        python -m dynamo.frontend \
+        python -m dingo.frontend \
         > "$OUTPUT_DIR/logs/frontend.log" 2>&1 &
     NSYS_WRAPPER_PID=$!
     ALL_PIDS+=($NSYS_WRAPPER_PID)
@@ -471,7 +471,7 @@ if [[ "$HAS_NSYS" == true ]]; then
     FRONTEND_PID=""
     for _try in $(seq 1 30); do
         sleep 1
-        _child=$(pgrep -P "$NSYS_WRAPPER_PID" -f "python.*dynamo.frontend" 2>/dev/null | head -1 || true)
+        _child=$(pgrep -P "$NSYS_WRAPPER_PID" -f "python.*dingo.frontend" 2>/dev/null | head -1 || true)
         if [[ -n "$_child" ]]; then
             FRONTEND_PID="$_child"
             break
@@ -485,7 +485,7 @@ if [[ "$HAS_NSYS" == true ]]; then
     echo "  nsys wrapper PID: $NSYS_WRAPPER_PID"
     echo "  Frontend PID: $FRONTEND_PID"
 else
-    env "${FRONTEND_ENV[@]}" python -m dynamo.frontend \
+    env "${FRONTEND_ENV[@]}" python -m dingo.frontend \
         > "$OUTPUT_DIR/logs/frontend.log" 2>&1 &
     FRONTEND_PID=$!
     ALL_PIDS+=($FRONTEND_PID)

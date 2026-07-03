@@ -51,7 +51,7 @@ For an integrated frontend disaggregated example, see [`examples/backends/vllm/l
 
 ```bash
 # Start frontend router for decode workers
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --http-port 8000 \
     --router-kv-overlap-score-credit 0  # Pure load balancing for decode

@@ -53,7 +53,7 @@ done
 if [[ "${ROLE}" == "head" ]]; then
 
   echo "Starting Dynamo frontend..."
-  python3 -m dynamo.frontend &
+  python3 -m dingo.frontend &
 
   echo "Starting dynamo.vllm head node (TP=${TP}, nnodes=${NNODES}, node-rank=0)..."
   python3 -m dynamo.vllm \

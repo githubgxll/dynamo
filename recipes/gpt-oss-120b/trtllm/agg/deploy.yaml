@@ -41,7 +41,7 @@ spec:
               topologyKey: kubernetes.io/hostname
         mainContainer:
           args:
-          - python3 -m dynamo.frontend --router-mode round-robin --http-port 8000
+          - python3 -m dingo.frontend --router-mode round-robin --http-port 8000
           command:
           - /bin/sh
           - -c

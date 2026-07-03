@@ -70,7 +70,7 @@ All `KvRouter` flags from `dynamo.router` (`--router-temperature`, `--use-kv-eve
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ dynamo.frontend  (HTTP + auth + tracing sink)               │
+│ dingo.frontend  (HTTP + auth + tracing sink)               │
 └────────────────────┬────────────────────────────────────────┘
                      │  chat completions, with session headers
                      ▼

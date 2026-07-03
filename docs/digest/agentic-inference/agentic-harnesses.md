@@ -29,7 +29,7 @@ To reproduce our results, configure the frontend with the Anthropic-compatible A
 
 Putting all of this together:
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
   --http-port 8000 \
   --enable-anthropic-api \
   --strip-anthropic-preamble \

@@ -57,7 +57,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.frontend
+            - dingo.frontend
             - --enforce-disagg
           env:
             - name: POD_UID

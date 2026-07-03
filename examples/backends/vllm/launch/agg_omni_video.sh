@@ -45,7 +45,7 @@ curl -s http://localhost:${HTTP_PORT}/v1/videos \\
 CURL
 
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 FRONTEND_PID=$!
 
 sleep 2

@@ -187,7 +187,7 @@ The server will start an system status server on the specified port (8081 in thi
 
 To Run an actual LLM frontend + server (aggregated example), launch both of them. By default, the frontend listens to port 8000.
 ```
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager --no-enable-prefix-caching &
 ```

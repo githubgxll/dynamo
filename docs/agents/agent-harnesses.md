@@ -37,7 +37,7 @@ Codex sends a `session-id` header that Dynamo maps to `session_id`.
 
 ## Claude Code
 
-Claude Code uses Anthropic-compatible Messages API. The local launcher above starts `dynamo.frontend` with `--enable-anthropic-api`; for other deployments, pass that flag when starting the frontend. Then set:
+Claude Code uses Anthropic-compatible Messages API. The local launcher above starts `dingo.frontend` with `--enable-anthropic-api`; for other deployments, pass that flag when starting the frontend. Then set:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8000

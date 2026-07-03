@@ -76,7 +76,7 @@ CURL
 # DashMap lookup in lib/llm/src/discovery/model_manager.rs handles both the
 # same-model fan-out (weighted-random across matching workers) and the
 # multi-model dispatch (model field selects the set of eligible workers).
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Tunable: see agg_embed.sh for the rationale.
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"

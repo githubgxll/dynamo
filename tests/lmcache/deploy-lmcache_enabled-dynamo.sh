@@ -25,6 +25,6 @@ echo "   Port: 8000"
 echo "   !! Remmber to kill the old dynamo processes other wise the port will be busy !! "
 echo "🔧 Starting dynamo worker with LMCache enabled..."
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 python3 -m dynamo.vllm --model $MODEL_URL --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'

@@ -191,7 +191,7 @@ async def wait_for_frontend_ready(
         2. Polls GET /v1/models until at least one model is registered.
         3. Sends a test POST to /v1/chat/completions to verify the request pipeline is functional.
 
-    Use this when testing through the HTTP frontend server (dynamo.frontend).
+    Use this when testing through the HTTP frontend server (dingo.frontend).
     For direct Python API testing with KvRouter, use wait_for_workers_ready() instead.
 
     Args:

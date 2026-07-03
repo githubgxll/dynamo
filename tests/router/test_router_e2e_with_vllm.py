@@ -82,7 +82,7 @@ class VLLMProcess(ManagedEngineProcessMixin):
     The key difference: dynamo.vllm automatically handles:
     - HTTP API serving
     - KV cache event publishing (ZMQ → NATS bridge)
-    - Integration with dynamo.frontend router
+    - Integration with dingo.frontend router
     """
 
     def __init__(

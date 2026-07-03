@@ -53,7 +53,7 @@ python -m dynamo.thunderagent_router \
 
 # 3. Start the frontend (any router mode -- the frontend just needs to find
 #    a model handler, which our service registered)
-python -m dynamo.frontend --router-mode round-robin --router-reset-states
+python -m dingo.frontend --router-mode round-robin --router-reset-states
 ```
 
 The control-loop knobs (`--pause-threshold`, `--pause-target`,

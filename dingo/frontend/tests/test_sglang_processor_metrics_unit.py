@@ -148,7 +148,7 @@ def _load_processor_module(module_stubs):
     _install_module(install_module, "dynamo._internal", ModelDeploymentCard=object)
     _install_module(
         install_module,
-        "dynamo.frontend.frontend_args",
+        "dingo.frontend.frontend_args",
         FrontendConfig=object,
     )
     _install_module(
@@ -164,8 +164,8 @@ def _load_processor_module(module_stubs):
         InvalidArgument=type("InvalidArgument", (Exception,), {}),
         Unknown=type("Unknown", (Exception,), {}),
     )
-    remove_module("dynamo.frontend.sglang_processor")
-    return importlib.import_module("dynamo.frontend.sglang_processor")
+    remove_module("dingo.frontend.sglang_processor")
+    return importlib.import_module("dingo.frontend.sglang_processor")
 
 
 def test_stream_emits_llm_metrics_annotation(module_stubs):

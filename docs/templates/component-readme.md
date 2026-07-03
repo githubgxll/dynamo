@@ -25,7 +25,7 @@ title: Component README
 ```bash
 # Add minimal usage example from existing docs
 # Example pattern (from Router):
-# python -m dynamo.frontend --router-mode kv --http-port 8000
+# python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 ### Kubernetes
@@ -52,7 +52,7 @@ title: Component README
 ### Usage
 
 ```bash
-python -m dynamo.frontend --router-mode kv --http-port 8000
+python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 ### Kubernetes

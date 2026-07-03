@@ -26,7 +26,7 @@ if HAS_VLLM:
     from vllm.tokenizers.mistral import MistralTokenizer
     from vllm.tool_parsers.mistral_tool_parser import MistralToolParser
 
-    from dynamo.frontend.prepost import StreamingPostProcessor
+    from dingo.frontend.prepost import StreamingPostProcessor
 else:
     # Fake some types so that `pre-commit` passes
     class MistralTokenizer:

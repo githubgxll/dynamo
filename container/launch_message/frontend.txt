@@ -61,6 +61,6 @@ Start mocker with custom configuration:
   --enable-prefix-caching
 
 Start frontend server:
-> python -m dynamo.frontend --http-port 8000
+> python -m dingo.frontend --http-port 8000
 
 

@@ -908,7 +908,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `image` _string_ | Image is the container image for the frontend sidecar. |  | Required: \{\} <br /> |
-| `args` _string array_ | Args overrides the default frontend arguments. When specified, these replace<br />the default ["-m", "dynamo.frontend"] entirely.<br />For example, ["-m", "dynamo.frontend", "--router-mode", "direct"] for GAIE deployments. |  | Optional: \{\} <br /> |
+| `args` _string array_ | Args overrides the default frontend arguments. When specified, these replace<br />the default ["-m", "dingo.frontend"] entirely.<br />For example, ["-m", "dingo.frontend", "--router-mode", "direct"] for GAIE deployments. |  | Optional: \{\} <br /> |
 | `envFromSecret` _string_ | EnvFromSecret references a Secret whose key/value pairs will be exposed as<br />environment variables in the frontend sidecar container. |  | Optional: \{\} <br /> |
 | `envs` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#envvar-v1-core) array_ | Envs defines additional environment variables for the frontend sidecar.<br />These are merged with (and can override) the auto-generated Dynamo env vars. |  | Optional: \{\} <br /> |
 

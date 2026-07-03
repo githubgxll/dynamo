@@ -157,7 +157,7 @@ spec:
         - name: sidecar-frontend
           args:
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           - --router-mode
           - direct
           envFrom:
@@ -215,7 +215,7 @@ spec:
         - name: sidecar-frontend
           args:
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           - --router-mode
           - direct
           envFrom:

@@ -17,7 +17,7 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated + Approximate KV Routing (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
 # run frontend with KV router (--router-mode kv) in approximate mode (--no-kv-events)
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --no-kv-events &
 

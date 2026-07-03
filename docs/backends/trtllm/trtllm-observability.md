@@ -41,7 +41,7 @@ Launch a frontend and TensorRT-LLM backend to test metrics:
 
 ```bash
 # Start frontend (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
-$ python -m dynamo.frontend
+$ python -m dingo.frontend
 
 # Enable system metrics server on port 8081 and enable metrics collection
 $ DYN_SYSTEM_PORT=8081 python -m dynamo.trtllm --model <model_name> --publish-events-and-metrics

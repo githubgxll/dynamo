@@ -58,7 +58,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.frontend
+            - dingo.frontend
           env:
             - name: POD_UID
               valueFrom:

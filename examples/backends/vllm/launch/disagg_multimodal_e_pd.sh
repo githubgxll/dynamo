@@ -75,7 +75,7 @@ print_launch_banner --multimodal "Launching Disaggregated Multimodal E+PD ($GPU_
 
 # Start frontend (no router mode)
 echo "Starting frontend..."
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # Each worker needs its own system port when tests inject DYN_SYSTEM_PORT{1,2}.
 unset DYN_SYSTEM_PORT

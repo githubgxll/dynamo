@@ -23,7 +23,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.frontend
+            - dingo.frontend
           args:
             - --router-reset-states
       replicas: 1

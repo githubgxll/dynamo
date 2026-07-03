@@ -112,7 +112,7 @@ export DYN_DISCOVERY_BACKEND="$DISCOVERY_BACKEND"
 # Run frontend in background
 # --kserve-grpc-server enables the KServe gRPC endpoint for tensor models
 echo "Starting Dynamo frontend..."
-python3 -m dynamo.frontend --kserve-grpc-server --discovery-backend "$DISCOVERY_BACKEND" &
+python3 -m dingo.frontend --kserve-grpc-server --discovery-backend "$DISCOVERY_BACKEND" &
 FRONTEND_PID=$!
 
 # Give frontend time to start

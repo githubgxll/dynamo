@@ -15,7 +15,7 @@ from _routed_engine_fakes import FakeRoutedEngine as _FakeRoutedEngine
 from transformers import AutoTokenizer
 from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
-from dynamo.frontend.prepost import _prepare_request
+from dingo.frontend.prepost import _prepare_request
 
 # Needs vllm packages (gpu_1 container), but does not allocate GPU VRAM.
 pytestmark = [
@@ -128,7 +128,7 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
 
 class TestReasoningParserMetadata:
     def test_no_reasoning_parser_returns_none(self):
-        from dynamo.frontend.vllm_processor import _build_reasoning_parser_metadata
+        from dingo.frontend.vllm_processor import _build_reasoning_parser_metadata
 
         assert _build_reasoning_parser_metadata(
             None,
@@ -139,7 +139,7 @@ class TestReasoningParserMetadata:
         ) == (None, None)
 
     def test_include_reasoning_false_marks_reasoning_ended(self):
-        from dynamo.frontend.vllm_processor import _build_reasoning_parser_metadata
+        from dingo.frontend.vllm_processor import _build_reasoning_parser_metadata
 
         class ParserShouldNotBeBuilt:
             def __init__(self, *args, **kwargs):
@@ -157,7 +157,7 @@ class TestReasoningParserMetadata:
         assert parser_kwargs == {"chat_template_kwargs": {"reasoning_effort": "low"}}
 
     def test_parser_receives_chat_template_kwargs(self):
-        from dynamo.frontend.vllm_processor import _build_reasoning_parser_metadata
+        from dingo.frontend.vllm_processor import _build_reasoning_parser_metadata
 
         class FakeReasoningParser:
             def __init__(self, tokenizer, *, chat_template_kwargs):
@@ -180,7 +180,7 @@ class TestReasoningParserMetadata:
         assert parser_kwargs == {"chat_template_kwargs": {"reasoning_effort": "high"}}
 
     def test_kv_router_copies_reasoning_metadata_to_extra_args(self):
-        from dynamo.frontend.vllm_processor import _inject_routing_metadata
+        from dingo.frontend.vllm_processor import _inject_routing_metadata
 
         kv_kwargs = {"extra_args": {"mm_hashes": [123]}}
         _inject_routing_metadata(
@@ -235,7 +235,7 @@ class _FakePostProcessor:
 
 @pytest.fixture
 def vllm_processor_module(monkeypatch):
-    import dynamo.frontend.vllm_processor as module
+    import dingo.frontend.vllm_processor as module
 
     class FakeEngineCoreOutput:
         __struct_fields__ = ()

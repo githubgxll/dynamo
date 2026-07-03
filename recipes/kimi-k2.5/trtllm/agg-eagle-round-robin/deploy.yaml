@@ -29,7 +29,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.frontend
+            - dingo.frontend
             - --router-mode
             - round-robin
             - --request-plane

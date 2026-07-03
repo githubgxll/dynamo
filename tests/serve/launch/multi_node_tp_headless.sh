@@ -19,7 +19,7 @@ if [[ -n "$KV_BYTES" ]]; then
 fi
 
 echo "Starting Dynamo frontend..."
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 echo "Starting dynamo.vllm head node (TP=2, nnodes=2, node-rank=0, GPU 0)..."
 CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \

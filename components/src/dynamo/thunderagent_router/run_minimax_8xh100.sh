@@ -39,7 +39,7 @@ python -m dynamo.thunderagent_router \
     --router-block-size "$BLOCK_SIZE" &
 
 # Frontend (round-robin; the router owns scheduling and registered the model).
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "$HTTP_PORT" \
     --router-mode round-robin \
     --router-reset-states &

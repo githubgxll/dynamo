@@ -53,9 +53,9 @@ echo ""
 echo "=========================================="
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 export OTEL_SERVICE_NAME=dynamo-frontend
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 # run worker
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag

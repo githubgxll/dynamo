@@ -59,8 +59,8 @@ echo ""
 echo "=========================================="
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var.
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var.
+python -m dingo.frontend &
 
 # ---- Tunable (override via env vars) ----
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"

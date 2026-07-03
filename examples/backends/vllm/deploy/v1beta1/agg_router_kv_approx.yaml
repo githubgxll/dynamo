@@ -17,7 +17,7 @@ spec:
         containers:
         - args:
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           - --router-mode
           - kv
           - --no-kv-events

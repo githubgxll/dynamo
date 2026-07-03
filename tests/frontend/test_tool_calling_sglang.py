@@ -76,7 +76,7 @@ def _prepare_log_dir(request, suffix: str) -> str:
 # switches will not touch unrelated processes in the system.
 _SGLANG_PROCESS_PATTERNS: tuple[str, ...] = (
     "-m dynamo.sglang",
-    "-m dynamo.frontend",
+    "-m dingo.frontend",
     "SGLANG:EngineCore",
     "sglang::scheduler",
 )
@@ -136,7 +136,7 @@ def _cleanup_sglang_stragglers(timeout: float = 10.0) -> None:
 #     frontend (``--dyn-chat-processor sglang``) with parsers declared as
 #     frontend flags. Worker is a plain ``dynamo.sglang`` engine.
 #
-#   * ``rust_parsers`` — plain Rust frontend (``dynamo.frontend``) with no
+#   * ``rust_parsers`` — plain Rust frontend (``dingo.frontend``) with no
 #     chat processor or parser flags. Parsers are declared on the worker
 #     (``--dyn-reasoning-parser`` / ``--dyn-tool-call-parser``) and
 #     propagated to the frontend via the model runtime config registered at
@@ -207,7 +207,7 @@ class ToolCallingFrontendProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.frontend",
+            "dingo.frontend",
             "--http-port",
             str(frontend_port),
             "--router-mode",
@@ -233,7 +233,7 @@ class ToolCallingFrontendProcess(ManagedProcess):
             timeout=240,
             display_output=True,
             terminate_all_matching_process_names=False,
-            straggler_commands=["-m dynamo.frontend"],
+            straggler_commands=["-m dingo.frontend"],
             log_dir=_prepare_log_dir(request, f"frontend-{topology}"),
         )
 

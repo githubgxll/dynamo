@@ -59,7 +59,7 @@ spec:
         image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
         args:
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           - --router-mode
           - direct
       extraPodSpec:

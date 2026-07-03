@@ -100,9 +100,9 @@ print_launch_banner "Launching Disaggregated on Same GPU (1 GPU)" "$MODEL" "$HTT
     "Workers:     2 (prefill + decode, fraction is per worker)"
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # run prefill worker (shares GPU with decode)
 OTEL_SERVICE_NAME=dynamo-worker-prefill \

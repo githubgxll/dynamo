@@ -13,8 +13,8 @@ print_launch_banner "Launching Disaggregated Serving + KVBM (2 GPUs)" "$MODEL" "
 
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # run decode worker on GPU 0, without enabling KVBM
 # NOTE: remove --enforce-eager for production use

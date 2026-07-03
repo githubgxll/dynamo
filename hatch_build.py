@@ -9,12 +9,11 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 def get_components():
     """
-    Scan the components/src/dynamo directory to get the list of available components.
+    Scan component package directories to get the list of available components.
     Returns full paths to component directories and RuntimeError if no components are found.
     """
-    components_dir = os.path.join(
-        os.path.dirname(__file__), "components", "src", "dynamo"
-    )
+    root = os.path.dirname(__file__)
+    components_dir = os.path.join(root, "components", "src", "dynamo")
 
     if not os.path.exists(components_dir):
         raise RuntimeError(f"Components directory not found: {components_dir}")
@@ -27,6 +26,10 @@ def get_components():
 
     if not components:
         raise RuntimeError(f"No components found in directory: {components_dir}")
+
+    dingo_frontend = os.path.join(root, "dingo", "frontend")
+    if os.path.isdir(dingo_frontend):
+        components.append(dingo_frontend)
 
     return components
 

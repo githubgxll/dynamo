@@ -78,7 +78,7 @@ spec:
         mainContainer:
           image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.2.1
           args:
-            - python3 -m dynamo.frontend --router-mode kv --http-port 8000
+            - python3 -m dingo.frontend --router-mode kv --http-port 8000
           command:
             - /bin/sh
             - -c

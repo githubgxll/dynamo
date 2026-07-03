@@ -45,7 +45,7 @@ CURL
 
 # Launch frontend (OpenAI-compatible API server)
 echo "Starting Dynamo Frontend on port $HTTP_PORT..."
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "$HTTP_PORT" &
 
 # Wait for frontend to start

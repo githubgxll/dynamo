@@ -17,7 +17,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           image: my-registry/vllm-runtime:my-tag
           name: main
           workingDir: /workspace/examples/backends/vllm

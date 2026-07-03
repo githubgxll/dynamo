@@ -117,7 +117,7 @@ This guide uses `--discovery-backend file`. For etcd setup, see [Service Discove
 Verify the CLI is installed and callable:
 
 ```bash
-python3 -m dynamo.frontend --help
+python3 -m dingo.frontend --help
 ```
 
 If you cloned the repository, you can run additional system checks:
@@ -130,14 +130,14 @@ python3 dev/sanity_check.py
 
 ```bash
 # Start the OpenAI compatible frontend (default port is 8000)
-python3 -m dynamo.frontend --discovery-backend file
+python3 -m dingo.frontend --discovery-backend file
 ```
 
 To run in a single terminal (useful in containers), append `> logfile.log 2>&1 &`
 to run processes in background:
 
 ```bash
-python3 -m dynamo.frontend --discovery-backend file > dynamo.frontend.log 2>&1 &
+python3 -m dingo.frontend --discovery-backend file > dingo.frontend.log 2>&1 &
 ```
 
 ### Start a Worker

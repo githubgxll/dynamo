@@ -3,7 +3,7 @@
 
 """Client for the Dynamo vLLM-Omni realtime endpoint (``/v1/realtime``).
 
-Streams an audio file to a launched ``dynamo.frontend`` over a WebSocket using
+Streams an audio file to a launched ``dingo.frontend`` over a WebSocket using
 OpenAI Realtime client events, prints every server event as it arrives, and
 writes the synthesized audio into an output folder: each returned
 ``response.output_audio.delta`` as ``chunk_NNNN.wav`` plus the concatenated
@@ -18,7 +18,7 @@ linearly resampled to 16 kHz PCM16 (the realtime input format). When
 ``--input-audio`` is omitted, a sample clip is fetched from the vLLM-Omni
 GitHub repo (``tests/assets/qwen3_tts/clone_2.wav``).
 
-python -m dynamo.frontend --http-port 8000
+python -m dingo.frontend --http-port 8000
 python -m dynamo.vllm.omni --realtime --model Qwen/Qwen3-Omni-30B-A3B-Instruct
 
 Usage (omit --input-audio to fetch the sample clip from GitHub):

@@ -57,6 +57,6 @@ python3 -m dynamo.trtllm \
   --block-size "$BLOCK_SIZE") &
 
 # Frontend: round-robin to mm_router (KV routing happens inside mm_router, not here).
-python3 -m dynamo.frontend --router-mode round-robin &
+python3 -m dingo.frontend --router-mode round-robin &
 
 wait_any_exit

@@ -1,7 +1,7 @@
 #  SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #  SPDX-License-Identifier: Apache-2.0
 
-# Usage: `python -m dynamo.frontend [args]`
+# Usage: `python -m dingo.frontend [args]`
 #
 # Start a frontend node. This runs:
 # - OpenAI HTTP server.
@@ -13,7 +13,7 @@
 # Pass `--interactive` or `-i` for text chat instead of HTTP server.
 #
 # For TLS:
-# - python -m dynamo.frontend --http-port 8443 --tls-cert-path cert.pem --tls-key-path key.pem
+# - python -m dingo.frontend --http-port 8443 --tls-cert-path cert.pem --tls-key-path key.pem
 #
 
 import argparse
@@ -171,7 +171,7 @@ async def async_main():
     # The system status server port is a worker concern.
     #
     # Serve tests set DYN_SYSTEM_PORT for the worker, but aggregated launch scripts
-    # start `dynamo.frontend` first. If the frontend inherits DYN_SYSTEM_PORT, it can
+    # start `dingo.frontend` first. If the frontend inherits DYN_SYSTEM_PORT, it can
     # bind that port before the worker, causing port conflicts and/or scraping the
     # wrong metrics endpoint.
     os.environ.pop("DYN_SYSTEM_PORT", None)

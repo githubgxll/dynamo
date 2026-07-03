@@ -933,14 +933,14 @@ class DynamoFrontendProcess(ManagedProcess):
             frontend_port = allocate_port(DefaultPort.FRONTEND.value)
             self._allocated_http_port = frontend_port
 
-        # If frontend_port is unset, dynamo.frontend defaults to DefaultPort.FRONTEND.
+        # If frontend_port is unset, dingo.frontend defaults to DefaultPort.FRONTEND.
         self.http_port = (
             DefaultPort.FRONTEND.value if frontend_port is None else int(frontend_port)
         )
 
-        command = ["python", "-m", "dynamo.frontend", "--router-mode", router_mode]
+        command = ["python", "-m", "dingo.frontend", "--router-mode", router_mode]
 
-        # dynamo.frontend defaults to 8000 when neither env nor flag is provided.
+        # dingo.frontend defaults to 8000 when neither env nor flag is provided.
         if frontend_port is not None:
             command.extend(["--http-port", str(frontend_port)])
         # Migration limit is configured at the frontend level
@@ -995,7 +995,7 @@ def main():
 
     # Example: Safe for parallel tests with terminate_all_matching_process_names=False
     with ManagedProcess(
-        command=["python", "-m", "dynamo.frontend", "--port", "8000"],
+        command=["python", "-m", "dingo.frontend", "--port", "8000"],
         display_output=True,
         terminate_all_matching_process_names=False,  # ✅ Safe - only kills what we launch
         health_check_ports=[8000],

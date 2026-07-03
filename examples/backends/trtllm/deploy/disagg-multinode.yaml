@@ -102,7 +102,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.frontend
+          - dingo.frontend
           args:
             - --http-port
             - "8000"

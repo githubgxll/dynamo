@@ -106,7 +106,7 @@ Environment variables:
 | `NUM_GPUS` | `1` | Number of GPUs |
 | `HTTP_PORT` | `8000` | Frontend HTTP port |
 | `WORKER_EXTRA_ARGS` | — | Extra flags for `worker.py` (for example, `--enable-optimizations --attention-backend FLASH_ATTN`) |
-| `FRONTEND_EXTRA_ARGS` | — | Extra flags for `dynamo.frontend` |
+| `FRONTEND_EXTRA_ARGS` | — | Extra flags for `dingo.frontend` |
 
 Example:
 
@@ -119,7 +119,7 @@ WORKER_EXTRA_ARGS="--enable-optimizations --attention-backend FLASH_ATTN" \
 ```
 
 > [!NOTE]
-> `--enable-optimizations` and `--attention-backend` are `worker.py` flags, not `dynamo.frontend` flags, so pass them through `WORKER_EXTRA_ARGS` when you want a non-default worker configuration.
+> `--enable-optimizations` and `--attention-backend` are `worker.py` flags, not `dingo.frontend` flags, so pass them through `WORKER_EXTRA_ARGS` when you want a non-default worker configuration.
 
 The script writes logs to:
 

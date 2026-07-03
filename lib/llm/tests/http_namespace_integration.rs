@@ -27,7 +27,7 @@ fn test_endpoint_id_namespace_extraction() {
             "backend",
             "generate",
         ),
-        ("dynamo.frontend.http", "dynamo", "frontend", "http"),
+        ("dingo.frontend.http", "dynamo", "frontend", "http"),
         (
             "tensorrt-llm.backend.inference",
             "tensorrt-llm",

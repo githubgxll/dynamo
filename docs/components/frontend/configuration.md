@@ -5,7 +5,7 @@ title: Frontend Configuration Reference
 subtitle: Complete reference for all frontend CLI arguments, environment variables, and HTTP endpoints
 ---
 
-This page documents all configuration options for the Dynamo Frontend (`python -m dynamo.frontend`).
+This page documents all configuration options for the Dynamo Frontend (`python -m dingo.frontend`).
 
 Every CLI argument has a corresponding environment variable. CLI arguments take precedence over environment variables.
 

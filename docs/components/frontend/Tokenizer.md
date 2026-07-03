@@ -39,11 +39,11 @@ Set the backend with a CLI flag or environment variable. The CLI flag takes prec
 
 ```bash
 # CLI flag
-python -m dynamo.frontend --tokenizer fastokens
+python -m dingo.frontend --tokenizer fastokens
 
 # Environment variable
 export DYN_TOKENIZER=fastokens
-python -m dynamo.frontend
+python -m dingo.frontend
 ```
 
 ## Dynamo Frontend Behavior

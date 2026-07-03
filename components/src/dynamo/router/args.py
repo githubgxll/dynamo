@@ -105,7 +105,7 @@ class DynamoRouterArgGroup(ArgGroup):
             dest="serve_indexer",
         )
 
-        # KV router options (shared with dynamo.frontend)
+        # KV router options (shared with dingo.frontend)
         KvRouterArgGroup().add_arguments(parser)
         AicPerfArgGroup().add_arguments(parser)
 

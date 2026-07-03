@@ -88,6 +88,6 @@ sleep 5
 
 # Frontend
 echo "Starting Frontend..."
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 wait_any_exit

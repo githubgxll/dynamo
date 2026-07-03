@@ -117,7 +117,7 @@ Dynamo 组件通过共享后端相互发现。可使用两个选项：
 验证 CLI 已安装并可调用：
 
 ```bash
-python3 -m dynamo.frontend --help
+python3 -m dingo.frontend --help
 ```
 
 如果你克隆了仓库，可以运行其他系统检查：
@@ -130,14 +130,14 @@ python3 dev/sanity_check.py
 
 ```bash
 # Start the OpenAI compatible frontend (default port is 8000)
-python3 -m dynamo.frontend --discovery-backend file
+python3 -m dingo.frontend --discovery-backend file
 ```
 
 如需在单个终端中运行（在容器中很有用），追加 `> logfile.log 2>&1 &`
 以在后台运行进程：
 
 ```bash
-python3 -m dynamo.frontend --discovery-backend file > dynamo.frontend.log 2>&1 &
+python3 -m dingo.frontend --discovery-backend file > dingo.frontend.log 2>&1 &
 ```
 
 ### 启动 Worker

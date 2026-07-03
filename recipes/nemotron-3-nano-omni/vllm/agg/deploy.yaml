@@ -48,7 +48,7 @@ spec:
             - -lc
           args:
             - >-
-              exec python3 -m dynamo.frontend
+              exec python3 -m dingo.frontend
               --router-mode kv
               --no-kv-events
               --http-port 8000

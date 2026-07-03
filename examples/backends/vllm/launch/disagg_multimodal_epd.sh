@@ -97,8 +97,8 @@ print_launch_banner --multimodal "Launching Disaggregated Multimodal E/P/D ($GPU
 
 # Start frontend (no router mode)
 echo "Starting frontend..."
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # Each worker needs its own system port when tests inject DYN_SYSTEM_PORT{1,2,3}.
 unset DYN_SYSTEM_PORT

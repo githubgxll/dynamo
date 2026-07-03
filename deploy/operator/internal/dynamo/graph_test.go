@@ -5761,7 +5761,7 @@ func TestGenerateBasePodSpec_Frontend(t *testing.T) {
 
 			// Check command and args
 			wantCommand := []string{"python3"}
-			wantArgs := []string{"-m", "dynamo.frontend"}
+			wantArgs := []string{"-m", "dingo.frontend"}
 			if !reflect.DeepEqual(podSpec.Containers[0].Command, wantCommand) {
 				t.Errorf("GenerateBasePodSpec() command = %v, want %v",
 					podSpec.Containers[0].Command, wantCommand)
@@ -8842,7 +8842,7 @@ func TestGenerateBasePodSpec_FrontendSidecar(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				FrontendSidecar: &v1alpha1.FrontendSidecarSpec{
 					Image: "my-frontend:latest",
-					Args:  []string{"-m", "dynamo.frontend", "--router-mode", "direct"},
+					Args:  []string{"-m", "dingo.frontend", "--router-mode", "direct"},
 				},
 			},
 			parentDGDName:    "test-dgd",
@@ -8850,7 +8850,7 @@ func TestGenerateBasePodSpec_FrontendSidecar(t *testing.T) {
 			wantSidecarCount: 2,
 			wantSidecarName:  commonconsts.FrontendSidecarContainerName,
 			wantSidecarImage: "my-frontend:latest",
-			wantSidecarArgs:  []string{"-m", "dynamo.frontend", "--router-mode", "direct"},
+			wantSidecarArgs:  []string{"-m", "dingo.frontend", "--router-mode", "direct"},
 			wantSidecarEnvVars: map[string]string{
 				"DYN_NAMESPACE":                "test-ns-test-dgd",
 				"DYN_COMPONENT":                commonconsts.ComponentTypeFrontend,
@@ -8876,7 +8876,7 @@ func TestGenerateBasePodSpec_FrontendSidecar(t *testing.T) {
 			wantSidecarCount:   2,
 			wantSidecarName:    commonconsts.FrontendSidecarContainerName,
 			wantSidecarImage:   "my-frontend:latest",
-			wantSidecarArgs:    []string{"-m", "dynamo.frontend"},
+			wantSidecarArgs:    []string{"-m", "dingo.frontend"},
 			wantSidecarEnvFrom: 1,
 			wantSidecarProbes:  true,
 			wantSidecarPorts:   true,

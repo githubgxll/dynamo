@@ -125,7 +125,7 @@ python -m dynamo.mocker --model-path "$MODEL" \
 # Terminal 3: Frontend with KV router
 # --model-path must be the on-disk snapshot directory
 MODEL_PATH=$(find ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots -mindepth 1 -maxdepth 1 -type d | head -1)
-python -m dynamo.frontend --namespace "$NAMESPACE" \
+python -m dingo.frontend --namespace "$NAMESPACE" \
     --model-name "$MODEL" --model-path "$MODEL_PATH" \
     --router-mode kv --http-port 8000 --kv-cache-block-size 16
 ```
@@ -148,7 +148,7 @@ In a **new terminal**, launch the Dynamo router using the Python CLI:
 # Explicitly set NATS server for KV event publishing
 export NATS_SERVER="${NATS_SERVER:-nats://localhost:4222}"
 
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --http-port 8000
 ```
@@ -163,7 +163,7 @@ and is not needed for these benchmark commands.
 
 To see all available router arguments, run:
 ```bash
-python -m dynamo.frontend --help
+python -m dingo.frontend --help
 ```
 
 For detailed explanations of router arguments (especially KV cache routing parameters), see the [Router Guide](../../docs/components/router/router-guide.md).
@@ -172,7 +172,7 @@ For detailed explanations of router arguments (especially KV cache routing param
 > If you're unsure whether your backend engines correctly emit KV events for certain models (e.g., hybrid models like gpt-oss or nemotron nano 2), use the `--no-router-kv-events` flag to disable KV event tracking and use approximate KV indexing instead:
 >
 > ```bash
-> python -m dynamo.frontend \
+> python -m dingo.frontend \
 >     --router-mode kv \
 >     --http-port 8000 \
 >     --no-router-kv-events
@@ -298,7 +298,7 @@ The router queue is enabled by default, but the default threshold is conservativ
 
 ```bash
 # Launch the router with a sensitive priority queue threshold.
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --router-queue-threshold 0.0
 ```

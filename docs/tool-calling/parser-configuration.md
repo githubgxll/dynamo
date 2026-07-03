@@ -44,8 +44,8 @@ Default (Dynamo-native) — the common case. The same `--dyn-*` flags work on ev
 
 ```bash
 # Frontend — chat processor defaults to `dynamo`, so these two are identical:
-python -m dynamo.frontend
-python -m dynamo.frontend --dyn-chat-processor dynamo
+python -m dingo.frontend
+python -m dingo.frontend --dyn-chat-processor dynamo
 
 # Worker selects the Dynamo parsers — same flags on vLLM, SGLang, or TRT-LLM:
 python -m dynamo.vllm   --model Qwen/Qwen3-0.6B \
@@ -60,11 +60,11 @@ Engine fallback — only when Dynamo lacks a parser for your model. Supported on
 
 ```bash
 # vLLM chat processor — frontend carries the parser flags, then launch the worker:
-python -m dynamo.frontend --dyn-chat-processor vllm   --tool-call-parser hermes  --reasoning-parser qwen3
+python -m dingo.frontend --dyn-chat-processor vllm   --tool-call-parser hermes  --reasoning-parser qwen3
 python -m dynamo.vllm   --model Qwen/Qwen3-0.6B
 
 # SGLang chat processor
-python -m dynamo.frontend --dyn-chat-processor sglang --tool-call-parser qwen25  --reasoning-parser qwen3
+python -m dingo.frontend --dyn-chat-processor sglang --tool-call-parser qwen25  --reasoning-parser qwen3
 python -m dynamo.sglang --model Qwen/Qwen3-0.6B
 ```
 

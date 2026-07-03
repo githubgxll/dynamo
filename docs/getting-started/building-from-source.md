@@ -88,7 +88,7 @@ uv pip install -e .
 ## 8. Verify the Build
 
 ```bash
-python3 -m dynamo.frontend --help
+python3 -m dingo.frontend --help
 ```
 
 You should see the frontend command help output.

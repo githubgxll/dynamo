@@ -72,7 +72,7 @@ python -m examples.backends.trtllm.mm_router_worker \
     --downstream-endpoint generate &
 
 # 4. Start Frontend
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port 8000 \
     --router-mode round-robin
 ```

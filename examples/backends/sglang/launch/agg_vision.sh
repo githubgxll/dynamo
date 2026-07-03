@@ -96,7 +96,7 @@ if [ "$FRONTEND_DECODING" = true ]; then
     # The SGLang image inherits NIXL from the upstream lmsysorg/sglang runtime
     # stack but does NOT add its native libs to LD_LIBRARY_PATH (cf.
     # container/templates/dev.Dockerfile: "SGLang dev/local-dev inherit the
-    # upstream SGLang/NIXL runtime stack"). Without this, dynamo.frontend's Rust
+    # upstream SGLang/NIXL runtime stack"). Without this, dingo.frontend's Rust
     # runtime hits "NIXL is not supported in stub mode" the moment it tries to
     # build a media-fetching pipeline. Point the loader at the wheel-shipped .so
     # files explicitly. We build cuda13 only, so the wheel is nixl_cu13, which
@@ -111,12 +111,12 @@ fi
 print_launch_banner --multimodal "Launching Aggregated Vision Serving${BANNER_SUFFIX}" "$MODEL" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 # Frontend has no --frontend-decoding flag — decoding is opt-in via the
 # backend's model card (MediaDecoder configured at register_model time when
 # the backend is launched with --frontend-decoding).
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Build chat template args (only if explicitly set)
 TEMPLATE_ARGS=()

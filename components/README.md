@@ -32,7 +32,7 @@ Dynamo supports multiple inference engines, each with their own deployment confi
 Each engine provides launch and deploy scripts for different deployment patterns in the [examples](../examples/backends/) folder.
 
 
-### [Frontend](src/dynamo/frontend/)
+### [Frontend](../dingo/frontend/)
 
 The frontend component provides the HTTP API layer and request processing:
 

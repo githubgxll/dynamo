@@ -36,8 +36,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # run frontend
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 DYNAMO_PID=$!
 
 # run encode worker (vision encoder on GPU 0)

@@ -1,9 +1,9 @@
 # Frontend Chat-Processor Test Cases
 
 Reference taxonomy for unit testing the **frontend chat-processor layer** —
-the code under `components/src/dynamo/frontend/` that sits between the
+the code under `dingo/frontend/` that sits between the
 OpenAI-shaped HTTP request and the backend engine. Tests for this layer
-live under `components/src/dynamo/frontend/tests/`.
+live under `dingo/frontend/tests/`.
 
 This is the **frontend** companion to `lib/parsers/TOOLCALLING_CASES.md`. The
 two taxonomies cover different surfaces:
@@ -13,7 +13,7 @@ two taxonomies cover different surfaces:
 | `lib/parsers/TOOLCALLING_CASES.md` | Tool-call parser behavior on **model output** | `TOOLCALLING.batch.*`, `TOOLCALLING.stream.*`, `TOOLCALLING.fmt.*`, `TOOLCALLING.xml.*`, `TOOLCALLING.harmony.*` |
 | `lib/parsers/REASONING_CASES.md` | Reasoning parser behavior on **model output** | `REASONING.batch.*`, `REASONING.stream.*` |
 | `lib/parsers/PIPELINE_CASES.md` | Pipeline-boundary contracts (parser output independence from upstream metadata) | `PIPELINE.*` |
-| `components/src/dynamo/frontend/tests/FRONTEND_CASES.md` | Chat-processor layer: request preprocessing, output assembly, error surface, worker plumbing | `FRONTEND.*` |
+| `dingo/frontend/tests/FRONTEND_CASES.md` | Chat-processor layer: request preprocessing, output assembly, error surface, worker plumbing | `FRONTEND.*` |
 
 Backends covered by this taxonomy: **vllm** (`prepost.py` + `vllm_processor.py`)
 and **sglang** (`sglang_prepost.py` + `sglang_processor.py`). trtllm has its
@@ -48,7 +48,7 @@ class TestUtilities:
     def test_normalize_prompt_token_ids(self): ...  # FRONTEND.6
 ```
 
-`grep -r 'FRONTEND.1' components/src/dynamo/frontend/tests/` returns every
+`grep -r 'FRONTEND.1' dingo/frontend/tests/` returns every
 chat-template-preprocessing test across vllm + sglang in one shot.
 
 ---

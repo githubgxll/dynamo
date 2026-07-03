@@ -296,7 +296,7 @@ services:
 ```yaml
 # In Frontend args:
 args:
-  - python3 -m dynamo.frontend --router-mode kv --http-port 8000
+  - python3 -m dingo.frontend --router-mode kv --http-port 8000
 # Options: round-robin, kv (KV-aware routing)
 ```
 

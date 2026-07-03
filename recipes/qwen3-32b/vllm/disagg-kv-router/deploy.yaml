@@ -25,7 +25,7 @@ spec:
           command:
             - python
             - -m
-            - dynamo.frontend
+            - dingo.frontend
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
           workingDir: /workspace
       replicas: 1

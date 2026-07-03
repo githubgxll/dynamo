@@ -59,8 +59,8 @@ echo ""
 echo "=========================================="
 
 # run frontend + KV router
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend \
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend \
     --router-mode kv \
     --router-reset-states &
 

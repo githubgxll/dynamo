@@ -333,7 +333,7 @@ class BaseConfigModifier:
 
         # If operator defaults are being used (no command/args), we must provide full CLI.
         if not c.command and not c.args:
-            c.command = ["python3", "-m", "dynamo.frontend"]
+            c.command = ["python3", "-m", "dingo.frontend"]
             c.args = []
 
         def _patch(tokens: list[str]) -> list[str]:

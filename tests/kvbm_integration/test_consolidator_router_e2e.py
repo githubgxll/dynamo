@@ -281,7 +281,7 @@ def frontend_server(test_directory, runtime_services):
     command = [
         "python",
         "-m",
-        "dynamo.frontend",
+        "dingo.frontend",
         "--http-port",
         str(FRONTEND_PORT),
         "--router-mode",
@@ -734,7 +734,7 @@ class TestConsolidatorRouterE2E:
         frontend_command = [
             "python",
             "-m",
-            "dynamo.frontend",
+            "dingo.frontend",
             "--http-port",
             str(FRONTEND_PORT),
             "--router-mode",

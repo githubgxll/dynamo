@@ -31,7 +31,7 @@ class SlotTrackerProcess(ManagedProcess):
 
 
 class FrontendRouterProcess(ManagedProcess):
-    """Manages a dynamo.frontend process with configurable --router-mode.
+    """Manages a dingo.frontend process with configurable --router-mode.
 
     Supports all router modes (round-robin, random, kv, direct) and all
     KV-specific options (block size, thresholds, durable events, disagg).
@@ -63,7 +63,7 @@ class FrontendRouterProcess(ManagedProcess):
         command = [
             sys.executable,
             "-m",
-            "dynamo.frontend",
+            "dingo.frontend",
             "--router-mode",
             router_mode,
             "--http-port",

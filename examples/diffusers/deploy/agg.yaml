@@ -24,7 +24,7 @@ spec:
           command:
             - python
             - -m
-            - dynamo.frontend
+            - dingo.frontend
           args:
             - --http-port
             - "8000"

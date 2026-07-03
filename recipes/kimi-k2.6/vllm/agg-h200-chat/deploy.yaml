@@ -69,7 +69,7 @@ spec:
                 - python3
               args:
                 - -m
-                - dynamo.frontend
+                - dingo.frontend
                 - --trust-remote-code
               env:
                 - name: POD_UID

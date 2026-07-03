@@ -38,7 +38,7 @@ class DynamoFrontendProcess(BaseDynamoFrontendProcess):
             "ETCD_ENDPOINTS": ",".join(etcd_endpoints),
         }
         # terminate_all_matching_process_names=False is required here: the frontend
-        # is launched as `python -m dynamo.frontend`, so its _command_name is the
+        # is launched as `python -m dingo.frontend`, so its _command_name is the
         # generic "python". With True, ManagedProcess.__enter__ would SIGTERM/SIGKILL
         # every "python" process on the host on startup — including this test's own
         # etcd cluster and vLLM worker (and sibling framework jobs). That orphans

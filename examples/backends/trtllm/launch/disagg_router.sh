@@ -21,8 +21,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Disaggregated + KV Routing (2 GPUs)" "$MODEL_PATH" "$HTTP_PORT"
 
 # run frontend with KV routing for cache-aware optimization
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend --router-mode kv &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend --router-mode kv &
 
 # run prefill worker
 # Publishes KV events for router's cache-aware routing

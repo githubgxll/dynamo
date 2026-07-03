@@ -121,7 +121,7 @@ esac
 
 echo ""
 echo "Starting frontend..."
-python -m dynamo.frontend &
+python -m dingo.frontend &
 FRONTEND_PID=$!
 
 # Wait for frontend to become ready

@@ -27,7 +27,7 @@ This documentation assumes readers are familiar with the usage of KServe v2 API 
 To start the KServe frontend, run the below command:
 
 ```bash
-python -m dynamo.frontend --kserve-grpc-server
+python -m dingo.frontend --kserve-grpc-server
 ```
 
 ## gRPC Performance Tuning
@@ -45,7 +45,7 @@ The gRPC server supports optional HTTP/2 flow control tuning via environment var
 # For 128 concurrent 15k-token requests
 export DYN_GRPC_INITIAL_CONNECTION_WINDOW_SIZE=16777216  # 16MB
 export DYN_GRPC_INITIAL_STREAM_WINDOW_SIZE=1048576      # 1MB
-python -m dynamo.frontend --kserve-grpc-server
+python -m dingo.frontend --kserve-grpc-server
 ```
 
 If these variables are not set, the server uses tonic's default values.
@@ -145,7 +145,7 @@ The frontend may be started via Python binding, this is useful when integrating 
 The frontend includes an integrated router for request distribution. Configure routing mode:
 
 ```bash
-python -m dynamo.frontend --router-mode kv --http-port 8000
+python -m dingo.frontend --router-mode kv --http-port 8000
 ```
 
 See [Router Documentation](../router/README.md) for routing configuration details.

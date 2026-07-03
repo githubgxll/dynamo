@@ -240,7 +240,7 @@ Match `terminationGracePeriodSeconds` to your expected request completion time:
 Enable migration at the frontend to allow request recovery when workers shut down:
 
 ```bash
-python3 -m dynamo.frontend ... --migration-limit 3  # Allow up to 3 migration attempts
+python3 -m dingo.frontend ... --migration-limit 3  # Allow up to 3 migration attempts
 ```
 
 This allows the frontend to automatically retry disconnected streams on healthy workers.

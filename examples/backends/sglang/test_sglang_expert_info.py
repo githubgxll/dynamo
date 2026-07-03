@@ -47,7 +47,7 @@ def start_frontend():
     os.makedirs(LOG_DIR, exist_ok=True)
     log = open(f"{LOG_DIR}/frontend.log", "w")
 
-    cmd = [sys.executable, "-m", "dynamo.frontend", "--http-port", str(FRONTEND_PORT)]
+    cmd = [sys.executable, "-m", "dingo.frontend", "--http-port", str(FRONTEND_PORT)]
     print(f"  Command: {' '.join(cmd)}")
     print(f"  Logs: {LOG_DIR}/frontend.log")
     process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)

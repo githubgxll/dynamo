@@ -473,8 +473,8 @@ type FrontendSidecarSpec struct {
 	Image string `json:"image"`
 
 	// Args overrides the default frontend arguments. When specified, these replace
-	// the default ["-m", "dynamo.frontend"] entirely.
-	// For example, ["-m", "dynamo.frontend", "--router-mode", "direct"] for GAIE deployments.
+	// the default ["-m", "dingo.frontend"] entirely.
+	// For example, ["-m", "dingo.frontend", "--router-mode", "direct"] for GAIE deployments.
 	// +optional
 	Args []string `json:"args,omitempty"`
 

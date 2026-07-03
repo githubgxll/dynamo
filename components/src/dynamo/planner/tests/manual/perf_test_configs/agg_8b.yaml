@@ -43,7 +43,7 @@ spec:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.frontend --http-port 8000"
+            - "python3 -m dingo.frontend --http-port 8000"
     VllmDecodeWorker:
       envFromSecret: hf-token-secret
       componentType: worker

@@ -70,7 +70,7 @@ physical class to dispatch before worker scoring runs.
 To enable KV cache-aware routing, start the frontend node like this:
 
 ```bash
-python -m dynamo.frontend --router-mode kv
+python -m dingo.frontend --router-mode kv
 ```
 
 When KV blocks are created or removed, the engine notifies the Dynamo router, which then identifies the worker with the best matching blocks and routes traffic accordingly.

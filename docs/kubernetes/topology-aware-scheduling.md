@@ -73,7 +73,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.frontend
+            - python3 -m dingo.frontend
 ```
 
 ### Example 2: Service-Level Constraint Only
@@ -114,7 +114,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.frontend
+            - python3 -m dingo.frontend
 ```
 
 ### Example 3: Mixed (Deployment-Level Default + Per-Service Override)
@@ -157,7 +157,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.frontend
+            - python3 -m dingo.frontend
 ```
 
 ## Hierarchy Rules

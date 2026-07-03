@@ -42,7 +42,7 @@ print_curl_footer <<CURL
 CURL
 
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 FRONTEND_PID=$!
 
 sleep 2

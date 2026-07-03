@@ -82,7 +82,7 @@ compute cache state for classification. See the tested
 [sample policy](../../../examples/router/policy-class-queues.yaml).
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --router-policy-config examples/router/policy-class-queues.yaml
 ```
@@ -156,7 +156,7 @@ Use `--router-prefill-load-model aic` when you want prompt-side load tracking to
 Enable it on the frontend like this:
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --router-prefill-load-model aic \
     --aic-backend vllm \

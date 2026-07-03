@@ -117,7 +117,7 @@ CURL
 
 # Launch frontend
 echo "Starting Dynamo Frontend on port $HTTP_PORT..."
-python3 -m dynamo.frontend \
+python3 -m dingo.frontend \
     --http-port "$HTTP_PORT" &
 
 sleep 2

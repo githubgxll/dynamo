@@ -9,7 +9,7 @@ This page covers day-2 operational topics for router deployments. For flags and 
 
 ## Serving Multiple Router Replicas
 
-For improved fault tolerance, you can launch multiple frontend-plus-router replicas. If multiple `dynamo.frontend` processes share the same host or network namespace, give each instance a different HTTP port. In Kubernetes or on separate hosts, replicas can usually reuse the same container port. Alternatively, you can deploy the router separately as the standalone `python -m dynamo.router` service.
+For improved fault tolerance, you can launch multiple frontend-plus-router replicas. If multiple `dingo.frontend` processes share the same host or network namespace, give each instance a different HTTP port. In Kubernetes or on separate hosts, replicas can usually reuse the same container port. Alternatively, you can deploy the router separately as the standalone `python -m dynamo.router` service.
 
 ## Router State Management
 
@@ -49,7 +49,7 @@ JetStream mode requires `--router-durable-kv-events` on both frontend and worker
 - You can launch a third router replica even if the first two are down, and it will recover the full prefix state.
 
 ```bash
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --router-mode kv \
     --http-port 8002 \
     --router-durable-kv-events
@@ -77,17 +77,17 @@ There are two operating modes for active blocks:
 
 ```bash
 # Router replica 1
-python -m dynamo.frontend --router-mode kv --http-port 8000 --router-replica-sync
+python -m dingo.frontend --router-mode kv --http-port 8000 --router-replica-sync
 
 # Router replica 2
-python -m dynamo.frontend --router-mode kv --http-port 8001 --router-replica-sync
+python -m dingo.frontend --router-mode kv --http-port 8001 --router-replica-sync
 ```
 
 With replica sync enabled, a new router still starts with zero active-block knowledge, but it converges through live request handling and active-sequence events from other replicas. Without it, each replica keeps an isolated active-block view, which can lead to suboptimal load balancing.
 
 ## Dynamo-Native Remote Indexer
 
-For Dynamo-native deployments, the remote indexer is served by `dynamo.frontend` or `dynamo.router`, not by `dynamo.indexer`.
+For Dynamo-native deployments, the remote indexer is served by `dingo.frontend` or `dynamo.router`, not by `dynamo.indexer`.
 
 - Use `--serve-indexer` on router or frontend replicas that should expose `kv_indexer_query` from the worker component.
 - Use `--use-remote-indexer` on consumer routers or frontends that should query that served endpoint instead of maintaining a local overlap indexer.
@@ -97,10 +97,10 @@ Frontend example:
 
 ```bash
 # Serving anchors
-python -m dynamo.frontend --router-mode kv --serve-indexer
+python -m dingo.frontend --router-mode kv --serve-indexer
 
 # Consumer frontend
-python -m dynamo.frontend --router-mode kv --use-remote-indexer
+python -m dingo.frontend --router-mode kv --use-remote-indexer
 ```
 
 The served service is request-plane only. Each serving router or frontend keeps its normal local KV event ingestion, gap detection, and worker-query recovery path; remote consumers only issue hash-based overlap queries.

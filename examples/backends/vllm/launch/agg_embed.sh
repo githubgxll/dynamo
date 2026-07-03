@@ -58,8 +58,8 @@ print_curl_footer <<CURL
 CURL
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # Tunable: most embedding workloads have short inputs (typically
 # 60-200 tokens; OpenAI's text-embedding-3 cap is 8K). Defaulting to

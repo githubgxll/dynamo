@@ -140,7 +140,7 @@ cd /workspace/examples/backends/trtllm
 1. **Start frontend**:
 ```bash
 # Start frontend with round-robin routing
-python3 -m dynamo.frontend --router-mode round-robin --http-port 8000 &
+python3 -m dingo.frontend --router-mode round-robin --http-port 8000 &
 ```
 
 2. **Launch prefill worker**:
