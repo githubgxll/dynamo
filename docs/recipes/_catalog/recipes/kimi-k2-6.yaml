@@ -24,7 +24,7 @@ targets:
   - eagle3-mla-spec-dec
   - lmcache-cpu-offload
   - flashinfer-trtllm-moe
-  - tokenspeed-mla-attention
+  - flash-attn-mla
   - nccl-symmetric-allreduce
   workload:
     type: chat
@@ -77,7 +77,7 @@ targets:
   - eagle3-mla-spec-dec
   - lmcache-cpu-offload
   - flashinfer-trtllm-moe
-  - tokenspeed-mla-attention
+  - flash-attn-mla
   workload:
     type: agentic
     traffic: Mooncake agentic trace 64k_400_90kv, 64K median ISL, 90% KV reuse

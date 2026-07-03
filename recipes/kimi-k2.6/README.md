@@ -14,7 +14,7 @@ Dynamo + vLLM deployment profiles across two GPU SKUs and two target workloads:
 | **Precision**            | NVFP4 + FP8 KV                        | INT4                                  | NVFP4 + FP8 KV                       | INT4                                 |
 | **Parallelism**          | TP4                                   | TP8                                   | TP4                                  | TP8                                  |
 | **MoE backend**          | FLASHINFER_TRTLLM                     | MARLIN                                | FLASHINFER_TRTLLM                    | MARLIN                               |
-| **Attention backend**    | TOKENSPEED_MLA                        | FLASH_ATTN_MLA                        | TOKENSPEED_MLA                       | FLASH_ATTN_MLA                       |
+| **Attention backend**    | FLASH_ATTN_MLA                        | FLASH_ATTN_MLA                        | FLASH_ATTN_MLA                       | FLASH_ATTN_MLA                       |
 | **AllReduce backend**    | NCCL symmetric memory                 | NCCL                                  | NCCL symmetric memory                | NCCL                                 |
 | **All2All backend**      | N/A                                   | N/A                                   | N/A                                  | N/A                                  |
 | **Routing**              | KV-aware                              | KV-aware                              | KV-aware                             | KV-aware                             |

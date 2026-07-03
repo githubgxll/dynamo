@@ -2,9 +2,6 @@
 
 Deployment recipes for **Kimi-K2.5-NVFP4** on an agentic coding workload.
 
-> [!NOTE]
-> A separate TokenSpeed-based aggregated recipe is available under [`tokenspeed/agg/nvidia/`](tokenspeed/agg/nvidia/README.md) (requires a local image build — no public Dynamo+TokenSpeed image yet).
-
 ## Configurations
 
 We compare four Dynamo + TRTLLM deployment modes on **6x GB200 (24 GPU)**:

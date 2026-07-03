@@ -32,7 +32,7 @@ Each target below is a validated aggregated vLLM deployment of Kimi-K2.6 — tex
 <span><b>Precision</b> NVFP4 + FP8 KV cache</span>
 <span><b>GPUs</b> 4x B200 per worker, TP4</span>
 <span><b>MoE backend</b> FlashInfer-TRTLLM</span>
-<span><b>Attention</b> TokenSpeed MLA</span>
+<span><b>Attention</b> FlashAttention MLA</span>
 <span><b>Workload</b> Chat, 70% KV reuse</span>
 </div>
 <div className="dynamo-target-picker-summary" data-sku="b200" data-usecase="agentic">
@@ -40,7 +40,7 @@ Each target below is a validated aggregated vLLM deployment of Kimi-K2.6 — tex
 <span><b>Precision</b> NVFP4 + FP8 KV cache</span>
 <span><b>GPUs</b> 4x B200 per worker, TP4</span>
 <span><b>MoE backend</b> FlashInfer-TRTLLM</span>
-<span><b>Attention</b> TokenSpeed MLA</span>
+<span><b>Attention</b> FlashAttention MLA</span>
 <span><b>Workload</b> Agentic, 64K-median ISL, 90% KV reuse</span>
 </div>
 <div className="dynamo-target-picker-summary" data-sku="h200" data-usecase="chat">
@@ -303,7 +303,7 @@ All four targets serve `moonshotai/Kimi-K2.6` on aggregated vLLM 0.21.0 with KV-
 | **Precision** | NVFP4 + FP8 KV | INT4 (native) | NVFP4 + FP8 KV | INT4 (native) |
 | **Parallelism** | TP4 | TP8 | TP4 | TP8 |
 | **MoE backend** | FlashInfer-TRTLLM | Marlin | FlashInfer-TRTLLM | Marlin |
-| **Attention backend** | TokenSpeed MLA | FlashAttention MLA | TokenSpeed MLA | FlashAttention MLA |
+| **Attention backend** | FlashAttention MLA | FlashAttention MLA | FlashAttention MLA | FlashAttention MLA |
 | **AllReduce** | NCCL symmetric memory | NCCL | NCCL symmetric memory | NCCL |
 | **Workload** | Chat trace | Chat trace | Agentic trace | Agentic trace |
 

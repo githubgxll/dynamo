@@ -11,8 +11,8 @@ metadata:
 data:
   attention-config: |-
     {
-      "backend": "TOKENSPEED_MLA",
-      "mla_prefill_backend": "TOKENSPEED_MLA",
+      "backend": "FLASH_ATTN_MLA",
+      "mla_prefill_backend": "FLASH_ATTN_MLA",
       "use_prefill_query_quantization": true
     }
   speculative-config-synthetic: |-
