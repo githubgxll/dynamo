@@ -33,7 +33,6 @@ docs:
   - 'LICENSE'
   - 'CODEOWNERS'
   - '.coveragerc'
-  - '.claude/**'
 
 examples:
   - 'recipes/**'
