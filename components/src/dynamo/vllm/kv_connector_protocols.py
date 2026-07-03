@@ -106,10 +106,27 @@ class MooncakeConnectorProtocol(KvConnectorProtocol):
         }
 
 
+class DfkvStoreConnectorProtocol(KvConnectorProtocol):
+    """Shared-store based: DFKV does not use per-request remote endpoint
+    metadata. Both prefill and decode workers coordinate through the external
+    store using the configured connector and request/block hashes, so Dynamo
+    only needs to provide an empty kv_transfer_params object to keep the
+    disaggregated request path active."""
+
+    def prefill_request_kv_transfer_params(self) -> Dict[str, Any]:
+        return {}
+
+    def decode_request_kv_transfer_params(
+        self, prefill_response: Any
+    ) -> Optional[Dict[str, Any]]:
+        return {}
+
+
 # Keyed by ``KVTransferConfig.kv_connector``. One entry per connector.
 KV_CONNECTOR_PROTOCOLS: Dict[str, Type[KvConnectorProtocol]] = {
     "NixlConnector": NixlConnectorProtocol,
     "MooncakeConnector": MooncakeConnectorProtocol,
+    "DfkvStoreConnector": DfkvStoreConnectorProtocol,
 }
 
 # Wrapper connectors that compose sub-connectors under
