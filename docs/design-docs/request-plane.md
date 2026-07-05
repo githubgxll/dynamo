@@ -77,7 +77,7 @@ export DYN_TCP_RPC_HOST=0.0.0.0  # Default host
 
 # Run your Dynamo service
 DYN_REQUEST_PLANE=tcp python -m dingo.frontend --http-port=8000 &
-DYN_REQUEST_PLANE=tcp python -m dynamo.vllm --model Qwen/Qwen3-0.6B
+DYN_REQUEST_PLANE=tcp python -m dingo.vllm --model Qwen/Qwen3-0.6B
 ```
 
 **Note:** By default, TCP uses an OS-assigned free port (port 0). This is ideal for environments where multiple services may run on the same machine or when you want to avoid port conflicts. If you need a specific port (e.g., for firewall rules), set `DYN_TCP_RPC_PORT` explicitly.
@@ -113,7 +113,7 @@ export DYN_REQUEST_PLANE=nats
 
 # Run your Dynamo service
 DYN_REQUEST_PLANE=nats python -m dingo.frontend --http-port=8000 &
-DYN_REQUEST_PLANE=nats python -m dynamo.vllm --model Qwen/Qwen3-0.6B
+DYN_REQUEST_PLANE=nats python -m dingo.vllm --model Qwen/Qwen3-0.6B
 ```
 
 **When to use NATS:**

@@ -320,7 +320,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - "Qwen/Qwen3-32B-FP8"

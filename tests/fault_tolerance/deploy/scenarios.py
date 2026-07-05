@@ -918,7 +918,7 @@ DEPLOYMENT_SPECS.update(_create_moe_deployments_for_backend("vllm"))
 #
 # Example:
 #
-#   "prefill_worker": [Failure(30, "VllmPrefillWorker", "dynamo.vllm", "SIGKILL")],
+#   "prefill_worker": [Failure(30, "VllmPrefillWorker", "dingo.vllm", "SIGKILL")],
 #
 # terminates 1 prefill worker after 30 seconds
 def _create_backend_failures(backend, deploy_type="disagg"):

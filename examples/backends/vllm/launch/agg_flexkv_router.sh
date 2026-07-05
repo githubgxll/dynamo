@@ -23,7 +23,7 @@ DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
 FLEXKV_SERVER_RECV_PORT="ipc:///tmp/flexkv_server_0" \
 CUDA_VISIBLE_DEVICES=0 \
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model $MODEL \
     --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' \
     --gpu-memory-utilization 0.2 \
@@ -33,7 +33,7 @@ DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
 FLEXKV_SERVER_RECV_PORT="ipc:///tmp/flexkv_server_1" \
 CUDA_VISIBLE_DEVICES=1 \
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model $MODEL \
     --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' \
     --gpu-memory-utilization 0.2 \

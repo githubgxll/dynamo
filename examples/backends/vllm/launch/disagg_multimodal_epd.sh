@@ -189,7 +189,7 @@ VLLM_ZMQ_PORT_DECODE=${VLLM_ZMQ_PORT_DECODE:-20082}
 # NOTE: encoder VRAM is STATIC, set by the model — $DYN_ENCODE_GPU_MEM
 # (--gpu-memory-utilization) is effectively a no-op for non-Qwen-VL models.
 # dynamo's EncodeWorkerHandler only consumes engine_args.enforce_eager;
-# load_vision_model (components/src/dynamo/vllm/multimodal_utils/model.py)
+# load_vision_model (dingo/vllm/multimodal_utils/model.py)
 # branches on family:
 #   - Qwen-VL: vLLM mm_encoder_only=True path, hardcoded gpu_memory_utilization=0.2
 #     and kv_cache_memory_bytes=64MiB inside the function — only the vision tower
@@ -203,19 +203,19 @@ echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (--gpu-memory-utiliza
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=$VLLM_NIXL_SIDE_CHANNEL_PORT_ENCODE \
 CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU \
-python -m dynamo.vllm --enable-multimodal --disaggregation-mode encode --model $MODEL_NAME --gpu-memory-utilization $DYN_ENCODE_GPU_MEM $EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_ENCODE}\"}" &
+python -m dingo.vllm --enable-multimodal --disaggregation-mode encode --model $MODEL_NAME --gpu-memory-utilization $DYN_ENCODE_GPU_MEM $EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_ENCODE}\"}" &
 
 # Start prefill worker (also handles encode routing via --route-to-encoder)
 echo "Starting prefill worker on GPU $DYN_PREFILL_WORKER_GPU (${PREFILL_GPU_MEM_ARGS})..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=$VLLM_NIXL_SIDE_CHANNEL_PORT_PREFILL \
-CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU python -m dynamo.vllm --route-to-encoder --disaggregation-mode prefill --enable-multimodal --enable-mm-embeds --model $MODEL_NAME $PREFILL_GPU_MEM_ARGS $EXTRA_ARGS $PD_EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_PREFILL}\"}" &
+CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU python -m dingo.vllm --route-to-encoder --disaggregation-mode prefill --enable-multimodal --enable-mm-embeds --model $MODEL_NAME $PREFILL_GPU_MEM_ARGS $EXTRA_ARGS $PD_EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_PREFILL}\"}" &
 
 # Start decode worker
 echo "Starting decode worker on GPU $DYN_DECODE_WORKER_GPU (${DECODE_GPU_MEM_ARGS})..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT3:-8083} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=$VLLM_NIXL_SIDE_CHANNEL_PORT_DECODE \
-CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU python -m dynamo.vllm  --disaggregation-mode decode --enable-multimodal --enable-mm-embeds --model $MODEL_NAME $DECODE_GPU_MEM_ARGS $EXTRA_ARGS $PD_EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_DECODE}\"}" &
+CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU python -m dingo.vllm  --disaggregation-mode decode --enable-multimodal --enable-mm-embeds --model $MODEL_NAME $DECODE_GPU_MEM_ARGS $EXTRA_ARGS $PD_EXTRA_ARGS --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${VLLM_ZMQ_PORT_DECODE}\"}" &
 
 echo "=================================================="
 echo "All components started. Waiting for initialization..."

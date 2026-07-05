@@ -52,7 +52,7 @@ echo "Starting Omni Audio worker..."
 # vLLM 0.19 validates that against the model config unless we opt in here.
 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dynamo.vllm.omni \
+    python -m dingo.vllm.omni \
     --model "$MODEL" \
     --output-modalities audio \
     --media-output-fs-url file:///tmp/dynamo_media \

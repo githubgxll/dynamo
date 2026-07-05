@@ -65,7 +65,7 @@ python3 -m dingo.frontend \
 
 # run prefill worker
 OTEL_SERVICE_NAME=dynamo-worker-prefill-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -81,7 +81,7 @@ python3 -m dynamo.sglang \
 
 # run prefill worker
 OTEL_SERVICE_NAME=dynamo-worker-prefill-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -97,7 +97,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
 
 # run decode worker
 OTEL_SERVICE_NAME=dynamo-worker-decode-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT3:-8083} \
-CUDA_VISIBLE_DEVICES=3 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=3 python3 -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -113,7 +113,7 @@ CUDA_VISIBLE_DEVICES=3 python3 -m dynamo.sglang \
 
 # run decode worker
 OTEL_SERVICE_NAME=dynamo-worker-decode-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT4:-8084} \
-CUDA_VISIBLE_DEVICES=2 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=2 python3 -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \

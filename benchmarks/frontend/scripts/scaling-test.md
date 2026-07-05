@@ -162,7 +162,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >-
-              python3 -m dynamo.vllm
+              python3 -m dingo.vllm
               --model /model-store/hub/models--openai--gpt-oss-20b/snapshots/main
               --served-model-name openai/gpt-oss-20b
               --tensor-parallel-size 2

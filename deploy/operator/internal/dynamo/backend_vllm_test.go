@@ -46,7 +46,7 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			role:              RoleMain,
 			component:         &v1alpha1.DynamoComponentDeploymentSharedSpec{},
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm"}},
 			gpuCount:          0,
 			expectNotModified: true,
 		},
@@ -56,9 +56,9 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			role:                RoleLeader,
 			component:           &v1alpha1.DynamoComponentDeploymentSharedSpec{},
 			multinodeDeployer:   &GroveMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Command: []string{"python3", "-m", "dynamo.vllm"}, Args: []string{"--model", "test", tensorParallelSizeFlag, "8"}},
+			initialContainer:    &corev1.Container{Command: []string{"python3", "-m", "dingo.vllm"}, Args: []string{"--model", "test", tensorParallelSizeFlag, "8"}},
 			gpuCount:            4,
-			expectedArgs:        []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dynamo.vllm --model test %s 8 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
+			expectedArgs:        []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dingo.vllm --model test %s 8 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
 			expectProbesRemoved: true,
 		},
 		{
@@ -68,7 +68,7 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			component:         &v1alpha1.DynamoComponentDeploymentSharedSpec{},
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialContainer: &corev1.Container{
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args: []string{
 					"--model", "test", tensorParallelSizeFlag, "8",
 					"--kv-transfer-config",
@@ -77,7 +77,7 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			},
 			gpuCount: 4,
 			expectedArgs: []string{fmt.Sprintf(
-				`ray start --head --port=%s && python3 -m dynamo.vllm --model test %s 8 --kv-transfer-config "{\"kv_connector\": \"NixlConnector\", \"kv_role\": \"kv_both\"}" --distributed-executor-backend ray`,
+				`ray start --head --port=%s && python3 -m dingo.vllm --model test %s 8 --kv-transfer-config "{\"kv_connector\": \"NixlConnector\", \"kv_role\": \"kv_both\"}" --distributed-executor-backend ray`,
 				VLLMPort, tensorParallelSizeFlag,
 			)},
 			expectProbesRemoved: true,
@@ -88,7 +88,7 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			role:                RoleWorker,
 			component:           &v1alpha1.DynamoComponentDeploymentSharedSpec{},
 			multinodeDeployer:   &GroveMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", "--model", "test", tensorParallelSizeFlag, "8"}},
+			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", "--model", "test", tensorParallelSizeFlag, "8"}},
 			gpuCount:            4,
 			expectedArgs:        []string{"ray start --address=$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):6379 --block"},
 			expectProbesRemoved: true,
@@ -99,7 +99,7 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 			role:                RoleWorker,
 			component:           &v1alpha1.DynamoComponentDeploymentSharedSpec{},
 			multinodeDeployer:   &LWSMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Args: []string{"python3", "-m", "dynamo.vllm", tensorParallelSizeFlag, "8"}},
+			initialContainer:    &corev1.Container{Args: []string{"python3", "-m", "dingo.vllm", tensorParallelSizeFlag, "8"}},
 			gpuCount:            4,
 			expectedArgs:        []string{"ray start --address=$(LWS_LEADER_ADDRESS):6379 --block"},
 			expectProbesRemoved: true,
@@ -134,9 +134,9 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 				},
 			},
 			multinodeDeployer:   &GroveMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:            8,
-			expectedArgs:        []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
+			expectedArgs:        []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
 			expectProbesRemoved: true,
 		},
 		{
@@ -149,10 +149,10 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 				},
 			},
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			expectedArgs: []string{fmt.Sprintf(
-				"exec python3 -m dynamo.vllm %s 16 --distributed-executor-backend mp --nnodes 2 --master-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --master-port %s --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --headless",
+				"exec python3 -m dingo.vllm %s 16 --distributed-executor-backend mp --nnodes 2 --master-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --master-port %s --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --headless",
 				tensorParallelSizeFlag, commonconsts.VLLMMpMasterPort)},
 			expectProbesRemoved: true,
 		},
@@ -167,9 +167,9 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 				},
 			},
 			multinodeDeployer:   &GroveMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Command: []string{"python3", "-m", "dynamo.vllm"}, Args: []string{"--model", "test", tensorParallelSizeFlag, "8"}},
+			initialContainer:    &corev1.Container{Command: []string{"python3", "-m", "dingo.vllm"}, Args: []string{"--model", "test", tensorParallelSizeFlag, "8"}},
 			gpuCount:            4,
-			expectedArgs:        []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dynamo.vllm --model test %s 8 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
+			expectedArgs:        []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dingo.vllm --model test %s 8 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
 			expectProbesRemoved: true,
 		},
 		{
@@ -182,9 +182,9 @@ func TestVLLMBackend_UpdateContainer(t *testing.T) {
 				},
 			},
 			multinodeDeployer:   &GroveMultinodeDeployer{},
-			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:    &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:            8,
-			expectedArgs:        []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
+			expectedArgs:        []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
 			expectProbesRemoved: true,
 		},
 	}
@@ -242,9 +242,9 @@ func TestVLLMBackend_ShellCommandInjection(t *testing.T) {
 			numberOfNodes:     1,
 			role:              RoleMain,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{"python3 -m dynamo.vllm"}},
+			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{"python3 -m dingo.vllm"}},
 			gpuCount:          0,
-			expectedArgs:      []string{"python3 -m dynamo.vllm"},
+			expectedArgs:      []string{"python3 -m dingo.vllm"},
 			description:       "Single node should not modify shell commands",
 		},
 		{
@@ -252,9 +252,9 @@ func TestVLLMBackend_ShellCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dynamo.vllm %s 8", dataParallelSizeFlag)}},
+			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dingo.vllm %s 8", dataParallelSizeFlag)}},
 			gpuCount:          4,
-			expectedArgs:      []string{"python3 -m dynamo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8"},
+			expectedArgs:      []string{"python3 -m dingo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8"},
 			description:       "Shell commands should use regex injection for python commands",
 		},
 		{
@@ -262,9 +262,9 @@ func TestVLLMBackend_ShellCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("echo blah | wc -l && python3 -m dynamo.vllm %s 8 && ls -al", dataParallelSizeFlag)}},
+			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("echo blah | wc -l && python3 -m dingo.vllm %s 8 && ls -al", dataParallelSizeFlag)}},
 			gpuCount:          4,
-			expectedArgs:      []string{"echo blah | wc -l && python3 -m dynamo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8 && ls -al"},
+			expectedArgs:      []string{"echo blah | wc -l && python3 -m dingo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8 && ls -al"},
 			description:       "Complex shell commands should inject flags only into python part",
 		},
 		{
@@ -272,9 +272,9 @@ func TestVLLMBackend_ShellCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleLeader,
 			multinodeDeployer: &LWSMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dynamo.vllm %s 8", dataParallelSizeFlag)}},
+			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dingo.vllm %s 8", dataParallelSizeFlag)}},
 			gpuCount:          4,
-			expectedArgs:      []string{"python3 -m dynamo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(LWS_LEADER_ADDRESS) --data-parallel-rpc-port 13445 --data-parallel-size 8"},
+			expectedArgs:      []string{"python3 -m dingo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(LWS_LEADER_ADDRESS) --data-parallel-rpc-port 13445 --data-parallel-size 8"},
 			description:       "LWS shell commands should use LWS variables",
 		},
 		{
@@ -282,9 +282,9 @@ func TestVLLMBackend_ShellCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dynamo.vllm %s 8 | tee /tmp/log", dataParallelSizeFlag)}},
+			initialContainer:  &corev1.Container{Command: []string{"sh", "-c"}, Args: []string{fmt.Sprintf("python3 -m dingo.vllm %s 8 | tee /tmp/log", dataParallelSizeFlag)}},
 			gpuCount:          4,
-			expectedArgs:      []string{"python3 -m dynamo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8 | tee /tmp/log"},
+			expectedArgs:      []string{"python3 -m dingo.vllm --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank 0 --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445 --data-parallel-size 8 | tee /tmp/log"},
 			description:       "Shell commands with pipes should inject flags before pipe",
 		},
 	}
@@ -436,33 +436,33 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "leader uses ray (nil annotations = legacy)",
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
-			expectedArgs:      []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dynamo.vllm %s 16 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
+			expectedArgs:      []string{fmt.Sprintf("ray start --head --port=%s && python3 -m dingo.vllm %s 16 --distributed-executor-backend ray", VLLMPort, tensorParallelSizeFlag)},
 		},
 		{
 			name:              "leader uses mp (origin version >= threshold)",
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.0.0",
 			},
-			expectedArgs: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
+			expectedArgs: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
 		},
 		{
 			name:              "worker uses mp (origin version >= threshold) Grove",
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.0.0",
 			},
 			expectedArgs: []string{fmt.Sprintf(
-				"exec python3 -m dynamo.vllm %s 16 --distributed-executor-backend mp --nnodes 2 --master-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --master-port %s --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --headless",
+				"exec python3 -m dingo.vllm %s 16 --distributed-executor-backend mp --nnodes 2 --master-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --master-port %s --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --headless",
 				tensorParallelSizeFlag, commonconsts.VLLMMpMasterPort)},
 		},
 		{
@@ -472,12 +472,12 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "worker uses mp (origin version >= threshold) LWS",
 			role:              RoleWorker,
 			multinodeDeployer: &LWSMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.0.0",
 			},
-			expectedArgs: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(LWS_LEADER_ADDRESS)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "$(LWS_WORKER_INDEX)", "--headless"},
+			expectedArgs: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(LWS_LEADER_ADDRESS)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "$(LWS_WORKER_INDEX)", "--headless"},
 		},
 		{
 			// Regression test: LWS leader with direct python command must emit
@@ -487,12 +487,12 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "leader uses mp (origin version >= threshold) LWS",
 			role:              RoleLeader,
 			multinodeDeployer: &LWSMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.0.0",
 			},
-			expectedArgs: []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(LWS_LEADER_ADDRESS)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
+			expectedArgs: []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", "--distributed-executor-backend", "mp", "--nnodes", "2", "--master-addr", "$(LWS_LEADER_ADDRESS)", "--master-port", commonconsts.VLLMMpMasterPort, "--node-rank", "0"},
 		},
 		{
 			// Regression test: LWS leader on the data-parallel path. Same bug
@@ -501,19 +501,19 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "leader with data parallel launch LWS",
 			role:              RoleLeader,
 			multinodeDeployer: &LWSMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", dataParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
-			expectedArgs:      []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "16", "--data-parallel-hybrid-lb", "--data-parallel-size-local", "8", "--data-parallel-start-rank", "0", "--data-parallel-address", "$(LWS_LEADER_ADDRESS)", "--data-parallel-rpc-port", "13445"},
+			expectedArgs:      []string{"-m", "dingo.vllm", dataParallelSizeFlag, "16", "--data-parallel-hybrid-lb", "--data-parallel-size-local", "8", "--data-parallel-start-rank", "0", "--data-parallel-address", "$(LWS_LEADER_ADDRESS)", "--data-parallel-rpc-port", "13445"},
 		},
 		{
 			name:              "leader prepends distributed data parallel flags (annotations don't affect DP path)",
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", dataParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
-			expectedArgs:      []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "16", "--data-parallel-hybrid-lb", "--data-parallel-size-local", "8", "--data-parallel-start-rank", "0", "--data-parallel-address", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--data-parallel-rpc-port", "13445"},
+			expectedArgs:      []string{"-m", "dingo.vllm", dataParallelSizeFlag, "16", "--data-parallel-hybrid-lb", "--data-parallel-size-local", "8", "--data-parallel-start-rank", "0", "--data-parallel-address", "$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)", "--data-parallel-rpc-port", "13445"},
 		},
 		{
 			name:              "leader with empty args does not modify",
@@ -528,7 +528,7 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "worker with ray distributed launch Grove (nil annotations)",
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Args: []string{"python3", "-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Args: []string{"python3", "-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
 			expectedArgs:      []string{"ray start --address=$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):6379 --block"},
@@ -537,25 +537,25 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			name:              "worker with data parallel launch Grove",
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", dataParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
-			expectedArgs:      []string{fmt.Sprintf("exec python3 -m dynamo.vllm %s 16 --data-parallel-hybrid-lb --data-parallel-size-local 8 --data-parallel-start-rank $(( 8 * $((GROVE_PCLQ_POD_INDEX + 1)) )) --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445", dataParallelSizeFlag)},
+			expectedArgs:      []string{fmt.Sprintf("exec python3 -m dingo.vllm %s 16 --data-parallel-hybrid-lb --data-parallel-size-local 8 --data-parallel-start-rank $(( 8 * $((GROVE_PCLQ_POD_INDEX + 1)) )) --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445", dataParallelSizeFlag)},
 		},
 		{
 			name:              "worker with data parallel launch Grove, tp > 1",
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm", dataParallelSizeFlag, "8", tensorParallelSizeFlag, "2"}},
+			initialContainer:  &corev1.Container{Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm", dataParallelSizeFlag, "8", tensorParallelSizeFlag, "2"}},
 			gpuCount:          8,
 			annotations:       nil,
-			expectedArgs:      []string{fmt.Sprintf("exec python3 -m dynamo.vllm %s 8 %s 2 --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank $(( 4 * $((GROVE_PCLQ_POD_INDEX + 1)) )) --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445", dataParallelSizeFlag, tensorParallelSizeFlag)},
+			expectedArgs:      []string{fmt.Sprintf("exec python3 -m dingo.vllm %s 8 %s 2 --data-parallel-hybrid-lb --data-parallel-size-local 4 --data-parallel-start-rank $(( 4 * $((GROVE_PCLQ_POD_INDEX + 1)) )) --data-parallel-address $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE) --data-parallel-rpc-port 13445", dataParallelSizeFlag, tensorParallelSizeFlag)},
 		},
 		{
 			name:              "worker with ray distributed launch LWS (nil annotations)",
 			role:              RoleWorker,
 			multinodeDeployer: &LWSMultinodeDeployer{},
-			initialContainer:  &corev1.Container{Args: []string{"python3", "-m", "dynamo.vllm", tensorParallelSizeFlag, "16"}},
+			initialContainer:  &corev1.Container{Args: []string{"python3", "-m", "dingo.vllm", tensorParallelSizeFlag, "16"}},
 			gpuCount:          8,
 			annotations:       nil,
 			expectedArgs:      []string{"ray start --address=$(LWS_LEADER_ADDRESS):6379 --block"},
@@ -575,7 +575,7 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 		// Leader: ray start --head --port=6379 --block & <tcp-poll-ray-ready 150×2s> && <vllm cmd>  (no --data-parallel-size-local injected)
 		// Worker: health-gate on DynamoSystemPort (9090) && ray start --address=<leader> --block
 		//
-		// The health-gate ensures the worker only joins Ray after dynamo.vllm is fully
+		// The health-gate ensures the worker only joins Ray after dingo.vllm is fully
 		// serving, so create_dp_placement_groups sees only the leader node and places all
 		// initial DP workers there (warm standby).
 		{
@@ -583,13 +583,13 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialContainer: &corev1.Container{
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args:    []string{"--model", "test", dataParallelSizeFlag, "4", "--data-parallel-backend", "ray", enableElasticEPFlag},
 			},
 			gpuCount:    2,
 			annotations: nil,
 			expectedArgs: []string{fmt.Sprintf(
-				`ray start --head --port=%s --block & i=0; until python3 -c "import socket; s=socket.create_connection(('127.0.0.1',%s),timeout=1); s.close()" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 150 ] && { echo "ERROR: Ray head did not start within 300s" >&2; exit 1; }; sleep 2; done && python3 -m dynamo.vllm --model test %s 4 --data-parallel-backend ray %s`,
+				`ray start --head --port=%s --block & i=0; until python3 -c "import socket; s=socket.create_connection(('127.0.0.1',%s),timeout=1); s.close()" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 150 ] && { echo "ERROR: Ray head did not start within 300s" >&2; exit 1; }; sleep 2; done && python3 -m dingo.vllm --model test %s 4 --data-parallel-backend ray %s`,
 				VLLMPort, VLLMPort, dataParallelSizeFlag, enableElasticEPFlag,
 			)},
 			description: "Operator prepends ray head start and TCP readiness poll; --data-parallel-hybrid-lb and --data-parallel-size-local are NOT injected (elastic EP uses Ray for GPU assignment, not the RPC path)",
@@ -599,13 +599,13 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialContainer: &corev1.Container{
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args:    []string{"--model", "test", dataParallelSizeFlag, "4", "--data-parallel-backend", "ray", enableElasticEPFlag},
 			},
 			gpuCount:    2,
 			annotations: nil,
 			expectedArgs: []string{fmt.Sprintf(
-				`i=0; until python3 -c "import urllib.request; urllib.request.urlopen('http://%s:%d/live', timeout=5)" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 720 ] && { echo "ERROR: leader /live did not become ready within 3h" >&2; exit 1; }; echo 'waiting for leader dynamo.vllm /live to return 200...'; sleep 15; done && ray start --address=%s:%s --block`,
+				`i=0; until python3 -c "import urllib.request; urllib.request.urlopen('http://%s:%d/live', timeout=5)" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 720 ] && { echo "ERROR: leader /live did not become ready within 3h" >&2; exit 1; }; echo 'waiting for leader dingo.vllm /live to return 200...'; sleep 15; done && ray start --address=%s:%s --block`,
 				"$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)",
 				commonconsts.DynamoSystemPort,
 				"$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE)",
@@ -618,13 +618,13 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialContainer: &corev1.Container{
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args:    []string{"--model", "test", dataParallelSizeFlag, "4", "--data-parallel-backend", "ray", enableElasticEPFlag, dataParallelSizeLocalFlag, "2"},
 			},
 			gpuCount:    2,
 			annotations: nil,
 			expectedArgs: []string{fmt.Sprintf(
-				`ray start --head --port=%s --block & i=0; until python3 -c "import socket; s=socket.create_connection(('127.0.0.1',%s),timeout=1); s.close()" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 150 ] && { echo "ERROR: Ray head did not start within 300s" >&2; exit 1; }; sleep 2; done && python3 -m dynamo.vllm --model test %s 4 --data-parallel-backend ray %s %s 2`,
+				`ray start --head --port=%s --block & i=0; until python3 -c "import socket; s=socket.create_connection(('127.0.0.1',%s),timeout=1); s.close()" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 150 ] && { echo "ERROR: Ray head did not start within 300s" >&2; exit 1; }; sleep 2; done && python3 -m dingo.vllm --model test %s 4 --data-parallel-backend ray %s %s 2`,
 				VLLMPort, VLLMPort, dataParallelSizeFlag, enableElasticEPFlag, dataParallelSizeLocalFlag,
 			)},
 			description: "Operator prepends ray head start but does not override a user-specified --data-parallel-size-local",
@@ -634,13 +634,13 @@ func TestUpdateVLLMMultinodeArgs(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &LWSMultinodeDeployer{},
 			initialContainer: &corev1.Container{
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args:    []string{"--model", "test", dataParallelSizeFlag, "4", "--data-parallel-backend", "ray", enableElasticEPFlag},
 			},
 			gpuCount:    2,
 			annotations: nil,
 			expectedArgs: []string{fmt.Sprintf(
-				`i=0; until python3 -c "import urllib.request; urllib.request.urlopen('http://%s:%d/live', timeout=5)" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 720 ] && { echo "ERROR: leader /live did not become ready within 3h" >&2; exit 1; }; echo 'waiting for leader dynamo.vllm /live to return 200...'; sleep 15; done && ray start --address=%s:%s --block`,
+				`i=0; until python3 -c "import urllib.request; urllib.request.urlopen('http://%s:%d/live', timeout=5)" 2>/dev/null; do i=$((i+1)); [ "$i" -ge 720 ] && { echo "ERROR: leader /live did not become ready within 3h" >&2; exit 1; }; echo 'waiting for leader dingo.vllm /live to return 200...'; sleep 15; done && ray start --address=%s:%s --block`,
 				"$(LWS_LEADER_ADDRESS)",
 				commonconsts.DynamoSystemPort,
 				"$(LWS_LEADER_ADDRESS)",
@@ -689,7 +689,7 @@ func TestVLLMBackend_UpdatePodSpec(t *testing.T) {
 					Name:    "main",
 					Image:   image,
 					Command: []string{"python3"},
-					Args:    []string{"-m", "dynamo.vllm", tensorParallelSizeFlag, "16", distributedExecutorFlag, "mp"},
+					Args:    []string{"-m", "dingo.vllm", tensorParallelSizeFlag, "16", distributedExecutorFlag, "mp"},
 				},
 			},
 		}
@@ -702,7 +702,7 @@ func TestVLLMBackend_UpdatePodSpec(t *testing.T) {
 					Image:   image,
 					Command: []string{"python3"},
 					Args: []string{
-						"-m", "dynamo.vllm",
+						"-m", "dingo.vllm",
 						tensorParallelSizeFlag, "1",
 						dataParallelSizeFlag, "16",
 						"--data-parallel-hybrid-lb",
@@ -754,7 +754,7 @@ func TestVLLMBackend_UpdatePodSpec(t *testing.T) {
 					{
 						Name:    "main",
 						Image:   "vllm:command",
-						Command: []string{"python3", "-m", "dynamo.vllm", tensorParallelSizeFlag, "16", distributedExecutorFlag, "mp"},
+						Command: []string{"python3", "-m", "dingo.vllm", tensorParallelSizeFlag, "16", distributedExecutorFlag, "mp"},
 					},
 				},
 			},
@@ -775,7 +775,7 @@ func TestVLLMBackend_UpdatePodSpec(t *testing.T) {
 						Command: []string{
 							"sh",
 							"-c",
-							fmt.Sprintf("exec python3 -m dynamo.vllm %s 16 %s    mp", tensorParallelSizeFlag, distributedExecutorFlag),
+							fmt.Sprintf("exec python3 -m dingo.vllm %s 16 %s    mp", tensorParallelSizeFlag, distributedExecutorFlag),
 						},
 					},
 				},
@@ -1041,7 +1041,7 @@ func TestVLLMBackend_UpdateContainer_InterPodGMS(t *testing.T) {
 			component := betaComponent(t, tt.component)
 			container := &corev1.Container{
 				Command: []string{"python3"},
-				Args:    []string{"-m", "dynamo.vllm"},
+				Args:    []string{"-m", "dingo.vllm"},
 			}
 
 			backend.UpdateContainer(container, 1, RoleMain, component, "svc", &GroveMultinodeDeployer{})
@@ -1077,7 +1077,7 @@ func TestVLLMBackend_UpdateContainer_NoInterPodGMS(t *testing.T) {
 	component := betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{})
 	container := &corev1.Container{
 		Command: []string{"python3"},
-		Args:    []string{"-m", "dynamo.vllm"},
+		Args:    []string{"-m", "dingo.vllm"},
 	}
 
 	backend.UpdateContainer(container, 1, RoleMain, component, "svc", &GroveMultinodeDeployer{})

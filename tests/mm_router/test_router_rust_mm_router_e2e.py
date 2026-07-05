@@ -115,7 +115,7 @@ class VLLMWorkerProcess(ManagedProcess):
             command=[
                 "python3",
                 "-m",
-                "dynamo.vllm",
+                "dingo.vllm",
                 "--model",
                 VLLM_MM_MODEL,
                 "--enable-multimodal",
@@ -137,7 +137,7 @@ class VLLMWorkerProcess(ManagedProcess):
                 (f"http://localhost:{system_port}/health", _check_ready)
             ],
             timeout=900,
-            straggler_commands=["-m dynamo.vllm"],
+            straggler_commands=["-m dingo.vllm"],
             log_dir=_prepare_log_dir(request, "vllm-worker"),
             **_COMMON_PROCESS_KWARGS,
         )

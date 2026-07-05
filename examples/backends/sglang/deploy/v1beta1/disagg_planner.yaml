@@ -48,7 +48,7 @@ spec:
         containers:
         - args:
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           - --model-path
           - Qwen/Qwen3-0.6B
           - --served-model-name
@@ -86,7 +86,7 @@ spec:
         containers:
         - args:
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           - --model-path
           - Qwen/Qwen3-0.6B
           - --served-model-name

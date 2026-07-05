@@ -56,7 +56,7 @@ echo "Starting Diffusion LM Worker..."
 
 # Build the command with required arguments
 export CUDA_VISIBLE_DEVICES=0
-CMD="python -m dynamo.sglang \
+CMD="python -m dingo.sglang \
     --model-path $MODEL_PATH \
     --tp-size $TP_SIZE \
     --skip-tokenizer-init \

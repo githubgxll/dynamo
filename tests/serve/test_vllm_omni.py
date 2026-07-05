@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import pytest
 
 try:
-    from dynamo.vllm.omni.args import OmniConfig  # noqa: F401
+    from dingo.vllm.omni.args import OmniConfig  # noqa: F401
 except Exception:
     # vllm_omni's import chain can raise NotImplementedError (and other
     # non-ImportError types) on platforms it doesn't support — e.g. a

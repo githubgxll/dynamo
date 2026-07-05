@@ -19,13 +19,13 @@ HTTP_PORT=8100
 export PYTHONHASHSEED=0  # deterministic KV-event block hashes
 
 # Worker 0: GPUs 0-3.
-DYN_SYSTEM_PORT=8081 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m dynamo.vllm \
+DYN_SYSTEM_PORT=8081 CUDA_VISIBLE_DEVICES=0,1,2,3 python -m dingo.vllm \
     --model "$MODEL" --tensor-parallel-size 4 --block-size "$BLOCK_SIZE" \
     --dyn-tool-call-parser minimax_m2 \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20080","enable_kv_cache_events":true}' &
 
 # Worker 1: GPUs 4-7.
-DYN_SYSTEM_PORT=8082 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m dynamo.vllm \
+DYN_SYSTEM_PORT=8082 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m dingo.vllm \
     --model "$MODEL" --tensor-parallel-size 4 --block-size "$BLOCK_SIZE" \
     --dyn-tool-call-parser minimax_m2 \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20081","enable_kv_cache_events":true}' &
@@ -33,7 +33,7 @@ DYN_SYSTEM_PORT=8082 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m dynamo.vllm \
 # Program-aware router: registers the model handler and forwards the parser so
 # MiniMax's <minimax:tool_call> XML reaches the agent as OpenAI tool_calls.
 python -m dynamo.thunderagent_router \
-    --endpoint dynamo.vllm.generate \
+    --endpoint dingo.vllm.generate \
     --model-name "$MODEL" \
     --dyn-tool-call-parser minimax_m2 \
     --router-block-size "$BLOCK_SIZE" &

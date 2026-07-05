@@ -223,7 +223,7 @@ else
             VLLM_ARGS+=("${EXTRA_ARGS[@]}")
 
             VLLM_ARGS+=("--kv-events-config" "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:$((20080 + i))\",\"enable_kv_cache_events\":true}")
-            exec env PYTHONHASHSEED=0 CUDA_VISIBLE_DEVICES=$GPU_DEVICES VLLM_NIXL_SIDE_CHANNEL_PORT=$((20096 + i)) python3 -m dynamo.vllm \
+            exec env PYTHONHASHSEED=0 CUDA_VISIBLE_DEVICES=$GPU_DEVICES VLLM_NIXL_SIDE_CHANNEL_PORT=$((20096 + i)) python3 -m dingo.vllm \
                 "${VLLM_ARGS[@]}"
         } &
         PIDS+=($!)

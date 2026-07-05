@@ -152,7 +152,7 @@ WORKER_COMMON_ARGS=(
 
 # Worker 1 on GPU 0
 OTEL_SERVICE_NAME=dynamo-worker-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.sglang \
   "${WORKER_COMMON_ARGS[@]}" \
   "${KV_EVENTS_ARGS_1[@]}" \
   $GPU_MEM_ARGS \
@@ -161,7 +161,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.sglang \
 
 # Worker 2 on GPU 1
 OTEL_SERVICE_NAME=dynamo-worker-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
   "${WORKER_COMMON_ARGS[@]}" \
   "${KV_EVENTS_ARGS_2[@]}" \
   $GPU_MEM_ARGS \

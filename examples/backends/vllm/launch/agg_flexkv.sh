@@ -19,7 +19,7 @@ python -m dingo.frontend &
 # Run worker with FlexKV
 DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
-  python -m dynamo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' &
+  python -m dingo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' &
 
 # Exit on first worker failure; kill 0 in the EXIT trap tears down the rest
 wait_any_exit

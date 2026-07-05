@@ -47,7 +47,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
           env:
           - name: DYN_HEALTH_CHECK_ENABLED

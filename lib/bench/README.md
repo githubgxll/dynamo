@@ -35,7 +35,7 @@ cache and gets a much lower TTFT.
 
 ```bash
 # Terminal 1 — backend (vLLM example, any supported backend works)
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --model deepseek-ai/DeepSeek-R1-Distill-Llama-8B
 
 # Terminal 2 — frontend with KV router

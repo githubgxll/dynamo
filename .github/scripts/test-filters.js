@@ -75,7 +75,7 @@ const testCases = [
     desc: 'trtllm script triggers only trtllm'
   },
   {
-    file: 'components/src/dynamo/vllm/worker.py',
+    file: 'dingo/vllm/worker.py',
     expect: { core: false, vllm: true },
     desc: 'vllm component triggers only vllm'
   },

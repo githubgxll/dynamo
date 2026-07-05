@@ -91,7 +91,7 @@ All `KvRouter` flags from `dingo.router` (`--router-temperature`, `--use-kv-even
                      │  per-worker dispatch
                      ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ dynamo.vllm  (N workers; FPM publisher, KV events publisher)│
+│ dingo.vllm  (N workers; FPM publisher, KV events publisher)│
 └─────────────────────────────────────────────────────────────┘
 ```
 

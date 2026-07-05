@@ -79,7 +79,7 @@ func TestReadProcessDetails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(procDir, "status"), []byte("Name:\tpython3\nPPid:\t0\nNSpid:\t2402711 1018\n"), 0644); err != nil {
 		t.Fatalf("WriteFile(status): %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(procDir, "cmdline"), []byte("python3\x00-m\x00dynamo.vllm\x00"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(procDir, "cmdline"), []byte("python3\x00-m\x00dingo.vllm\x00"), 0644); err != nil {
 		t.Fatalf("WriteFile(cmdline): %v", err)
 	}
 
@@ -102,8 +102,8 @@ func TestReadProcessDetails(t *testing.T) {
 	if len(details.NamespacePIDs) != 2 || details.NamespacePIDs[0] != 2402711 || details.NamespacePIDs[1] != 1018 {
 		t.Fatalf("NamespacePIDs = %v, want [2402711 1018]", details.NamespacePIDs)
 	}
-	if details.Cmdline != "python3 -m dynamo.vllm" {
-		t.Fatalf("Cmdline = %q, want %q", details.Cmdline, "python3 -m dynamo.vllm")
+	if details.Cmdline != "python3 -m dingo.vllm" {
+		t.Fatalf("Cmdline = %q, want %q", details.Cmdline, "python3 -m dingo.vllm")
 	}
 }
 
@@ -140,7 +140,7 @@ func TestReadProcessTable(t *testing.T) {
 	}
 
 	writeEntry(768, "Name:\tworker\nPPid:\t1\nNSpid:\t2444000 768\n", "VLLM::Worker_TP0\x00")
-	writeEntry(1, "Name:\tpython3\nPPid:\t0\nNSpid:\t2443990 1\n", "python3\x00-m\x00dynamo.vllm\x00")
+	writeEntry(1, "Name:\tpython3\nPPid:\t0\nNSpid:\t2443990 1\n", "python3\x00-m\x00dingo.vllm\x00")
 
 	processes, err := ReadProcessTable(procRoot)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestResolveManifestPIDsToObservedPIDs(t *testing.T) {
 	processes := []ProcessDetails{
 		{ObservedPID: 1, ParentPID: 0, OutermostPID: 1, InnermostPID: 1, NamespacePIDs: []int{1}, Cmdline: "sleep infinity"},
 		{ObservedPID: 50, ParentPID: 0, OutermostPID: 50, InnermostPID: 50, NamespacePIDs: []int{50}, Cmdline: "nsrestore"},
-		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{74, 1}, Cmdline: "python3 -m dynamo.vllm"},
+		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{74, 1}, Cmdline: "python3 -m dingo.vllm"},
 		{ObservedPID: 80, ParentPID: 74, OutermostPID: 80, InnermostPID: 750, NamespacePIDs: []int{80, 750}, Cmdline: "VLLM::EngineCore"},
 		{ObservedPID: 81, ParentPID: 74, OutermostPID: 81, InnermostPID: 749, NamespacePIDs: []int{81, 749}, Cmdline: "resource_tracker"},
 	}
@@ -179,7 +179,7 @@ func TestResolveManifestPIDsToObservedPIDsFailsWhenManifestPIDMissingFromRestore
 	processes := []ProcessDetails{
 		{ObservedPID: 1, ParentPID: 0, OutermostPID: 1, InnermostPID: 1, NamespacePIDs: []int{1}, Cmdline: "sleep infinity"},
 		{ObservedPID: 50, ParentPID: 0, OutermostPID: 50, InnermostPID: 50, NamespacePIDs: []int{50}, Cmdline: "nsrestore"},
-		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{74, 1}, Cmdline: "python3 -m dynamo.vllm"},
+		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{74, 1}, Cmdline: "python3 -m dingo.vllm"},
 	}
 
 	_, err := ResolveManifestPIDsToObservedPIDs(processes, 74, []int{1, 750})
@@ -191,7 +191,7 @@ func TestResolveManifestPIDsToObservedPIDsFailsWhenManifestPIDMissingFromRestore
 func TestResolveManifestPIDsToObservedPIDsFailsWhenNamespaceDepthIsNotTwo(t *testing.T) {
 	processes := []ProcessDetails{
 		{ObservedPID: 50, ParentPID: 0, OutermostPID: 50, InnermostPID: 50, NamespacePIDs: []int{50}, Cmdline: "nsrestore"},
-		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{900, 74, 1}, Cmdline: "python3 -m dynamo.vllm"},
+		{ObservedPID: 74, ParentPID: 50, OutermostPID: 74, InnermostPID: 1, NamespacePIDs: []int{900, 74, 1}, Cmdline: "python3 -m dingo.vllm"},
 		{ObservedPID: 80, ParentPID: 74, OutermostPID: 80, InnermostPID: 750, NamespacePIDs: []int{900, 80, 750}, Cmdline: "VLLM::EngineCore"},
 	}
 

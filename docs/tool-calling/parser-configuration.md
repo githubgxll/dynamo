@@ -48,9 +48,9 @@ python -m dingo.frontend
 python -m dingo.frontend --dyn-chat-processor dynamo
 
 # Worker selects the Dynamo parsers — same flags on vLLM, SGLang, or TRT-LLM:
-python -m dynamo.vllm   --model Qwen/Qwen3-0.6B \
+python -m dingo.vllm   --model Qwen/Qwen3-0.6B \
   --dyn-tool-call-parser hermes --dyn-reasoning-parser qwen3
-python -m dynamo.sglang --model Qwen/Qwen3-0.6B \
+python -m dingo.sglang --model Qwen/Qwen3-0.6B \
   --dyn-tool-call-parser hermes --dyn-reasoning-parser qwen3
 python -m dynamo.trtllm --model-path Qwen/Qwen3-0.6B --served-model-name Qwen/Qwen3-0.6B \
   --dyn-tool-call-parser hermes --dyn-reasoning-parser qwen3
@@ -61,11 +61,11 @@ Engine fallback — only when Dynamo lacks a parser for your model. Supported on
 ```bash
 # vLLM chat processor — frontend carries the parser flags, then launch the worker:
 python -m dingo.frontend --dyn-chat-processor vllm   --tool-call-parser hermes  --reasoning-parser qwen3
-python -m dynamo.vllm   --model Qwen/Qwen3-0.6B
+python -m dingo.vllm   --model Qwen/Qwen3-0.6B
 
 # SGLang chat processor
 python -m dingo.frontend --dyn-chat-processor sglang --tool-call-parser qwen25  --reasoning-parser qwen3
-python -m dynamo.sglang --model Qwen/Qwen3-0.6B
+python -m dingo.sglang --model Qwen/Qwen3-0.6B
 ```
 
 ## Parser names and per-stage details

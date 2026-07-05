@@ -276,7 +276,7 @@ class VLLMWithGMSProcess(GMSEngineProcess):
         command = [
             sys.executable,
             "-m",
-            "dynamo.vllm",
+            "dingo.vllm",
             "--model",
             FAULT_TOLERANCE_MODEL_NAME,
             "--load-format",
@@ -335,7 +335,7 @@ class SGLangWithGMSProcess(GMSEngineProcess):
         command = [
             sys.executable,
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             FAULT_TOLERANCE_MODEL_NAME,
             "--load-format",

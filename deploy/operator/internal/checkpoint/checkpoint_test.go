@@ -77,7 +77,7 @@ func testPodSpec() *corev1.PodSpec {
 			Name:    consts.MainContainerName,
 			Image:   "test-image:latest",
 			Command: []string{"python3"},
-			Args:    []string{"-m", "dynamo.vllm"},
+			Args:    []string{"-m", "dingo.vllm"},
 		}},
 	}
 }
@@ -587,14 +587,14 @@ func TestInjectCheckpointIntoPodSpec(t *testing.T) {
 		info := &CheckpointInfo{Enabled: true, Ready: true, Identity: ptr.To(testIdentity())}
 		reader := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testSnapshotAgentDaemonSet()).Build()
 		require.NoError(t, InjectCheckpointIntoPodSpec(context.Background(), reader, testNamespace, podSpec, info, snapshotprotocol.DefaultSeccompLocalhostProfile))
-		assertRestoreStandbyMode(t, &podSpec.Containers[0], []string{"python3"}, []string{"-m", "dynamo.vllm"})
+		assertRestoreStandbyMode(t, &podSpec.Containers[0], []string{"python3"}, []string{"-m", "dingo.vllm"})
 
 	})
 
 	t.Run("ready checkpoint targets the container named main", func(t *testing.T) {
 		podSpec := &corev1.PodSpec{
 			Containers: []corev1.Container{
-				{Name: "main", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm"}},
+				{Name: "main", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm"}},
 				{Name: "sidecar", Image: "sidecar:latest", Command: []string{"sidecar"}, Args: []string{"run"}},
 			},
 		}
@@ -602,7 +602,7 @@ func TestInjectCheckpointIntoPodSpec(t *testing.T) {
 		reader := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testSnapshotAgentDaemonSet()).Build()
 
 		require.NoError(t, InjectCheckpointIntoPodSpec(context.Background(), reader, testNamespace, podSpec, info, snapshotprotocol.DefaultSeccompLocalhostProfile))
-		assertRestoreStandbyMode(t, &podSpec.Containers[0], []string{"python3"}, []string{"-m", "dynamo.vllm"})
+		assertRestoreStandbyMode(t, &podSpec.Containers[0], []string{"python3"}, []string{"-m", "dingo.vllm"})
 		assert.Equal(t, []string{"sidecar"}, podSpec.Containers[1].Command)
 		assert.Equal(t, []string{"run"}, podSpec.Containers[1].Args)
 	})
@@ -610,8 +610,8 @@ func TestInjectCheckpointIntoPodSpec(t *testing.T) {
 	t.Run("failover targets shape every engine container", func(t *testing.T) {
 		podSpec := &corev1.PodSpec{
 			Containers: []corev1.Container{
-				{Name: "engine-0", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm"}},
-				{Name: "engine-1", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dynamo.vllm"}},
+				{Name: "engine-0", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm"}},
+				{Name: "engine-1", Image: "main:latest", Command: []string{"python3"}, Args: []string{"-m", "dingo.vllm"}},
 				{Name: "sidecar", Image: "sidecar:latest", Command: []string{"sidecar"}, Args: []string{"run"}},
 			},
 		}
@@ -627,7 +627,7 @@ func TestInjectCheckpointIntoPodSpec(t *testing.T) {
 		for _, name := range []string{"engine-0", "engine-1"} {
 			c := findContainer(podSpec, name)
 			require.NotNil(t, c, "container %q not found", name)
-			assertRestoreStandbyMode(t, c, []string{"python3"}, []string{"-m", "dynamo.vllm"})
+			assertRestoreStandbyMode(t, c, []string{"python3"}, []string{"-m", "dingo.vllm"})
 			gotSubPath := ""
 			for _, m := range c.VolumeMounts {
 				if m.Name == snapshotprotocol.SnapshotControlVolumeName {

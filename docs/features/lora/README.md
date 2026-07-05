@@ -50,7 +50,7 @@ The LoRA system consists of:
 
 - **Rust Core** (`lib/llm/src/lora/`): High-performance downloading, caching, and validation
 - **Python Manager** (`components/src/dynamo/common/lora/`): Extensible wrapper with custom source support
-- **Worker Handlers** (`components/src/dynamo/vllm/handlers.py`): Load/unload API and inference integration
+- **Worker Handlers** (`dingo/vllm/handlers.py`): Load/unload API and inference integration
 
 ## Quick Start
 
@@ -67,7 +67,7 @@ The LoRA system consists of:
 ```bash
 # Start vLLM worker with LoRA flags
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=8081 \
-    python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager \
+    python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager \
     --enable-lora \
     --max-lora-rank 64
 ```

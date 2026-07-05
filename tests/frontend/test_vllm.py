@@ -87,7 +87,7 @@ class VllmWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.vllm",
+            "dingo.vllm",
             "--model",
             TEST_MODEL,
             "--max-model-len",
@@ -141,7 +141,7 @@ class VllmWorkerProcess(ManagedProcess):
             display_output=True,
             terminate_all_matching_process_names=False,
             stragglers=["VLLM::EngineCore"],
-            straggler_commands=["-m dynamo.vllm"],
+            straggler_commands=["-m dingo.vllm"],
             log_dir=log_dir,
         )
 

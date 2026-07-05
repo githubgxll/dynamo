@@ -60,7 +60,7 @@ python3 -m dingo.frontend &
 
 # run worker
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --embedding-worker \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \

@@ -15,7 +15,7 @@ All metrics created via the Dynamo metrics API are automatically exposed on the 
 
 Example:
 ```bash
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model <model>
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model <model>
 ```
 
 Prometheus Exposition Format text metrics will be available at: `http://localhost:8081/metrics`

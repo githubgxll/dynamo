@@ -20,7 +20,7 @@
 #   agg_embed_multiworker.sh MODEL1 MODEL2 [EXTRA_DYNAMO_VLLM_ARGS...]
 #
 # EXTRA args (after the two model positions) are forwarded verbatim to
-# *both* dynamo.vllm worker processes. The current launch matches the
+# *both* dingo.vllm worker processes. The current launch matches the
 # single-worker ``agg_embed.sh`` script (``--runner pooling``,
 # ``--dtype float32``, MEAN pooler config, ``--max-model-len 2048``,
 # ``--no-enable-prefix-caching``).
@@ -33,7 +33,7 @@ source "$SCRIPT_DIR/../../../common/gpu_utils.sh"   # build_vllm_gpu_mem_args
 source "$SCRIPT_DIR/../../../common/launch_utils.sh" # print_launch_banner, wait_any_exit
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 MODEL1 MODEL2 [extra dynamo.vllm args...]" >&2
+    echo "Usage: $0 MODEL1 MODEL2 [extra dingo.vllm args...]" >&2
     echo "" >&2
     echo "Examples:" >&2
     echo "  # Same-model load balance test:" >&2
@@ -112,7 +112,7 @@ common_worker_args=(
 #
 # Endpoint format is ``namespace.component.endpoint`` (dots, not slashes).
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT1} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model "$MODEL1" \
     --endpoint embed-worker-1.vllm.generate \
     "${common_worker_args[@]}" \
@@ -120,7 +120,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
     "${EXTRA_ARGS[@]}" &
 
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT2} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model "$MODEL2" \
     --endpoint embed-worker-2.vllm.generate \
     "${common_worker_args[@]}" \

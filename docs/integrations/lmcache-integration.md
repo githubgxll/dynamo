@@ -36,7 +36,7 @@ LMCache runs the cache engine as an out-of-process sidecar (`lmcache server`); t
 ```bash
 lmcache server --l1-size-gb 100 --eviction-policy LRU &
 
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --model <model_name> \
   --disable-hybrid-kv-cache-manager \
   --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'

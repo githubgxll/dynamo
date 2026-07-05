@@ -126,7 +126,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           envFrom:
           - secretRef:
               name: hf-token-secret
@@ -158,7 +158,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           envFrom:
           - secretRef:
               name: hf-token-secret
@@ -227,7 +227,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           envFrom:
           - secretRef:
               name: hf-token-secret
@@ -259,7 +259,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           envFrom:
           - secretRef:
               name: hf-token-secret

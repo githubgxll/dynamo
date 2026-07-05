@@ -25,4 +25,4 @@ echo "   Port: 8000"
 echo "🔧 Starting dynamo worker without LMCache..."
 
 python -m dingo.frontend &
-python3 -m dynamo.vllm --model $MODEL_URL
+python3 -m dingo.vllm --model $MODEL_URL

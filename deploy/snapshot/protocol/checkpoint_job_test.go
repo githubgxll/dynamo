@@ -37,7 +37,7 @@ func TestNewCheckpointJob(t *testing.T) {
 			Containers: []corev1.Container{{
 				Name:    "main",
 				Image:   "test:latest",
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Args:    []string{"--model", "Qwen"},
 			}},
 		},
@@ -99,7 +99,7 @@ func TestNewCheckpointJob(t *testing.T) {
 	if len(main.Command) != 1 || main.Command[0] != "cuda-checkpoint" {
 		t.Fatalf("expected cuda-checkpoint wrapper command: %#v", main.Command)
 	}
-	expectedArgs := []string{"--launch-job", "python3", "-m", "dynamo.vllm", "--model", "Qwen"}
+	expectedArgs := []string{"--launch-job", "python3", "-m", "dingo.vllm", "--model", "Qwen"}
 	if strings.Join(main.Args, "|") != strings.Join(expectedArgs, "|") {
 		t.Fatalf("expected launch-job args %#v, got %#v", expectedArgs, main.Args)
 	}
@@ -122,7 +122,7 @@ func TestNewCheckpointJobWrapsTargetContainer(t *testing.T) {
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
 				{Name: "sidecar", Command: []string{"sleep"}, Args: []string{"infinity"}},
-				{Name: "worker", Command: []string{"python3", "-m", "dynamo.vllm"}, Args: []string{"--model", "Qwen"}},
+				{Name: "worker", Command: []string{"python3", "-m", "dingo.vllm"}, Args: []string{"--model", "Qwen"}},
 			},
 		},
 	}, CheckpointJobOptions{
@@ -141,7 +141,7 @@ func TestNewCheckpointJobWrapsTargetContainer(t *testing.T) {
 	if len(worker.Command) != 1 || worker.Command[0] != "cuda-checkpoint" {
 		t.Fatalf("expected target container to be wrapped, got %#v", worker.Command)
 	}
-	expectedArgs := []string{"--launch-job", "python3", "-m", "dynamo.vllm", "--model", "Qwen"}
+	expectedArgs := []string{"--launch-job", "python3", "-m", "dingo.vllm", "--model", "Qwen"}
 	if strings.Join(worker.Args, "|") != strings.Join(expectedArgs, "|") {
 		t.Fatalf("expected launch-job args %#v, got %#v", expectedArgs, worker.Args)
 	}

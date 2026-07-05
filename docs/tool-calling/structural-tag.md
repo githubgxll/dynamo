@@ -33,7 +33,7 @@ Benefits:
 
 ```bash
 # Launch backend with structural tag enabled
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model Qwen/Qwen3.5-4B \
   --dyn-tool-call-parser qwen3_coder \
   --dyn-enable-structural-tag
@@ -140,7 +140,7 @@ KV cache reuse.
 
 ```bash
 # Launch with structural tag, strict schema, always scope
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model Qwen/Qwen3.5-4B \
   --dyn-tool-call-parser qwen3_coder \
   --dyn-enable-structural-tag \

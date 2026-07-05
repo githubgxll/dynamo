@@ -62,7 +62,7 @@ ${WORKER_IMAGE_PULL_SECRETS_BLOCK}
             - /bin/sh
             - -c
           args:
-            - python3 -m dynamo.vllm --model ${MODEL} --tensor-parallel-size 1
+            - python3 -m dingo.vllm --model ${MODEL} --tensor-parallel-size 1
           env:
             - name: HF_TOKEN
               valueFrom:

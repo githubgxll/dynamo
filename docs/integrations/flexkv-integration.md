@@ -43,7 +43,7 @@ Set the `DYNAMO_USE_FLEXKV` environment variable and use the `--kv-transfer-conf
 
 ```bash
 export DYNAMO_USE_FLEXKV=1
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}'
+python -m dingo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}'
 ```
 
 ## Aggregated Serving
@@ -57,7 +57,7 @@ python -m dingo.frontend &
 # Terminal 2: Start vLLM worker with FlexKV
 DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
-  python -m dynamo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}'
+  python -m dingo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}'
 ```
 
 ### With KV-Aware Routing
@@ -75,7 +75,7 @@ DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
 FLEXKV_SERVER_RECV_PORT="ipc:///tmp/flexkv_server_0" \
 CUDA_VISIBLE_DEVICES=0 \
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model Qwen/Qwen3-0.6B \
     --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' \
     --gpu-memory-utilization 0.2 \
@@ -86,7 +86,7 @@ DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
 FLEXKV_SERVER_RECV_PORT="ipc:///tmp/flexkv_server_1" \
 CUDA_VISIBLE_DEVICES=1 \
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model Qwen/Qwen3-0.6B \
     --kv-transfer-config '{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"}' \
     --gpu-memory-utilization 0.2 \
@@ -111,7 +111,7 @@ FlexKV can be used with disaggregated prefill/decode serving. The prefill worker
 python -m dingo.frontend &
 
 # Terminal 2: Decode worker (without FlexKV)
-CUDA_VISIBLE_DEVICES=0 python -m dynamo.vllm --model Qwen/Qwen3-0.6B \
+CUDA_VISIBLE_DEVICES=0 python -m dingo.vllm --model Qwen/Qwen3-0.6B \
   --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
 
 # Terminal 3: Prefill worker (with FlexKV + NIXL via PdConnector)
@@ -120,7 +120,7 @@ VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
 DYNAMO_USE_FLEXKV=1 \
 FLEXKV_CPU_CACHE_GB=32 \
 CUDA_VISIBLE_DEVICES=1 \
-  python -m dynamo.vllm \
+  python -m dingo.vllm \
   --model Qwen/Qwen3-0.6B \
   --is-prefill-worker \
   --kv-transfer-config '{"kv_connector":"PdConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"FlexKVConnectorV1","kv_role":"kv_both"},{"kv_connector":"NixlConnector","kv_role":"kv_both"}]},"kv_connector_module_path":"kvbm.vllm_integration.connector"}' \

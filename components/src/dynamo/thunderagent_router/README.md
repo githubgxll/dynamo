@@ -38,7 +38,7 @@ uv pip install -e .
 
 ```bash
 # 1. Start your Dynamo workers (vLLM example, with KV events on)
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model <model> --tensor-parallel-size <N> \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events",
                          "endpoint":"tcp://*:20080",

@@ -70,8 +70,8 @@ python -m dynamo.<backend> --help
 ### 启动 Dynamo Frontend 和 Backend
 
 ```bash
-# 启动后端 worker（或 dynamo.vllm）
-python -m dynamo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
+# 启动后端 worker（或 dingo.vllm）
+python -m dingo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
 
 # 启动 frontend
 python -m dingo.frontend

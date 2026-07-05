@@ -127,7 +127,7 @@ VLLM_NIXL_SIDE_CHANNEL_PORT=20096 \
 VLLM_ALL2ALL_BACKEND="deepep_low_latency" \
 VLLM_USE_DEEP_GEMM=1 \
 VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
-python3 -m dynamo.vllm \
+python3 -m dingo.vllm \
 --model $MODEL \
 --data-parallel-hybrid-lb \
 --data-parallel-size $DATA_PARALLEL_SIZE \

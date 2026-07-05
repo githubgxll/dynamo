@@ -81,8 +81,8 @@ Reasoning parsing happens before tool call parsing. If a model emits both reason
 ### Launch Dynamo Frontend and Backend
 
 ```bash
-# launch backend worker (or dynamo.vllm)
-python -m dynamo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
+# launch backend worker (or dingo.vllm)
+python -m dingo.sglang --model Qwen/Qwen3.5-4B --dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3
 
 # launch frontend worker
 python -m dingo.frontend

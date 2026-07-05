@@ -147,7 +147,7 @@ In another terminal (or same terminal if using background mode), start a worker 
 **SGLang**
 
 ```bash
-python3 -m dynamo.sglang --model-path Qwen/Qwen3-0.6B --discovery-backend file
+python3 -m dingo.sglang --model-path Qwen/Qwen3-0.6B --discovery-backend file
 ```
 
 **TensorRT-LLM**
@@ -167,7 +167,7 @@ for the correct configuration.
 **vLLM**
 
 ```bash
-python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --discovery-backend file \
+python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --discovery-backend file \
   --kv-events-config '{"enable_kv_cache_events": false}'
 ```
 

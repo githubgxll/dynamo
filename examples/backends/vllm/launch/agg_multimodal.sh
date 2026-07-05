@@ -55,7 +55,7 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 export DYN_REQUEST_PLANE=tcp
 
 print_launch_banner --no-curl "Launching Aggregated Multimodal Serving" "$MODEL_NAME" "$HTTP_PORT" \
-    "Backend:     dynamo.vllm --enable-multimodal" \
+    "Backend:     dingo.vllm --enable-multimodal" \
     "Media:       image_url and video_url (model support dependent)"
 
 print_curl_footer <<CURL
@@ -107,7 +107,7 @@ GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 # Extra args from command line come last to allow overrides
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dynamo.vllm --enable-multimodal --model $MODEL_NAME \
+    python -m dingo.vllm --enable-multimodal --model $MODEL_NAME \
     --max-model-len "$MAX_MODEL_LEN" \
     --max-num-seqs "$MAX_CONCURRENT_SEQS" \
     $GPU_MEM_ARGS \

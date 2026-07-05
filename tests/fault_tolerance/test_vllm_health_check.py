@@ -32,7 +32,7 @@ class DynamoWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.vllm",
+            "dingo.vllm",
             "--model",
             FAULT_TOLERANCE_MODEL_NAME,
             "--enforce-eager",
@@ -72,7 +72,7 @@ class DynamoWorkerProcess(ManagedProcess):
             display_output=True,
             terminate_all_matching_process_names=False,
             stragglers=["VLLM::EngineCore"],
-            straggler_commands=["-m dynamo.vllm"],
+            straggler_commands=["-m dingo.vllm"],
             log_dir=log_dir,
         )
 

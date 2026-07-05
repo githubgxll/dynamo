@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --unified            Use unified_main entry point (Worker)"
             echo "  -h, --help           Show this help message"
             echo ""
-            echo "Any additional options are passed through to dynamo.vllm."
+            echo "Any additional options are passed through to dingo.vllm."
             exit 0
             ;;
         *)
@@ -62,9 +62,9 @@ python -m dingo.frontend &
 
 # run worker
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
-WORKER_MODULE="dynamo.vllm"
+WORKER_MODULE="dingo.vllm"
 if [ "$USE_UNIFIED" = true ]; then
-    WORKER_MODULE="dynamo.vllm.unified_main"
+    WORKER_MODULE="dingo.vllm.unified_main"
 fi
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
     python -m "$WORKER_MODULE" --model "$MODEL" --enforce-eager \

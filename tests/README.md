@@ -660,7 +660,7 @@ The profiler automatically detects the engine type and uses the appropriate bina
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 ```
 
-Then pass the variable to each worker: `CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 -m dynamo.vllm ...`. For multi-GPU scripts that assign distinct GPUs per worker, use named env vars with defaults (e.g. `PREFILL_CUDA_VISIBLE_DEVICES="${PREFILL_CUDA_VISIBLE_DEVICES:-0}"`).
+Then pass the variable to each worker: `CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 -m dingo.vllm ...`. For multi-GPU scripts that assign distinct GPUs per worker, use named env vars with defaults (e.g. `PREFILL_CUDA_VISIBLE_DEVICES="${PREFILL_CUDA_VISIBLE_DEVICES:-0}"`).
 
 ### Engine-specific mapping
 
@@ -669,11 +669,11 @@ Launch scripts call engine-specific functions from `examples/common/gpu_utils.sh
 ```bash
 # vLLM
 GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
-python -m dynamo.vllm --model "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.vllm --model "$MODEL" $GPU_MEM_ARGS &
 
 # SGLang
 GPU_MEM_ARGS=$(build_sglang_gpu_mem_args)
-python -m dynamo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
 
 # TRT-LLM (requires JSON merging, separate function)
 OVERRIDE_JSON=$(build_trtllm_override_args_with_mem)

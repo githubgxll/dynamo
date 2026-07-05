@@ -165,7 +165,7 @@ mainContainer:
     # to actually unset it before the runtime reads env.
     - >-
       unset NATS_SERVER &&
-      exec python3 -m dingo.frontend ...   # or dynamo.vllm
+      exec python3 -m dingo.frontend ...   # or dingo.vllm
 ```
 
 The request plane defaults to TCP already, so no further flags are needed.

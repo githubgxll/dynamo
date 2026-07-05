@@ -69,7 +69,7 @@ MAX_CONCURRENT_SEQS="${MAX_CONCURRENT_SEQS:-2}"
 GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT} \
-    python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+    python -m dingo.vllm --model "$MODEL" --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --max-num-seqs "$MAX_CONCURRENT_SEQS" \
     --block-size "${BLOCK_SIZE:-64}" \

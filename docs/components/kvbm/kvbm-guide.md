@@ -191,7 +191,7 @@ SGLang's Hierarchical Cache (HiCache) extends KV cache storage beyond GPU memory
 
 ```bash
 # Start SGLang worker with HiCache enabled
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --host 0.0.0.0 --port 8000 \
   --enable-hierarchical-cache \
@@ -312,7 +312,7 @@ docker compose -f dev/docker-observability.yml up -d
 ```bash
 DYN_KVBM_METRICS=true \
 DYN_KVBM_CPU_CACHE_GB=20 \
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model Qwen/Qwen3-0.6B \
     --enforce-eager \
     --kv-transfer-config '{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"}'
@@ -535,7 +535,7 @@ python -m dingo.frontend &
 
 DYN_KVBM_CPU_CACHE_GB=10 \
 nsys profile -o /tmp/kvbm-nsys --trace-fork-before-exec=true --cuda-graph-trace=node --delay 30 --duration 60 \
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"}'
+python -m dingo.vllm --model Qwen/Qwen3-0.6B --kv-transfer-config '{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"}'
 ```
 
 ## See Also

@@ -33,7 +33,7 @@ python -m dingo.frontend \
 
 # run workers (local indexer is enabled by default, so routers can query on restart)
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -41,7 +41,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \

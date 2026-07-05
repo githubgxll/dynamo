@@ -30,9 +30,9 @@ title: Backend README
 ```bash
 # Add minimal usage example from existing backend docs
 # Example pattern (vLLM):
-# python -m dynamo.vllm --model <model-name>
+# python -m dingo.vllm --model <model-name>
 # Example pattern (SGLang):
-# python -m dynamo.sglang --model <model-name>
+# python -m dingo.sglang --model <model-name>
 ```
 
 ### Kubernetes

@@ -51,10 +51,10 @@ SGLANG_ARGS: Dict[str, Any] = {
 
 
 class SGLangProcess(ManagedEngineProcessMixin):
-    """Manages SGLang workers using dynamo.sglang (HTTP API + KV events).
+    """Manages SGLang workers using dingo.sglang (HTTP API + KV events).
 
     This is a drop-in replacement for MockerProcess that uses real SGLang workers.
-    The key difference: dynamo.sglang automatically handles:
+    The key difference: dingo.sglang automatically handles:
     - HTTP API serving
     - KV cache event publishing (ZMQ → NATS bridge)
     - Integration with dingo.frontend router
@@ -153,7 +153,7 @@ class SGLangProcess(ManagedEngineProcessMixin):
             command = [
                 "python3",
                 "-m",
-                "dynamo.sglang",
+                "dingo.sglang",
                 "--model-path",
                 model,
                 "--page-size",

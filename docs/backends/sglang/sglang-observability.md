@@ -40,7 +40,7 @@ Launch a frontend and SGLang backend to test metrics:
 $ python -m dingo.frontend
 
 # Enable system metrics server on port 8081
-$ DYN_SYSTEM_PORT=8081 python -m dynamo.sglang --model <model_name> --enable-metrics
+$ DYN_SYSTEM_PORT=8081 python -m dingo.sglang --model <model_name> --enable-metrics
 ```
 
 Wait for the SGLang worker to start, then send requests and check metrics:
@@ -131,7 +131,7 @@ The transport is backend-agnostic: the same `FpmEventRelay` and `FpmEventSubscri
 
 ### Enabling FPM
 
-FPM requires the Dynamo adapter (`dynamo.sglang`) to inject the worker identity and IPC path before engine initialization. This happens automatically when the Dynamo runtime creates the SGLang worker.
+FPM requires the Dynamo adapter (`dingo.sglang`) to inject the worker identity and IPC path before engine initialization. This happens automatically when the Dynamo runtime creates the SGLang worker.
 
 The Planner subscribes to FPM via the NATS event plane. See the [Planner Guide](../../components/planner/planner-guide.md) for configuration (`load_adjustment_interval`, `max_num_fpm_samples`, `fpm_sample_bucket_size`).
 
@@ -240,8 +240,8 @@ SGLang Engine (internal spans attached to same trace)
 
 Key implementation files:
 - `components/src/dynamo/common/utils/otel_tracing.py` - W3C `traceparent` header builder
-- `components/src/dynamo/sglang/request_handlers/handler_base.py:71-84` - Extracts trace context from Dynamo `Context` object
-- `components/src/dynamo/sglang/request_handlers/llm/decode_handler.py` - Passes `external_trace_header` and `rid=trace_id` to `engine.async_generate()`
+- `dingo/sglang/request_handlers/handler_base.py:71-84` - Extracts trace context from Dynamo `Context` object
+- `dingo/sglang/request_handlers/llm/decode_handler.py` - Passes `external_trace_header` and `rid=trace_id` to `engine.async_generate()`
 
 ### Environment Variables
 
@@ -280,10 +280,10 @@ Use the `SGLANG_TRACE_LEVEL` environment variable to override the default:
 
 ```bash
 # Keep only the most essential per-request spans
-SGLANG_TRACE_LEVEL=1 python -m dynamo.sglang --model Qwen/Qwen3-0.6B --enable-trace --otlp-traces-endpoint localhost:4317
+SGLANG_TRACE_LEVEL=1 python -m dingo.sglang --model Qwen/Qwen3-0.6B --enable-trace --otlp-traces-endpoint localhost:4317
 
 # Restore SGLang's default level (includes decode_loop — high volume)
-SGLANG_TRACE_LEVEL=3 python -m dynamo.sglang --model Qwen/Qwen3-0.6B --enable-trace --otlp-traces-endpoint localhost:4317
+SGLANG_TRACE_LEVEL=3 python -m dingo.sglang --model Qwen/Qwen3-0.6B --enable-trace --otlp-traces-endpoint localhost:4317
 ```
 
 ### Launch with Tracing
@@ -313,7 +313,7 @@ OTEL_SERVICE_NAME=dynamo-frontend python -m dingo.frontend &
 # SGLang worker with tracing
 OTEL_SERVICE_NAME=dynamo-worker-sglang \
 DYN_SYSTEM_PORT=8081 \
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model Qwen/Qwen3-0.6B \
   --enable-metrics \
   --enable-trace \

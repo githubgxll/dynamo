@@ -50,7 +50,7 @@
                 "program": "${workspaceFolder}/.venv/bin/python",
                 "args": [
                     "-m",
-                    "dynamo.vllm",
+                    "dingo.vllm",
                     "--model",
                     "${env:DYNAMO_MODEL_NAME}",
                     "--enforce-eager",

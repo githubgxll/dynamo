@@ -34,7 +34,7 @@ KV_EVENTS_PORT_BASE="${KV_EVENTS_PORT_BASE:-29090}"
 
 DYN_LOG_VAL="${DYN_LOG:-info,mm_routing=debug,dynamo_kv_router::scheduling=debug,dynamo_llm::kv_router=debug}"
 
-# Pass-through extra args for `python -m dynamo.sglang`.
+# Pass-through extra args for `python -m dingo.sglang`.
 SGLANG_EXTRA_ARGS="${SGLANG_EXTRA_ARGS:-}"
 
 PASSTHRU_ARGS=()
@@ -124,7 +124,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_SYSTEM_PORT=${WORKER_PORT}" \
         "CUDA_VISIBLE_DEVICES=${GPU_ID}" \
-    python -m dynamo.sglang \
+    python -m dingo.sglang \
         --model-path "${MODEL}" \
         --served-model-name "${MODEL}" \
         --page-size "${BLOCK_SIZE}" \

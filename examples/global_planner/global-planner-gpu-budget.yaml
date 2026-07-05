@@ -116,7 +116,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - ${MODEL_A}
@@ -146,7 +146,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - ${MODEL_A}
@@ -211,7 +211,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - ${MODEL_B}
@@ -241,7 +241,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - ${MODEL_B}

@@ -3,7 +3,7 @@
 
 """Shared `--frontend-decoding` flag helper.
 
-Both `dynamo.vllm` and `dynamo.sglang` (and any future backend) expose the
+Both `dingo.vllm` and `dingo.sglang` (and any future backend) expose the
 same `--frontend-decoding` knob — when set, the Rust frontend decodes
 multimodal images and ships pre-decoded pixels via NIXL RDMA instead of
 letting the engine fetch + decode. The flag definition is identical

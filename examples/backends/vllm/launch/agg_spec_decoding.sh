@@ -23,7 +23,7 @@ python -m dingo.frontend --http-port="$HTTP_PORT" &
 # This runs the main model with EAGLE as the draft model for speculative decoding
 # TODO: use build_vllm_gpu_mem_args to measure VRAM instead of hardcoded fractions
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=8081 \
-CUDA_VISIBLE_DEVICES=0 python -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python -m dingo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --speculative_config '{

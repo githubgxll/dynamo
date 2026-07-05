@@ -56,7 +56,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite
@@ -121,7 +121,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite

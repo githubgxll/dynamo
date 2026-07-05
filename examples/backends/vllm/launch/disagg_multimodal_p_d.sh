@@ -102,7 +102,7 @@ echo "Starting prefill worker on GPU $DYN_PREFILL_WORKER_GPU (${PREFILL_GPU_MEM_
 VLLM_NIXL_SIDE_CHANNEL_PORT=20098 \
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-${DYN_SYSTEM_PORT:-8081}} \
 CUDA_VISIBLE_DEVICES=$DYN_PREFILL_WORKER_GPU \
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --disaggregation-mode prefill \
   --enable-multimodal \
   --model $MODEL_NAME \
@@ -117,7 +117,7 @@ echo "Starting decode worker on GPU $DYN_DECODE_WORKER_GPU (${DECODE_GPU_MEM_ARG
 VLLM_NIXL_SIDE_CHANNEL_PORT=20099 \
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 CUDA_VISIBLE_DEVICES=$DYN_DECODE_WORKER_GPU \
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --disaggregation-mode decode \
   --enable-multimodal \
   --enable-mm-embeds \

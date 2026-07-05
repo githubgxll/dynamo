@@ -58,7 +58,7 @@ python -m dingo.frontend &
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 export OTEL_SERVICE_NAME=dynamo-worker-decode
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --otlp-traces-endpoint="$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" \
@@ -68,7 +68,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
 export OTEL_SERVICE_NAME=dynamo-worker-prefill
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --otlp-traces-endpoint="$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" \

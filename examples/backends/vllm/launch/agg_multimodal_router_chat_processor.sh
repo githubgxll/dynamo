@@ -188,7 +188,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_SYSTEM_PORT=${WORKER_PORT}" \
         "CUDA_VISIBLE_DEVICES=${GPU_ID}" \
-    python -m dynamo.vllm \
+    python -m dingo.vllm \
             --model "${MODEL}" \
             --enable-multimodal \
             --block-size "${BLOCK_SIZE}" \

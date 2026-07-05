@@ -122,7 +122,7 @@ spec:
             - |
               # Bind vLLM's DP coordinator on :29500 so the operator's wait-for-leader-mp
               # init container's TCP probe is satisfied by the real RPC server.
-              exec python3 -m dynamo.vllm \
+              exec python3 -m dingo.vllm \
                 --model "${MODEL_PATH}" \
                 --served-model-name "${SERVED_MODEL_NAME}" \
                 --trust-remote-code \
@@ -228,7 +228,7 @@ spec:
           args:
             - |
               # See VllmPrefillWorker for the :29500 / wait-for-leader-mp rationale.
-              exec python3 -m dynamo.vllm \
+              exec python3 -m dingo.vllm \
                 --model "${MODEL_PATH}" \
                 --served-model-name "${SERVED_MODEL_NAME}" \
                 --trust-remote-code \

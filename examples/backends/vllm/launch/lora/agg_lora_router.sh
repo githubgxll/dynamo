@@ -66,7 +66,7 @@ python -m dingo.frontend \
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 # TODO: use build_vllm_gpu_mem_args to measure VRAM instead of relying on vLLM defaults
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT1} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -76,7 +76,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
 
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT2} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \

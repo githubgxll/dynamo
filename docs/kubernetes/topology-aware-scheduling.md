@@ -64,7 +64,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B
+            - python3 -m dingo.vllm --model Qwen/Qwen3-0.6B
     Frontend:
       componentType: frontend
       replicas: 1
@@ -105,7 +105,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.vllm --model meta-llama/Llama-4-Maverick-17B-128E
+            - python3 -m dingo.vllm --model meta-llama/Llama-4-Maverick-17B-128E
     Frontend:
       componentType: frontend
       replicas: 1
@@ -147,7 +147,7 @@ spec:
           image: my-image
           command: ["/bin/sh", "-c"]
           args:
-            - python3 -m dynamo.vllm --model meta-llama/Llama-4-Maverick-17B-128E
+            - python3 -m dingo.vllm --model meta-llama/Llama-4-Maverick-17B-128E
     Frontend:
       componentType: frontend
       replicas: 1

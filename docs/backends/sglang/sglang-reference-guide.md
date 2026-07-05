@@ -117,7 +117,7 @@ Health checks are registered with the Dynamo runtime and called by the frontend 
 Enable metrics with `--enable-metrics` on the worker. Set `DYN_SYSTEM_PORT` to expose the `/metrics` endpoint:
 
 ```bash
-DYN_SYSTEM_PORT=8081 python -m dynamo.sglang --model-path Qwen/Qwen3-0.6B --enable-metrics
+DYN_SYSTEM_PORT=8081 python -m dingo.sglang --model-path Qwen/Qwen3-0.6B --enable-metrics
 ```
 
 Both SGLang engine metrics (`sglang:*` prefix) and Dynamo runtime metrics (`dynamo_*` prefix) are served from the same endpoint.

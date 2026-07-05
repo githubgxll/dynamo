@@ -51,7 +51,7 @@ spec:
               - python3
             args:
               - "-m"
-              - "dynamo.vllm"
+              - "dingo.vllm"
               - "--model"
               - "Qwen/Qwen3-0.6B"
               - "--dtype"

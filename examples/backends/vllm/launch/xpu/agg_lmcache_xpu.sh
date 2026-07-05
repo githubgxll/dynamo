@@ -35,7 +35,7 @@ print_launch_banner "Launching Aggregated Serving + LMCache (1 GPU)" "$MODEL" "$
 python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-  python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+  python -m dingo.vllm --model "$MODEL" --enforce-eager \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_CONCURRENT_SEQS" \
   --block-size "${BLOCK_SIZE:-64}" \

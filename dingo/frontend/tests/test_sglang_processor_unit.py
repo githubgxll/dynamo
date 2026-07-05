@@ -2453,7 +2453,7 @@ class TestDeprecationWarning:  # FRONTEND.8 — legacy/deprecated field warnings
         """
         import inspect
 
-        from dynamo.sglang import args as sglang_args
+        from dingo.sglang import args as sglang_args
 
         source = inspect.getsource(sglang_args)
         assert "use_sglang_tokenizer" in source

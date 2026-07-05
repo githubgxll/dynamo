@@ -22,7 +22,7 @@ from vllm_omni.engine.mm_outputs import MultimodalPayload
 
 from dynamo.llm import ModelInput, ModelType, WorkerType, register_model
 from dynamo.runtime import DistributedRuntime
-from dynamo.vllm.omni.realtime_handler import RealtimeOmniHandler
+from dingo.vllm.omni.realtime_handler import RealtimeOmniHandler
 from tests.frontend.test_realtime_omni_bridge import (
     ENDPOINT_PATH,
     MOCK_TRANSCRIPT,

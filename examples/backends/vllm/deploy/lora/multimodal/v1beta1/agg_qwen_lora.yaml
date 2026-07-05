@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Aggregated multimodal serving for Qwen VL with dynamic LoRA adapter support.
-# Uses dynamo.vllm --enable-multimodal --enable-lora in a single-worker PD architecture
+# Uses dingo.vllm --enable-multimodal --enable-lora in a single-worker PD architecture
 # where the Rust OpenAIPreprocessor in the Frontend handles image URLs directly.
 #
 # LoRA adapters are managed via the system API on DYN_SYSTEM_PORT:
@@ -58,7 +58,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: DYN_REQUEST_PLANE
             value: tcp

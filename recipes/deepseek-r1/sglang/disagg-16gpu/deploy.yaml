@@ -43,7 +43,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.sglang
+            - dingo.sglang
           args:
             - --model-path
             - deepseek-ai/DeepSeek-R1
@@ -90,7 +90,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.sglang
+            - dingo.sglang
           args:
             - --model-path
             - deepseek-ai/DeepSeek-R1

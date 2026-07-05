@@ -46,7 +46,7 @@ curl -sf "http://localhost:$LMCACHE_HTTP_PORT/healthcheck" >/dev/null 2>&1 || {
 python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-  python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+  python -m dingo.vllm --model "$MODEL" --enforce-eager \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_CONCURRENT_SEQS" \
   $GPU_MEM_ARGS \

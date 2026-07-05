@@ -12,12 +12,12 @@ source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 # Consume --unified and handle --help BEFORE installing the
 # kill-process-group EXIT trap; an early exit would otherwise tear down
 # the caller's process group.
-pick_worker_module dynamo.vllm dynamo.vllm.unified_main "$@"
+pick_worker_module dingo.vllm dingo.vllm.unified_main "$@"
 set -- "${REMAINING_ARGS[@]}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     echo "Usage: $0 [--unified]"
-    echo "  --unified  Use the unified backend entry point (python -m dynamo.vllm.unified_main)"
+    echo "  --unified  Use the unified backend entry point (python -m dingo.vllm.unified_main)"
     exit 0
 fi
 if [[ $# -gt 0 ]]; then

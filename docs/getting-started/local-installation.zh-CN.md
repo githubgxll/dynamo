@@ -147,7 +147,7 @@ python3 -m dingo.frontend --discovery-backend file > dingo.frontend.log 2>&1 &
 **SGLang**
 
 ```bash
-python3 -m dynamo.sglang --model-path Qwen/Qwen3-0.6B --discovery-backend file
+python3 -m dingo.sglang --model-path Qwen/Qwen3-0.6B --discovery-backend file
 ```
 
 **TensorRT-LLM**
@@ -166,7 +166,7 @@ python3 -m dynamo.trtllm --model-path Qwen/Qwen3-0.6B --discovery-backend file
 **vLLM**
 
 ```bash
-python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --discovery-backend file \
+python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --discovery-backend file \
   --kv-events-config '{"enable_kv_cache_events": false}'
 ```
 

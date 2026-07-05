@@ -42,7 +42,7 @@ spec:
           args:
             - |
               set -euo pipefail
-              python3 -m dynamo.vllm \
+              python3 -m dingo.vllm \
                 --model Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 \
                 --enable-multimodal \
                 --tensor-parallel-size 1 \

@@ -146,7 +146,7 @@ class XPUVLLMProcess(ManagedEngineProcessMixin):
             else:
                 gpu_device = str(device_idx)
 
-            command = ["python3", "-m", "dynamo.vllm", "--model", model]
+            command = ["python3", "-m", "dingo.vllm", "--model", model]
 
             if "block_size" in vllm_args:
                 command.extend(["--block-size", str(vllm_args["block_size"])])

@@ -158,7 +158,7 @@ vllm:
   - 'container/deps/requirements.vllm.txt'
   - 'container/deps/vllm/**'
   - 'examples/backends/vllm/**'
-  - 'components/src/dynamo/vllm/**'
+  - 'dingo/vllm/**'
   - 'container/templates/vllm_*'
   - '!**/*.md'
   - '!**/*.rst'
@@ -166,7 +166,7 @@ vllm:
 sglang:
   - 'container/deps/sglang/**'
   - 'examples/backends/sglang/**'
-  - 'components/src/dynamo/sglang/**'
+  - 'dingo/sglang/**'
   - 'container/templates/sglang_*'
   - 'container/deps/sglang/**'
   - '!**/*.md'

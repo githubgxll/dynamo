@@ -66,7 +66,7 @@ python3 -m dingo.frontend \
 
 # Session-aware radix ownership is built into SGLang 0.5.14+.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \

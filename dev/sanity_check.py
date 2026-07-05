@@ -88,8 +88,8 @@ System info (hostname=jensen-linux, IP=10.111.122.133)
    └─ ✅ Framework components: ai-dynamo 0.5.0
       ├─ ✅ dingo.frontend  $HOME/dynamo/dingo/frontend/__init__.py
       ├─ ✅ dynamo.llama_cpp $HOME/dynamo/components/src/dynamo/llama_cpp/__init__.py
-      ├─ ✅ dynamo.sglang    $HOME/dynamo/components/src/dynamo/sglang/__init__.py
-      └─ ✅ dynamo.vllm      $HOME/dynamo/components/src/dynamo/vllm/__init__.py
+      ├─ ✅ dingo.sglang    $HOME/dynamo/dingo/sglang/__init__.py
+      └─ ✅ dingo.vllm      $HOME/dynamo/dingo/vllm/__init__.py
 
 Additional output with --thorough-check:
 
@@ -3090,8 +3090,8 @@ class DynamoFrameworkInfo(NodeInfo):
             # Try common framework components even if not discovered
             components = [
                 "dingo.frontend",
-                "dynamo.vllm",
-                "dynamo.sglang",
+                "dingo.vllm",
+                "dingo.sglang",
             ]
 
         # Find where each component actually is and add them
@@ -3163,7 +3163,7 @@ class DynamoFrameworkInfo(NodeInfo):
 
         Returns:
             List of framework component module names
-            Example: ['dingo.frontend', 'dynamo.planner', 'dynamo.vllm', 'dynamo.sglang']
+            Example: ['dingo.frontend', 'dynamo.planner', 'dingo.vllm', 'dingo.sglang']
 
         Note: Scans components/src/dynamo/... directory for modules with __init__.py files.
         """

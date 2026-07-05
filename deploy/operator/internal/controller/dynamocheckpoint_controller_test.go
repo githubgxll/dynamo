@@ -108,7 +108,7 @@ func makeTestCheckpoint(phase nvidiacomv1alpha1.DynamoCheckpointPhase) *nvidiaco
 						Containers: []corev1.Container{{
 							Name:    "main",
 							Image:   "test-image:latest",
-							Command: []string{"python3", "-m", "dynamo.vllm"},
+							Command: []string{"python3", "-m", "dingo.vllm"},
 							Env:     []corev1.EnvVar{{Name: "HF_TOKEN", Value: "secret"}},
 						}},
 					},
@@ -232,7 +232,7 @@ func TestBuildCheckpointJob(t *testing.T) {
 	// Restart policy, user image/command preserved
 	assert.Equal(t, corev1.RestartPolicyNever, podSpec.RestartPolicy)
 	assert.Equal(t, "test-image:latest", main.Image)
-	assert.Equal(t, []string{"python3", "-m", "dynamo.vllm"}, main.Command)
+	assert.Equal(t, []string{"python3", "-m", "dingo.vllm"}, main.Command)
 
 	// Default deadlines
 	assert.Equal(t, int64(3600), *job.Spec.ActiveDeadlineSeconds)
@@ -254,7 +254,7 @@ func TestBuildCheckpointJob(t *testing.T) {
 	ckpt.Spec.Identity.TensorParallelSize = 2
 	job, err = buildCheckpointJob(context.Background(), nil, r.Config, ckpt, defaultCheckpointJobName)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"python3", "-m", "dynamo.vllm"}, job.Spec.Template.Spec.Containers[0].Command)
+	assert.Equal(t, []string{"python3", "-m", "dingo.vllm"}, job.Spec.Template.Spec.Containers[0].Command)
 
 	// Multi-GPU: wrapping decision uses target-container GPU resources.
 	ckpt.Spec.Job.PodTemplateSpec.Spec.Containers[0].Resources = corev1.ResourceRequirements{
@@ -265,7 +265,7 @@ func TestBuildCheckpointJob(t *testing.T) {
 	job, err = buildCheckpointJob(context.Background(), nil, r.Config, ckpt, defaultCheckpointJobName)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"cuda-checkpoint"}, job.Spec.Template.Spec.Containers[0].Command)
-	assert.Equal(t, []string{"--launch-job", "python3", "-m", "dynamo.vllm"}, job.Spec.Template.Spec.Containers[0].Args)
+	assert.Equal(t, []string{"--launch-job", "python3", "-m", "dingo.vllm"}, job.Spec.Template.Spec.Containers[0].Args)
 }
 
 func TestBuildCheckpointJobWrapsWithCudaCheckpointForMultiGPU(t *testing.T) {
@@ -275,7 +275,7 @@ func TestBuildCheckpointJobWrapsWithCudaCheckpointForMultiGPU(t *testing.T) {
 		{
 			Name:    consts.MainContainerName,
 			Image:   "test-image:latest",
-			Command: []string{"python3", "-m", "dynamo.vllm"},
+			Command: []string{"python3", "-m", "dingo.vllm"},
 			Env:     []corev1.EnvVar{{Name: "HF_TOKEN", Value: "secret"}},
 			Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
@@ -297,7 +297,7 @@ func TestBuildCheckpointJobWrapsWithCudaCheckpointForMultiGPU(t *testing.T) {
 
 	main := &job.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, []string{"cuda-checkpoint"}, main.Command)
-	assert.Equal(t, []string{"--launch-job", "python3", "-m", "dynamo.vllm"}, main.Args)
+	assert.Equal(t, []string{"--launch-job", "python3", "-m", "dingo.vllm"}, main.Args)
 	require.NotNil(t, main.ReadinessProbe)
 	assert.Equal(t, []string{"cat", "/snapshot-control/ready-for-snapshot"}, main.ReadinessProbe.Exec.Command)
 	assert.Nil(t, main.LivenessProbe)
@@ -429,9 +429,9 @@ func TestBuildCheckpointJobDRAResourceClaimsForCudaCheckpoint(t *testing.T) {
 			main := &job.Spec.Template.Spec.Containers[0]
 			if tt.wantWrap {
 				assert.Equal(t, []string{"cuda-checkpoint"}, main.Command)
-				assert.Equal(t, []string{"--launch-job", "python3", "-m", "dynamo.vllm"}, main.Args)
+				assert.Equal(t, []string{"--launch-job", "python3", "-m", "dingo.vllm"}, main.Args)
 			} else {
-				assert.Equal(t, []string{"python3", "-m", "dynamo.vllm"}, main.Command)
+				assert.Equal(t, []string{"python3", "-m", "dingo.vllm"}, main.Command)
 				assert.Empty(t, main.Args)
 			}
 		})

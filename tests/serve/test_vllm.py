@@ -102,7 +102,7 @@ vllm_configs = {
         name="aggregated",
         directory=vllm_dir,
         script_name="agg.sh",
-        # Forwarded through agg.sh -> dynamo.vllm. Required for the
+        # Forwarded through agg.sh -> dingo.vllm. Required for the
         # max_thinking_tokens payload below: vLLM only enables the thinking-
         # budget logits processor when reasoning_config is populated.
         script_args=["--reasoning-parser", "qwen3"],

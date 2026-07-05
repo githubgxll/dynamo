@@ -28,7 +28,7 @@ python -m dingo.frontend \
 DYN_KVBM_LEADER_ZMQ_PUB_PORT=56001 \
 DYN_KVBM_LEADER_ZMQ_ACK_PORT=56002 \
 CUDA_VISIBLE_DEVICES=0 DYN_KVBM_CPU_CACHE_GB=2 \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --kv-transfer-config '{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"}' \
@@ -39,7 +39,7 @@ DYN_KVBM_LEADER_ZMQ_PUB_PORT=56003 \
 DYN_KVBM_LEADER_ZMQ_ACK_PORT=56004 \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
 CUDA_VISIBLE_DEVICES=1 DYN_KVBM_CPU_CACHE_GB=2 \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --kv-transfer-config '{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"}' \

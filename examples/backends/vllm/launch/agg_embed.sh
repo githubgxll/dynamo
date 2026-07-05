@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --model <name>  Specify embedding model (default: $MODEL)"
             echo "  -h, --help      Show this help message"
             echo ""
-            echo "Any additional options are passed through to dynamo.vllm."
+            echo "Any additional options are passed through to dingo.vllm."
             echo "Note: --runner pooling, --dtype float32, and --pooler-config"
             echo "are set here. Override via EXTRA_ARGS if your model requires"
             echo "different pooling."
@@ -84,7 +84,7 @@ fi
 # --dtype float32: matches Qwen3-Embedding's released weights; override
 #   if your model is shipped at a different precision.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --embedding-worker \
     --model "$MODEL" \
     --runner pooling \

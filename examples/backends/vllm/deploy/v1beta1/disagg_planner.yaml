@@ -45,7 +45,7 @@ spec:
         containers:
         - args:
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           - --model
           - Qwen/Qwen3-0.6B
           command:
@@ -67,7 +67,7 @@ spec:
         containers:
         - args:
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           - --model
           - Qwen/Qwen3-0.6B
           - --disaggregation-mode

@@ -61,7 +61,7 @@ python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
 DYN_HEALTH_CHECK_ENABLED=true \
-    python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+    python -m dingo.vllm --model "$MODEL" --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --max-num-seqs "$MAX_CONCURRENT_SEQS" \
     --block-size "${BLOCK_SIZE:-64}" \

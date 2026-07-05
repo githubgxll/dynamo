@@ -72,9 +72,9 @@ OTEL_SERVICE_NAME=dynamo-frontend \
 python3 -m dingo.frontend &
 
 # run worker with metrics enabled
-WORKER_MODULE="dynamo.sglang"
+WORKER_MODULE="dingo.sglang"
 if [ "$USE_UNIFIED" = true ]; then
-    WORKER_MODULE="dynamo.sglang.unified_main"
+    WORKER_MODULE="dingo.sglang.unified_main"
 fi
 OTEL_SERVICE_NAME=dynamo-worker DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
 python3 -m "$WORKER_MODULE" \

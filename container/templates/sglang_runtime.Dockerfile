@@ -110,7 +110,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # SGLang server_args eagerly imports sglang.srt.entrypoints.openai.protocol
 # which pulls in openai.types.responses → triggers openai pkg init → import distro.
 # The upstream lmsysorg/sglang runtime installs openai with --no-deps so distro is
-# missing; without this any dynamo.sglang worker fails to import at startup.
+# missing; without this any dingo.sglang worker fails to import at startup.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps "distro==1.9.0"
@@ -163,7 +163,7 @@ COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
 COPY --chmod=775 --chown=dynamo:0 dev /workspace/dev
 COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/common /workspace/components/src/dynamo/common
 COPY --chmod=775 --chown=dynamo:0 dingo/frontend /workspace/dingo/frontend
-COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/sglang /workspace/components/src/dynamo/sglang
+COPY --chmod=775 --chown=dynamo:0 dingo/sglang /workspace/dingo/sglang
 COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/mocker /workspace/components/src/dynamo/mocker
 COPY --chmod=775 --chown=dynamo:0 recipes/ /workspace/recipes/
 COPY --chmod=664 --chown=dynamo:0 LICENSE /workspace/

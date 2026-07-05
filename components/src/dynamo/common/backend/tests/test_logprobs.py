@@ -677,7 +677,7 @@ def test_parity_vllm_legacy_wrapper_matches_shared():
     # `exc_type=ImportError` also skips on missing native deps (libcuda)
     # on CPU-only lanes where the wheel is installed but no GPU runtime.
     pytest.importorskip("vllm", reason="vLLM not installed", exc_type=ImportError)
-    from dynamo.vllm.handlers import BaseWorkerHandler
+    from dingo.vllm.handlers import BaseWorkerHandler
 
     output = SimpleNamespace(
         token_ids=[11, 12],
@@ -698,7 +698,7 @@ def test_parity_vllm_legacy_wrapper_matches_shared():
 @pytest.mark.sglang
 def test_parity_sglang_legacy_extract_wrapper_matches_shared():
     pytest.importorskip("sglang", reason="SGLang not installed", exc_type=ImportError)
-    from dynamo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
+    from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
 
     meta = {
         "output_token_logprobs": [(-0.1, 101, "a"), (-0.2, 102, "b")],
@@ -716,7 +716,7 @@ def test_parity_sglang_legacy_extract_wrapper_matches_shared():
 @pytest.mark.sglang
 def test_parity_sglang_legacy_kwargs_wrapper_matches_shared(monkeypatch):
     pytest.importorskip("sglang", reason="SGLang not installed", exc_type=ImportError)
-    from dynamo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
+    from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
 
     # Gate off — both must reject logprobs >= 1 identically.
     monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)

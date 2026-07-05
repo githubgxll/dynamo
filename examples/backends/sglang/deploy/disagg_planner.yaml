@@ -50,7 +50,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.sglang
+            - dingo.sglang
             - --model-path
             - Qwen/Qwen3-0.6B
             - --served-model-name
@@ -85,7 +85,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.sglang
+            - dingo.sglang
             - --model-path
             - Qwen/Qwen3-0.6B
             - --served-model-name

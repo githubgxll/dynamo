@@ -45,7 +45,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: VLLM_TARGET_DEVICE
             value: xpu
@@ -82,7 +82,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: VLLM_TARGET_DEVICE
             value: xpu

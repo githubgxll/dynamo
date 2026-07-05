@@ -41,7 +41,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           envFrom:
           - secretRef:
               name: hf-token-secret
@@ -79,7 +79,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           envFrom:
           - secretRef:
               name: hf-token-secret

@@ -16,7 +16,7 @@ Dynamo vLLM uses vLLM's native argument parser — all vLLM engine arguments are
 The vLLM backend accepts all upstream vLLM engine arguments plus Dynamo-specific arguments. The authoritative source is always the CLI:
 
 ```bash
-python -m dynamo.vllm --help
+python -m dingo.vllm --help
 ```
 
 The `--help` output is organized into the following groups:
@@ -35,7 +35,7 @@ vLLM engine-level request priority is controlled by the upstream vLLM
 `--scheduling-policy priority` argument.
 
 ```bash
-python -m dynamo.vllm \
+python -m dingo.vllm \
     --model <model> \
     --scheduling-policy priority
 ```

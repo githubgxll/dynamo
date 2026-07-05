@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """End-to-end router tests against the **unified-backend** entrypoints
-(``python -m dynamo.vllm.unified_main`` etc.) introduced under the
+(``python -m dingo.vllm.unified_main`` etc.) introduced under the
 ``dynamo.common.backend`` abstraction.
 
 Each backend's existing legacy entrypoint already has e2e router tests in
@@ -65,23 +65,23 @@ def _swap_module(worker_processes, legacy_module: str, unified_module: str) -> N
 
 
 class UnifiedVLLMProcess(VLLMProcess):
-    """vLLM workers launched via ``dynamo.vllm.unified_main``."""
+    """vLLM workers launched via ``dingo.vllm.unified_main``."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        _swap_module(self.worker_processes, "dynamo.vllm", "dynamo.vllm.unified_main")
+        _swap_module(self.worker_processes, "dingo.vllm", "dingo.vllm.unified_main")
 
     process_name = "Unified vLLM worker"
     cleanup_name = "Unified vLLM worker resources"
 
 
 class UnifiedSGLangProcess(SGLangProcess):
-    """SGLang workers launched via ``dynamo.sglang.unified_main``."""
+    """SGLang workers launched via ``dingo.sglang.unified_main``."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         _swap_module(
-            self.worker_processes, "dynamo.sglang", "dynamo.sglang.unified_main"
+            self.worker_processes, "dingo.sglang", "dingo.sglang.unified_main"
         )
 
     process_name = "Unified SGLang worker"

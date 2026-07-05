@@ -43,10 +43,10 @@ Python components also accept this as a CLI flag:
 
 ```bash
 # SGLang backend
-python3 -m dynamo.sglang --event-plane zmq --model Qwen/Qwen3-0.6B
+python3 -m dingo.sglang --event-plane zmq --model Qwen/Qwen3-0.6B
 
 # vLLM backend
-python3 -m dynamo.vllm --event-plane zmq --model Qwen/Qwen3-0.6B
+python3 -m dingo.vllm --event-plane zmq --model Qwen/Qwen3-0.6B
 ```
 
 ### Environment Variables
@@ -74,7 +74,7 @@ export NATS_SERVER=nats://nats-server:4222
 export DYN_EVENT_PLANE=nats
 
 # Start workers -- explicitly enable KV event publishing
-python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B \
+python3 -m dingo.vllm --model Qwen/Qwen3-0.6B \
     --kv-events-config '{"publisher":"nats","topic":"kv-events","enable_kv_cache_events":true}'
 
 # Start frontend -- it subscribes to events from NATS automatically
@@ -95,7 +95,7 @@ Example setup:
 export DYN_EVENT_PLANE=zmq
 
 # Start workers -- each binds a ZMQ socket, registers with discovery
-python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B \
+python3 -m dingo.vllm --model Qwen/Qwen3-0.6B \
   --kv-events-config '{"publisher":"zmq","endpoint":"tcp://*:20080","enable_kv_cache_events":true}'
 
 # Start frontend -- discovers workers and connects directly

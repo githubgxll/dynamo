@@ -163,7 +163,7 @@ spec:
               rdma/ib: "2"
             requests:
               rdma/ib: "2"
-          command: ["python3", "-m", "dynamo.vllm"]
+          command: ["python3", "-m", "dingo.vllm"]
           args:
             - --model
             - "Qwen/Qwen3-32B-FP8"
@@ -211,7 +211,7 @@ spec:
               rdma/ib: "4"
             requests:
               rdma/ib: "4"
-          command: ["python3", "-m", "dynamo.vllm"]
+          command: ["python3", "-m", "dingo.vllm"]
           args:
             - --model
             - "Qwen/Qwen3-32B-FP8"

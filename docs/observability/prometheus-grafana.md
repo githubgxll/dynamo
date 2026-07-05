@@ -40,7 +40,7 @@ Start frontend and worker (a simple single GPU example):
 python -m dingo.frontend &
 
 # Start vLLM worker with metrics enabled on port 8081
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager
 ```
 
 After the workers are running, send a few test requests to populate metrics in the system:

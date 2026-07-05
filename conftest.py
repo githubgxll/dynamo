@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Block dynamo.vllm/sglang from shadowing the installed vllm/sglang.
+"""Block dingo.vllm/sglang from shadowing the installed vllm/sglang.
 
 Pytest collection puts components/src/dynamo on sys.path, which makes
-`import vllm` resolve to dynamo.vllm. Spawned subprocesses (EngineCore,
+`import vllm` resolve to dingo.vllm. Spawned subprocesses (EngineCore,
 sglang scheduler) inherit that and crash on `from vllm.v1 ...`.
 """
 
@@ -22,7 +22,7 @@ for _name in ("vllm", "sglang"):
     except ImportError:
         pass
 
-# Suppress ImportPathMismatchError when pytest later loads dynamo.vllm
+# Suppress ImportPathMismatchError when pytest later loads dingo.vllm
 # under the bare name "vllm".
 os.environ.setdefault("PY_IGNORE_IMPORTMISMATCH", "1")
 

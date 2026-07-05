@@ -24,7 +24,7 @@ Dynamo's agent hints give the router per-request metadata. SGLang's engine flags
 Enable priority-based scheduling so the engine respects the `priority` value from `nvext.agent_hints.priority`:
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path <model> \
   --enable-priority-scheduling \
   ...
@@ -45,7 +45,7 @@ Router queue priority is configured separately on the frontend with
 By default, SGLang evicts radix tree nodes using LRU. You can switch to priority-based eviction so that low-priority cache entries are evicted before high-priority ones:
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path <model> \
   --radix-eviction-policy priority \
   ...
@@ -120,7 +120,7 @@ SGLang can tag ordinary evictable radix KV with the normalized agent session ID 
 Launch the worker with:
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path <model> \
   --radix-eviction-policy priority
 ```

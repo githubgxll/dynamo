@@ -49,7 +49,7 @@ echo "Starting Omni Realtime worker..."
 # vLLM-Omni streaming; --output-modalities audio drives the talker so the
 # response carries synthesized speech (the thinker transcript streams too).
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dynamo.vllm.omni \
+    python -m dingo.vllm.omni \
     --realtime \
     --model "$MODEL" \
     --output-modalities audio \

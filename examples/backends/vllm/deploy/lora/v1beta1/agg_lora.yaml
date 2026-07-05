@@ -30,7 +30,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: DYN_LORA_ENABLED
             value: "true"

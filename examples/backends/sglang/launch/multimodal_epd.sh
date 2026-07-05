@@ -147,7 +147,7 @@ python3 -m dingo.frontend &
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --disaggregation-mode encode \
   --model-path "$MODEL_NAME" \
@@ -171,7 +171,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting PD worker on GPU $DYN_WORKER_GPU..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-env ${_WORKER_CUDA_PIN:+"$_WORKER_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_WORKER_CUDA_PIN:+"$_WORKER_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --disaggregation-mode pd \

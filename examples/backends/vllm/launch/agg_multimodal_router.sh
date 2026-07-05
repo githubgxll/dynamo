@@ -51,7 +51,7 @@ VLLM_SYSTEM_PORT_BASE="${VLLM_SYSTEM_PORT_BASE:-18081}"
 KV_EVENTS_PORT_BASE="${KV_EVENTS_PORT_BASE:-5557}"
 DYN_LOG_VAL="${DYN_LOG:-info,mm_routing=debug,dynamo_kv_router::scheduling=debug,dynamo_llm::kv_router=debug}"
 
-# Pass-through extra args for `python -m dynamo.vllm`.
+# Pass-through extra args for `python -m dingo.vllm`.
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 
 PASSTHRU_ARGS=()
@@ -145,7 +145,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_SYSTEM_PORT=${WORKER_PORT}" \
         "CUDA_VISIBLE_DEVICES=${GPU_ID}" \
-    python -m dynamo.vllm \
+    python -m dingo.vllm \
         --model "${MODEL}" \
         --enable-multimodal \
         --block-size "${BLOCK_SIZE}" \

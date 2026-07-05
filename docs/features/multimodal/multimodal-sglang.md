@@ -74,7 +74,7 @@ git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 
 ### Components
 
-- worker: [DecodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/llm/decode_handler.py) handles encoding, prefilling, and decoding in a single process.
+- worker: [DecodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/llm/decode_handler.py) handles encoding, prefilling, and decoding in a single process.
 
 ### Workflow
 
@@ -156,8 +156,8 @@ curl http://localhost:8000/v1/chat/completions \
 ### Components
 
 - workers:
-  - [PrefillWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/llm/prefill_handler.py) receives raw multimodal metadata and lets SGLang perform media loading, encoding, token expansion, and KV production during prefill.
-  - [DecodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/llm/decode_handler.py) receives matching multimodal metadata so token layout stays aligned with the transferred KV cache.
+  - [PrefillWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/llm/prefill_handler.py) receives raw multimodal metadata and lets SGLang perform media loading, encoding, token expansion, and KV production during prefill.
+  - [DecodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/llm/decode_handler.py) receives matching multimodal metadata so token layout stays aligned with the transferred KV cache.
 
 ### Workflow
 
@@ -200,8 +200,8 @@ These launchers pass `--enable-multimodal` to the prefill and decode workers but
 ### Components
 
 - workers:
-  - [MultimodalEncodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/multimodal/encode_worker_handler.py) for image encoding and embeddings generation
-  - [MultimodalWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/multimodal/worker_handler.py) for prefilling and decoding.
+  - [MultimodalEncodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/multimodal/encode_worker_handler.py) for image encoding and embeddings generation
+  - [MultimodalWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/multimodal/worker_handler.py) for prefilling and decoding.
 
 ### Workflow
 
@@ -258,9 +258,9 @@ curl http://localhost:8000/v1/chat/completions \
 ### Components
 
 - workers:
-  - [MultimodalEncodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/multimodal/encode_worker_handler.py) for image encoding and embeddings generation
-  - [MultimodalWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/multimodal/worker_handler.py) for decoding
-  - [MultimodalPrefillWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/sglang/request_handlers/multimodal/worker_handler.py) for prefilling
+  - [MultimodalEncodeWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/multimodal/encode_worker_handler.py) for image encoding and embeddings generation
+  - [MultimodalWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/multimodal/worker_handler.py) for decoding
+  - [MultimodalPrefillWorkerHandler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/sglang/request_handlers/multimodal/worker_handler.py) for prefilling
 
 ### Workflow
 
@@ -532,8 +532,8 @@ SGLang multimodal **only supports image-based vision-language models**:
 
 | File | Description |
 |------|-------------|
-| `components/src/dynamo/sglang/main.py` | Component initialization, Encode Worker registers |
-| `components/src/dynamo/sglang/request_handlers/multimodal/encode_worker_handler.py` | Frontend-facing: vision encoding, embeddings generation (receives pre-tokenized input) |
-| `components/src/dynamo/sglang/request_handlers/multimodal/worker_handler.py` | PD/Prefill/Decode workers, NIXL read |
-| `components/src/dynamo/sglang/protocol.py` | Request/response data structures |
-| `components/src/dynamo/sglang/register.py` | Registration logic (called for Encode Worker) |
+| `dingo/sglang/main.py` | Component initialization, Encode Worker registers |
+| `dingo/sglang/request_handlers/multimodal/encode_worker_handler.py` | Frontend-facing: vision encoding, embeddings generation (receives pre-tokenized input) |
+| `dingo/sglang/request_handlers/multimodal/worker_handler.py` | PD/Prefill/Decode workers, NIXL read |
+| `dingo/sglang/protocol.py` | Request/response data structures |
+| `dingo/sglang/register.py` | Registration logic (called for Encode Worker) |

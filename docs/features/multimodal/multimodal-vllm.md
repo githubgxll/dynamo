@@ -242,7 +242,7 @@ bash examples/backends/vllm/launch/agg_multimodal.sh \
     --multimodal-embedding-cache-capacity-gb 10
 ```
 
-`dynamo.vllm` automatically configures `ec_both` mode with the `DynamoMultimodalEmbeddingCacheConnector` when the capacity is > 0.
+`dingo.vllm` automatically configures `ec_both` mode with the `DynamoMultimodalEmbeddingCacheConnector` when the capacity is > 0.
 
 **Launch with `vllm serve` (standalone, no Dynamo):**
 
@@ -251,7 +251,7 @@ vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 \
     --ec-transfer-config "{
         \"ec_role\": \"ec_both\",
         \"ec_connector\": \"DynamoMultimodalEmbeddingCacheConnector\",
-        \"ec_connector_module_path\": \"dynamo.vllm.multimodal_utils.multimodal_embedding_cache_connector\",
+        \"ec_connector_module_path\": \"dingo.vllm.multimodal_utils.multimodal_embedding_cache_connector\",
         \"ec_connector_extra_config\": {\"multimodal_embedding_cache_capacity_gb\": 10}
     }"
 ```

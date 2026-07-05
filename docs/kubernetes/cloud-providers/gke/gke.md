@@ -131,7 +131,7 @@ spec:
             export LD_LIBRARY_PATH=/usr/local/nvidia/lib64:$LD_LIBRARY_PATH
             export PATH=$PATH:/usr/local/nvidia/bin:/usr/local/nvidia/lib64
             /sbin/ldconfig
-            python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --disaggregation-mode decode
+            python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --disaggregation-mode decode
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
           name: main
           resources:

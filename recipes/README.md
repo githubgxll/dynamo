@@ -272,7 +272,7 @@ Each `deploy.yaml` contains:
 ```yaml
 # In deploy.yaml under worker args:
 args:
-  - python3 -m dynamo.vllm --model <your-model-path> --served-model-name <name>
+  - python3 -m dingo.vllm --model <your-model-path> --served-model-name <name>
 ```
 
 **GPU Resources:**

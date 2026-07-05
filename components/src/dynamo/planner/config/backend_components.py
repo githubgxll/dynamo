@@ -33,7 +33,7 @@ class VllmComponentName(ComponentName):
     decode_worker_component_name = "backend"
     decode_worker_endpoint = "generate"
     # Aggregated mode emits a single worker; name matches VllmWorker
-    # log identifier in dynamo.vllm.main.
+    # log identifier in dingo.vllm.main.
     agg_worker_k8s_name = "VllmWorker"
 
 

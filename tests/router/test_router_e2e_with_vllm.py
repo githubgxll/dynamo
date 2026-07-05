@@ -76,10 +76,10 @@ def _vllm_gpu_mem_args(gpu_memory_utilization: Optional[float]) -> list[str]:
 
 
 class VLLMProcess(ManagedEngineProcessMixin):
-    """Manages vLLM workers using dynamo.vllm (HTTP API + KV events).
+    """Manages vLLM workers using dingo.vllm (HTTP API + KV events).
 
     This is a drop-in replacement for MockerProcess that uses real vLLM workers.
-    The key difference: dynamo.vllm automatically handles:
+    The key difference: dingo.vllm automatically handles:
     - HTTP API serving
     - KV cache event publishing (ZMQ → NATS bridge)
     - Integration with dingo.frontend router
@@ -146,7 +146,7 @@ class VLLMProcess(ManagedEngineProcessMixin):
         self._kv_event_ports = allocate_ports(num_workers, DefaultPort.SYSTEM1.value)
         self._nixl_ports = allocate_ports(num_workers, DefaultPort.SYSTEM1.value)
         # Per-worker forward-pass-metrics (FPM) base ports. Setting
-        # DYN_FORWARDPASS_METRIC_PORT makes dynamo.vllm auto-inject
+        # DYN_FORWARDPASS_METRIC_PORT makes dingo.vllm auto-inject
         # InstrumentedScheduler, whose ZMQ PUB binds ``base_port + dp_rank`` in
         # every EngineCore child (see instrumented_scheduler.py). Each worker
         # therefore needs a contiguous block of ``data_parallel_size`` ports so
@@ -224,7 +224,7 @@ class VLLMProcess(ManagedEngineProcessMixin):
                 # No DP; worker sees one GPU
                 gpu_device = str(gpu_start_index + worker_idx)
 
-            command = ["python3", "-m", "dynamo.vllm", "--model", model]
+            command = ["python3", "-m", "dingo.vllm", "--model", model]
 
             if "block_size" in vllm_args:
                 command.extend(["--block-size", str(vllm_args["block_size"])])

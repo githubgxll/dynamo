@@ -46,7 +46,7 @@ python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
   PROMETHEUS_MULTIPROC_DIR="$PROMETHEUS_MULTIPROC_DIR" \
-  python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+  python -m dingo.vllm --model "$MODEL" --enforce-eager \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_CONCURRENT_SEQS" \
   --block-size "${BLOCK_SIZE:-64}" \

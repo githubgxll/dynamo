@@ -2416,7 +2416,7 @@ func TestGenerateGrovePodCliqueSet(t *testing.T) {
 											"-c",
 										},
 										Args: []string{
-											"python3 -m dynamo.sglang --custom-flag custom-value",
+											"python3 -m dingo.sglang --custom-flag custom-value",
 										},
 									},
 								},
@@ -2576,7 +2576,7 @@ func TestGenerateGrovePodCliqueSet(t *testing.T) {
 													"-c",
 												},
 												Args: []string{
-													"python3 -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-worker-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank 0 --custom-flag custom-value",
+													"python3 -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-worker-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank 0 --custom-flag custom-value",
 												},
 												Ports: []corev1.ContainerPort{
 													{
@@ -2790,7 +2790,7 @@ func TestGenerateGrovePodCliqueSet(t *testing.T) {
 													"-c",
 												},
 												Args: []string{
-													"python3 -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-worker-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --custom-flag custom-value",
+													"python3 -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-worker-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank $((GROVE_PCLQ_POD_INDEX + 1)) --custom-flag custom-value",
 												},
 												Ports: []corev1.ContainerPort{
 													{
@@ -3406,7 +3406,7 @@ func TestGenerateGrovePodCliqueSet(t *testing.T) {
 										Command: []string{
 											"python3",
 											"-m",
-											"dynamo.vllm",
+											"dingo.vllm",
 										},
 										Args: []string{
 											"--custom-flag",
@@ -3598,7 +3598,7 @@ func TestGenerateGrovePodCliqueSet(t *testing.T) {
 													"-c",
 												},
 												Args: []string{
-													"ray start --head --port=6379 && python3 -m dynamo.vllm --custom-flag custom-value --tensor-parallel-size 4 --pipeline-parallel-size 1 --distributed-executor-backend ray",
+													"ray start --head --port=6379 && python3 -m dingo.vllm --custom-flag custom-value --tensor-parallel-size 4 --pipeline-parallel-size 1 --distributed-executor-backend ray",
 												},
 												Ports: []corev1.ContainerPort{
 													{
@@ -4456,7 +4456,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3 -m dynamo.sglang"},
+						Args: []string{"python3 -m dingo.sglang"},
 					},
 				},
 			},
@@ -4464,7 +4464,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 			role:              RoleMain,
 			numberOfNodes:     1,
 			expectError:       false,
-			expectContains:    []string{"python3", "-m", "dynamo.sglang"},
+			expectContains:    []string{"python3", "-m", "dingo.sglang"},
 			expectNotContains: []string{"dist-init-addr", "nnodes", "tp-size"},
 		},
 		{
@@ -4473,7 +4473,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3 -m dynamo.sglang"},
+						Args: []string{"python3 -m dingo.sglang"},
 					},
 				},
 			},
@@ -4481,7 +4481,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 			role:             RoleLeader,
 			numberOfNodes:    3,
 			expectError:      false,
-			expectContains:   []string{"python3", "-m", "dynamo.sglang", "dist-init-addr", "nnodes", "node-rank"},
+			expectContains:   []string{"python3", "-m", "dingo.sglang", "dist-init-addr", "nnodes", "node-rank"},
 		},
 		{
 			name: "SGLang multinode worker",
@@ -4489,7 +4489,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3 -m dynamo.sglang"},
+						Args: []string{"python3 -m dingo.sglang"},
 					},
 				},
 			},
@@ -4497,7 +4497,7 @@ func TestGeneratePodSpecForComponent_SGLang(t *testing.T) {
 			role:             RoleWorker,
 			numberOfNodes:    3,
 			expectError:      false,
-			expectContains:   []string{"python3", "-m", "dynamo.sglang", "dist-init-addr", "nnodes", "node-rank"},
+			expectContains:   []string{"python3", "-m", "dingo.sglang", "dist-init-addr", "nnodes", "node-rank"},
 		},
 		{
 			name: "SGLang with user command override",
@@ -4604,7 +4604,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3", "-m", "dynamo.vllm"},
+						Args: []string{"python3", "-m", "dingo.vllm"},
 					},
 				},
 			},
@@ -4612,7 +4612,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 			role:              RoleMain,
 			numberOfNodes:     1,
 			expectError:       false,
-			expectContains:    []string{"python3", "-m", "dynamo.vllm"},
+			expectContains:    []string{"python3", "-m", "dingo.vllm"},
 			expectNotContains: []string{"ray start"},
 		},
 		{
@@ -4621,7 +4621,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3", "-m", "dynamo.vllm", "--tensor-parallel-size", "4", "--pipeline-parallel-size", "1"},
+						Args: []string{"python3", "-m", "dingo.vllm", "--tensor-parallel-size", "4", "--pipeline-parallel-size", "1"},
 					},
 				},
 				Resources: &v1alpha1.Resources{
@@ -4634,7 +4634,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 			role:             RoleLeader,
 			numberOfNodes:    3,
 			expectError:      false,
-			expectContains:   []string{"ray start --head --port=6379", "python3", "-m", "dynamo.vllm"},
+			expectContains:   []string{"ray start --head --port=6379", "python3", "-m", "dingo.vllm"},
 		},
 		{
 			name: "VLLM multinode worker",
@@ -4642,7 +4642,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3", "-m", "dynamo.vllm", "--tensor-parallel-size", "4", "--pipeline-parallel-size", "1"},
+						Args: []string{"python3", "-m", "dingo.vllm", "--tensor-parallel-size", "4", "--pipeline-parallel-size", "1"},
 					},
 				},
 				Resources: &v1alpha1.Resources{
@@ -4656,7 +4656,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 			numberOfNodes:     3,
 			expectError:       false,
 			expectContains:    []string{"ray start --address=$(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-worker-ldr-0.$(GROVE_HEADLESS_SERVICE):6379 --block"},
-			expectNotContains: []string{"python3 -m dynamo.vllm"},
+			expectNotContains: []string{"python3 -m dingo.vllm"},
 		},
 		{
 			name: "VLLM worker single node",
@@ -4664,7 +4664,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 				ComponentType: commonconsts.ComponentTypeWorker,
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python3", "-m", "dynamo.vllm", "--is-prefill-worker"},
+						Args: []string{"python3", "-m", "dingo.vllm", "--is-prefill-worker"},
 					},
 				},
 			},
@@ -4672,7 +4672,7 @@ func TestGeneratePodSpecForComponent_VLLM(t *testing.T) {
 			role:              RoleMain,
 			numberOfNodes:     1,
 			expectError:       false,
-			expectContains:    []string{"python3", "-m", "dynamo.vllm", "--is-prefill-worker"},
+			expectContains:    []string{"python3", "-m", "dingo.vllm", "--is-prefill-worker"},
 			expectNotContains: []string{"ray start"},
 		},
 	}
@@ -5038,13 +5038,13 @@ func TestDetectBackendFrameworkFromArgs(t *testing.T) {
 		{
 			name:     "detect VLLM from args",
 			command:  []string{"/bin/sh", "-c"},
-			args:     []string{"python -m dynamo.vllm.worker --model test"},
+			args:     []string{"python -m dingo.vllm.worker --model test"},
 			expected: BackendFrameworkVLLM,
 		},
 		{
 			name:     "detect SGLang from args",
 			command:  []string{"/bin/sh", "-c"},
-			args:     []string{"python -m dynamo.sglang --model test"},
+			args:     []string{"python -m dingo.sglang --model test"},
 			expected: BackendFrameworkSGLang,
 		},
 		{
@@ -5056,13 +5056,13 @@ func TestDetectBackendFrameworkFromArgs(t *testing.T) {
 		{
 			name:     "detect from complex command with pipes",
 			command:  []string{},
-			args:     []string{"echo start && python -m dynamo.vllm.worker --model test | tee /tmp/log"},
+			args:     []string{"echo start && python -m dingo.vllm.worker --model test | tee /tmp/log"},
 			expected: BackendFrameworkVLLM,
 		},
 		{
 			name:     "detect from python3.11",
 			command:  []string{},
-			args:     []string{"python3.11 -m dynamo.sglang"},
+			args:     []string{"python3.11 -m dingo.sglang"},
 			expected: BackendFrameworkSGLang,
 		},
 		{
@@ -5074,7 +5074,7 @@ func TestDetectBackendFrameworkFromArgs(t *testing.T) {
 		{
 			name:        "multiple backends detected",
 			command:     []string{},
-			args:        []string{"python -m dynamo.vllm.worker && python -m dynamo.sglang"},
+			args:        []string{"python -m dingo.vllm.worker && python -m dingo.sglang"},
 			expectError: true,
 		},
 	}
@@ -5124,7 +5124,7 @@ func TestDetermineBackendFramework(t *testing.T) {
 			name:          "worker with VLLM detection",
 			componentType: "worker",
 			command:       []string{},
-			args:          []string{"python -m dynamo.vllm.worker --model test"},
+			args:          []string{"python -m dingo.vllm.worker --model test"},
 			expected:      BackendFrameworkVLLM,
 		},
 		{
@@ -5136,14 +5136,14 @@ func TestDetermineBackendFramework(t *testing.T) {
 		{
 			name:                     "worker with detected matching explicit",
 			componentType:            "worker",
-			args:                     []string{"python -m dynamo.sglang"},
+			args:                     []string{"python -m dingo.sglang"},
 			explicitBackendFramework: "sglang",
 			expected:                 BackendFrameworkSGLang,
 		},
 		{
 			name:                     "worker with detected conflicting explicit",
 			componentType:            "worker",
-			args:                     []string{"python -m dynamo.vllm.worker"},
+			args:                     []string{"python -m dingo.vllm.worker"},
 			explicitBackendFramework: "sglang",
 			expectError:              true,
 			errorContains:            "backend framework mismatch",
@@ -5210,7 +5210,7 @@ func TestGetBackendFrameworkFromComponent(t *testing.T) {
 				ComponentType: "worker", // Worker component
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python -m dynamo.vllm.worker --model test"},
+						Args: []string{"python -m dingo.vllm.worker --model test"},
 					},
 				},
 			},
@@ -5235,7 +5235,7 @@ func TestGetBackendFrameworkFromComponent(t *testing.T) {
 				ComponentType: "worker", // Worker component
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python -m dynamo.sglang"},
+						Args: []string{"python -m dingo.sglang"},
 					},
 				},
 			},
@@ -5252,7 +5252,7 @@ func TestGetBackendFrameworkFromComponent(t *testing.T) {
 				ComponentType: "worker", // Worker component
 				ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 					MainContainer: &corev1.Container{
-						Args: []string{"python -m dynamo.vllm.worker"},
+						Args: []string{"python -m dingo.vllm.worker"},
 					},
 				},
 			},
@@ -8622,7 +8622,7 @@ func TestGenerateDynamoComponentsDeployments_InferBackendFrameworkForGeneratedDC
 					ExtraPodSpec: &v1alpha1.ExtraPodSpec{
 						MainContainer: &corev1.Container{
 							Command: []string{"python3"},
-							Args:    []string{"-m", "dynamo.vllm", "--model", "Qwen/Qwen3-0.6B"},
+							Args:    []string{"-m", "dingo.vllm", "--model", "Qwen/Qwen3-0.6B"},
 							Env: []corev1.EnvVar{
 								{Name: "MY_NEW_ENV", Value: "enabled"},
 							},

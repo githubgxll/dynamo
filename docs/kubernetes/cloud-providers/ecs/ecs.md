@@ -92,13 +92,13 @@ Please follow steps below to create this task
 |ETCD_ENDPOINTS|Value|http://IP_ADDRESS:2379|
 |NATS_SERVER|Value|nats://IP_ADDRESS:4222|
 - Docker configuration
-Add `sh,-c` in **Entry point** and `cd examples/backends/vllm && python -m dingo.frontend --router-mode kv & python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager` in **Command**
+Add `sh,-c` in **Entry point** and `cd examples/backends/vllm && python -m dingo.frontend --router-mode kv & python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager` in **Command**
 
 2. Dynamo vLLM PrefillWorker Task
 Create the PrefillWorker task same as the frontend worker, except for following changes
 - Set container name as `dynamo-prefill`
 - No container port mapping
-- Docker configuration with command `cd examples/backends/vllm && python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager --disaggregation-mode prefill`
+- Docker configuration with command `cd examples/backends/vllm && python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager --disaggregation-mode prefill`
 
 ## 5. Task Deployment
 You can create a service or directly run the task from the task definition

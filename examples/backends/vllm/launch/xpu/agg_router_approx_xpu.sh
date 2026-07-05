@@ -29,14 +29,14 @@ python -m dingo.frontend \
 # TODO: use build_vllm_gpu_mem_args to measure VRAM instead of relying on vLLM defaults
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-ZE_AFFINITY_MASK=0 python3 -m dynamo.vllm \
+ZE_AFFINITY_MASK=0 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --kv-events-config '{"enable_kv_cache_events": false}' &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-ZE_AFFINITY_MASK=1 python3 -m dynamo.vllm \
+ZE_AFFINITY_MASK=1 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --kv-events-config '{"enable_kv_cache_events": false}' &

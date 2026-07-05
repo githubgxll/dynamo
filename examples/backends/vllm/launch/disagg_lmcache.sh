@@ -17,7 +17,7 @@ print_launch_banner "Launching Disaggregated Serving + LMCache (2 GPUs)" "$MODEL
 python -m dingo.frontend --router-mode kv &
 
 # run decode worker on GPU 0, without enabling LMCache
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model "$MODEL" &
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm --model "$MODEL" &
 
 # wait for decode worker to initialize
 sleep 20
@@ -25,7 +25,7 @@ sleep 20
 # run prefill worker on GPU 1 with LMCache
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
 CUDA_VISIBLE_DEVICES=1 \
-  python3 -m dynamo.vllm \
+  python3 -m dingo.vllm \
     --model "$MODEL" \
     --disaggregation-mode prefill \
     --kv-transfer-config '{"kv_connector":"PdConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"},{"kv_connector":"NixlConnector","kv_role":"kv_both"}]},"kv_connector_module_path":"kvbm.vllm_integration.connector"}' \

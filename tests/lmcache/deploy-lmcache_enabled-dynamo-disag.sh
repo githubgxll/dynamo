@@ -29,7 +29,7 @@ echo "🔧 Starting dynamo disaggregated serving with LMCache enabled..."
 
 python -m dingo.frontend &
 
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model $MODEL_URL --disaggregation-mode decode &
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm --model $MODEL_URL --disaggregation-mode decode &
 
 sleep 20
 
@@ -38,6 +38,6 @@ LMCACHE_CHUNK_SIZE=256 \
 LMCACHE_LOCAL_CPU=True \
 LMCACHE_MAX_LOCAL_CPU_SIZE=20 \
 CUDA_VISIBLE_DEVICES=1 \
-  python3 -m dynamo.vllm \
+  python3 -m dingo.vllm \
     --model $MODEL_URL \
     --disaggregation-mode prefill

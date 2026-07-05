@@ -131,7 +131,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.vllm
+            - dingo.vllm
             - --model
             - nvidia/Llama-3.1-8B-Instruct-FP8
             - --no-enable-prefix-caching
@@ -185,7 +185,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.vllm
+            - dingo.vllm
             - --model
             - nvidia/Llama-3.1-8B-Instruct-FP8
             - --disaggregation-mode

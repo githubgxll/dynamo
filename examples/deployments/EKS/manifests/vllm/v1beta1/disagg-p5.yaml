@@ -69,7 +69,7 @@ spec:
           - /bin/bash
           - -c
           - |
-            exec python3 -m dynamo.vllm \
+            exec python3 -m dingo.vllm \
              --model Qwen/Qwen3-32B \
              --tensor-parallel-size 2 \
              --disaggregation-mode decode \
@@ -136,7 +136,7 @@ spec:
           - /bin/bash
           - -c
           - |-
-            exec python3 -m dynamo.vllm \
+            exec python3 -m dingo.vllm \
              --model Qwen/Qwen3-32B \
              --tensor-parallel-size 2 \
              --disaggregation-mode prefill \

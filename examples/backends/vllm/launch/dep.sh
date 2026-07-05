@@ -23,7 +23,7 @@ python -m dingo.frontend --router-mode kv &
 # Chose Qwen3-30B because its a small MOE that can fit on smaller GPUs (L40S for example)
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 VLLM_NIXL_SIDE_CHANNEL_PORT=20096 \
-python3 -m dynamo.vllm \
+python3 -m dingo.vllm \
 --model Qwen/Qwen3-30B-A3B \
 --data-parallel-hybrid-lb \
 --data-parallel-size 4 \

@@ -75,7 +75,7 @@ def _prepare_log_dir(request, suffix: str) -> str:
 # pattern is distinctive enough that a targeted sweep between topology
 # switches will not touch unrelated processes in the system.
 _SGLANG_PROCESS_PATTERNS: tuple[str, ...] = (
-    "-m dynamo.sglang",
+    "-m dingo.sglang",
     "-m dingo.frontend",
     "SGLANG:EngineCore",
     "sglang::scheduler",
@@ -134,7 +134,7 @@ def _cleanup_sglang_stragglers(timeout: float = 10.0) -> None:
 #
 #   * ``chat_processor_frontend`` — Python SGLang chat processor on the
 #     frontend (``--dyn-chat-processor sglang``) with parsers declared as
-#     frontend flags. Worker is a plain ``dynamo.sglang`` engine.
+#     frontend flags. Worker is a plain ``dingo.sglang`` engine.
 #
 #   * ``rust_parsers`` — plain Rust frontend (``dingo.frontend``) with no
 #     chat processor or parser flags. Parsers are declared on the worker
@@ -159,7 +159,7 @@ class WorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             MODEL_NAME,
             "--served-model-name",
@@ -185,7 +185,7 @@ class WorkerProcess(ManagedProcess):
             display_output=True,
             terminate_all_matching_process_names=False,
             stragglers=["SGLANG:EngineCore"],
-            straggler_commands=["-m dynamo.sglang"],
+            straggler_commands=["-m dingo.sglang"],
             log_dir=_prepare_log_dir(request, f"sglang-worker-{topology}"),
         )
 

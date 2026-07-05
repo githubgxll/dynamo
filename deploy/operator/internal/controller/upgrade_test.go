@@ -101,7 +101,7 @@ func TestLegacyWorkerIdentityUpgradeDoesNotTriggerRollout(t *testing.T) {
 								Name:    commonconsts.MainContainerName,
 								Image:   "test-image:latest",
 								Command: []string{"python3"},
-								Args:    []string{"-m", "dynamo.vllm"},
+								Args:    []string{"-m", "dingo.vllm"},
 								Resources: corev1.ResourceRequirements{
 									Limits: corev1.ResourceList{
 										corev1.ResourceName(commonconsts.KubeResourceGPUNvidia): resource.MustParse("1"),
@@ -148,7 +148,7 @@ spec:
         - python3
         args:
         - -m
-        - dynamo.vllm
+        - dingo.vllm
         ports:
         - name: system
           containerPort: 9090
@@ -296,7 +296,7 @@ spec:
 								Name:    commonconsts.MainContainerName,
 								Image:   "test-image:latest",
 								Command: []string{"python3"},
-								Args:    []string{"-m", "dynamo.vllm"},
+								Args:    []string{"-m", "dingo.vllm"},
 								Resources: corev1.ResourceRequirements{
 									Limits: corev1.ResourceList{
 										corev1.ResourceName(commonconsts.KubeResourceGPUNvidia): resource.MustParse("1"),
@@ -343,7 +343,7 @@ spec:
           - python3
           args:
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           ports:
           - name: system
             containerPort: 9090
@@ -450,7 +450,7 @@ spec:
           - python3
           args:
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           ports:
           - name: system
             containerPort: 9090

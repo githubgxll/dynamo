@@ -130,7 +130,7 @@ python3 -m dingo.frontend &
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (GPU mem: $DYN_ENCODE_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --disaggregation-mode encode \
   --model-path "$MODEL_NAME" \
@@ -154,7 +154,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting prefill worker on GPU $DYN_PREFILL_WORKER_GPU (GPU mem: $DYN_PREFILL_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-env ${_PREFILL_CUDA_PIN:+"$_PREFILL_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_PREFILL_CUDA_PIN:+"$_PREFILL_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --model-path "$MODEL_NAME" \
@@ -178,7 +178,7 @@ fi
 
 # run SGLang multimodal decode worker
 echo "Starting decode worker on GPU $DYN_DECODE_WORKER_GPU (GPU mem: $DYN_DECODE_GPU_MEM)..."
-env ${_DECODE_CUDA_PIN:+"$_DECODE_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_DECODE_CUDA_PIN:+"$_DECODE_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --model-path "$MODEL_NAME" \

@@ -62,7 +62,7 @@ EXAMPLE_PROMPT_VISUAL="A golden retriever riding a skateboard through a neon-lit
 #
 # Usage:
 #   python -m dingo.frontend &
-#   python -m dynamo.vllm --model "$MODEL" &
+#   python -m dingo.vllm --model "$MODEL" &
 #   wait_any_exit
 
 # Signals the pgid, reaps tracked jobs, then exits with the given code.
@@ -251,7 +251,7 @@ wait_for_ready() {
 #   the caller's own arg loop so engine-specific options keep working.
 #
 # Usage:
-#   pick_worker_module dynamo.vllm dynamo.vllm.unified_main "$@"
+#   pick_worker_module dingo.vllm dingo.vllm.unified_main "$@"
 #   set -- "${REMAINING_ARGS[@]}"
 #   trap 'echo Cleaning up...; kill 0' EXIT
 #   # ... caller's own argument parsing on the surviving $@ ...

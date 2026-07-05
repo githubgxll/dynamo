@@ -99,7 +99,7 @@ def start_sglang_backend():
     cmd = [
         "python",
         "-m",
-        "dynamo.sglang",
+        "dingo.sglang",
         "--model-path",
         MODEL,
         "--tp",

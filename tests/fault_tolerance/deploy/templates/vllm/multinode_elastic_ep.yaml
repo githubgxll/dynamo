@@ -12,8 +12,8 @@
 #
 # Topology:
 #   - 2 nodes × 3 GPUs each = 6 GPUs total in one Ray cluster
-#   - Leader pod: ray start --head && dynamo.vllm ... --data-parallel-size 2
-#   - Worker pod: polls leader port 9090 until dynamo.vllm is ready, then
+#   - Leader pod: ray start --head && dingo.vllm ... --data-parallel-size 2
+#   - Worker pod: polls leader port 9090 until dingo.vllm is ready, then
 #                 ray start --address=<leader>:6379 --block  (no vLLM, GPUs idle)
 #   - scale_elastic_ep endpoint: leader pod port 9090 only
 #
@@ -92,7 +92,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite

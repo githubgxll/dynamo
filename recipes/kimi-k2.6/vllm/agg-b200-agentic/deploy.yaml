@@ -127,7 +127,7 @@ spec:
               command:
                 - python3
                 - -m
-                - dynamo.vllm
+                - dingo.vllm
               env:
                 - name: POD_UID
                   valueFrom:

@@ -72,7 +72,7 @@ spec:
             - |
               set -euo pipefail
               ulimit -l unlimited
-              python3 -m dynamo.vllm \
+              python3 -m dingo.vllm \
                 --model "${MODEL_NAME}" \
                 --enable-multimodal \
                 --frontend-decoding \

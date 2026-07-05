@@ -50,7 +50,7 @@ services:
     extraPodSpec:
       mainContainer:
         image: <vllm-runtime-image-with-modelexpress>
-        command: ["python3", "-m", "dynamo.vllm"]
+        command: ["python3", "-m", "dingo.vllm"]
         args:
           - --model
           - meta-llama/Llama-3.1-70B-Instruct
@@ -93,7 +93,7 @@ services:
     extraPodSpec:
       mainContainer:
         image: <vllm-runtime-image-with-modelexpress-and-modelstreamer>
-        command: ["python3", "-m", "dynamo.vllm"]
+        command: ["python3", "-m", "dingo.vllm"]
         args:
           - --model
           - meta-llama/Llama-3.1-70B-Instruct

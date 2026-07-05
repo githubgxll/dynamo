@@ -61,7 +61,7 @@ class DynamoWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             FAULT_TOLERANCE_MODEL_NAME,
             "--served-model-name",
@@ -155,7 +155,7 @@ class DynamoWorkerProcess(ManagedProcess):
                 "SGLANG:EngineCore",
             ],
             straggler_commands=[
-                "-m dynamo.sglang",
+                "-m dingo.sglang",
             ],
             log_dir=log_dir,
         )

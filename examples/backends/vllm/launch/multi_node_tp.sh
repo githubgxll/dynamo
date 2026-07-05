@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Multi-node TP deployment with dynamo.vllm
+# Multi-node TP deployment with dingo.vllm
 #
 # Single script for both head and worker roles.
 #
@@ -55,8 +55,8 @@ if [[ "${ROLE}" == "head" ]]; then
   echo "Starting Dynamo frontend..."
   python3 -m dingo.frontend &
 
-  echo "Starting dynamo.vllm head node (TP=${TP}, nnodes=${NNODES}, node-rank=0)..."
-  python3 -m dynamo.vllm \
+  echo "Starting dingo.vllm head node (TP=${TP}, nnodes=${NNODES}, node-rank=0)..."
+  python3 -m dingo.vllm \
     --model "${MODEL}" \
     --tensor-parallel-size "${TP}" \
     --nnodes "${NNODES}" \
@@ -66,8 +66,8 @@ if [[ "${ROLE}" == "head" ]]; then
 
   wait_any_exit
 else
-  echo "Starting dynamo.vllm headless worker (TP=${TP}, nnodes=${NNODES}, node-rank=1)..."
-  python3 -m dynamo.vllm \
+  echo "Starting dingo.vllm headless worker (TP=${TP}, nnodes=${NNODES}, node-rank=1)..."
+  python3 -m dingo.vllm \
     --model "${MODEL}" \
     --tensor-parallel-size "${TP}" \
     --nnodes "${NNODES}" \

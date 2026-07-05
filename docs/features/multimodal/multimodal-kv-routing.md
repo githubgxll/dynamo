@@ -161,7 +161,7 @@ Key environment variables:
 | `SINGLE_GPU` | `false` | Pack all workers onto GPU 0 (testing-only override; pass `--single-gpu` or set `SINGLE_GPU=true` for functional tests on a single-GPU box) |
 | `KV_EVENTS_PORT_BASE` | `5557` | Worker `i` publishes ZMQ KV events on `BASE + i - 1` |
 | `DYN_LOG` | `info,mm_routing=debug,...` | Frontend log filter |
-| `VLLM_EXTRA_ARGS` | (unset) | Pass-through args to `python -m dynamo.vllm`. Set `--frontend-decoding` to enable content-addressed `mm_hash` (cross-URL KV-cache reuse). |
+| `VLLM_EXTRA_ARGS` | (unset) | Pass-through args to `python -m dingo.vllm`. Set `--frontend-decoding` to enable content-addressed `mm_hash` (cross-URL KV-cache reuse). |
 
 To opt into frontend image decoding (so the frontend downloads + decodes once and `mm_hash` becomes content-addressed instead of URL-addressed):
 
@@ -220,7 +220,7 @@ Key environment variables:
 | `SINGLE_GPU` | `false` | Pack all workers onto GPU 0 (for single-GPU functional tests) |
 | `KV_EVENTS_PORT_BASE` | `29090` | Worker `i` publishes ZMQ KV events on `BASE + i - 1` |
 | `DYN_LOG` | `info,mm_routing=debug,…` | Frontend log filter |
-| `SGLANG_EXTRA_ARGS` | (unset) | Pass-through args to `python -m dynamo.sglang` |
+| `SGLANG_EXTRA_ARGS` | (unset) | Pass-through args to `python -m dingo.sglang` |
 
 Both prerequisites are enabled by default in the dynamo sglang image; the list below is only for users building dynamo from source:
 

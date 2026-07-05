@@ -63,7 +63,7 @@ export DYN_LOG=debug
 
 # Start your Dynamo components (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
 python -m dingo.frontend &
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
+python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
 ```
 
 Logs will be written to stderr in JSONL format with trace context.
@@ -134,7 +134,7 @@ export DYN_LOG=debug  # Set to debug to see detailed trace logs
 
 # Start your Dynamo components (e.g., frontend and worker) (default port 8000, override with --http-port or DYN_HTTP_PORT env var)
 python -m dingo.frontend &
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
+python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
 ```
 
 This enables JSONL logging with `trace_id` and `span_id` fields. Traces appear in logs but are not exported to any backend.

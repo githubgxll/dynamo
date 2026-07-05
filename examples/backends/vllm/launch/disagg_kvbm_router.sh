@@ -24,14 +24,14 @@ python -m dingo.frontend \
 
 # two decode workers (without KVBM)
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --disaggregation-mode decode \
     --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
 
 VLLM_NIXL_SIDE_CHANNEL_PORT=20096 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --disaggregation-mode decode \
@@ -43,7 +43,7 @@ VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
 DYN_KVBM_LEADER_ZMQ_PUB_PORT=56001 \
 DYN_KVBM_LEADER_ZMQ_ACK_PORT=56002 \
 CUDA_VISIBLE_DEVICES=2 DYN_KVBM_CPU_CACHE_GB=20 \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --disaggregation-mode prefill \
@@ -54,7 +54,7 @@ VLLM_NIXL_SIDE_CHANNEL_PORT=20098 \
 DYN_KVBM_LEADER_ZMQ_PUB_PORT=56003 \
 DYN_KVBM_LEADER_ZMQ_ACK_PORT=56004 \
 CUDA_VISIBLE_DEVICES=3 DYN_KVBM_CPU_CACHE_GB=20 \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --model $MODEL \
     --enforce-eager \
     --disaggregation-mode prefill \

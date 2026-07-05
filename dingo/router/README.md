@@ -63,10 +63,10 @@ python -m dingo.router \
     --no-router-track-active-blocks
 
 # Start decode workers
-python -m dynamo.vllm --model MODEL_NAME --block-size 64 &
+python -m dingo.vllm --model MODEL_NAME --block-size 64 &
 
 # Start prefill workers
-python -m dynamo.vllm --model MODEL_NAME --block-size 64 --disaggregation-mode prefill &
+python -m dingo.vllm --model MODEL_NAME --block-size 64 --disaggregation-mode prefill &
 ```
 
 For event-driven prefix-cache state, add the backend-specific KV event publishing flags to the workers that the router indexes. Use `--no-router-kv-events` on the router only when approximate cache-state prediction is acceptable.
@@ -103,7 +103,7 @@ To integrate the standalone router with a backend:
 2. Clients call the `router.generate` endpoint to stream completions (router selects the best worker), or call `router.best_worker_id` to get the best worker ID and then send requests to that worker
 3. Router state is updated automatically as requests are routed; no separate "free" call is required
 
-See [`components/src/dynamo/vllm/handlers.py`](../vllm/handlers.py) for a reference implementation (search for `prefill_router_client`).
+See [`dingo/vllm/handlers.py`](../vllm/handlers.py) for a reference implementation (search for `prefill_router_client`).
 
 ## See Also
 

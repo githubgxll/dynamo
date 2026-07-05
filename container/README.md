@@ -459,7 +459,7 @@ dev/sanity_check.py
 python -m dingo.frontend &
 
 # Start backend (vLLM example)
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B --gpu-memory-utilization 0.20 &
+python -m dingo.vllm --model Qwen/Qwen3-0.6B --gpu-memory-utilization 0.20 &
 ```
 
 **Intel XPU variant** (SGLang only) — pass `--device=xpu` so `run.sh` exposes `/dev/dri` and joins the host render group, then start the SGLang backend instead of vLLM:
@@ -485,7 +485,7 @@ sudo chown -R dynamo:0 /opt/miniforge3/envs/sglang
 cargo build --locked --features dynamo-llm/block-manager --workspace
 # 3a. ai_dynamo_runtime (Rust bindings: dynamo._core)
 cd lib/bindings/python && maturin develop --uv && cd -
-# 3b. ai-dynamo (Python namespace packages: dingo.frontend, dynamo.sglang, ...)
+# 3b. ai-dynamo (Python namespace packages: dingo.frontend, dingo.sglang, ...)
 uv pip install --no-deps -e /workspace
 # 3c. NIXL python bindings (C++ libs are already baked in at /opt/intel/intel_nixl;
 #     local-dev intentionally skips installing the wheel into the env)
@@ -500,7 +500,7 @@ etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://0.0
 
 # 6. Run inference (frontend + SGLang XPU backend)
 python -m dingo.frontend &
-python -m dynamo.sglang --model Qwen/Qwen3-0.6B --mem-fraction-static 0.20 &
+python -m dingo.sglang --model Qwen/Qwen3-0.6B --mem-fraction-static 0.20 &
 ```
 
 ### Production Workflow
@@ -557,10 +557,10 @@ python -m dingo.frontend &
 
 # Start worker backend (choose one framework):
 # vLLM
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --gpu-memory-utilization 0.20 --enforce-eager --no-enable-prefix-caching --max-num-seqs 64 &
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model Qwen/Qwen3-0.6B --gpu-memory-utilization 0.20 --enforce-eager --no-enable-prefix-caching --max-num-seqs 64 &
 
 # SGLang
-DYN_SYSTEM_PORT=8081 python -m dynamo.sglang --model Qwen/Qwen3-0.6B --mem-fraction-static 0.20 --max-running-requests 64 &
+DYN_SYSTEM_PORT=8081 python -m dingo.sglang --model Qwen/Qwen3-0.6B --mem-fraction-static 0.20 --max-running-requests 64 &
 
 # TensorRT-LLM
 DYN_SYSTEM_PORT=8081 python -m dynamo.trtllm --model Qwen/Qwen3-0.6B --free-gpu-memory-fraction 0.20 --max-num-tokens 8192 --max-batch-size 64 &

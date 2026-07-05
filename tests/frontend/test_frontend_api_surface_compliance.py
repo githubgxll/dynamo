@@ -496,7 +496,7 @@ def test_frontend_api_surface_compliance(
         script_name="agg.sh",
         # Qwen3-VL-2B-specific flags: vision-model CUDA graph workaround +
         # model-aware reasoning/tool-call parsers. Forwarded verbatim to
-        # `dynamo.sglang` by agg.sh's pass-through loop.
+        # `dingo.sglang` by agg.sh's pass-through loop.
         #
         # Tool-call parser is `hermes`, not `qwen3_coder`: Qwen3-VL-Instruct
         # emits `<tool_call>{"name":..., "arguments":...}</tool_call>` (JSON

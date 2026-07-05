@@ -1201,7 +1201,7 @@ async fn embeddings(
 /// vector. The byte length must be a multiple of 4; trailing bytes are
 /// rejected. Mirrors the encoder in `lib/llm/src/preprocessor.rs` and the
 /// Python `_encode_floats_to_base64` helper in
-/// `components/src/dynamo/vllm/handlers.py`.
+/// `dingo/vllm/handlers.py`.
 fn decode_base64_embedding_to_floats(s: &str) -> Result<Vec<f32>, anyhow::Error> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let bytes = STANDARD.decode(s)?;

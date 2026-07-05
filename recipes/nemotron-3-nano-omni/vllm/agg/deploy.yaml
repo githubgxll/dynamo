@@ -90,7 +90,7 @@ spec:
             - -lc
           args:
             - >-
-              exec python3 -m dynamo.vllm
+              exec python3 -m dingo.vllm
               --model nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
               --served-model-name nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
               --max-model-len 131072

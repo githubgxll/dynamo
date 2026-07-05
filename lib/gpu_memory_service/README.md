@@ -546,7 +546,7 @@ When `--load-format gms` is set:
 #### vLLM
 
 ```bash
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --model <model> \
   --load-format gms \
   --worker-cls gpu_memory_service.integrations.vllm.worker:GMSWorker \
@@ -566,7 +566,7 @@ The integration uses a custom worker class (`GMSWorker`) that:
 #### SGLang
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path <model> \
   --load-format gms \
   --enable-memory-saver \

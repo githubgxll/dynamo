@@ -34,7 +34,7 @@ Today, vLLM exposes Prometheus gauge/histogram metrics that are **scraped asynch
 
 **Why this matters for the ecosystem:**
 
-- **NVIDIA Dynamo** currently implements this as an out-of-tree `--scheduler-cls` subclass ([InstrumentedScheduler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/vllm/instrumented_scheduler.py)), but measuring wall time from the scheduler is inherently imprecise because the scheduler cannot observe the GPU forward pass boundary (see Proposed Change).
+- **NVIDIA Dynamo** currently implements this as an out-of-tree `--scheduler-cls` subclass ([InstrumentedScheduler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/vllm/instrumented_scheduler.py)), but measuring wall time from the scheduler is inherently imprecise because the scheduler cannot observe the GPU forward pass boundary (see Proposed Change).
 - **Autoscalers** (Kubernetes HPA, custom planners) need per-iteration throughput signals to make scaling decisions within seconds, not minutes.
 
 ---
@@ -182,7 +182,7 @@ For DP deployments, rank N binds on `PORT + N`. When enabled, the scheduler base
 
 ## Any Other Things
 
-**Reference implementation:** NVIDIA Dynamo's [InstrumentedScheduler](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/vllm/instrumented_scheduler.py) implements this as an out-of-tree scheduler subclass with scheduler-side timing. Moving the timing into EngineCore and the ZMQ publisher into vLLM core would:
+**Reference implementation:** NVIDIA Dynamo's [InstrumentedScheduler](https://github.com/ai-dynamo/dynamo/blob/main/dingo/vllm/instrumented_scheduler.py) implements this as an out-of-tree scheduler subclass with scheduler-side timing. Moving the timing into EngineCore and the ZMQ publisher into vLLM core would:
 
 1. Eliminate the need for `--scheduler-cls` overrides for metrics
 2. Provide accurate GPU timing (not scheduler-approximate)

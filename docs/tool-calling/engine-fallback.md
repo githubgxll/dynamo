@@ -26,11 +26,11 @@ These are distinct from the Dynamo-native `--dyn-tool-call-parser` / `--dyn-reas
 ```bash
 # vLLM chat processor — frontend carries the parser flags, then launch the worker:
 python -m dingo.frontend --dyn-chat-processor vllm   --tool-call-parser hermes --reasoning-parser qwen3
-python -m dynamo.vllm   --model Qwen/Qwen3-0.6B
+python -m dingo.vllm   --model Qwen/Qwen3-0.6B
 
 # SGLang chat processor
 python -m dingo.frontend --dyn-chat-processor sglang --tool-call-parser qwen25 --reasoning-parser qwen3
-python -m dynamo.sglang --model Qwen/Qwen3-0.6B
+python -m dingo.sglang --model Qwen/Qwen3-0.6B
 ```
 
 > [!TIP]

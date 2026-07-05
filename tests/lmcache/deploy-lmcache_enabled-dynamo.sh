@@ -27,4 +27,4 @@ echo "🔧 Starting dynamo worker with LMCache enabled..."
 
 python -m dingo.frontend &
 
-python3 -m dynamo.vllm --model $MODEL_URL --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+python3 -m dingo.vllm --model $MODEL_URL --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'

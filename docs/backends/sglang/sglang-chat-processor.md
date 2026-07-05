@@ -30,7 +30,7 @@ python -m dingo.frontend \
   --reasoning-parser qwen3
 
 # Workers (unchanged)
-CUDA_VISIBLE_DEVICES=0 python -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=0 python -m dingo.sglang \
   --model-path Qwen/Qwen3-14B-FP8 \
   --served-model-name Qwen/Qwen3-14B-FP8 \
   --tp 1 --trust-remote-code \
@@ -129,11 +129,11 @@ The parser separates think tag content into the `reasoning_content` field and re
 
 ```diff
   # Before (deprecated)
-- python -m dynamo.sglang --model-path <model> --use-sglang-tokenizer
+- python -m dingo.sglang --model-path <model> --use-sglang-tokenizer
 - python -m dingo.frontend
 
   # After
-  python -m dynamo.sglang --model-path <model>
+  python -m dingo.sglang --model-path <model>
 + python -m dingo.frontend --dyn-chat-processor sglang
 ```
 

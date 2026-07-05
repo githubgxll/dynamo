@@ -131,7 +131,7 @@ spec:
               command:
                 - python3
                 - -m
-                - dynamo.vllm
+                - dingo.vllm
               args:
                 - --model
                 - nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4

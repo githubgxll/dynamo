@@ -249,7 +249,7 @@ Available voices and languages are loaded dynamically from the model's `config.j
 
 ## CLI Reference
 
-The omni backend uses a dedicated entrypoint: `python -m dynamo.vllm.omni`.
+The omni backend uses a dedicated entrypoint: `python -m dingo.vllm.omni`.
 
 | Flag | Description |
 |---|---|

@@ -50,7 +50,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.vllm
+            - dingo.vllm
             - --model
             - nvidia/Llama-3.1-8B-Instruct-FP8
     VllmPrefillWorker:
@@ -69,7 +69,7 @@ spec:
             - python3
           args:
             - -m
-            - dynamo.vllm
+            - dingo.vllm
             - --model
             - nvidia/Llama-3.1-8B-Instruct-FP8
             - --disaggregation-mode

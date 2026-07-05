@@ -28,7 +28,7 @@ python -m dingo.frontend \
 
 # two decode workers
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -36,7 +36,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
     --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
 
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -47,7 +47,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
 # When registered with --disaggregation-mode prefill, these workers are automatically detected
 # by the frontend, which activates an internal prefill router for KV-aware prefill routing
 VLLM_NIXL_SIDE_CHANNEL_PORT=20098 \
-CUDA_VISIBLE_DEVICES=2 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=2 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -56,7 +56,7 @@ CUDA_VISIBLE_DEVICES=2 python3 -m dynamo.vllm \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20082","enable_kv_cache_events":true}'&
 
 VLLM_NIXL_SIDE_CHANNEL_PORT=20099 \
-CUDA_VISIBLE_DEVICES=3 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=3 python3 -m dingo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \

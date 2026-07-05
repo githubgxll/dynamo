@@ -26,7 +26,7 @@ If you are running a single worker with HiCache and no shared pool, no Dynamo-si
 Launch a worker with HiCache enabled:
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --page-size 64 \
   --enable-hierarchical-cache \
@@ -154,7 +154,7 @@ You also need:
 **SGLang worker** — HiCache with Mooncake storage:
 
 ```bash
-python -m dynamo.sglang \
+python -m dingo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --page-size 64 \
   --enable-hierarchical-cache \
@@ -193,7 +193,7 @@ No extra flags are required on the worker. When `--hicache-storage-backend moonc
 **Events carry a medium.** Run the worker with `--log-level debug` and grep the log:
 
 ```bash
-python -m dynamo.sglang ... --log-level debug 2>&1 | grep -E 'BlockStored|BlockRemoved'
+python -m dingo.sglang ... --log-level debug 2>&1 | grep -E 'BlockStored|BlockRemoved'
 # BlockStored(block_hashes=[...], medium=CPU_PINNED)
 # BlockRemoved(block_hashes=[...], medium=GPU)
 ```

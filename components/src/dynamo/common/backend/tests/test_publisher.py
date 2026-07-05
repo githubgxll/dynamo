@@ -88,7 +88,7 @@ async def test_register_prometheus_default_is_noop():
 @pytest.mark.asyncio
 async def test_vllm_kv_event_sources_return_one_zmq_source_per_dp_rank(monkeypatch):
     mod = pytest.importorskip(
-        "dynamo.vllm.llm_engine", reason="vLLM backend dependencies not installed"
+        "dingo.vllm.llm_engine", reason="vLLM backend dependencies not installed"
     )
     from dynamo.common.constants import DisaggregationMode
 
@@ -130,7 +130,7 @@ async def test_sglang_kv_event_sources_return_one_zmq_source_per_local_dp_rank(
     monkeypatch,
 ):
     mod = pytest.importorskip(
-        "dynamo.sglang.llm_engine", reason="SGLang backend dependencies not installed"
+        "dingo.sglang.llm_engine", reason="SGLang backend dependencies not installed"
     )
 
     engine = mod.SglangLLMEngine.__new__(mod.SglangLLMEngine)

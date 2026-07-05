@@ -282,7 +282,7 @@ func updateVLLMMultinodeArgs(container *corev1.Container, role Role, serviceName
 		//   Leader: ray start --head --block & <tcp-poll-ray-ready> && <vllm cmd>
 		//   Worker: <poll /live until 200> && ray start --address=<leader>:6379 --block
 		// Note: --data-parallel-size-local is intentionally NOT injected. With the
-		// worker's health-gate delaying its Ray join until dynamo.vllm is fully ready,
+		// worker's health-gate delaying its Ray join until dingo.vllm is fully ready,
 		// only the leader node is in the Ray cluster when create_dp_placement_groups runs,
 		// so vLLM naturally places all initial DP workers on the leader node.
 		injectElasticEPRayLaunchFlags(container, role, serviceName, multinodeDeployer)
@@ -295,7 +295,7 @@ func updateVLLMMultinodeArgs(container *corev1.Container, role Role, serviceName
 }
 
 // getExpandedArgs will expand the containers args in the case where
-// the args are joined together with spaces as an individual string (i.e. "python3 -m dynamo.vllm")
+// the args are joined together with spaces as an individual string (i.e. "python3 -m dingo.vllm")
 func getExpandedArgs(container *corev1.Container) []string {
 	expandedArgs := []string{}
 	for _, arg := range container.Args {
@@ -453,7 +453,7 @@ func injectElasticEPRayLaunchFlags(container *corev1.Container, role Role, servi
 			`i=0; until python3 -c "import urllib.request; urllib.request.urlopen('http://%s:%d/live', timeout=5)" `+
 				`2>/dev/null; do `+
 				`i=$((i+1)); [ "$i" -ge 720 ] && { echo "ERROR: leader /live did not become ready within 3h" >&2; exit 1; }; `+
-				`echo 'waiting for leader dynamo.vllm /live to return 200...'; sleep 15; done`,
+				`echo 'waiting for leader dingo.vllm /live to return 200...'; sleep 15; done`,
 			leaderHostname, commonconsts.DynamoSystemPort,
 		)
 		container.Args = []string{fmt.Sprintf(

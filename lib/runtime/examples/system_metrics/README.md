@@ -189,7 +189,7 @@ To Run an actual LLM frontend + server (aggregated example), launch both of them
 ```
 python -m dingo.frontend &
 
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager --no-enable-prefix-caching &
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager --no-enable-prefix-caching &
 ```
 Then make curl requests to the frontend (see the [main README](../../../../README.md))
 

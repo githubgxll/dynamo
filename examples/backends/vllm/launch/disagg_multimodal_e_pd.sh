@@ -16,7 +16,7 @@ MODEL_NAME="Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 SINGLE_GPU=false
 
 # Parse command line arguments
-# All extra arguments are passed through to the PD worker's dynamo.vllm
+# All extra arguments are passed through to the PD worker's dingo.vllm
 # (which routes them to Dynamo or vLLM as appropriate).
 EXTRA_PD_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --single-gpu                  Run encode and PD workers on the same GPU (for small models, e.g. 2B)"
             echo "  -h, --help                    Show this help message"
             echo ""
-            echo "All additional arguments are passed through to the PD worker's dynamo.vllm."
+            echo "All additional arguments are passed through to the PD worker's dingo.vllm."
             echo "Dynamo args (e.g. --multimodal-embedding-cache-capacity-gb) and"
             echo "vLLM engine args (e.g. --no-enable-prefix-caching) are automatically routed."
             echo ""
@@ -112,7 +112,7 @@ fi
 # NOTE: encoder VRAM is STATIC, set by the model — $DYN_ENCODE_GPU_MEM
 # (--gpu-memory-utilization) is effectively a no-op for non-Qwen-VL models.
 # dynamo's EncodeWorkerHandler only consumes engine_args.enforce_eager;
-# load_vision_model (components/src/dynamo/vllm/multimodal_utils/model.py)
+# load_vision_model (dingo/vllm/multimodal_utils/model.py)
 # branches on family:
 #   - Qwen-VL: vLLM mm_encoder_only=True path, hardcoded gpu_memory_utilization=0.2
 #     and kv_cache_memory_bytes=64MiB inside the function — only the vision tower
@@ -127,7 +127,7 @@ fi
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (--gpu-memory-utilization $DYN_ENCODE_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
 CUDA_VISIBLE_DEVICES=$DYN_ENCODE_WORKER_GPU \
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --enable-multimodal \
   --disaggregation-mode encode \
   --model "$MODEL_NAME" \
@@ -138,7 +138,7 @@ python -m dynamo.vllm \
 echo "Starting PD worker on GPU $DYN_PD_WORKER_GPU (${PD_GPU_MEM_ARGS})..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 CUDA_VISIBLE_DEVICES=$DYN_PD_WORKER_GPU \
-python -m dynamo.vllm \
+python -m dingo.vllm \
   --route-to-encoder \
   --enable-multimodal \
   --disaggregation-mode pd \

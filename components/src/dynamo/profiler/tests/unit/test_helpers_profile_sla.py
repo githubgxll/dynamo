@@ -891,7 +891,7 @@ class TestAddProfileDataMockerGuard:
                             "mainContainer": {
                                 "args": [
                                     "-m",
-                                    "dynamo.sglang",
+                                    "dingo.sglang",
                                     "--model-path",
                                     "Qwen/Qwen3-32B",
                                     "--disaggregation-mode",
@@ -905,7 +905,7 @@ class TestAddProfileDataMockerGuard:
                             "mainContainer": {
                                 "args": [
                                     "-m",
-                                    "dynamo.sglang",
+                                    "dingo.sglang",
                                     "--model-path",
                                     "Qwen/Qwen3-32B",
                                     "--disaggregation-mode",

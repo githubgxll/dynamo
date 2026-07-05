@@ -67,7 +67,7 @@ spec:
           - /bin/bash
           - -c
           - |
-            exec python3 -m dynamo.vllm \
+            exec python3 -m dingo.vllm \
              --model Qwen/Qwen3-32B \
              --disaggregation-mode decode \
              --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config": {"backends": ["LIBFABRIC"]}}'
@@ -130,7 +130,7 @@ spec:
           - /bin/bash
           - -c
           - |-
-            exec python3 -m dynamo.vllm \
+            exec python3 -m dingo.vllm \
              --model Qwen/Qwen3-32B \
              --disaggregation-mode prefill \
              --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config": {"backends": ["LIBFABRIC"]}}'

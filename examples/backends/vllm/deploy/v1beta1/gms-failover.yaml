@@ -57,7 +57,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:latest
           name: main
           resources:
@@ -92,7 +92,7 @@ spec:
   #         command:
   #         - python3
   #         - -m
-  #         - dynamo.vllm
+  #         - dingo.vllm
   #         envFrom:
   #         - secretRef:
   #             name: hf-token-secret

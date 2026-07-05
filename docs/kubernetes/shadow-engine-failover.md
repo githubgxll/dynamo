@@ -212,7 +212,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.vllm
+            - dingo.vllm
           args:
             - --model
             - Qwen/Qwen3-0.6B

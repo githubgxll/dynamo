@@ -128,7 +128,7 @@ class RLVllmWorkerProcess(ManagedProcess):
             command=[
                 "python3",
                 "-m",
-                "dynamo.vllm",
+                "dingo.vllm",
                 "--model",
                 TEST_MODEL,
                 "--enforce-eager",
@@ -152,7 +152,7 @@ class RLVllmWorkerProcess(ManagedProcess):
             timeout=600,
             display_output=True,
             terminate_all_matching_process_names=False,
-            straggler_commands=["-m dynamo.vllm"],
+            straggler_commands=["-m dingo.vllm"],
             log_dir=_prepare_log_dir(request, "rl-vllm-worker"),
             display_name="rl-vllm-worker",
         )

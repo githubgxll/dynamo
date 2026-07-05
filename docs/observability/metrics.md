@@ -39,7 +39,7 @@ Launch a frontend and vLLM backend to test metrics:
 $ python -m dingo.frontend
 
 # Enable backend worker's system metrics on port 8081
-$ DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B  \
+$ DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model Qwen/Qwen3-0.6B  \
    --enforce-eager --no-enable-prefix-caching --max-num-seqs 3
 ```
 
@@ -105,7 +105,7 @@ This hierarchical structure allows you to create metrics at the appropriate leve
 
 ### Backend Component Metrics
 
-**Backend workers** (`python -m dynamo.vllm`, `python -m dynamo.sglang`, etc.) expose `dynamo_component_*` metrics on the system status port (configurable via `DYN_SYSTEM_PORT`, disabled by default). In Kubernetes the operator typically sets `DYN_SYSTEM_PORT=9090`; for local development you must set it explicitly (e.g. `DYN_SYSTEM_PORT=8081`).
+**Backend workers** (`python -m dingo.vllm`, `python -m dingo.sglang`, etc.) expose `dynamo_component_*` metrics on the system status port (configurable via `DYN_SYSTEM_PORT`, disabled by default). In Kubernetes the operator typically sets `DYN_SYSTEM_PORT=9090`; for local development you must set it explicitly (e.g. `DYN_SYSTEM_PORT=8081`).
 
 The core Dynamo backend system exposes metrics at the `/metrics` endpoint with the `dynamo_component_*` prefix for all components that use the `DistributedRuntime` framework:
 
@@ -120,7 +120,7 @@ The core Dynamo backend system exposes metrics at the `/metrics` endpoint with t
 **Access backend component metrics:**
 ```bash
 # Set DYN_SYSTEM_PORT to enable the system status server
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model <model>
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model <model>
 curl http://localhost:8081/metrics
 ```
 
@@ -455,12 +455,12 @@ To enable, set these environment variables on your worker process:
 # Prefill worker
 NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus \
   NIXL_TELEMETRY_PROMETHEUS_PORT=19090 DYN_SYSTEM_PORT=8081 \
-  python -m dynamo.vllm --model <model> --disaggregation-mode prefill
+  python -m dingo.vllm --model <model> --disaggregation-mode prefill
 
 # Decode worker (different NIXL port to avoid collision)
 NIXL_TELEMETRY_ENABLE=y NIXL_TELEMETRY_EXPORTER=prometheus \
   NIXL_TELEMETRY_PROMETHEUS_PORT=19091 DYN_SYSTEM_PORT=8082 \
-  python -m dynamo.vllm --model <model> --disaggregation-mode decode
+  python -m dingo.vllm --model <model> --disaggregation-mode decode
 
 # Scrape NIXL metrics (separate from Dynamo metrics on 8081/8082)
 curl http://localhost:19090/metrics

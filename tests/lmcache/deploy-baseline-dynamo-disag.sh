@@ -28,8 +28,8 @@ echo "🔧 Starting dynamo disaggregated serving without LMCache..."
 
 python -m dingo.frontend &
 
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model $MODEL_URL --disaggregation-mode decode &
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm --model $MODEL_URL --disaggregation-mode decode &
 
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
     --model $MODEL_URL \
     --disaggregation-mode prefill

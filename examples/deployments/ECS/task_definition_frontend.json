@@ -23,7 +23,7 @@
                 "-c"
             ],
             "command": [
-                "cd examples/backends/vllm && python -m dingo.frontend --router-mode kv & python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager"
+                "cd examples/backends/vllm && python -m dingo.frontend --router-mode kv & python3 -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager"
             ],
             "environment": [
                 {

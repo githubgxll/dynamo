@@ -35,7 +35,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: OTEL_SERVICE_NAME
             value: dynamo-worker-vllm

@@ -61,7 +61,7 @@ python -m dingo.frontend &
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 export OTEL_SERVICE_NAME=dynamo-worker-vllm
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+    python -m dingo.vllm --model "$MODEL" --enforce-eager \
     --otlp-traces-endpoint="$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" \
     "${EXTRA_ARGS[@]}" &
 

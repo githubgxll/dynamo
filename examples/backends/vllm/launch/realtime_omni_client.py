@@ -19,7 +19,7 @@ linearly resampled to 16 kHz PCM16 (the realtime input format). When
 GitHub repo (``tests/assets/qwen3_tts/clone_2.wav``).
 
 python -m dingo.frontend --http-port 8000
-python -m dynamo.vllm.omni --realtime --model Qwen/Qwen3-Omni-30B-A3B-Instruct
+python -m dingo.vllm.omni --realtime --model Qwen/Qwen3-Omni-30B-A3B-Instruct
 
 Usage (omit --input-audio to fetch the sample clip from GitHub):
   python realtime_omni_client.py \

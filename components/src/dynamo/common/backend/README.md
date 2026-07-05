@@ -66,10 +66,10 @@ dependencies.
 
 ```bash
 # vLLM
-python -m dynamo.vllm.unified_main --model Qwen/Qwen3-0.6B ...
+python -m dingo.vllm.unified_main --model Qwen/Qwen3-0.6B ...
 
 # SGLang
-python -m dynamo.sglang.unified_main --model-path Qwen/Qwen3-0.6B ...
+python -m dingo.sglang.unified_main --model-path Qwen/Qwen3-0.6B ...
 
 # TensorRT-LLM
 python -m dynamo.trtllm.unified_main --model Qwen/Qwen3-0.6B ...
@@ -589,7 +589,7 @@ Request handling:
 | `KvConnectorProtocol` abstraction | Legacy abstracts NIXL pull / Mooncake push; unified uses vLLM's internal connector only |
 | `--headless` multi-node mode | Secondary-node TP/PP worker mode (`run_dynamo_headless`); unified requires every node to run the backend |
 | `--benchmark-mode` family | The `--benchmark-*` flag family (mode, prefill/decode granularities, warmup, output path, timeout) injects into `vllm_config.additional_config` |
-| "Omni" alternative entry point | `dynamo.vllm.omni.*` parallel mode for alternative tensor workflows |
+| "Omni" alternative entry point | `dingo.vllm.omni.*` parallel mode for alternative tensor workflows |
 | Multimodal (vLLM) | NIXL embedding transfer (`EmbeddingTransferMode`, `--embedding-transfer-mode`), embedding LRU cache (`--multimodal-embedding-cache-capacity-gb`), Qwen VL mRoPE, `EncodeWorkerHandler`, `--route-to-encoder` |
 
 ### SGLang-specific gaps

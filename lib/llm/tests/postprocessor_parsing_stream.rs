@@ -1462,7 +1462,7 @@ async fn tool_choice_matrix_non_force_required_prompt_injected_with_close_marker
 /// CASE 5 — non-force parser + required + `prompt_injected_reasoning=true`
 /// + bare JSON (no `</think>`). Documents the **backend contract** rather
 /// than asserting recovery: when `--dyn-reasoning-parser X` is set, vLLM's
-/// auto-forward in `components/src/dynamo/vllm/main.py:506-507` instantiates
+/// auto-forward in `dingo/vllm/main.py:506-507` instantiates
 /// a reasoner whose `should_fill_bitmask` gate (vLLM
 /// `v1/structured_output/__init__.py:301`) keeps the xgrammar bitmask off
 /// until `</think>` appears in the output. Consequently any "bare guided

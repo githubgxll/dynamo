@@ -30,7 +30,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           env:
           - name: DYN_KVBM_CPU_CACHE_GB
             value: "100"

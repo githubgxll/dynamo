@@ -15,7 +15,7 @@ Logits processors let you modify the next-token logits at every decoding step (e
 
 - **Interface**: Implement `dynamo.logits_processing.BaseLogitsProcessor`, which defines `__call__(input_ids, logits)` and modifies `logits` in-place.
 - **Shared spec layer**: The engine declares a backend-neutral `LogitsProcessorSpec` (see `dynamo.common.backend.engine`). The shared `logits_processors_for_request` helper owns the generation-stage gating (activate only on `AGGREGATED` / `DECODE`) and the per-request freshness policy.
-- **SGLang mechanism**: SGLang gates the feature behind the server flag `--enable-custom-logit-processor`, takes a *serialized* processor class as a top-level `async_generate` argument (`custom_logit_processor`), and hands that processor a **batch** logits tensor plus a `custom_param_list` (one `sampling_params["custom_params"]` dict per request in the batch). Dynamo's adapter lives at `dynamo.sglang.logits_processing.adapter`.
+- **SGLang mechanism**: SGLang gates the feature behind the server flag `--enable-custom-logit-processor`, takes a *serialized* processor class as a top-level `async_generate` argument (`custom_logit_processor`), and hands that processor a **batch** logits tensor plus a `custom_param_list` (one `sampling_params["custom_params"]` dict per request in the batch). Dynamo's adapter lives at `dingo.sglang.logits_processing.adapter`.
 
 ### Quick test: HelloWorld processor
 
@@ -42,7 +42,7 @@ The quick test targets aggregated deployments. In disaggregated mode the prefill
 
 ### How the unified backend wires this up
 
-The unified SGLang engine threads logits processors through the shared spec layer in `dynamo.common.backend.engine` and the per-backend realizer at `dynamo.sglang.logits_processing.adapter`:
+The unified SGLang engine threads logits processors through the shared spec layer in `dynamo.common.backend.engine` and the per-backend realizer at `dingo.sglang.logits_processing.adapter`:
 
 - `from_args()` sets `server_args.enable_custom_logit_processor = True` and `server_args.skip_tokenizer_init = False` when the env hook is on **and** the worker is a generation role — after user overrides, so an explicit `skip_tokenizer_init=True` can't starve the hook. PREFILL keeps its configured flags.
 - `start()` resolves a `LogitsProcessorSpec` once via `resolve_test_logits_processor_spec`, tokenizing `"Hello world!"` into a `ForcedTokenSequenceSpec`. `None` when the env var is off or on a non-generation role.

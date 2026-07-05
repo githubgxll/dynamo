@@ -31,7 +31,7 @@ func TestNewRestorePod(t *testing.T) {
 			Containers: []corev1.Container{{
 				Name:           "main",
 				Image:          "test:latest",
-				Command:        []string{"python3", "-m", "dynamo.vllm"},
+				Command:        []string{"python3", "-m", "dingo.vllm"},
 				Args:           []string{"--model", "Qwen"},
 				ReadinessProbe: readinessProbe.DeepCopy(),
 				LivenessProbe:  livenessProbe.DeepCopy(),
@@ -72,7 +72,7 @@ func TestNewRestorePod(t *testing.T) {
 		t.Fatalf("expected restartPolicy Never, got %#v", restorePod.Spec.RestartPolicy)
 	}
 	main := &restorePod.Spec.Containers[0]
-	if got, want := main.Command, []string{"python3", "-m", "dynamo.vllm"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := main.Command, []string{"python3", "-m", "dingo.vllm"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected command %#v, got %#v", want, got)
 	}
 	if got, want := main.Args, []string{"--model", "Qwen"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -262,7 +262,7 @@ func TestPrepareRestorePodSpec(t *testing.T) {
 	startupProbe := &corev1.Probe{FailureThreshold: 60}
 	podSpec.Containers = []corev1.Container{{
 		Name:           "main",
-		Command:        []string{"python3", "-m", "dynamo.vllm"},
+		Command:        []string{"python3", "-m", "dingo.vllm"},
 		Args:           []string{"--model", "Qwen"},
 		ReadinessProbe: readinessProbe.DeepCopy(),
 		LivenessProbe:  livenessProbe.DeepCopy(),
@@ -329,7 +329,7 @@ func TestPrepareRestorePodSpec(t *testing.T) {
 	if standbyEnvCount != 1 {
 		t.Fatalf("expected single %s env after repeated calls, got %#v", RestoreStandbyModeEnv, container.Env)
 	}
-	if got, want := container.Command, []string{"python3", "-m", "dynamo.vllm"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := container.Command, []string{"python3", "-m", "dingo.vllm"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected command %#v, got %#v", want, got)
 	}
 	if got, want := container.Args, []string{"--model", "Qwen"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -365,7 +365,7 @@ func TestPrepareRestorePodSpecSynthesizesStartupProbeFromLiveness(t *testing.T) 
 	podSpec := corev1.PodSpec{
 		Containers: []corev1.Container{{
 			Name:          "main",
-			Command:       []string{"python3", "-m", "dynamo.vllm"},
+			Command:       []string{"python3", "-m", "dingo.vllm"},
 			Args:          []string{"--model", "Qwen"},
 			LivenessProbe: livenessProbe.DeepCopy(),
 		}},
@@ -400,7 +400,7 @@ func TestPrepareRestorePodSpecSynthesizesStartupProbeFromReadiness(t *testing.T)
 	podSpec := corev1.PodSpec{
 		Containers: []corev1.Container{{
 			Name:           "main",
-			Command:        []string{"python3", "-m", "dynamo.vllm"},
+			Command:        []string{"python3", "-m", "dingo.vllm"},
 			Args:           []string{"--model", "Qwen"},
 			ReadinessProbe: readinessProbe.DeepCopy(),
 		}},
@@ -431,7 +431,7 @@ func TestPrepareRestorePodSpecFallsBackToSentinelWhenNoProbe(t *testing.T) {
 	podSpec := corev1.PodSpec{
 		Containers: []corev1.Container{{
 			Name:    "main",
-			Command: []string{"python3", "-m", "dynamo.vllm"},
+			Command: []string{"python3", "-m", "dingo.vllm"},
 			Args:    []string{"--model", "Qwen"},
 		}},
 	}

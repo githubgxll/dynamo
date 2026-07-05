@@ -163,7 +163,7 @@ func checkpointCandidatePod(checkpointName string) *corev1.Pod {
 			Containers: []corev1.Container{{
 				Name:    consts.MainContainerName,
 				Image:   "worker:latest",
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 			}},
 		},
 	}

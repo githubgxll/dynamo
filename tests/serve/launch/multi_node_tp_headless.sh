@@ -21,8 +21,8 @@ fi
 echo "Starting Dynamo frontend..."
 python3 -m dingo.frontend &
 
-echo "Starting dynamo.vllm head node (TP=2, nnodes=2, node-rank=0, GPU 0)..."
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
+echo "Starting dingo.vllm head node (TP=2, nnodes=2, node-rank=0, GPU 0)..."
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
   --model "${MODEL}" \
   --tensor-parallel-size 2 \
   --nnodes 2 \
@@ -31,8 +31,8 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
   --enforce-eager \
   $GPU_MEM_ARGS &
 
-echo "Starting dynamo.vllm headless worker (TP=2, nnodes=2, node-rank=1, GPU 1)..."
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
+echo "Starting dingo.vllm headless worker (TP=2, nnodes=2, node-rank=1, GPU 1)..."
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
   --model "${MODEL}" \
   --tensor-parallel-size 2 \
   --nnodes 2 \

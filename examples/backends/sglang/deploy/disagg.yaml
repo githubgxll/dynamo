@@ -28,7 +28,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           args:
             - --model-path
             - Qwen/Qwen3-0.6B
@@ -63,7 +63,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.sglang
+          - dingo.sglang
           args:
             - --model-path
             - Qwen/Qwen3-0.6B

@@ -94,7 +94,7 @@ extraPodSpec:
     args:
       - "python3"
       - "-m"
-      - "dynamo.vllm"
+      - "dingo.vllm"
       - "--model"
       - "Qwen/Qwen3-0.6B"
       # Optional: Enable prompt embeddings feature

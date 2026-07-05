@@ -152,7 +152,7 @@ spec:
             - -c
           args:
             - >-
-              python3 -m dynamo.vllm
+              python3 -m dingo.vllm
               --model Qwen/Qwen3-32B
               --quantization fp8
               --kv-cache-dtype fp8
@@ -244,7 +244,7 @@ spec:
             - -c
           args:
             - >-
-              python3 -m dynamo.vllm
+              python3 -m dingo.vllm
               --model Qwen/Qwen3-32B
               --quantization fp8
               --kv-cache-dtype fp8

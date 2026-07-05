@@ -21,7 +21,7 @@ spec:
         - command:
           - /bin/bash
           - -c
-          - exec python3 -m dynamo.vllm --model Qwen/Qwen3-0.6B
+          - exec python3 -m dingo.vllm --model Qwen/Qwen3-0.6B
           envFrom:
           - secretRef:
               name: hf-token-secret

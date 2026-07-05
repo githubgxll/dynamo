@@ -78,7 +78,7 @@ if [ "$APPROX_MODE" = false ]; then
 fi
 
 OTEL_SERVICE_NAME=dynamo-worker-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER1:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \
@@ -91,7 +91,7 @@ python3 -m dynamo.sglang \
   "${TRACE_ARGS[@]}" &
 
 OTEL_SERVICE_NAME=dynamo-worker-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \

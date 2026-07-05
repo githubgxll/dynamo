@@ -7,7 +7,7 @@ Each backend's ``unified_main.py`` calls :func:`run` with its
 ``LLMEngine`` subclass.  Example::
 
     from dynamo.common.backend.run import run
-    from dynamo.vllm.llm_engine import VllmLLMEngine
+    from dingo.vllm.llm_engine import VllmLLMEngine
 
     def main():
         run(VllmLLMEngine)

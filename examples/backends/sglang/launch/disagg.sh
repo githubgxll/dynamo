@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/../../../common/launch_utils.sh" # print_launch_banner, wait
 # Strip --unified via the shared helper, then parse the remaining flags.
 # All of this runs BEFORE installing the kill-process-group EXIT trap so
 # an early exit (--help / unknown option) doesn't tear down the caller.
-pick_worker_module dynamo.sglang dynamo.sglang.unified_main "$@"
+pick_worker_module dingo.sglang dingo.sglang.unified_main "$@"
 set -- "${REMAINING_ARGS[@]}"
 
 ENABLE_OTEL=false
@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --enable-otel        Enable OpenTelemetry tracing"
             echo "  --model <name>       Model to serve (default: $MODEL)"
             echo "  --unified            Use the unified backend entry point"
-            echo "                       (python -m dynamo.sglang.unified_main)"
+            echo "                       (python -m dingo.sglang.unified_main)"
             echo "  -h, --help           Show this help message"
             echo ""
             echo "Note: System metrics are enabled by default on ports 8081 (prefill), 8082 (decode)"

@@ -186,7 +186,7 @@ spec:
                   fi
                   echo "PRESTART_GPU_GUARD_PASS role=agg workload=agentic"
                   ulimit -l unlimited
-                  exec python3 -m dynamo.vllm \
+                  exec python3 -m dingo.vllm \
                     --model "${MODEL_PATH}" \
                     --served-model-name "${SERVED_MODEL_NAME}" \
                     --tensor-parallel-size 4 \

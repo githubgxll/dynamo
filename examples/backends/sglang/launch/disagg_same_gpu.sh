@@ -24,11 +24,11 @@ MODEL="Qwen/Qwen3-0.6B"
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
 # Strip --unified via the shared helper, then parse the remaining flags.
-# `--unified` routes workers through dynamo.sglang.unified_main (the Rust
+# `--unified` routes workers through dingo.sglang.unified_main (the Rust
 # backend-common Worker, which owns the prefill drain loop); default stays
 # on the legacy main. Done before the arg loop so it isn't rejected as an
 # unknown option.
-pick_worker_module dynamo.sglang dynamo.sglang.unified_main "$@"
+pick_worker_module dingo.sglang dingo.sglang.unified_main "$@"
 set -- "${REMAINING_ARGS[@]}"
 
 # --model overrides the default (e.g. a VLM for the multimodal P/D test).

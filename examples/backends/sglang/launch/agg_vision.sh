@@ -129,7 +129,7 @@ fi
 # vision encoding internally. With it, the worker consumes Decoded items via
 # ImageLoader and hands PIL Images to sgl.Engine.async_generate(image_data=[...]).
 OTEL_SERVICE_NAME=dynamo-worker DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   "${TEMPLATE_ARGS[@]}" \

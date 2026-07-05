@@ -343,7 +343,7 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
     # falls through to AutoModel.from_pretrained(..., torch_dtype=fp16) for
     # non-Qwen-VL models and loads the full LLaVA-1.5-7b weights before
     # extracting .visual. See disagg_multimodal_e_pd.sh and
-    # components/src/dynamo/vllm/multimodal_utils/model.py:load_vision_model.
+    # dingo/vllm/multimodal_utils/model.py:load_vision_model.
     # PD VRAM is bounded by --kv-cache-memory-bytes (set via
     # requested_vllm_kv_cache_bytes marker → _PROFILE_OVERRIDE_VLLM_KV_CACHE_BYTES);
     # without that marker, the PD fraction $DYN_PD_GPU_MEM applies.

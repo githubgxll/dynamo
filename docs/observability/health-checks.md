@@ -33,7 +33,7 @@ Enable health checks and query endpoints:
 python -m dingo.frontend &
 
 # Enable system status server on port 8081
-DYN_SYSTEM_PORT=8081 python -m dynamo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
+DYN_SYSTEM_PORT=8081 python -m dingo.vllm --model Qwen/Qwen3-0.6B --enforce-eager &
 ```
 
 Check health status:
@@ -273,7 +273,7 @@ export DYN_CANARY_WAIT_TIME=5  # Wait 5 seconds before sending health check
 export DYN_HEALTH_CHECK_REQUEST_TIMEOUT=5  # 5 second timeout
 
 # Start worker
-python -m dynamo.vllm --model Qwen/Qwen3-0.6B
+python -m dingo.vllm --model Qwen/Qwen3-0.6B
 ```
 
 #### Configuration Options

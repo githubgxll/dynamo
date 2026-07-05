@@ -5,7 +5,7 @@
 
 Usage:
     python -m dynamo.thunderagent_router \\
-        --endpoint dynamo.vllm.generate \\
+        --endpoint dingo.vllm.generate \\
         --router-block-size 64
 
 Serves ``{namespace}.thunderagent_router.generate``. Pause/resume is
@@ -280,7 +280,7 @@ async def worker(runtime: DistributedRuntime) -> None:
         # tool_calls before pi / openhands / other agents see them. These use
         # the same --dyn-tool-call-parser / --dyn-reasoning-parser flag names
         # (and DYN_TOOL_CALL_PARSER / DYN_REASONING_PARSER env vars) as the
-        # standalone dynamo.vllm worker.
+        # standalone dingo.vllm worker.
         runtime_cfg = ModelRuntimeConfig()
         if config.tool_call_parser:
             runtime_cfg.tool_call_parser = config.tool_call_parser

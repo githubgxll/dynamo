@@ -44,7 +44,7 @@ The `KvRouter` provides the following methods:
 
 First, launch your backend engines:
 ```bash
-python -m dynamo.vllm --model meta-llama/Llama-2-7b-hf
+python -m dingo.vllm --model meta-llama/Llama-2-7b-hf
 ```
 
 ### Example Script

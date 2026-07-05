@@ -89,7 +89,7 @@ spec:
         containers:
         - name: main
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
-          command: ["python3", "-m", "dynamo.vllm"]
+          command: ["python3", "-m", "dingo.vllm"]
           args: ["--model", "Qwen/Qwen3-0.6B", "--disaggregation-mode", "prefill"]
           envFrom:
           - secretRef:
@@ -105,7 +105,7 @@ spec:
         containers:
         - name: main
           image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
-          command: ["python3", "-m", "dynamo.vllm"]
+          command: ["python3", "-m", "dingo.vllm"]
           args: ["--model", "Qwen/Qwen3-0.6B", "--disaggregation-mode", "decode"]
           envFrom:
           - secretRef:

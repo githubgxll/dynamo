@@ -486,7 +486,7 @@ func intraPodFailoverPodSpec() corev1.PodSpec {
 			{
 				Name:    "main",
 				Image:   "test-image:latest",
-				Command: []string{"python3", "-m", "dynamo.vllm"},
+				Command: []string{"python3", "-m", "dingo.vllm"},
 				Env: []corev1.EnvVar{
 					{Name: "DYN_SYSTEM_PORT", Value: "9090"},
 					{Name: "DYN_SYSTEM_ENABLED", Value: "true"},
