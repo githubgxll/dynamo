@@ -176,6 +176,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             **mm_kwargs,
             sampling_params=sampling_params,
             stream=True,
+            **require_reasoning_kwargs(self.engine, inner_request),
             bootstrap_host=bootstrap_host,
             bootstrap_port=bootstrap_port,
             bootstrap_room=bootstrap_room,
