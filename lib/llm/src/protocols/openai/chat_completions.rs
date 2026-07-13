@@ -539,7 +539,11 @@ impl ValidateRequest for NvCreateChatCompletionRequest {
         validate::validate_logit_bias(&self.inner.logit_bias)?;
         // none for logprobs
         validate::validate_top_logprobs(self.inner.top_logprobs)?;
-        // validate::validate_max_tokens(self.inner.max_tokens)?; // warning depricated field
+        // `max_tokens` is deprecated in favor of `max_completion_tokens`, but
+        // remains part of the OpenAI-compatible request contract and must be
+        // validated before the request reaches a backend worker.
+        #[allow(deprecated)]
+        validate::validate_max_tokens(self.inner.max_tokens)?;
         validate::validate_max_completion_tokens(self.inner.max_completion_tokens)?;
         validate::validate_n(self.inner.n)?;
         validate_completion_token_ids_single_choice(
@@ -818,6 +822,33 @@ mod tests {
             serde_json::from_value(request_json).expect("Failed to deserialize request");
 
         assert!(ValidateRequest::validate(&request).is_err());
+    }
+
+    #[test]
+    fn test_validate_legacy_max_tokens_rejects_zero() {
+        let request_json = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 0
+        });
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(request_json).expect("Failed to deserialize request");
+
+        let err = ValidateRequest::validate(&request).expect_err("zero max_tokens must fail");
+        assert_eq!(err.to_string(), "Max tokens must be greater than 0, got 0");
+    }
+
+    #[test]
+    fn test_validate_legacy_max_tokens_accepts_positive_value() {
+        let request_json = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 1
+        });
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(request_json).expect("Failed to deserialize request");
+
+        ValidateRequest::validate(&request).expect("positive max_tokens must validate");
     }
 
     // -----------------------------------------------------------------------
