@@ -19,7 +19,7 @@ Use DynoSim when you want to answer questions such as:
 | Component | Entry Point | Role |
 |---|---|---|
 | DynoSim run | `python -m dynamo.replay` | Runs one workload against one simulated Dynamo configuration and emits metrics plus a report |
-| DynoSim sweep | `dynamo.profiler.utils.replay_optimize` | Sweeps many simulation trials across TP shape, worker split, router knobs, SLA constraints, and GPU budget |
+| DynoSim sweep | `dingo.profiler.utils.replay_optimize` | Sweeps many simulation trials across TP shape, worker split, router knobs, SLA constraints, and GPU budget |
 | Live simulation with Mocker | `python -m dynamo.mocker` | Runs simulated workers inside a live Dynamo deployment path, including worker registration and KV event publishing |
 | Mocker core | `lib/mocker` | Models engine scheduling, KV allocation, prefix caching, preemption, and timing |
 | AIC | AI Configurator SDK | Supplies calibrated timing and candidate-shape data for supported model/backend/GPU tuples |

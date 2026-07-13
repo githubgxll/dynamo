@@ -47,28 +47,33 @@ def _repo_root() -> Path:
     return start
 
 
-_components_src = _repo_root() / "components" / "src"
+_root = _repo_root()
+_components_src = _root / "components" / "src"
+_profiler_src = _root / "dingo" / "profiler"
 
-# In the operator Docker build the context is deploy/operator/ only — components/src
-# is not copied in. The generated files are already committed, so skip validation.
-if not _components_src.exists():
+# In the operator Docker build the context is deploy/operator/ only — the Python
+# component sources are not copied in. The generated files are already committed,
+# so skip validation.
+if not _components_src.exists() or not _profiler_src.exists():
     print(
-        f"Note: {_components_src} not found (operator-only build context). "
+        "Note: Python component sources not found (operator-only build context). "
         "Skipping Pydantic validation tests."
     )
     sys.exit(0)
 
-# Add the components src to path so we can import the generated models
+# The planner remains under components/src while the profiler is part of the
+# repository-root dingo package.
 sys.path.insert(0, str(_components_src))
+sys.path.insert(0, str(_root))
 
 # ---------------------------------------------------------------------------
 # Stub dynamo.runtime.logging and bypass the heavy dynamo.planner.__init__
 # before importing any dynamo module.
 #
 # dynamo itself must be a namespace-like package (has __path__) so that
-# Python's import machinery can traverse down to dynamo.profiler from the
-# filesystem.  dynamo.planner is pre-registered as a stub to skip its heavy
-# __init__.py, while still allowing dynamo.planner.config.* to load normally.
+# dynamo.planner is pre-registered as a stub to skip its heavy __init__.py,
+# while still allowing dynamo.planner.config.* to load normally. The lightweight
+# dingo package is imported normally from the repository root.
 # ---------------------------------------------------------------------------
 _dynamo_path = str(_components_src / "dynamo")
 _planner_path = str(_components_src / "dynamo" / "planner")
@@ -94,7 +99,7 @@ sys.modules["dynamo.planner"] = _planner_mod
 
 import pydantic  # noqa: E402
 
-from dynamo.profiler.utils.dgdr_v1beta1_types import (  # noqa: E402
+from dingo.profiler.utils.dgdr_v1beta1_types import (  # noqa: E402
     BackendType,
     DeploymentInfoStatus,
     DGDRPhase,

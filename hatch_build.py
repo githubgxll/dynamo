@@ -27,9 +27,10 @@ def get_components():
     if not components:
         raise RuntimeError(f"No components found in directory: {components_dir}")
 
-    dingo_frontend = os.path.join(root, "dingo", "frontend")
-    if os.path.isdir(dingo_frontend):
-        components.append(dingo_frontend)
+    for component_name in ("frontend", "profiler"):
+        dingo_component = os.path.join(root, "dingo", component_name)
+        if os.path.isdir(dingo_component):
+            components.append(dingo_component)
 
     return components
 

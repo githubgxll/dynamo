@@ -94,7 +94,7 @@ dynamo/
 | Router             | Router E2E with backends              | `tests/router/`                               |
 | Planner            | Planner unit + integration tests      | `components/src/dynamo/planner/tests/`        |
 | Frontend           | Frontend HTTP/gRPC tests              | `tests/frontend/`                             |
-| Profiler           | Profiler unit + integration tests     | `components/src/dynamo/profiler/tests/`       |
+| Profiler           | Profiler unit + integration tests     | `dingo/profiler/tests/`       |
 | Global Planner     | Global planner unit tests             | `components/src/dynamo/global_planner/tests/` |
 | Fault Tolerance    | Chaos, migration, cancellation        | `tests/fault_tolerance/`                      |
 | Deployment         | Deployment validation                 | `tests/deploy/`                               |

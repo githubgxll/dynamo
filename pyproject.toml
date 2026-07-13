@@ -480,7 +480,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # Profiler module was never previously type-checked and has many
 # union-attr / attr-defined issues. Skip errors for now.
-module = ["dynamo.profiler.*"]
+module = ["dingo.profiler.*"]
 ignore_errors = true
 
 [tool.sphinx]

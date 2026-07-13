@@ -20,7 +20,7 @@ class AICInterpolationSpec(BaseModel):
     """Everything the planner needs to reproduce the rapid-mode AIC sweep.
 
     The picks come straight from AIC's picker DataFrame (via
-    :func:`dynamo.profiler.utils.profile_common.picked_config_from_row`) so
+    :func:`dingo.profiler.utils.profile_common.picked_config_from_row`) so
     any AIC-valid pick is representable.
     """
 

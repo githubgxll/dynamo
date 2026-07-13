@@ -56,7 +56,7 @@ func baseJob() *batchv1.Job {
 						{
 							Name:    "profiler",
 							Image:   "profiler:latest",
-							Command: []string{"python", "-m", "dynamo.profiler"},
+							Command: []string{"python", "-m", "dingo.profiler"},
 							Env: []corev1.EnvVar{
 								{Name: "OUTPUT_DIR", Value: "/output"},
 							},

@@ -23,7 +23,7 @@ pytestmark = [
 
 try:
     from dynamo.planner.config.parallelization import PickedParallelConfig
-    from dynamo.profiler.utils.aic_dataframe import make_parallel_label
+    from dingo.profiler.utils.aic_dataframe import make_parallel_label
 except ImportError as e:
     pytest.skip(f"Skip (missing dependency): {e}", allow_module_level=True)
 

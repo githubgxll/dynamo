@@ -7,7 +7,7 @@ subtitle: Search simulated deployment candidates across topology, router, and SL
 
 A DynoSim sweep runs many simulated trials across candidate topologies, router settings, and timing-model inputs, then ranks the results against SLA constraints and GPU budget. Use sweeps when a single [DynoSim run](runs.md) is not enough and you want to search the design space before validating on real GPUs.
 
-The current Python API is `dynamo.profiler.utils.replay_optimize`. The docs use "DynoSim sweep" as the product term while keeping the existing implementation name for now.
+The current Python API is `dingo.profiler.utils.replay_optimize`. The docs use "DynoSim sweep" as the product term while keeping the existing implementation name for now.
 
 ## What It Answers
 
@@ -121,7 +121,7 @@ export DYN_LOG='info,dynamo_kv_router::scheduling::selector=warn'
 The canonical starting point is the checked-in driver script:
 
 ```bash
-.venv/bin/python components/src/dynamo/profiler/utils/replay_optimize/example.py \
+.venv/bin/python dingo/profiler/utils/replay_optimize/example.py \
   --max-parallel-evals 4
 ```
 
@@ -165,7 +165,7 @@ Only add those when the experiment is specifically about scheduler limits.
 To run against a Mooncake-style trace instead of the synthetic workload:
 
 ```bash
-.venv/bin/python components/src/dynamo/profiler/utils/replay_optimize/example.py \
+.venv/bin/python dingo/profiler/utils/replay_optimize/example.py \
   --trace-file /path/to/mooncake_trace.jsonl \
   --arrival-speedup-ratio 1.0 \
   --max-parallel-evals 4
@@ -182,7 +182,7 @@ curl -sL \
 Then run:
 
 ```bash
-.venv/bin/python components/src/dynamo/profiler/utils/replay_optimize/example.py \
+.venv/bin/python dingo/profiler/utils/replay_optimize/example.py \
   --trace-file /tmp/toolagent_trace.jsonl \
   --arrival-speedup-ratio 1.0 \
   --max-parallel-evals 4

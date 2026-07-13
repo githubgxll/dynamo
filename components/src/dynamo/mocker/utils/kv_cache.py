@@ -6,7 +6,7 @@ from typing import Any
 
 from transformers import AutoConfig
 
-from dynamo.profiler.utils.model_info import get_model_info
+from dingo.profiler.utils.model_info import get_model_info
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def compute_kv_bytes_per_token(
 
     Formula: num_layers * 2 (K+V) * num_kv_heads * head_dim * dtype_bytes
 
-    Uses get_model_info from dynamo.profiler for robust detection of num_kv_heads
+    Uses get_model_info from dingo.profiler for robust detection of num_kv_heads
     across different model architectures.
 
     Args:
