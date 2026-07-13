@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from dynamo.global_router.handler import GlobalRouterHandler
+from dingo.global_router.handler import GlobalRouterHandler
 
 pytestmark = [
     pytest.mark.gpu_0,

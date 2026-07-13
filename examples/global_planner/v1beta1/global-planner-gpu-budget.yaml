@@ -71,7 +71,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.global_planner
+          - dingo.global_planner
           image: ${DYNAMO_IMAGE}
           name: main
     replicas: 1

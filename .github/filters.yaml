@@ -147,9 +147,9 @@ deploy:
 planner:
   - 'container/templates/planner.Dockerfile'
   - 'components/src/dynamo/planner/**'
-  - 'components/src/dynamo/global_planner/**'
+  - 'dingo/global_planner/**'
   - 'dingo/profiler/**'
-  - 'components/src/dynamo/global_router/**'
+  - 'dingo/global_router/**'
   # Power-aware planner (PR #9369): per-node power agent component
   - 'deploy/power-agent/**'
   - 'deploy/helm/charts/power-agent/**'

@@ -70,7 +70,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.global_planner
+            - dingo.global_planner
           args:
             - --max-total-gpus
             - "${MAX_TOTAL_GPUS}"

@@ -87,7 +87,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.global_router
+            - dingo.global_router
           args:
             - --config
             - /config/global_router_config.json
@@ -111,7 +111,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.global_planner
+            - dingo.global_planner
           args:
             - --no-operation
 ---

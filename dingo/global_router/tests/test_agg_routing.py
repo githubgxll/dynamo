@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from dynamo.global_router.pool_selection import (
+from dingo.global_router.pool_selection import (
     AggPoolSelectionStrategy,
     GlobalRouterConfig,
     PriorityPoolOverride,

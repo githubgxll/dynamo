@@ -4,7 +4,7 @@
 """
 Global Router Service for Hierarchical Routing
 
-Usage: python -m dynamo.global_router --config <config.json> --model-name <model>
+Usage: python -m dingo.global_router --config <config.json> --model-name <model>
 
 This service routes requests to local routers in different namespaces based on
 a grid-based pool selection strategy. It supports two modes:

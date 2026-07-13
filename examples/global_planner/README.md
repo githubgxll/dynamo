@@ -161,6 +161,6 @@ This is why planner configs and router endpoints use the full `${K8S_NAMESPACE}-
 ## Further Reading
 
 - [Global Planner Deployment Guide](../../docs/components/planner/global-planner.md)
-- [Global Planner README](../../components/src/dynamo/global_planner/README.md)
+- [Global Planner README](../../dingo/global_planner/README.md)
 - [Planner Configuration Guide](../../docs/components/planner/planner-guide.md)
-- [Global Router README](../../components/src/dynamo/global_router/README.md)
+- [Global Router README](../../dingo/global_router/README.md)

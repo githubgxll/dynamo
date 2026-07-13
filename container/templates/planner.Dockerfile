@@ -85,7 +85,7 @@ RUN --mount=type=bind,source=./container/deps/requirements.planner.txt,target=/t
 COPY --chmod=664 --chown=dynamo:0 pyproject.toml /workspace/pyproject.toml
 COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/planner /workspace/components/src/dynamo/planner
 COPY --chmod=775 --chown=dynamo:0 dingo/profiler /workspace/dingo/profiler
-COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/global_planner /workspace/components/src/dynamo/global_planner
+COPY --chmod=775 --chown=dynamo:0 dingo/global_planner /workspace/dingo/global_planner
 COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
 COPY --chmod=775 --chown=dynamo:0 dev /workspace/dev
 COPY --chmod=775 --chown=dynamo:0 examples /workspace/examples

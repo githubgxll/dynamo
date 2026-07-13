@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dynamo.global_planner import __main__ as gp_main
+from dingo.global_planner import __main__ as gp_main
 
 pytestmark = [
     pytest.mark.gpu_0,
@@ -67,7 +67,7 @@ async def test_main_registers_both_endpoints_concurrently():
 
     with patch.dict(
         os.environ, {"DYN_NAMESPACE": "gp-ns", "POD_NAMESPACE": "default"}
-    ), patch("dynamo.global_planner.__main__.ScaleRequestHandler") as mock_handler_cls:
+    ), patch("dingo.global_planner.__main__.ScaleRequestHandler") as mock_handler_cls:
         mock_handler_cls.return_value = MagicMock()
 
         # main never returns on its own (it awaits the endpoint futures

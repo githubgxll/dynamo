@@ -47,7 +47,7 @@ Clients call the `generate` endpoint to stream completions, call `best_worker_id
 >
 > Use this manual setup if you need explicit control over prefill routing configuration or want to manage prefill and decode routers separately.
 
-For an integrated frontend disaggregated example, see [`examples/backends/vllm/launch/disagg_router.sh`](/examples/backends/vllm/launch/disagg_router.sh). For explicit multi-router composition, see the [Global Router README](/components/src/dynamo/global_router/README.md).
+For an integrated frontend disaggregated example, see [`examples/backends/vllm/launch/disagg_router.sh`](/examples/backends/vllm/launch/disagg_router.sh). For explicit multi-router composition, see the [Global Router README](/dingo/global_router/README.md).
 
 ```bash
 # Start frontend router for decode workers

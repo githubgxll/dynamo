@@ -7,10 +7,10 @@ GlobalPlanner - Centralized Scaling Execution Service
 Entry point for the GlobalPlanner component.
 
 Usage:
-    DYN_NAMESPACE=global-infra python -m dynamo.global_planner
+    DYN_NAMESPACE=global-infra python -m dingo.global_planner
 
 With authorization:
-    DYN_NAMESPACE=global-infra python -m dynamo.global_planner \\
+    DYN_NAMESPACE=global-infra python -m dingo.global_planner \\
         --managed-namespaces app-ns-1 app-ns-2
 """
 
@@ -20,8 +20,8 @@ import os
 
 from pydantic import BaseModel
 
-from dynamo.global_planner.argparse_config import create_global_planner_parser
-from dynamo.global_planner.scale_handler import ScaleRequestHandler
+from dingo.global_planner.argparse_config import create_global_planner_parser
+from dingo.global_planner.scale_handler import ScaleRequestHandler
 from dynamo.runtime import DistributedRuntime, dynamo_worker
 from dynamo.runtime.logging import configure_dynamo_logging
 

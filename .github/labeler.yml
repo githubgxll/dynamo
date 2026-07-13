@@ -60,7 +60,7 @@ planner:
       - any-glob-to-any-file:
           - components/src/dynamo/planner/**
           - dingo/profiler/**
-          - components/src/dynamo/global_planner/**
+          - dingo/global_planner/**
 
 # Deployment labels
 deployment::k8s:

@@ -18,14 +18,14 @@ def create_global_planner_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # Simple deployment (accept all namespaces)
-  DYN_NAMESPACE=global-infra python -m dynamo.global_planner
+  DYN_NAMESPACE=global-infra python -m dingo.global_planner
 
   # With authorization
-  DYN_NAMESPACE=global-infra python -m dynamo.global_planner \\
+  DYN_NAMESPACE=global-infra python -m dingo.global_planner \\
     --managed-namespaces app-ns-1 app-ns-2 app-ns-3
 
   # Custom environment
-  DYN_NAMESPACE=global-infra python -m dynamo.global_planner \\
+  DYN_NAMESPACE=global-infra python -m dingo.global_planner \\
     --environment=kubernetes
         """,
     )

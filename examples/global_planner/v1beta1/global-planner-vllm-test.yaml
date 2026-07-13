@@ -114,7 +114,7 @@ spec:
         - command:
           - python3
           - -m
-          - dynamo.global_planner
+          - dingo.global_planner
           image: ${DYNAMO_IMAGE}
           name: main
         imagePullSecrets:
@@ -145,7 +145,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.global_router
+          - dingo.global_router
           image: ${DYNAMO_IMAGE}
           name: main
           volumeMounts:

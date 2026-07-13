@@ -65,28 +65,28 @@ Given `DYN_NAMESPACE=<ns>`, this component serves:
 
 ```bash
 # Accept scale requests from any namespace
-DYN_NAMESPACE=global-infra python -m dynamo.global_planner
+DYN_NAMESPACE=global-infra python -m dingo.global_planner
 ```
 
 ```bash
 # Restrict requests to specific planner namespaces
-DYN_NAMESPACE=global-infra python -m dynamo.global_planner \
+DYN_NAMESPACE=global-infra python -m dingo.global_planner \
   --managed-namespaces app-ns-1 app-ns-2
 ```
 
 ```bash
 # Dry-run mode (no Kubernetes updates)
-DYN_NAMESPACE=global-infra python -m dynamo.global_planner --no-operation
+DYN_NAMESPACE=global-infra python -m dingo.global_planner --no-operation
 ```
 
 ```bash
 # Enforce a maximum total GPU budget across managed pools
-DYN_NAMESPACE=global-infra python -m dynamo.global_planner --max-total-gpus 16
+DYN_NAMESPACE=global-infra python -m dingo.global_planner --max-total-gpus 16
 ```
 
 ```bash
 # Fixed-total deployment: pin the cluster at 16 GPUs with cross-pool transfers
-DYN_NAMESPACE=global-infra python -m dynamo.global_planner \
+DYN_NAMESPACE=global-infra python -m dingo.global_planner \
   --min-total-gpus 16 --max-total-gpus 16
 ```
 
@@ -156,7 +156,7 @@ When the selected partners span multiple DGDs:
 - **Cross-DGD partners** (different DGD) get their own per-DGD patch.
 - **Direction-aware order**: scale-down DGDs apply first (freeing GPUs), then scale-up DGDs. If any second-or-later patch fails, the first has already landed and the system self-corrects from the new state on the next tick.
 
-This scope is needed for "multiple agg pools sharing a budget" deployments such as [`examples/global_planner/global-planner-gpu-budget.yaml`](../../../../examples/global_planner/global-planner-gpu-budget.yaml).
+This scope is needed for "multiple agg pools sharing a budget" deployments such as [`examples/global_planner/global-planner-gpu-budget.yaml`](../../examples/global_planner/global-planner-gpu-budget.yaml).
 
 **Tolerance for asymmetric pools.** When two paired pools have different `resources.limits.gpu` per replica, a single-worker step cannot always exactly cancel. Paired transfers may land up to `max(gpu_per_replica across the paired pools)` **below** `min` so the pair can still rebalance in whole-worker steps. `max` is a hard cluster-capacity bound and is never relaxed — pairs whose post-transfer total would exceed `max` are denied. Standalone (non-paired) requests must stay strictly within `[min, max]`.
 
@@ -166,8 +166,8 @@ This scope is needed for "multiple agg pools sharing a budget" deployments such 
 
 ## Related Documentation
 
-- [Planner Guide](../../../../docs/components/planner/planner-guide.md) — Planner configuration and deployment workflow
-- [Global Planner Deployment Guide](../../../../docs/components/planner/global-planner.md) — Deployment patterns for `GlobalPlanner`, including multi-model coordination and single-endpoint multi-pool workflows
-- [Planner Design](../../../../docs/design-docs/planner-design.md) — Planner architecture and algorithms
+- [Planner Guide](../../docs/components/planner/planner-guide.md) — Planner configuration and deployment workflow
+- [Global Planner Deployment Guide](../../docs/components/planner/global-planner.md) — Deployment patterns for `GlobalPlanner`, including multi-model coordination and single-endpoint multi-pool workflows
+- [Planner Design](../../docs/design-docs/planner-design.md) — Planner architecture and algorithms
 
 Planners delegate to this service when planner config uses `environment: "global-planner"` and sets `global_planner_namespace`.

@@ -74,7 +74,7 @@ Global Router (registers as Chat + Completions)
 ## Usage
 
 ```bash
-python -m dynamo.global_router \
+python -m dingo.global_router \
   --config path/to/global_router_config.json \
   --model-name Qwen/Qwen3-0.6B \
   --namespace dynamo

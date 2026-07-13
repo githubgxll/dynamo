@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynamo.global_planner.scale_handler import PoolIntent, ScaleRequestHandler
+from dingo.global_planner.scale_handler import PoolIntent, ScaleRequestHandler
 from dynamo.planner import SubComponentType, TargetReplica
 from dynamo.planner.connectors.protocol import ScaleRequest
 
@@ -47,7 +47,7 @@ async def test_handler_authorization_success(mock_runtime):
 
     # Mock KubernetesConnector
     with patch(
-        "dynamo.global_planner.scale_handler.KubernetesConnector"
+        "dingo.global_planner.scale_handler.KubernetesConnector"
     ) as mock_connector_cls:
         mock_connector = AsyncMock()
         mock_connector_cls.return_value = mock_connector
@@ -140,7 +140,7 @@ async def test_handler_multiple_dgds(mock_runtime):
     )
 
     with patch(
-        "dynamo.global_planner.scale_handler.KubernetesConnector"
+        "dingo.global_planner.scale_handler.KubernetesConnector"
     ) as mock_connector_cls:
         mock_connector = AsyncMock()
         mock_connector_cls.return_value = mock_connector
@@ -182,7 +182,7 @@ async def test_handler_error_handling(mock_runtime):
     )
 
     with patch(
-        "dynamo.global_planner.scale_handler.KubernetesConnector"
+        "dingo.global_planner.scale_handler.KubernetesConnector"
     ) as mock_connector_cls:
         mock_connector = AsyncMock()
         mock_connector_cls.return_value = mock_connector
@@ -247,9 +247,9 @@ async def test_populate_connectors_explicit_mode(mock_runtime):
     )
 
     with (
-        patch("dynamo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
+        patch("dingo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
         patch(
-            "dynamo.global_planner.scale_handler.KubernetesConnector"
+            "dingo.global_planner.scale_handler.KubernetesConnector"
         ) as mock_connector_cls,
     ):
         mock_kube = MagicMock()
@@ -281,9 +281,9 @@ async def test_populate_connectors_implicit_mode(mock_runtime):
     )
 
     with (
-        patch("dynamo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
+        patch("dingo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
         patch(
-            "dynamo.global_planner.scale_handler.KubernetesConnector"
+            "dingo.global_planner.scale_handler.KubernetesConnector"
         ) as mock_connector_cls,
     ):
         mock_kube = MagicMock()
@@ -322,7 +322,7 @@ async def test_handler_blocking_mode(mock_runtime):
     )
 
     with patch(
-        "dynamo.global_planner.scale_handler.KubernetesConnector"
+        "dingo.global_planner.scale_handler.KubernetesConnector"
     ) as mock_connector_cls:
         mock_connector = AsyncMock()
         mock_connector_cls.return_value = mock_connector
@@ -637,7 +637,7 @@ async def test_cross_dgd_pair_second_patch_failure_self_corrects(mock_runtime, c
     connector_b.set_component_replicas.side_effect = Exception("simulated K8s failure")
 
     req = _scale_req(dgd="dgd-a", caller_ns="default-dgd-a", prefill=2)
-    with caplog.at_level(_logging.ERROR, logger="dynamo.global_planner.scale_handler"):
+    with caplog.at_level(_logging.ERROR, logger="dingo.global_planner.scale_handler"):
         results = await _run(handler, req)
     # Overall response: the request-side patch succeeded; response path reports
     # success because the request-side was applied. The cross-DGD partner
@@ -889,9 +889,9 @@ async def test_initial_below_floor_logs_warning(mock_runtime):
     semantics — and the floor only blocks explicit scale-downs going forward
     (covered by the standalone-deny tests above)."""
     with (
-        patch("dynamo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
+        patch("dingo.global_planner.scale_handler.KubernetesAPI") as mock_kube_cls,
         patch(
-            "dynamo.global_planner.scale_handler.KubernetesConnector"
+            "dingo.global_planner.scale_handler.KubernetesConnector"
         ) as mock_connector_cls,
     ):
         mock_kube = MagicMock()
@@ -907,7 +907,7 @@ async def test_initial_below_floor_logs_warning(mock_runtime):
         )
         mock_connector_cls.return_value = mock_connector
 
-        with patch("dynamo.global_planner.scale_handler.logger") as mock_logger:
+        with patch("dingo.global_planner.scale_handler.logger") as mock_logger:
             ScaleRequestHandler(
                 runtime=mock_runtime,
                 managed_namespaces=["default-my-dgd"],

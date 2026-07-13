@@ -15,7 +15,7 @@ Architecture:
 - GlobalPlanner is stateless and can scale horizontally
 
 Usage:
-    DYN_NAMESPACE=global-infra python -m dynamo.global_planner \
+    DYN_NAMESPACE=global-infra python -m dingo.global_planner \
         --managed-namespaces app-ns-1 app-ns-2
 """
 
@@ -23,4 +23,4 @@ __all__ = [
     "ScaleRequestHandler",
 ]
 
-from dynamo.global_planner.scale_handler import ScaleRequestHandler
+from dingo.global_planner.scale_handler import ScaleRequestHandler
