@@ -32,7 +32,7 @@ DYN_SYSTEM_PORT=8082 CUDA_VISIBLE_DEVICES=4,5,6,7 python -m dingo.vllm \
 
 # Program-aware router: registers the model handler and forwards the parser so
 # MiniMax's <minimax:tool_call> XML reaches the agent as OpenAI tool_calls.
-python -m dynamo.thunderagent_router \
+python -m dingo.thunderagent_router \
     --endpoint dingo.vllm.generate \
     --model-name "$MODEL" \
     --dyn-tool-call-parser minimax_m2 \

@@ -5,9 +5,9 @@ title: ThunderAgent Program Scheduler
 subtitle: Program-level scheduling with tool-boundary pause/resume on top of KV-aware routing
 ---
 
-> **Experimental — not a released component.** Run it from a source checkout, not from a `pip install ai-dynamo`. The CLI flags, session headers, and lifecycle hooks are all unstable and will change. Build and launch specifics live next to the code in [`components/src/dynamo/thunderagent_router/README.md`](../../components/src/dynamo/thunderagent_router/README.md).
+> **Experimental — not a released component.** Run it from a source checkout, not from a `pip install ai-dynamo`. The CLI flags, session headers, and lifecycle hooks are all unstable and will change. Build and launch specifics live next to the code in [`dingo/thunderagent_router/README.md`](https://github.com/ai-dynamo/dynamo/blob/main/dingo/thunderagent_router/README.md).
 
-`dynamo.thunderagent_router` is a standalone Dynamo router that schedules at the granularity of an agent run — the whole `LLM turn → tool call → next turn` loop — instead of individual requests. It wraps Dynamo's native KV router and adds a program-level scheduler with tool-boundary pause/resume on top of KV-aware routing, porting the scheduler from the [ThunderAgent](https://arxiv.org/abs/2602.13692) paper (Kang et al., 2026).
+`dingo.thunderagent_router` is a standalone Dynamo router that schedules at the granularity of an agent run — the whole `LLM turn → tool call → next turn` loop — instead of individual requests. It wraps Dynamo's native KV router and adds a program-level scheduler with tool-boundary pause/resume on top of KV-aware routing, porting the scheduler from the [ThunderAgent](https://arxiv.org/abs/2602.13692) paper (Kang et al., 2026).
 
 ## The Problem
 
@@ -64,7 +64,7 @@ Pause/resume is driven by per-worker utilization — the program working set as 
 
 > **Constraint:** `pause-target <= pause-threshold`. The service rejects configs that violate it (along with `0 <= resume-hysteresis <= pause-threshold` and `0 <= soft-demote-threshold <= pause-threshold`).
 
-All `KvRouter` flags from `dingo.router` (`--router-temperature`, `--use-kv-events`, `--router-track-output-blocks`, …) are also accepted and forwarded. See the [folder README](../../components/src/dynamo/thunderagent_router/README.md) for the remaining service flags (`--endpoint`, `--model-name`, `--model-path`, tool-call and reasoning parsers).
+All `KvRouter` flags from `dingo.router` (`--router-temperature`, `--use-kv-events`, `--router-track-output-blocks`, …) are also accepted and forwarded. See the [folder README](https://github.com/ai-dynamo/dynamo/blob/main/dingo/thunderagent_router/README.md) for the remaining service flags (`--endpoint`, `--model-name`, `--model-path`, tool-call and reasoning parsers).
 
 ## Architecture
 
@@ -75,7 +75,7 @@ All `KvRouter` flags from `dingo.router` (`--router-temperature`, `--use-kv-even
                      │  chat completions, with session headers
                      ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ dynamo.thunderagent_router  (this service)                  │
+│ dingo.thunderagent_router  (this service)                  │
 │  - ProgramTable: session_id → ProgramState                  │
 │  - admission gate: before_request → was_paused?             │
 │  - scheduler loop (every scheduler_interval_seconds):       │
@@ -122,13 +122,13 @@ Paused program <program_id> (tokens=<n>)
 Resumed program <program_id> -> worker=<id> (tokens=<n>)
 ```
 
-Enable these by lowering the log level for `dynamo.thunderagent_router`. They give the exact program identities behind each INFO summary count.
+Enable these by lowering the log level for `dingo.thunderagent_router`. They give the exact program identities behind each INFO summary count.
 
 For per-request tracing (token counts, cache hits, worker placement), the router also integrates with [Agent Tracing](agent-tracing.md#enable-output): set `DYN_REQUEST_TRACE=1` on the frontend to land a `request_end` record per LLM call. Harness tool-event spans are separate: they require `DYN_REQUEST_TRACE_TOOL_EVENTS_ZMQ_ENDPOINT` plus a configured publisher.
 
 ## Reproducing the MiniMax-M2 Results
 
-The headline numbers (program-aware scheduling vs KV-routing-only on the same hardware, ~12-16% throughput improvement on SWE-bench-Lite with two TP4 MiniMax-M2 replicas on a single 8×H100 node) and the exact launch/repro commands live in the [folder README](../../components/src/dynamo/thunderagent_router/README.md).
+The headline numbers (program-aware scheduling vs KV-routing-only on the same hardware, ~12-16% throughput improvement on SWE-bench-Lite with two TP4 MiniMax-M2 replicas on a single 8×H100 node) and the exact launch/repro commands live in the [folder README](https://github.com/ai-dynamo/dynamo/blob/main/dingo/thunderagent_router/README.md).
 
 ## References
 

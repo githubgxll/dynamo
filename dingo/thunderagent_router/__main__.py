@@ -4,7 +4,7 @@
 """Standalone ThunderAgent router service.
 
 Usage:
-    python -m dynamo.thunderagent_router \\
+    python -m dingo.thunderagent_router \\
         --endpoint dingo.vllm.generate \\
         --router-block-size 64
 
@@ -30,14 +30,14 @@ from dynamo.llm import (
 )
 from dynamo.runtime import DistributedRuntime, dynamo_worker
 from dynamo.runtime.logging import configure_dynamo_logging
-from dynamo.thunderagent_router.args import (
+from dingo.thunderagent_router.args import (
     ThunderAgentRouterConfig,
     build_aic_perf_config,
     build_kv_router_config,
     parse_args,
 )
-from dynamo.thunderagent_router.capacity import WorkerCapacityProvider
-from dynamo.thunderagent_router.router import ThunderAgentScheduler
+from dingo.thunderagent_router.capacity import WorkerCapacityProvider
+from dingo.thunderagent_router.router import ThunderAgentScheduler
 
 configure_dynamo_logging()
 logger = logging.getLogger(__name__)

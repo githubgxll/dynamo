@@ -3,6 +3,6 @@
 
 """ThunderAgent program scheduler inside a Dynamo router service."""
 
-from dynamo.thunderagent_router.router import PauseDecision, ThunderAgentScheduler
+from dingo.thunderagent_router.router import PauseDecision, ThunderAgentScheduler
 
 __all__ = ["PauseDecision", "ThunderAgentScheduler"]

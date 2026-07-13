@@ -46,7 +46,7 @@ logic but do not share the same serialization, RPC, or process boundaries.
    ```
 
    Examples: `python -m dingo.router` and
-   `python -m dynamo.thunderagent_router`. These own a binding-level
+   `python -m dingo.thunderagent_router`. These own a binding-level
    `KvRouter` in another process.
 
 ### Guidance

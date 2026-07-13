@@ -1,4 +1,4 @@
-# `dynamo.thunderagent_router` (experimental)
+# `dingo.thunderagent_router` (experimental)
 
 > **Experimental — not a released component.** Run it from a source checkout
 > (see [Install](#install)), not from a `pip install ai-dynamo`. The CLI
@@ -30,7 +30,7 @@ cd dynamo
 uv pip install -e .
 ```
 
-`python -m dynamo.thunderagent_router` then resolves against that checkout.
+`python -m dingo.thunderagent_router` then resolves against that checkout.
 
 ## Usage
 
@@ -45,7 +45,7 @@ python -m dingo.vllm \
                          "enable_kv_cache_events":true}'
 
 # 2. Start the ThunderAgent router pointing at the worker endpoint
-python -m dynamo.thunderagent_router \
+python -m dingo.thunderagent_router \
     --endpoint dynamo.backend.generate \
     --model-name <model> \
     --router-block-size 16 \
@@ -107,7 +107,7 @@ One script brings up both TP4 workers, the program-aware router, and the
 frontend on `:8100`:
 
 ```bash
-bash components/src/dynamo/thunderagent_router/run_minimax_8xh100.sh
+bash dingo/thunderagent_router/run_minimax_8xh100.sh
 ```
 
 First launch JIT-warms the FP8 kernels — wait for `curl localhost:8100/v1/models`

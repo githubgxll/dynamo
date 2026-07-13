@@ -12,8 +12,8 @@ from typing import Optional
 
 import pytest
 
-from dynamo.thunderagent_router.program_state import ProgramLifecycle, ProgramStatus
-from dynamo.thunderagent_router.router import ThunderAgentConfig, ThunderAgentScheduler
+from dingo.thunderagent_router.program_state import ProgramLifecycle, ProgramStatus
+from dingo.thunderagent_router.router import ThunderAgentConfig, ThunderAgentScheduler
 
 pytestmark = [pytest.mark.pre_merge, pytest.mark.unit, pytest.mark.gpu_0]
 

@@ -16,7 +16,7 @@ from dingo.router.args import (
     build_aic_perf_config,
     build_kv_router_config,
 )
-from dynamo.thunderagent_router.router import ThunderAgentConfig
+from dingo.thunderagent_router.router import ThunderAgentConfig
 
 
 class ThunderAgentRouterConfig(DynamoRouterConfig):

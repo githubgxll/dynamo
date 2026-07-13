@@ -16,8 +16,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from dynamo.thunderagent_router.capacity import WorkerCapacityProvider
-from dynamo.thunderagent_router.program_state import (
+from dingo.thunderagent_router.capacity import WorkerCapacityProvider
+from dingo.thunderagent_router.program_state import (
     Program,
     ProgramLifecycle,
     ProgramStatus,
