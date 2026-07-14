@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import torch
 
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     CachedEmbedding,
     MultimodalEmbeddingCacheManager,
 )

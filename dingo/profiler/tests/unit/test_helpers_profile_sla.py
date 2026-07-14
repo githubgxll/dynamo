@@ -24,7 +24,7 @@ pytestmark = [
 ]
 
 try:
-    from dynamo.planner.config.planner_config import (
+    from dingo.planner.config.planner_config import (
         PlannerConfig,
         PlannerPreDeploymentSweepMode,
     )
@@ -1102,7 +1102,7 @@ class TestRunProfileSkipsInterpolationForAggConfig:
             import asyncio
             from unittest.mock import AsyncMock, patch
 
-            from dynamo.planner.config.planner_config import (
+            from dingo.planner.config.planner_config import (
                 PlannerPreDeploymentSweepMode,
             )
             from dingo.profiler.profile_sla import run_profile
@@ -1200,7 +1200,7 @@ class TestRunProfileSkipsInterpolationForAggConfig:
             import asyncio
             from unittest.mock import AsyncMock, patch
 
-            from dynamo.planner.config.planner_config import (
+            from dingo.planner.config.planner_config import (
                 PlannerPreDeploymentSweepMode,
             )
             from dingo.profiler.profile_sla import run_profile

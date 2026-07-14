@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0
 > logprobs. Multimodal, diffusion (image/video/DLLM), LoRA, engine
 > routes (pause/resume, profiling, weight updates), text-in-text-out,
 > and snapshot/CRIU are still on the non-unified path. See the
-> [Python package README](../../components/src/dynamo/common/backend/README.md#feature-gaps)
+> [Python package README](../../dingo/common/backend/README.md#feature-gaps)
 > for the per-engine matrix. The Python `Worker`
-> ([`dynamo.common.backend`](../../components/src/dynamo/common/backend/))
+> ([`dingo.common.backend`](../../dingo/common/backend/))
 > is a thin shim over this crate.
 
 > **Looking for a walkthrough?** Start with
@@ -417,7 +417,7 @@ lib/backend-common/
 
 The Python `Worker` shim that drives this crate from `dynamo.*.unified_main`
 entry points lives at
-[`components/src/dynamo/common/backend/worker.py`](../../components/src/dynamo/common/backend/worker.py).
+[`dingo/common/backend/worker.py`](../../dingo/common/backend/worker.py).
 
 ## See Also
 
@@ -426,7 +426,7 @@ entry points lives at
 - [`CLAUDE.md`](CLAUDE.md) — design notes (rationale, invariants,
   Phase 2 PyO3 plans).
 - [Mocker example](examples/mocker/) — reference engine + compose stack.
-- [Python sibling](../../components/src/dynamo/common/backend/README.md)
-  — `dynamo.common.backend`, the Python ABC layered over this crate.
+- [Python sibling](../../dingo/common/backend/README.md)
+  — `dingo.common.backend`, the Python ABC layered over this crate.
 - [DEP #8251](https://github.com/ai-dynamo/dynamo/issues/8251) —
   Backend Interface proposal and ongoing status.

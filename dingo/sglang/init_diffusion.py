@@ -8,8 +8,8 @@ from typing import Awaitable, Callable
 
 import sglang as sgl
 
-from dynamo.common.storage import get_fs
-from dynamo.common.utils.endpoint_types import parse_endpoint_types
+from dingo.common.storage import get_fs
+from dingo.common.utils.endpoint_types import parse_endpoint_types
 from dynamo.llm import WorkerType
 from dynamo.runtime import DistributedRuntime
 from dingo.sglang.args import Config

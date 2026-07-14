@@ -14,8 +14,8 @@ import torch
 from PIL import Image
 
 from dynamo._core import Context
-from dynamo.common.protocols.image_protocol import ImageNvExt
-from dynamo.common.storage import upload_to_fs
+from dingo.common.protocols.image_protocol import ImageNvExt
+from dingo.common.storage import upload_to_fs
 from dingo.sglang.args import Config
 from dingo.sglang.protocol import CreateImageRequest, ImageData, ImagesResponse
 from dingo.sglang.publisher import DynamoSglangPublisher

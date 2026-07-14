@@ -11,8 +11,8 @@ from vllm_omni.distributed.omni_connectors.utils.serialization import OmniSerial
 from vllm_omni.entrypoints.stage_utils import shm_read_bytes
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
 
-from dynamo.common.utils.output_modalities import RequestType, parse_request_type
-from dynamo.common.utils.video_utils import compute_num_frames, parse_size
+from dingo.common.utils.output_modalities import RequestType, parse_request_type
+from dingo.common.utils.video_utils import compute_num_frames, parse_size
 
 DEFAULT_IMAGE_SIZE = "1024x1024"
 DEFAULT_VIDEO_SIZE = "832x480"

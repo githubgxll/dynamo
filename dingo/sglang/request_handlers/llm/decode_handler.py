@@ -10,11 +10,11 @@ import sglang as sgl
 from PIL.Image import Image as PILImage
 
 from dynamo._core import Context
-from dynamo.common.backend import logprobs as _shared_logprobs
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.metadata_upload import MetadataUploader
-from dynamo.common.multimodal.image_loader import ImageLoader
-from dynamo.common.utils.engine_response import normalize_finish_reason
+from dingo.common.backend import logprobs as _shared_logprobs
+from dingo.common.constants import DisaggregationMode
+from dingo.common.metadata_upload import MetadataUploader
+from dingo.common.multimodal.image_loader import ImageLoader
+from dingo.common.utils.engine_response import normalize_finish_reason
 from dingo.sglang._compat import filter_supported_async_generate_kwargs
 from dingo.sglang.args import Config
 from dingo.sglang.publisher import DynamoSglangPublisher

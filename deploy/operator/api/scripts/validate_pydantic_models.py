@@ -67,12 +67,12 @@ sys.path.insert(0, str(_components_src))
 sys.path.insert(0, str(_root))
 
 # ---------------------------------------------------------------------------
-# Stub dynamo.runtime.logging and bypass the heavy dynamo.planner.__init__
+# Stub dynamo.runtime.logging and bypass the heavy dingo.planner.__init__
 # before importing any dynamo module.
 #
 # dynamo itself must be a namespace-like package (has __path__) so that
-# dynamo.planner is pre-registered as a stub to skip its heavy __init__.py,
-# while still allowing dynamo.planner.config.* to load normally. The lightweight
+# dingo.planner is pre-registered as a stub to skip its heavy __init__.py,
+# while still allowing dingo.planner.config.* to load normally. The lightweight
 # dingo package is imported normally from the repository root.
 # ---------------------------------------------------------------------------
 _dynamo_path = str(_components_src / "dynamo")
@@ -92,10 +92,10 @@ _logging_mod = types.ModuleType("dynamo.runtime.logging")
 _logging_mod.configure_dynamo_logging = lambda *args, **kwargs: None  # type: ignore[attr-defined]
 sys.modules["dynamo.runtime.logging"] = _logging_mod
 
-_planner_mod = types.ModuleType("dynamo.planner")
+_planner_mod = types.ModuleType("dingo.planner")
 _planner_mod.__path__ = [_planner_path]  # type: ignore[attr-defined]
-_planner_mod.__package__ = "dynamo.planner"
-sys.modules["dynamo.planner"] = _planner_mod
+_planner_mod.__package__ = "dingo.planner"
+sys.modules["dingo.planner"] = _planner_mod
 
 import pydantic  # noqa: E402
 

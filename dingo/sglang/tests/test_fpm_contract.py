@@ -33,8 +33,8 @@ def test_sglang_fpm_decodes_with_dynamo_schema():
     )
     from sglang.srt.observability.forward_pass_metrics import encode as sglang_encode
 
-    from dynamo.common.forward_pass_metrics import ForwardPassMetrics as DynamoFPM
-    from dynamo.common.forward_pass_metrics import decode as dynamo_decode
+    from dingo.common.forward_pass_metrics import ForwardPassMetrics as DynamoFPM
+    from dingo.common.forward_pass_metrics import decode as dynamo_decode
 
     sglang_fpm = SglangFPM(
         version=1,
@@ -96,9 +96,9 @@ def test_sglang_fpm_field_order_matches_dynamo():
         ScheduledRequestMetrics as SglangScheduled,
     )
 
-    from dynamo.common.forward_pass_metrics import ForwardPassMetrics as DynamoFPM
-    from dynamo.common.forward_pass_metrics import QueuedRequestMetrics as DynamoQueued
-    from dynamo.common.forward_pass_metrics import (
+    from dingo.common.forward_pass_metrics import ForwardPassMetrics as DynamoFPM
+    from dingo.common.forward_pass_metrics import QueuedRequestMetrics as DynamoQueued
+    from dingo.common.forward_pass_metrics import (
         ScheduledRequestMetrics as DynamoScheduled,
     )
 

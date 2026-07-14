@@ -8,8 +8,8 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.utils import add_argument
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.utils import add_argument
 from dingo.router.args import (
     DynamoRouterArgGroup,
     DynamoRouterConfig,

@@ -10,10 +10,10 @@ import sglang as sgl
 import torch
 
 from dynamo._core import Client, Context
-from dynamo.common.constants import DisaggregationMode, EmbeddingTransferMode
-from dynamo.common.multimodal import EMBEDDING_RECEIVER_FACTORIES, TransferRequest
-from dynamo.common.utils import nvtx_utils as _nvtx
-from dynamo.common.utils.engine_response import normalize_finish_reason
+from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
+from dingo.common.multimodal import EMBEDDING_RECEIVER_FACTORIES, TransferRequest
+from dingo.common.utils import nvtx_utils as _nvtx
+from dingo.common.utils.engine_response import normalize_finish_reason
 from dingo.sglang.args import Config
 from dingo.sglang.protocol import (
     DisaggSglangMultimodalRequest,

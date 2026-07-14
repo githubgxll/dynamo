@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 import torch
 
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     CachedEmbedding,
     MultimodalEmbeddingCacheManager,
 )
-from dynamo.common.multimodal import TransferRequest
+from dingo.common.multimodal import TransferRequest
 from dingo.sglang.request_handlers.multimodal.encode_worker_handler import (
     Modality,
     MultimodalEncodeWorkerHandler,

@@ -26,11 +26,11 @@ from vllm.v1.metrics.loggers import StatLoggerBase
 from vllm.v1.metrics.stats import IterationStats, SchedulerStats
 
 from dynamo._core import Context
-from dynamo.common.backend import logprobs as _shared_logprobs
-from dynamo.common.backend import telemetry
-from dynamo.common.backend.disagg import require_prefill_result
-from dynamo.common.backend.dp_rank import forced_dp_rank, validate_global_dp_rank
-from dynamo.common.backend.engine import (
+from dingo.common.backend import logprobs as _shared_logprobs
+from dingo.common.backend import telemetry
+from dingo.common.backend.disagg import require_prefill_result
+from dingo.common.backend.dp_rank import forced_dp_rank, validate_global_dp_rank
+from dingo.common.backend.engine import (
     DYN_ENABLE_TEST_LOGITS_PROCESSOR,
     EngineConfig,
     GenerateChunk,
@@ -42,18 +42,18 @@ from dynamo.common.backend.engine import (
     logits_processors_for_request,
     resolve_test_logits_processor_spec,
 )
-from dynamo.common.backend.health_check import (
+from dingo.common.backend.health_check import (
     bos_token_id_or,
     build_health_check_payload,
 )
-from dynamo.common.backend.metrics import (
+from dingo.common.backend.metrics import (
     ensure_prometheus_multiproc_dir,
     register_global_registry,
 )
-from dynamo.common.backend.publisher import ComponentSnapshot, KvEventSource, ZmqSource
-from dynamo.common.backend.worker import WorkerConfig
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.lora.manager import LoRAInfo, get_lora_manager
+from dingo.common.backend.publisher import ComponentSnapshot, KvEventSource, ZmqSource
+from dingo.common.backend.worker import WorkerConfig
+from dingo.common.constants import DisaggregationMode
+from dingo.common.lora.manager import LoRAInfo, get_lora_manager
 from dynamo.llm import (
     ModelInput,
     ModelRuntimeConfig,

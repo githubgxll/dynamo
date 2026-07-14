@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any, Awaitable, Callable, DefaultDict
 
 from dynamo._core import DistributedRuntime
-from dynamo.common.utils.graceful_shutdown import graceful_shutdown_with_discovery
+from dingo.common.utils.graceful_shutdown import graceful_shutdown_with_discovery
 
 SignalCallback = Callable[..., Any]
 

@@ -81,7 +81,7 @@ pub(crate) struct DeferredKvPublish {
     pub(crate) storage_tier: StorageTier,
 }
 
-/// Captures raw KV publishes for the live `python -m dynamo.mocker` and online
+/// Captures raw KV publishes for the live `python -m dingo.mocker` and online
 /// replay paths.
 ///
 /// Unlike `CapturedRouterEventBuffer`, this keeps `block_token_ids` so delayed

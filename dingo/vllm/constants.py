@@ -3,10 +3,10 @@
 
 """Constants for vLLM backend.
 
-DisaggregationMode is defined in dynamo.common.constants and re-exported here
+DisaggregationMode is defined in dingo.common.constants and re-exported here
 so that existing imports from dingo.vllm.constants continue to work.
 """
 
-from dynamo.common.constants import DisaggregationMode, EmbeddingTransferMode
+from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
 
 __all__ = ["DisaggregationMode", "EmbeddingTransferMode"]

@@ -27,7 +27,7 @@ Additional checks with --thorough-check:
 IMPORTANT: This script is STANDALONE and uses only Python stdlib (no Dynamo components).
 
 Why: Must work before Dynamo is built/installed (CI, fresh containers, build failures).
-This tool is for pre-deployment validation; dynamo.common.config_dump is for runtime.
+This tool is for pre-deployment validation; dingo.common.config_dump is for runtime.
 
 Hard-coded paths: Uses defaults (e.g., ~/.cache/huggingface/hub) for predictable
 behavior even when environment variables are misconfigured. See class docs for details.
@@ -668,7 +668,7 @@ class SystemInfo(NodeInfo):
         """Suppress Prometheus endpoint warnings from planner module during import testing."""
         # The planner module logs a warning about Prometheus endpoint when imported
         # outside of a Kubernetes cluster. Suppress this for cleaner output.
-        planner_logger = logging.getLogger("dynamo.planner.config.defaults")
+        planner_logger = logging.getLogger("dingo.planner.config.defaults")
         planner_logger.setLevel(logging.ERROR)
         # Also suppress the defaults._get_default_prometheus_endpoint logger
         defaults_logger = logging.getLogger("defaults._get_default_prometheus_endpoint")
@@ -1806,7 +1806,7 @@ class HuggingFaceInfo(NodeInfo):
     This class directly uses ~/.cache/huggingface/hub instead of reading environment
     variables because this tool must work reliably in all environments, including when
     environment variables are misconfigured or not set. For dynamic configuration that
-    respects all HF environment variables, use dynamo.common.config_dump at runtime.
+    respects all HF environment variables, use dingo.common.config_dump at runtime.
     """
 
     def __init__(self, thorough_check: bool = False):
@@ -3163,7 +3163,7 @@ class DynamoFrameworkInfo(NodeInfo):
 
         Returns:
             List of framework component module names
-            Example: ['dingo.frontend', 'dynamo.planner', 'dingo.vllm', 'dingo.sglang']
+            Example: ['dingo.frontend', 'dingo.planner', 'dingo.vllm', 'dingo.sglang']
 
         Note: Scans components/src/dynamo/... directory for modules with __init__.py files.
         """

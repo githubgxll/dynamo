@@ -155,7 +155,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.mocker
+            - dingo.mocker
           args:
             - --model-path
             - nvidia/Llama-3.1-8B-Instruct-FP8
@@ -164,7 +164,7 @@ spec:
             - --speedup-ratio
             - "5.0"
             - --planner-profile-data
-            - /workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D
+            - /workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D
             - --is-prefill-worker
 
     Planner:
@@ -178,10 +178,10 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.planner
+            - dingo.planner
           args:
             - --config
-            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"prefill","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"ttft_ms":2000,"max_gpu_budget":-1,"prefill_engine_num_gpu":1,"profile_results_dir":"/workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
+            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"prefill","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"ttft_ms":2000,"max_gpu_budget":-1,"prefill_engine_num_gpu":1,"profile_results_dir":"/workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
 ---
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
@@ -223,7 +223,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.mocker
+            - dingo.mocker
           args:
             - --model-path
             - nvidia/Llama-3.1-8B-Instruct-FP8
@@ -232,7 +232,7 @@ spec:
             - --speedup-ratio
             - "5.0"
             - --planner-profile-data
-            - /workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D
+            - /workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D
             - --is-prefill-worker
 
     Planner:
@@ -246,10 +246,10 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.planner
+            - dingo.planner
           args:
             - --config
-            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"prefill","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"ttft_ms":2000,"max_gpu_budget":-1,"prefill_engine_num_gpu":1,"profile_results_dir":"/workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
+            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"prefill","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"ttft_ms":2000,"max_gpu_budget":-1,"prefill_engine_num_gpu":1,"profile_results_dir":"/workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
 ---
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
@@ -292,7 +292,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.mocker
+            - dingo.mocker
           args:
             - --model-path
             - nvidia/Llama-3.1-8B-Instruct-FP8
@@ -301,7 +301,7 @@ spec:
             - --speedup-ratio
             - "5.0"
             - --planner-profile-data
-            - /workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D
+            - /workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D
 
     Planner:
       componentType: planner
@@ -314,10 +314,10 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.planner
+            - dingo.planner
           args:
             - --config
-            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"decode","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"itl_ms":200,"max_gpu_budget":-1,"decode_engine_num_gpu":1,"profile_results_dir":"/workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
+            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"decode","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"itl_ms":200,"max_gpu_budget":-1,"decode_engine_num_gpu":1,"profile_results_dir":"/workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
 ---
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
@@ -360,7 +360,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.mocker
+            - dingo.mocker
           args:
             - --model-path
             - nvidia/Llama-3.1-8B-Instruct-FP8
@@ -369,7 +369,7 @@ spec:
             - --speedup-ratio
             - "5.0"
             - --planner-profile-data
-            - /workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D
+            - /workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D
 
     Planner:
       componentType: planner
@@ -382,7 +382,7 @@ spec:
           command:
             - python3
             - -m
-            - dynamo.planner
+            - dingo.planner
           args:
             - --config
-            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"decode","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"itl_ms":200,"max_gpu_budget":-1,"decode_engine_num_gpu":1,"profile_results_dir":"/workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'
+            - '{"environment":"global-planner","global_planner_namespace":"${K8S_NAMESPACE}-gp-ctrl","backend":"mocker","mode":"decode","optimization_target":"sla","throughput_metrics_source":"router","throughput_adjustment_interval_seconds":30,"itl_ms":200,"max_gpu_budget":-1,"decode_engine_num_gpu":1,"profile_results_dir":"/workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D","model_name":"nvidia/Llama-3.1-8B-Instruct-FP8"}'

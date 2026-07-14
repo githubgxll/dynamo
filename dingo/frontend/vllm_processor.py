@@ -28,13 +28,13 @@ from vllm.v1.engine.output_processor import OutputProcessor, OutputProcessorOutp
 from vllm.v1.engine.parallel_sampling import ParentRequest
 
 from dynamo._internal import ModelDeploymentCard
-from dynamo.common.multimodal.mm_kwargs_transfer import (
+from dingo.common.multimodal.mm_kwargs_transfer import (
     MmKwargsNixlSender,
     MmKwargsSender,
     MmKwargsShmSender,
 )
-from dynamo.common.multimodal.routing_utils import build_mm_routing_info_from_features
-from dynamo.common.utils import nvtx_utils as _nvtx
+from dingo.common.multimodal.routing_utils import build_mm_routing_info_from_features
+from dingo.common.utils import nvtx_utils as _nvtx
 from dingo.frontend.frontend_args import FrontendConfig
 from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
 
@@ -833,7 +833,7 @@ class EngineFactory:
         # This eliminates data URI encoding overhead entirely.
         if os.environ.get("VLLM_MEDIA_CONNECTOR") != "dynamo":
             os.environ["VLLM_MEDIA_CONNECTOR"] = "dynamo"
-        import dynamo.common.multimodal.media_connector  # noqa: F401
+        import dingo.common.multimodal.media_connector  # noqa: F401
 
         input_processor = InputProcessor(vllm_config)
         tokenizer = input_processor.get_tokenizer()

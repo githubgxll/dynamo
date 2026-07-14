@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from dynamo.mocker import MockEngineArgs
-from dynamo.replay import run_synthetic_trace_replay, run_trace_replay
-from dynamo.replay.reporting import format_report_table, write_report_json
+from dingo.mocker import MockEngineArgs
+from dingo.replay import run_synthetic_trace_replay, run_trace_replay
+from dingo.replay.reporting import format_report_table, write_report_json
 
 from .replay_utils import (
     _assert_basic_report_counts,
@@ -449,7 +449,7 @@ def test_run_trace_replay_accepts_partial_extra_engine_args_json(tmp_path, repla
 
 
 def test_run_trace_replay_materializes_kv_bytes_from_aic_model(monkeypatch, tmp_path):
-    kv_cache = importlib.import_module("dynamo.mocker.utils.kv_cache")
+    kv_cache = importlib.import_module("dingo.mocker.utils.kv_cache")
 
     def fake_compute_kv_bytes_per_token(model_path, kv_cache_dtype="auto"):
         return 1 if model_path == "test/model" else None

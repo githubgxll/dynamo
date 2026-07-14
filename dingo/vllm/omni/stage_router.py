@@ -11,8 +11,8 @@ from typing import Any, AsyncGenerator, Dict, List
 from vllm_omni.entrypoints.utils import load_and_resolve_stage_configs
 
 from dynamo import prometheus_names
-from dynamo.common.storage import get_fs
-from dynamo.common.utils.output_modalities import (
+from dingo.common.storage import get_fs
+from dingo.common.utils.output_modalities import (
     RequestType,
     get_output_modalities,
     parse_request_type,

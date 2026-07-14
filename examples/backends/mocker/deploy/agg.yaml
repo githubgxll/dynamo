@@ -3,7 +3,7 @@
 
 # NOTE: There is no dedicated `mocker-runtime` image. The published
 # `dynamo-planner` image includes the ai-dynamo wheel, ai-dynamo-runtime, and
-# planner/profiler dependencies needed by `python3 -m dynamo.mocker`.
+# planner/profiler dependencies needed by `python3 -m dingo.mocker`.
 # Replace `my-tag` below with the Dynamo release tag you deploy.
 apiVersion: nvidia.com/v1alpha1
 kind: DynamoGraphDeployment
@@ -29,7 +29,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.mocker
+          - dingo.mocker
           args:
             - --model-path
             - nvidia/Llama-3.1-8B-Instruct-FP8
@@ -38,4 +38,4 @@ spec:
             - --speedup-ratio
             - "1.0"
             - --planner-profile-data
-            - /workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D
+            - /workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D

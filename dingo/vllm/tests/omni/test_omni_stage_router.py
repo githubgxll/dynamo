@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynamo.common.utils.output_modalities import RequestType
+from dingo.common.utils.output_modalities import RequestType
 
 try:
     from dingo.vllm.omni import stage_router

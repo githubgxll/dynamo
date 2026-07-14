@@ -136,7 +136,7 @@ define_dynamo_exceptions!(
 
 /// Read `(code, message)` off a Python exception carrying an HTTP-style
 /// status. Accepts `.code` (matches [`HttpError`] in `http.rs`) or `.status`
-/// (matches `dynamo.common.http.HttpStatusError`) plus `.message`.
+/// (matches `dingo.common.http.HttpStatusError`) plus `.message`.
 ///
 /// SECURITY: `.message` is forwarded verbatim to clients on 4xx responses
 /// (HTTP protocol contract). Python callers must ensure it contains no

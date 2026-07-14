@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from dynamo.common.multimodal.image_loader import ImageLoader
+from dingo.common.multimodal.image_loader import ImageLoader
 from dingo.vllm.multimodal_utils.chat_message_utils import extract_user_text
 from dingo.vllm.multimodal_utils.embed_assembler import build_mixed_embeds
 from dingo.vllm.multimodal_utils.encode_utils import (

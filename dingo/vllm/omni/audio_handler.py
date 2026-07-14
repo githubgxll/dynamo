@@ -13,8 +13,8 @@ from typing import Any, Dict
 
 from vllm_omni.inputs.data import OmniTextPrompt
 
-from dynamo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
-from dynamo.common.utils.output_modalities import RequestType
+from dingo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
+from dingo.common.utils.output_modalities import RequestType
 
 logger = logging.getLogger(__name__)
 

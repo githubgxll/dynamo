@@ -21,7 +21,7 @@ from tests.utils.test_output import resolve_test_output_path
 
 
 def _get_workspace_dir() -> str:
-    """Get workspace directory without depending on dynamo.common package.
+    """Get workspace directory without depending on dingo.common package.
 
     This allows tests to run without requiring dynamo package to be installed.
     """

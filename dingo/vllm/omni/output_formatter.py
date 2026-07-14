@@ -22,13 +22,13 @@ import soundfile as sf
 import torch
 from diffusers.utils.export_utils import export_to_video
 
-from dynamo.common.protocols.audio_protocol import AudioData, NvAudioSpeechResponse
-from dynamo.common.protocols.image_protocol import ImageData, NvImagesResponse
-from dynamo.common.protocols.video_protocol import NvVideosResponse, VideoData
-from dynamo.common.storage import upload_to_fs
-from dynamo.common.utils.engine_response import normalize_finish_reason
-from dynamo.common.utils.output_modalities import RequestType
-from dynamo.common.utils.video_utils import normalize_video_frames
+from dingo.common.protocols.audio_protocol import AudioData, NvAudioSpeechResponse
+from dingo.common.protocols.image_protocol import ImageData, NvImagesResponse
+from dingo.common.protocols.video_protocol import NvVideosResponse, VideoData
+from dingo.common.storage import upload_to_fs
+from dingo.common.utils.engine_response import normalize_finish_reason
+from dingo.common.utils.output_modalities import RequestType
+from dingo.common.utils.video_utils import normalize_video_frames
 
 logger = logging.getLogger(__name__)
 

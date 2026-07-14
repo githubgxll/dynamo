@@ -22,17 +22,17 @@ from typing import Any, Optional
 import numpy as np
 import yaml
 
-from dynamo.common.utils.paths import get_workspace_dir
-from dynamo.planner.config.aic_interpolation_spec import AICInterpolationSpec
-from dynamo.planner.config.backend_components import (
+from dingo.common.utils.paths import get_workspace_dir
+from dingo.planner.config.aic_interpolation_spec import AICInterpolationSpec
+from dingo.planner.config.backend_components import (
     MockerComponentName,
     VllmComponentName,
 )
-from dynamo.planner.config.parallelization import (
+from dingo.planner.config.parallelization import (
     PickedParallelConfig,
     picked_to_aic_model_config_kwargs,
 )
-from dynamo.planner.config.planner_config import (
+from dingo.planner.config.planner_config import (
     AICPerfModelSpec,
     PlannerConfig,
     PlannerPreDeploymentSweepMode,

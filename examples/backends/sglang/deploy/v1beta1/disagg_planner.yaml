@@ -27,7 +27,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.planner
+          - dingo.planner
           envFrom:
           - secretRef:
               name: hf-token-secret

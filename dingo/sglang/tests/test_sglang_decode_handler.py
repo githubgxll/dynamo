@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dynamo.common.metadata_upload import MetadataUploader
+from dingo.common.metadata_upload import MetadataUploader
 from dingo.sglang.request_handlers.llm.decode_handler import (
     DecodeWorkerHandler,
     _extract_sglang_stop_reason,

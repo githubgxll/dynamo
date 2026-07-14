@@ -14,7 +14,7 @@ import pytest
 
 try:
     from dynamo.llm import KvRouterConfig
-    from dynamo.mocker import MockEngineArgs
+    from dingo.mocker import MockEngineArgs
 except ImportError:
     pytest.skip("dynamo mocker bindings not available", allow_module_level=True)
 from dingo.profiler.utils import replay_optimize

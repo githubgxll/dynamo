@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator, Optional
 import torch
 
 from dynamo._core import Context
-from dynamo.common.storage import upload_to_fs
+from dingo.common.storage import upload_to_fs
 from dingo.sglang.args import Config
 from dingo.sglang.protocol import (
     CreateVideoRequest,

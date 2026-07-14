@@ -20,7 +20,7 @@ import logging
 from typing import Any, Protocol, Tuple
 from uuid import uuid4
 
-from dynamo.planner.config.defaults import SubComponentType
+from dingo.planner.config.defaults import SubComponentType
 from dingo.profiler.utils.config import (
     Config,
     Container,

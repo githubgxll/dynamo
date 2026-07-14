@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-import dynamo.replay.api as replay_api
-import dynamo.replay.main as replay_main
+import dingo.replay.api as replay_api
+import dingo.replay.main as replay_main
 from dynamo.llm import KvRouterConfig
 
 pytestmark = [

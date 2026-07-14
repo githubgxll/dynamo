@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 try:
-    from dynamo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
-    from dynamo.common.utils.output_modalities import RequestType
+    from dingo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
+    from dingo.common.utils.output_modalities import RequestType
     from dingo.vllm.omni.audio_handler import AudioGenerationHandler
 except ImportError:
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)

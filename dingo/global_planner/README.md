@@ -32,7 +32,7 @@ That is fine for isolated deployments, but it becomes awkward when you want one 
 
 ## Terminology
 
-- **SLA Planner**: The normal `dynamo.planner` component that computes desired replica counts from SLA targets, profiles, and/or metrics.
+- **SLA Planner**: The normal `dingo.planner` component that computes desired replica counts from SLA targets, profiles, and/or metrics.
 - **Local planner**: An instance of that planner running inside one DGD or one pool.
 - **GlobalPlanner**: The centralized execution and policy layer that receives scale requests from local planners and applies them to target DGDs.
 - **Hierarchical planner**: An architecture term, not a separate binary. In practice it means multiple local planners feeding one `GlobalPlanner`, often together with `GlobalRouter`.

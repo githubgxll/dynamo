@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 # Import canonical planner types - do NOT redefine them here.
-from dynamo.planner.config.planner_config import (  # noqa: F401 (re-exported)
+from dingo.planner.config.planner_config import (  # noqa: F401 (re-exported)
     PlannerConfig,
     PlannerPreDeploymentSweepMode,
 )
@@ -204,7 +204,7 @@ class FeaturesSpec(BaseModel):
 
     planner: Optional[PlannerConfig] = Field(
         default=None,
-        description="Planner contains the raw Planner configuration passed to the Planner service. Its schema is defined by dynamo.planner.config.planner_config.PlannerConfig. See https://docs.dynamo.nvidia.com/dynamo/components/planner/planner-guide#plannerconfig-reference. DGDR passes this object through without field-level validation; the Planner service validates it at startup. The presence of this field (non-null) enables the planner in the generated DGD.",
+        description="Planner contains the raw Planner configuration passed to the Planner service. Its schema is defined by dingo.planner.config.planner_config.PlannerConfig. See https://docs.dynamo.nvidia.com/dynamo/components/planner/planner-guide#plannerconfig-reference. DGDR passes this object through without field-level validation; the Planner service validates it at startup. The presence of this field (non-null) enables the planner in the generated DGD.",
     )
     mocker: Optional[MockerSpec] = Field(
         default=None,

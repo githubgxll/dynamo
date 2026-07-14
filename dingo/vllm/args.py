@@ -17,12 +17,12 @@ try:
 except ImportError:
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from dynamo.common.config_dump import register_encoder
-from dynamo.common.configuration.groups.runtime_args import (
+from dingo.common.config_dump import register_encoder
+from dingo.common.configuration.groups.runtime_args import (
     DynamoRuntimeArgGroup,
     DynamoRuntimeConfig,
 )
-from dynamo.common.utils.runtime import parse_endpoint
+from dingo.common.utils.runtime import parse_endpoint
 from dingo.vllm.backend_args import DynamoVllmArgGroup, DynamoVllmConfig
 from dingo.vllm.constants import DisaggregationMode
 

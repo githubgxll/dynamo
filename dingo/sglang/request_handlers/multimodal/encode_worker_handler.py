@@ -20,12 +20,12 @@ from sglang.srt.parser.conversation import chat_templates
 from transformers import AutoTokenizer
 
 from dynamo._core import Client, Context
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     CachedEmbedding,
     MultimodalEmbeddingCacheManager,
 )
-from dynamo.common.multimodal import EMBEDDING_SENDER_FACTORIES
-from dynamo.common.utils import nvtx_utils as _nvtx
+from dingo.common.multimodal import EMBEDDING_SENDER_FACTORIES
+from dingo.common.utils import nvtx_utils as _nvtx
 from dynamo.llm import MultimodalEmbeddingCachePublisher
 from dingo.sglang.args import Config
 from dingo.sglang.protocol import (

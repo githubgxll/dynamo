@@ -132,7 +132,7 @@ async def main(runtime: DistributedRuntime, args):
     # never register the health endpoint, so system_health would never flip
     # to Ready and the operator-injected HTTP probes on :system/live and
     # :system/health would 503 indefinitely. Run concurrently via
-    # asyncio.gather; pattern matches components/src/dynamo/planner/__main__.py.
+    # asyncio.gather; pattern matches dingo/planner/__main__.py.
     #
     # Passing health_check_payload to the health endpoint registers it as a
     # health-check target so system_health flips to Ready once the endpoint

@@ -223,7 +223,7 @@ The interpolators use the profiling sweep granularity to determine precision. Fi
 
 ## Initialization
 
-The `python -m dynamo.planner` entrypoint loads `PlannerConfig`, constructs
+The `python -m dingo.planner` entrypoint loads `PlannerConfig`, constructs
 the mode-specific planner wrapper, and then initializes the selected
 connector. The runtime base validates worker topology, discovers worker
 capabilities, installs any available pre-deployment FPMs into the perf model,
@@ -262,7 +262,7 @@ Per-engine FPM queue depths from `_collect_fpm()` are exported as labeled Promet
 ### Regression Models
 
 Three specialized regression models live under
-`components/src/dynamo/planner/core/perf_model/`:
+`dingo/planner/core/perf_model/`:
 - **PrefillRegressionModel**: 1D regression `sum_prefill_tokens -> wall_time`. Estimates TTFT by simulating chunked prefill scheduling (chunks of `max_num_batched_tokens`).
 - **DecodeRegressionModel**: 1D regression `sum_decode_kv_tokens -> wall_time`. Estimates ITL for total decode load (scheduled + queued + avg decode length).
 - **AggRegressionModel**: 2D regression `(sum_prefill_tokens, sum_decode_kv_tokens) -> wall_time`. Estimates both TTFT (simulated prefill with piggybacked decode) and ITL (decode with average piggybacked prefill).
@@ -298,13 +298,13 @@ In aggregated mode (`--mode agg`), engines handle both prefill and decode via ch
 
 | File / package | Purpose |
 | --------------- | ------- |
-| `components/src/dynamo/planner/core/base.py` | Runtime I/O loop: gathers observations and applies scaling effects. |
-| `components/src/dynamo/planner/core/state_machine.py` | Shared builtin scaling state used by local planner plugins. |
-| `components/src/dynamo/planner/core/load_scaling.py` | FPM-driven load scaling algorithm. |
-| `components/src/dynamo/planner/core/throughput_scaling.py` | Prediction-driven throughput scaling algorithm. |
-| `components/src/dynamo/planner/plugins/builtins/` | Builtin plugins that expose the local planner algorithms to the pipeline. |
-| `components/src/dynamo/planner/plugins/orchestrator/` | PREDICT -> PROPOSE -> RECONCILE -> CONSTRAIN pipeline driver and engine adapter. |
-| `components/src/dynamo/planner/plugins/proto/v1/` | Public gRPC/proto plugin API. |
-| `components/src/dynamo/planner/monitoring/` | Prometheus, diagnostics reports, live dashboard, and worker metadata. |
-| `components/src/dynamo/planner/connectors/` | K8s, virtual, global-planner, and remote connector implementations. |
-| `components/src/dynamo/planner/config/` | PlannerConfig schema, defaults, backend component names, and profiling bootstrap specs. |
+| `dingo/planner/core/base.py` | Runtime I/O loop: gathers observations and applies scaling effects. |
+| `dingo/planner/core/state_machine.py` | Shared builtin scaling state used by local planner plugins. |
+| `dingo/planner/core/load_scaling.py` | FPM-driven load scaling algorithm. |
+| `dingo/planner/core/throughput_scaling.py` | Prediction-driven throughput scaling algorithm. |
+| `dingo/planner/plugins/builtins/` | Builtin plugins that expose the local planner algorithms to the pipeline. |
+| `dingo/planner/plugins/orchestrator/` | PREDICT -> PROPOSE -> RECONCILE -> CONSTRAIN pipeline driver and engine adapter. |
+| `dingo/planner/plugins/proto/v1/` | Public gRPC/proto plugin API. |
+| `dingo/planner/monitoring/` | Prometheus, diagnostics reports, live dashboard, and worker metadata. |
+| `dingo/planner/connectors/` | K8s, virtual, global-planner, and remote connector implementations. |
+| `dingo/planner/config/` | PlannerConfig schema, defaults, backend component names, and profiling bootstrap specs. |

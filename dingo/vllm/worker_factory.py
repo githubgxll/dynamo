@@ -16,9 +16,9 @@ from vllm.config import VllmConfig
 from vllm.v1.engine.async_llm import AsyncLLM
 
 from dynamo import prometheus_names
-from dynamo.common.rl import first_endpoint_response, register_rl_routes
-from dynamo.common.utils.endpoint_types import parse_endpoint_types
-from dynamo.common.utils.prometheus import (
+from dingo.common.rl import first_endpoint_response, register_rl_routes
+from dingo.common.utils.endpoint_types import parse_endpoint_types
+from dingo.common.utils.prometheus import (
     LLMBackendMetrics,
     register_embedding_cache_metrics,
 )

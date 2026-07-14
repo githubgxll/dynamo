@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from dynamo.mocker import MockEngineArgs
-from dynamo.replay import run_synthetic_trace_replay
+from dingo.mocker import MockEngineArgs
+from dingo.replay import run_synthetic_trace_replay
 
 # run_synthetic_trace_replay constructs the Rust AIC callback, which imports
 # aiconfigurator.sdk.engine (Phase 1.5 compile_engine API). Skip if absent —

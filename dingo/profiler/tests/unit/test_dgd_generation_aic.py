@@ -6,9 +6,9 @@
 import pytest
 
 try:
-    from dynamo.planner.config.aic_interpolation_spec import AICInterpolationSpec
-    from dynamo.planner.config.parallelization import PickedParallelConfig
-    from dynamo.planner.config.planner_config import (
+    from dingo.planner.config.aic_interpolation_spec import AICInterpolationSpec
+    from dingo.planner.config.parallelization import PickedParallelConfig
+    from dingo.planner.config.planner_config import (
         PlannerConfig,
         PlannerPreDeploymentSweepMode,
     )

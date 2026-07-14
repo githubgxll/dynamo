@@ -19,7 +19,7 @@ import pytest
 import torch
 
 import dingo.vllm.handlers as mod
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     MultimodalEmbeddingCacheManager,
 )
 from dingo.vllm.multimodal_utils.protocol import (

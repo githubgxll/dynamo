@@ -9,7 +9,7 @@ from typing import Any, Optional, Type
 
 import pytest
 
-from dynamo.common.utils.paths import WORKSPACE_DIR
+from dingo.common.utils.paths import WORKSPACE_DIR
 from tests.serve.conftest import MULTIMODAL_IMG_URL, get_multimodal_test_image_bytes
 from tests.utils.engine_process import EngineConfig
 from tests.utils.payload_builder import chat_payload

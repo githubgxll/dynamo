@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dynamo.common.engine_monitor import EngineHealthMonitorConfig
+from dingo.common.engine_monitor import EngineHealthMonitorConfig
 from dingo.vllm.engine_monitor import VllmEngineMonitor
 
 pytestmark = [

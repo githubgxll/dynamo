@@ -11,7 +11,7 @@ from typing import Any
 
 import sglang as sgl
 
-from dynamo.common.snapshot.lifecycle import (
+from dingo.common.snapshot.lifecycle import (
     EngineSnapshotController,
     SnapshotConfig,
     configure_snapshot_capture_env,

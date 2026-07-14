@@ -6,16 +6,16 @@
 import argparse
 from typing import Optional
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.groups.aic_perf_args import (
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.aic_perf_args import (
     AicPerfArgGroup,
     AicPerfConfigBase,
 )
-from dynamo.common.configuration.groups.kv_router_args import (
+from dingo.common.configuration.groups.kv_router_args import (
     KvRouterArgGroup,
     KvRouterConfigBase,
 )
-from dynamo.common.configuration.utils import add_argument, add_negatable_bool_argument
+from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
 from dynamo.llm import AicPerfConfig, KvRouterConfig
 
 

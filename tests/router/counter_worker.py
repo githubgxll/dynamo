@@ -18,16 +18,16 @@ import argparse
 import asyncio
 import os
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.groups.kv_router_args import (
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.kv_router_args import (
     KvRouterArgGroup,
     KvRouterConfigBase,
 )
-from dynamo.common.configuration.groups.router_args import (
+from dingo.common.configuration.groups.router_args import (
     RouterArgGroup,
     RouterConfigBase,
 )
-from dynamo.common.configuration.utils import add_argument
+from dingo.common.configuration.utils import add_argument
 
 request_count = 0
 

@@ -57,8 +57,8 @@ import subprocess
 import sys
 import time
 
-from dynamo.mocker import MockEngineArgs
-from dynamo.replay import run_synthetic_trace_replay
+from dingo.mocker import MockEngineArgs
+from dingo.replay import run_synthetic_trace_replay
 
 # AIC tuple — matches components/.../tests/unit/test_replay_aic_parity.py so the
 # perf database is one already exercised by CI.

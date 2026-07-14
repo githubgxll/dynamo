@@ -23,9 +23,9 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from dynamo.common.utils.paths import get_workspace_dir
-from dynamo.planner.config.backend_components import WORKER_COMPONENT_NAMES
-from dynamo.planner.config.defaults import SubComponentType
+from dingo.common.utils.paths import get_workspace_dir
+from dingo.planner.config.backend_components import WORKER_COMPONENT_NAMES
+from dingo.planner.config.defaults import SubComponentType
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -103,8 +103,8 @@ class DgdPlannerServiceConfig(BaseModel):
     extraPodSpec: PodSpec = PodSpec(
         mainContainer=Container(
             image="my-registry/dynamo-planner:my-tag",  # placeholder
-            workingDir=f"{get_workspace_dir()}/components/src/dynamo/planner",
-            command=["python3", "-m", "dynamo.planner"],
+            workingDir=f"{get_workspace_dir()}/dingo/planner",
+            command=["python3", "-m", "dingo.planner"],
             args=[],
         )
     )

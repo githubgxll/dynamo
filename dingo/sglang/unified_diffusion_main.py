@@ -10,7 +10,7 @@ Usage:
 The token-pipeline / diffusion-LLM entry point is dingo.sglang.unified_main.
 """
 
-from dynamo.common.backend.run import run
+from dingo.common.backend.run import run
 from dingo.sglang.unified_diffusion import SglangDiffusionEngine
 
 

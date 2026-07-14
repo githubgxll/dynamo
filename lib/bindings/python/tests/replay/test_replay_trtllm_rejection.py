@@ -20,8 +20,8 @@ import json
 
 import pytest
 
-from dynamo.mocker import MockEngineArgs
-from dynamo.replay import run_trace_replay
+from dingo.mocker import MockEngineArgs
+from dingo.replay import run_trace_replay
 
 pytestmark = [
     pytest.mark.gpu_0,

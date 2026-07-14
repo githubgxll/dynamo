@@ -22,7 +22,7 @@ def resolve_deploy_path(rel_path: str) -> str:
 
     Uses get_workspace_dir() which handles repo root, container, and env var cases.
     """
-    from dynamo.common.utils.paths import get_workspace_dir
+    from dingo.common.utils.paths import get_workspace_dir
 
     return os.path.join(get_workspace_dir(), rel_path)
 

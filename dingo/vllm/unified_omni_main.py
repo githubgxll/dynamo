@@ -8,7 +8,7 @@ Usage:
         --output-modalities {image,video,audio} [vLLM-Omni args...]
 """
 
-from dynamo.common.backend.run import run
+from dingo.common.backend.run import run
 from dingo.vllm.unified_omni import VllmOmniEngine
 
 

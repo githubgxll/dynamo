@@ -107,7 +107,7 @@ pub mod name_prefix {
 ///
 /// These labels are auto-injected into metrics by the hierarchy system:
 /// - Rust: lib/runtime/src/metrics.rs create_metric() function
-/// - Python: components/src/dynamo/common/utils/prometheus.py register_engine_metrics_callback()
+/// - Python: dingo/common/utils/prometheus.py register_engine_metrics_callback()
 ///
 /// Python codegen: These constants are exported to lib/bindings/python/src/dynamo/prometheus_names.py
 pub mod labels {

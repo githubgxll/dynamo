@@ -32,7 +32,7 @@ const MAX_REDIRECTS: usize = 3;
 // (reserved). Link-local 169.254/16 covers the AWS / OpenStack metadata IP.
 //
 // Keep this list in sync with the Python counterpart
-// (components/src/dynamo/common/multimodal/url_validator.py::_BLOCKED_IP_NETWORKS).
+// (dingo/common/multimodal/url_validator.py::_BLOCKED_IP_NETWORKS).
 static BLOCKED_IP_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
     [
         "0.0.0.0/8",
@@ -67,7 +67,7 @@ static BLOCKED_IP_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
 // internal-service names to attacker IPs. Match is case-insensitive.
 //
 // Keep this list in sync with the Python counterpart
-// (components/src/dynamo/common/multimodal/url_validator.py::_BLOCKED_HOSTS).
+// (dingo/common/multimodal/url_validator.py::_BLOCKED_HOSTS).
 static BLOCKED_HOSTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
         "localhost",

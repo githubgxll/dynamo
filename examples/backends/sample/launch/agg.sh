@@ -44,7 +44,7 @@ print_launch_banner "Launching Sample Aggregated Serving" "$MODEL_NAME" "$HTTP_P
 python3 -m dingo.frontend &
 
 # run sample worker
-python3 -m dynamo.common.backend.sample_main \
+python3 -m dingo.common.backend.sample_main \
   --model-name "$MODEL_NAME" \
   "${EXTRA_ARGS[@]}" &
 

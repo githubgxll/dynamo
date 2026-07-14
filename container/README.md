@@ -66,7 +66,7 @@ Below is a summary of the general file structure for the framework Dockerfile st
 **Note on `/workspace/` COPY set:**
 
 - Common to all three frameworks: `tests`, `examples`, `dev`, `components/src/dynamo/{common,frontend,<framework>}`
-- vLLM and TRT-LLM additionally copy `lib`; SGLang and TRT-LLM additionally copy `deploy` and `components/src/dynamo/mocker`; SGLang additionally copies `recipes`.
+- vLLM and TRT-LLM additionally copy `lib`; SGLang and TRT-LLM additionally copy `deploy` and `dingo/mocker`; SGLang additionally copies `recipes`.
 - See each framework's `templates/<framework>_runtime.Dockerfile` for the exact list.
 </details>
 

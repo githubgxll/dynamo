@@ -158,7 +158,7 @@ Interpolators 使用 profiling sweep granularity 来决定精度。granularity �
 
 ## 初始化
 
-`python -m dynamo.planner` entrypoint 加载 `PlannerConfig`，构造 mode-specific planner wrapper，然后初始化所选 connector。运行时 base 会验证 worker topology、发现 worker capabilities、把可用的 pre-deployment FPM 安装到 perf model、启动 builtin 和已配置 plugins，并进入 tick loop。
+`python -m dingo.planner` entrypoint 加载 `PlannerConfig`，构造 mode-specific planner wrapper，然后初始化所选 connector。运行时 base 会验证 worker topology、发现 worker capabilities、把可用的 pre-deployment FPM 安装到 perf model、启动 builtin 和已配置 plugins，并进入 tick loop。
 
 ## Performance Considerations
 
@@ -193,7 +193,7 @@ Interpolators 使用 profiling sweep granularity 来决定精度。granularity �
 
 ### Regression Models
 
-三个专用 regression models 位于 `components/src/dynamo/planner/core/perf_model/`：
+三个专用 regression models 位于 `dingo/planner/core/perf_model/`：
 
 - **PrefillRegressionModel**：1D regression `sum_prefill_tokens -> wall_time`。通过模拟 chunked prefill scheduling（chunk 大小为 `max_num_batched_tokens`）估算 TTFT。
 - **DecodeRegressionModel**：1D regression `sum_decode_kv_tokens -> wall_time`。估算 total decode load（scheduled + queued + avg decode length）的 ITL。
@@ -229,13 +229,13 @@ Interpolators 使用 profiling sweep granularity 来决定精度。granularity �
 
 | File / package | Purpose |
 | --------------- | ------- |
-| `components/src/dynamo/planner/core/base.py` | Runtime I/O loop：收集 observations 并应用 scaling effects。 |
-| `components/src/dynamo/planner/core/state_machine.py` | 本地 planner plugins 使用的 shared builtin scaling state。 |
-| `components/src/dynamo/planner/core/load_scaling.py` | FPM-driven load scaling algorithm。 |
-| `components/src/dynamo/planner/core/throughput_scaling.py` | Prediction-driven throughput scaling algorithm。 |
-| `components/src/dynamo/planner/plugins/builtins/` | 把 local planner algorithms 暴露给 pipeline 的 builtin plugins。 |
-| `components/src/dynamo/planner/plugins/orchestrator/` | PREDICT -> PROPOSE -> RECONCILE -> CONSTRAIN pipeline driver 和 engine adapter。 |
-| `components/src/dynamo/planner/plugins/proto/v1/` | Public gRPC/proto plugin API。 |
-| `components/src/dynamo/planner/monitoring/` | Prometheus、diagnostics reports、live dashboard 和 worker metadata。 |
-| `components/src/dynamo/planner/connectors/` | K8s、virtual、global-planner 和 remote connector implementations。 |
-| `components/src/dynamo/planner/config/` | PlannerConfig schema、defaults、backend component names 和 profiling bootstrap specs。 |
+| `dingo/planner/core/base.py` | Runtime I/O loop：收集 observations 并应用 scaling effects。 |
+| `dingo/planner/core/state_machine.py` | 本地 planner plugins 使用的 shared builtin scaling state。 |
+| `dingo/planner/core/load_scaling.py` | FPM-driven load scaling algorithm。 |
+| `dingo/planner/core/throughput_scaling.py` | Prediction-driven throughput scaling algorithm。 |
+| `dingo/planner/plugins/builtins/` | 把 local planner algorithms 暴露给 pipeline 的 builtin plugins。 |
+| `dingo/planner/plugins/orchestrator/` | PREDICT -> PROPOSE -> RECONCILE -> CONSTRAIN pipeline driver 和 engine adapter。 |
+| `dingo/planner/plugins/proto/v1/` | Public gRPC/proto plugin API。 |
+| `dingo/planner/monitoring/` | Prometheus、diagnostics reports、live dashboard 和 worker metadata。 |
+| `dingo/planner/connectors/` | K8s、virtual、global-planner 和 remote connector implementations。 |
+| `dingo/planner/config/` | PlannerConfig schema、defaults、backend component names 和 profiling bootstrap specs。 |

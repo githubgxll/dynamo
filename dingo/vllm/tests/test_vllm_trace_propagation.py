@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dynamo.common.constants import DisaggregationMode
+from dingo.common.constants import DisaggregationMode
 
 # Guard the engine import directly: a partial vLLM install (e.g., metadata
 # present but `vllm.usage` missing) lets `find_spec("vllm")` pass while the

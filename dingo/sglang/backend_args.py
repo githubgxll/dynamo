@@ -10,13 +10,13 @@ import logging
 import warnings
 from typing import Optional
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.config_base import ConfigBase
-from dynamo.common.configuration.groups.frontend_decoding_args import (
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.config_base import ConfigBase
+from dingo.common.configuration.groups.frontend_decoding_args import (
     add_frontend_decoding_arg,
 )
-from dynamo.common.configuration.utils import add_argument, add_negatable_bool_argument
-from dynamo.common.constants import EmbeddingTransferMode
+from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
+from dingo.common.constants import EmbeddingTransferMode
 
 from . import __version__
 

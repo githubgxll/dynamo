@@ -14,8 +14,8 @@ runtime, so a bare run drives every request to completion.
 
 import pytest
 
-from dynamo.mocker import MockEngineArgs, PlannerReplayBridge
-from dynamo.replay import run_synthetic_trace_replay, run_trace_replay
+from dingo.mocker import MockEngineArgs, PlannerReplayBridge
+from dingo.replay import run_synthetic_trace_replay, run_trace_replay
 
 from .replay_utils import _vllm_args, _write_trace_and_args
 

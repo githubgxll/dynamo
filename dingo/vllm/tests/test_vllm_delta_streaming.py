@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
-from dynamo.common.constants import DisaggregationMode
+from dingo.common.constants import DisaggregationMode
 from dingo.vllm.handlers import BaseWorkerHandler, build_sampling_params
 
 pytestmark = [

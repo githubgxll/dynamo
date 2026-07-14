@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from dynamo.planner.config.planner_config import PlannerPreDeploymentSweepMode
+from dingo.planner.config.planner_config import PlannerPreDeploymentSweepMode
 from dingo.profiler.utils.config_modifiers.parallelization_mapping import (
     PickedParallelConfig,
 )

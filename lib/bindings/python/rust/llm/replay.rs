@@ -1779,7 +1779,7 @@ fn populate_missing_offload_kv_bytes_per_token(
         .extract()?;
     let kv_cache_dtype = kv_cache_dtype.as_deref().unwrap_or("auto");
 
-    let kv_cache_module = py.import("dynamo.mocker.utils.kv_cache")?;
+    let kv_cache_module = py.import("dingo.mocker.utils.kv_cache")?;
     let kv_bytes_per_token = kv_cache_module
         .getattr("compute_kv_bytes_per_token")?
         .call1((model_path, kv_cache_dtype))?

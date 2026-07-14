@@ -5,9 +5,9 @@
 
 from typing import Optional
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.config_base import ConfigBase
-from dynamo.common.configuration.utils import add_argument, env_or_default
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.config_base import ConfigBase
+from dingo.common.configuration.utils import add_argument, env_or_default
 
 
 class DynamoGlobalRouterArgGroup(ArgGroup):

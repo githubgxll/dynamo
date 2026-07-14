@@ -11,10 +11,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterator, Optional
 
-from dynamo.planner import KubernetesConnector, SubComponentType, TargetReplica
-from dynamo.planner.connectors.kubernetes_api import KubernetesAPI
-from dynamo.planner.connectors.protocol import ScaleRequest, ScaleResponse, ScaleStatus
-from dynamo.planner.core import budget
+from dingo.planner import KubernetesConnector, SubComponentType, TargetReplica
+from dingo.planner.connectors.kubernetes_api import KubernetesAPI
+from dingo.planner.connectors.protocol import ScaleRequest, ScaleResponse, ScaleStatus
+from dingo.planner.core import budget
 from dynamo.runtime import DistributedRuntime, dynamo_endpoint
 
 logger = logging.getLogger(__name__)

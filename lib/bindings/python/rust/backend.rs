@@ -536,7 +536,7 @@ impl Worker {
 
             // Initialize logging now that tokio context is available. Mirrors
             // the DistributedRuntime init path — required so workers using
-            // `dynamo.common.backend.Worker` directly (without constructing a
+            // `dingo.common.backend.Worker` directly (without constructing a
             // DistributedRuntime first) install the tracing + OTLP exporter
             // layers. Without this, OTEL_EXPORT_ENABLED workers emit no
             // logs and no spans.
@@ -791,7 +791,7 @@ impl PyEngineCore {
             let bound = result.bind(py);
             // Accept either the Rust EngineConfig pyclass or any Python
             // object exposing the canonical attribute names (e.g. the
-            // `dynamo.common.backend.EngineConfig` dataclass).
+            // `dingo.common.backend.EngineConfig` dataclass).
             if let Ok(cfg) = bound.extract::<EngineConfig>() {
                 return Ok(cfg.inner);
             }
@@ -1532,7 +1532,7 @@ fn depythonize_kv_source(item: &Bound<'_, PyAny>) -> PyResult<RsKvEventSource> {
             // `Arc<KvEventPublisher>` as the existing Python pyclass, and
             // invokes the engine-supplied callback. The callback is
             // declared sync on the Python side (see `PushSource.on_ready`
-            // in `dynamo.common.backend.publisher`), so no asyncio
+            // in `dingo.common.backend.publisher`), so no asyncio
             // round-trip is needed here.
             let on_ready_obj: PyObject = item.getattr("on_ready")?.into();
             let on_ready: OnPublisherReady = Box::new(move |publisher| {

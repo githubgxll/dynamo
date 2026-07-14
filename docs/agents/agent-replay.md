@@ -139,7 +139,7 @@ Fixed-schedule behavior is required to preserve recorded arrival times, although
 Pass the captured shards directly to simulated workers:
 
 ```bash
-python -m dynamo.replay /tmp/agent-run/request-trace.*.jsonl.gz \
+python -m dingo.replay /tmp/agent-run/request-trace.*.jsonl.gz \
   --trace-format dynamo \
   --replay-mode offline \
   --router-mode kv_router \

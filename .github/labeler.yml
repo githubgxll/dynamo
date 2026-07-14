@@ -58,7 +58,7 @@ frontend:
 planner:
   - changed-files:
       - any-glob-to-any-file:
-          - components/src/dynamo/planner/**
+          - dingo/planner/**
           - dingo/profiler/**
           - dingo/global_planner/**
 
@@ -98,8 +98,8 @@ xpu:
 multimodal:
   - changed-files:
       - any-glob-to-any-file:
-          - components/src/dynamo/common/memory/multimodal_embedding_cache_manager.py
-          - components/src/dynamo/common/multimodal/**
+          - dingo/common/memory/multimodal_embedding_cache_manager.py
+          - dingo/common/multimodal/**
           - components/src/dynamo/vllm/omni/**
           - components/src/dynamo/vllm/multimodal_handlers/**
           - components/src/dynamo/vllm/multimodal_utils/**

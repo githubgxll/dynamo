@@ -49,7 +49,7 @@ flowchart TD
 The LoRA system consists of:
 
 - **Rust Core** (`lib/llm/src/lora/`): High-performance downloading, caching, and validation
-- **Python Manager** (`components/src/dynamo/common/lora/`): Extensible wrapper with custom source support
+- **Python Manager** (`dingo/common/lora/`): Extensible wrapper with custom source support
 - **Worker Handlers** (`dingo/vllm/handlers.py`): Load/unload API and inference integration
 
 ## Quick Start

@@ -6,9 +6,9 @@ import json
 import pytest
 
 import dynamo._internal.aic as aic
-import dynamo.replay.main as replay_main
-from dynamo.mocker import MockEngineArgs, PlannerReplayBridge
-from dynamo.replay import run_synthetic_trace_replay
+import dingo.replay.main as replay_main
+from dingo.mocker import MockEngineArgs, PlannerReplayBridge
+from dingo.replay import run_synthetic_trace_replay
 
 from .replay_utils import _write_trace_and_args
 

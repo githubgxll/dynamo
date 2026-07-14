@@ -8,7 +8,7 @@ from pathlib import Path
 import uvloop
 from transformers import AutoTokenizer
 
-from dynamo.common.utils.paths import WORKSPACE_DIR
+from dingo.common.utils.paths import WORKSPACE_DIR
 from dynamo.llm import ModelInput, ModelType, WorkerType, register_model
 from dynamo.runtime import DistributedRuntime, dynamo_worker
 

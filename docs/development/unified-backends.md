@@ -57,7 +57,7 @@ custom backend in a `DynamoGraphDeployment` and follow the
 ## Python Implementation
 > **New — Dynamo's unified backend.** This guide covers the new
 > **unified backend** infrastructure in
-> [`dynamo.common.backend`](https://github.com/ai-dynamo/dynamo/tree/main/components/src/dynamo/common/backend):
+> [`dingo.common.backend`](https://github.com/ai-dynamo/dynamo/tree/main/dingo/common/backend):
 > a shared `LLMEngine` ABC that vLLM, SGLang, TRT-LLM, and a sample
 > engine already implement, and that any custom Python engine can plug
 > into the same way. For the Rust version of the same contract, use the
@@ -74,18 +74,18 @@ custom backend in a `DynamoGraphDeployment` and follow the
 
 This guide walks through building a Python backend for an inference
 engine that plugs into Dynamo's distributed runtime via
-`dynamo.common.backend`. A "unified backend" is a Python entry point
+`dingo.common.backend`. A "unified backend" is a Python entry point
 that implements the shared `LLMEngine` ABC and lets the framework own
 runtime lifecycle (signal handling, model registration, graceful
 shutdown, cancellation monitoring) — your code just owns inference.
 
 Your backend lives in its own package and **does not need to be part
 of the dynamo repository**. It depends on `ai-dynamo` from PyPI (or
-the git source) and imports `dynamo.common.backend`. The steps below
+the git source) and imports `dingo.common.backend`. The steps below
 assume you're starting a fresh package in your own repo.
 
 The reference example is the **sample engine** at
-[`sample_engine.py`](../../components/src/dynamo/common/backend/sample_engine.py)
+[`sample_engine.py`](../../dingo/common/backend/sample_engine.py)
 — a complete, runnable implementation under 120 lines. Read it
 alongside this guide.
 
@@ -93,9 +93,9 @@ alongside this guide.
 
 - This guide — step-by-step walkthrough for someone starting a new
   backend from scratch.
-- [`LLMEngine` ABC docstrings](../../components/src/dynamo/common/backend/engine.py)
+- [`LLMEngine` ABC docstrings](../../dingo/common/backend/engine.py)
   — authoritative method-by-method contract.
-- [Package README](../../components/src/dynamo/common/backend/README.md)
+- [Package README](../../dingo/common/backend/README.md)
   — in-tree reference: `GenerateRequest` / `GenerateChunk` field
   definitions, per-engine cancellation cookbook (vLLM / SGLang /
   TRT-LLM), full `DynamoException` table, file index, and the
@@ -108,7 +108,7 @@ contract — what every engine on the unified path gets — plus the
 gaps that apply to all three engines. Per-engine specifics (vLLM
 sleep/wake, SGLang diffusion, TRT-LLM custom logits processors,
 etc.) live in the
-[package README](../../components/src/dynamo/common/backend/README.md#feature-gaps).
+[package README](../../dingo/common/backend/README.md#feature-gaps).
 
 **Supported today**
 
@@ -182,14 +182,14 @@ A backend is two things:
 1. **An engine class** that subclasses `LLMEngine` — owns the model,
    accepts preprocessed token requests, streams output chunks.
 2. **A `main.py` entry point** — a three-line shim that hands the
-   engine class to `run()` from `dynamo.common.backend.run`, which
+   engine class to `run()` from `dingo.common.backend.run`, which
    drives the lifecycle.
 
-The `dynamo.common.backend` package handles everything else: signal
+The `dingo.common.backend` package handles everything else: signal
 handling, distributed runtime setup, model registration with
 discovery, the serving loop, graceful shutdown, cancellation
 monitoring, and error chain wrapping. (The lifecycle state machine
-actually lives in Rust; `dynamo.common.backend.Worker` is a thin
+actually lives in Rust; `dingo.common.backend.Worker` is a thin
 Python shim over it.)
 
 ```text
@@ -234,7 +234,7 @@ name = "my-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    # ai-dynamo bundles dynamo.common.backend. Pin to the release whose
+    # ai-dynamo bundles dingo.common.backend. Pin to the release whose
     # LLMEngine contract you tested against — the surface is still beta
     # and may change between releases.
     "ai-dynamo>=1.2.0",
@@ -278,7 +278,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 from dynamo._core import Context
-from dynamo.common.backend import (
+from dingo.common.backend import (
     EngineConfig,
     GenerateChunk,
     GenerateRequest,
@@ -394,7 +394,7 @@ request. Called concurrently for multiple in-flight requests.
 
 **Contract** (chunk shape is defined by the `GenerateChunk` TypedDict
 — see
-[Request / Response Types](../../components/src/dynamo/common/backend/README.md#request--response-types)
+[Request / Response Types](../../dingo/common/backend/README.md#request--response-types)
 in the package README for the field reference):
 
 - Every chunk carries `token_ids` and `index` (use `0` for single
@@ -514,7 +514,7 @@ Use `ZmqSource` when the engine already emits Dynamo-compatible KV events on a
 ZMQ socket, as vLLM and SGLang do:
 
 ```python
-from dynamo.common.backend.publisher import ZmqSource
+from dingo.common.backend.publisher import ZmqSource
 
 async def kv_event_sources(self):
     return [
@@ -528,7 +528,7 @@ Use `PushSource` when the engine needs a live publisher object and drives
 TRT-LLM backend is the reference implementation for this path:
 
 ```python
-from dynamo.common.backend.publisher import PushSource
+from dingo.common.backend.publisher import PushSource
 
 def _on_kv_publisher_ready(self, publisher):
     self._kv_publisher = publisher
@@ -559,7 +559,7 @@ Three lines.
 
 ```python
 # src/my_backend/main.py
-from dynamo.common.backend.run import run
+from dingo.common.backend.run import run
 from .engine import MyBackend
 
 
@@ -584,7 +584,7 @@ Pair this with the `[project.scripts]` entry from Step 1's
 **Errors**: the framework wraps non-`DynamoException` errors raised
 from `generate()` (or lifecycle methods) as `Unknown`. For typed
 error reporting, raise a `DynamoException` subclass directly from
-[`dynamo.llm.exceptions`](../../components/src/dynamo/common/backend/README.md#error-handling)
+[`dynamo.llm.exceptions`](../../dingo/common/backend/README.md#error-handling)
 — it propagates unchanged through the Rust bridge:
 
 ```python
@@ -625,7 +625,7 @@ pip install -e ".[dev]"
 ```
 
 The sample engine has a unit-test
-[suite](../../components/src/dynamo/common/backend/tests/test_engine.py)
+[suite](../../dingo/common/backend/tests/test_engine.py)
 that you can copy as a starting point. The shape of a useful test:
 
 ```python
@@ -726,11 +726,11 @@ the framework configures `tracing` from `DYN_LOG`.
 
 ### Python reference: sample engine
 
-[`sample_engine.py`](../../components/src/dynamo/common/backend/sample_engine.py)
+[`sample_engine.py`](../../dingo/common/backend/sample_engine.py)
 is the canonical minimal reference. Run it as-is:
 
 ```bash
-python -m dynamo.common.backend.sample_main --model-name test-model
+python -m dingo.common.backend.sample_main --model-name test-model
 ```
 
 It generates rotating token IDs with no ML dependencies, so it's a
@@ -763,11 +763,11 @@ Before shipping:
 
 ### Python see also
 
-- [`LLMEngine` ABC](../../components/src/dynamo/common/backend/engine.py)
+- [`LLMEngine` ABC](../../dingo/common/backend/engine.py)
   — authoritative contract.
-- [Package README](../../components/src/dynamo/common/backend/README.md)
+- [Package README](../../dingo/common/backend/README.md)
   — feature gaps, error model, request/response contract.
-- [Sample engine](../../components/src/dynamo/common/backend/sample_engine.py)
+- [Sample engine](../../dingo/common/backend/sample_engine.py)
   — example user guide.
 - Rust tab on this page — the Rust counterpart, same contract,
   lower-level.
@@ -834,7 +834,7 @@ contract — what every engine on the unified path gets, whether
 written in Rust directly or plugged in from Python via the PyO3
 `Worker` shim. Per-engine specifics (vLLM sleep/wake, SGLang
 diffusion, TRT-LLM custom logits processors, etc.) live in the
-[Python package README](../../components/src/dynamo/common/backend/README.md#feature-gaps).
+[Python package README](../../dingo/common/backend/README.md#feature-gaps).
 
 **Supported today**
 
@@ -904,7 +904,7 @@ Request handling:
 
 | Feature | What's missing |
 |---------|----------------|
-| `cum_log_probs` response wire | Completion-side `log_probs` / `top_logprobs` are populated on the unified path for vLLM, SGLang, and TRT-LLM (shared helpers in `components/src/dynamo/common/backend/logprobs.py`). Prompt-side logprobs ride on the final chunk's `LLMEngineOutput.engine_data["prompt_logprobs"]` (consumed by `prompt_logprobs_from_engine_data` in the response builders). `cum_log_probs` is still not emitted. |
+| `cum_log_probs` response wire | Completion-side `log_probs` / `top_logprobs` are populated on the unified path for vLLM, SGLang, and TRT-LLM (shared helpers in `dingo/common/backend/logprobs.py`). Prompt-side logprobs ride on the final chunk's `LLMEngineOutput.engine_data["prompt_logprobs"]` (consumed by `prompt_logprobs_from_engine_data` in the response builders). `cum_log_probs` is still not emitted. |
 | Text-in-text-out mode | `ModelInput::Text` is rejected at startup — `Tokens` only |
 | Multimodal | Images / video / embeddings, NIXL embedding transfer, separate encode workers; `ENCODE` disaggregation role |
 | Diffusion | Image (FLUX), video (Wan2.1), LLM diffusion (DLLM) workers; no diffusion engine, MediaOutput, or media scheduling on the unified path |
@@ -1609,7 +1609,7 @@ Before shipping:
 - [Conformance kit](../../lib/backend-common/src/testing.rs) —
   `run_conformance`, `mock_context`, `cancelling_context`.
 - [Mocker backend](../backends/mocker_backend/README.md) — example user guide.
-- [Python sibling](../../components/src/dynamo/common/backend/README.md)
+- [Python sibling](../../dingo/common/backend/README.md)
   — Python ABC layered over this crate.
 
 </Tab>

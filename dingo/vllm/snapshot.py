@@ -5,7 +5,7 @@ import gc
 import logging
 from collections.abc import Callable
 
-from dynamo.common.snapshot.lifecycle import (
+from dingo.common.snapshot.lifecycle import (
     EngineSnapshotController,
     SnapshotConfig,
     configure_snapshot_capture_env,

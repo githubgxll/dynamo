@@ -13,7 +13,7 @@ import yaml
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
 
 import dingo.sglang._compat as sglang_compat
-from dynamo.common.constants import EmbeddingTransferMode
+from dingo.common.constants import EmbeddingTransferMode
 from dingo.sglang._compat import (
     ensure_sglang_top_level_exports,
     filter_supported_async_generate_kwargs,
@@ -818,7 +818,7 @@ async def test_lora_registration_model_type_gate(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from dynamo.common.constants import DisaggregationMode
+    from dingo.common.constants import DisaggregationMode
     from dingo.sglang.request_handlers import handler_base
     from dingo.sglang.request_handlers.handler_base import LoraMixin
 

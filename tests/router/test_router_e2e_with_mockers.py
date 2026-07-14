@@ -100,7 +100,7 @@ ROUTER_OVERLOAD_DEBUG_DYN_LOG = (
 )
 PLANNER_PROFILE_DATA_DIR = (
     Path(__file__).resolve().parents[2]
-    / "components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D"
+    / "dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D"
 )
 ROUTER_AIC_CONFIG = {
     "aic_backend": "vllm",

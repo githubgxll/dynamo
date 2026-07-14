@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from dynamo.llm import KvRouterConfig
-from dynamo.mocker import MockEngineArgs
-from dynamo.replay import run_synthetic_trace_replay, run_trace_replay
+from dingo.mocker import MockEngineArgs
+from dingo.replay import run_synthetic_trace_replay, run_trace_replay
 
 from .engine_args import (
     _build_agg_candidate_engine_args,

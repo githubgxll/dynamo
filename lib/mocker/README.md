@@ -49,4 +49,4 @@ embedding it directly as a standalone Rust dependency.
 - DynoSim runs guide:
   [../../docs/dynosim/runs.md](../../docs/dynosim/runs.md)
 - Python component README:
-  [../../components/src/dynamo/mocker/README.md](../../components/src/dynamo/mocker/README.md)
+  [../../dingo/mocker/README.md](../../dingo/mocker/README.md)

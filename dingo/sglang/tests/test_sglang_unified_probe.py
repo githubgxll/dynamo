@@ -35,7 +35,7 @@ class _FakeContext:
 
 
 def _build_prefill_engine(stream_factory):
-    from dynamo.common.constants import DisaggregationMode
+    from dingo.common.constants import DisaggregationMode
     from dingo.sglang.llm_engine import SglangLLMEngine
 
     server_args = SimpleNamespace(skip_tokenizer_init=True)

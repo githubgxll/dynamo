@@ -25,10 +25,10 @@ from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from dynamo._core import Context
-from dynamo.common.backend.engine import EngineConfig, RawEngine
-from dynamo.common.backend.worker import WorkerConfig
-from dynamo.common.constants import DisaggregationMode as CommonDisaggregationMode
-from dynamo.common.storage import get_fs
+from dingo.common.backend.engine import EngineConfig, RawEngine
+from dingo.common.backend.worker import WorkerConfig
+from dingo.common.constants import DisaggregationMode as CommonDisaggregationMode
+from dingo.common.storage import get_fs
 from dynamo.llm import ModelInput
 from dingo.vllm.omni.args import parse_omni_args
 

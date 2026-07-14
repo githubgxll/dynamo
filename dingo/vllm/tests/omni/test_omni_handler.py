@@ -12,10 +12,10 @@ try:
     from vllm.sampling_params import SamplingParams
     from vllm_omni.inputs.data import OmniDiffusionSamplingParams
 
-    from dynamo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
-    from dynamo.common.protocols.image_protocol import NvCreateImageRequest
-    from dynamo.common.protocols.video_protocol import NvCreateVideoRequest, VideoNvExt
-    from dynamo.common.utils.output_modalities import RequestType
+    from dingo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
+    from dingo.common.protocols.image_protocol import NvCreateImageRequest
+    from dingo.common.protocols.video_protocol import NvCreateVideoRequest, VideoNvExt
+    from dingo.common.utils.output_modalities import RequestType
     from dingo.vllm.omni.audio_handler import AudioGenerationHandler
     from dingo.vllm.omni.omni_handler import EngineInputs, OmniHandler
     from dingo.vllm.omni.utils import build_original_prompt, parse_omni_request

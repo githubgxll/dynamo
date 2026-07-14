@@ -7,13 +7,13 @@ import sys
 
 import uvloop
 
-from dynamo.common.config_dump import dump_config
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.snapshot.restore_context import (
+from dingo.common.config_dump import dump_config
+from dingo.common.constants import DisaggregationMode
+from dingo.common.snapshot.restore_context import (
     parse_snapshot_restore_runtime_config,
     refresh_snapshot_restore_config,
 )
-from dynamo.common.utils.runtime import create_runtime
+from dingo.common.utils.runtime import create_runtime
 from dynamo.runtime.logging import configure_dynamo_logging
 from dingo.sglang.args import parse_args
 from dingo.sglang.init_diffusion import (

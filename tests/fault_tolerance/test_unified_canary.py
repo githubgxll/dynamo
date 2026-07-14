@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 import requests
 
-from dynamo.common.utils.paths import WORKSPACE_DIR
+from dingo.common.utils.paths import WORKSPACE_DIR
 from tests.utils.engine_process import EngineConfig, EngineProcess
 
 CANARY_READY_BUDGET_S = 60

@@ -224,7 +224,7 @@ Dynamo RPC (NATS transport)
     |
     v
 SGLang Handler (Python)
-  dynamo.common.utils.otel_tracing.build_trace_headers(context)
+  dingo.common.utils.otel_tracing.build_trace_headers(context)
   builds W3C traceparent: "00-{trace_id}-{span_id}-01"
     |
     v
@@ -239,7 +239,7 @@ SGLang Engine (internal spans attached to same trace)
 ```
 
 Key implementation files:
-- `components/src/dynamo/common/utils/otel_tracing.py` - W3C `traceparent` header builder
+- `dingo/common/utils/otel_tracing.py` - W3C `traceparent` header builder
 - `dingo/sglang/request_handlers/handler_base.py:71-84` - Extracts trace context from Dynamo `Context` object
 - `dingo/sglang/request_handlers/llm/decode_handler.py` - Passes `external_trace_header` and `rid=trace_id` to `engine.async_generate()`
 
@@ -495,4 +495,4 @@ This is useful for automated benchmarking pipelines where you want to capture me
 - Dynamo runtime metrics (prefixed with `dynamo_*`) are available at the same `/metrics` endpoint alongside SGLang metrics
   - Implementation: `lib/runtime/src/metrics.rs` (Rust runtime metrics)
   - Metric names: `lib/runtime/src/metrics/prometheus_names.rs` (metric name constants)
-  - Integration code: `components/src/dynamo/common/utils/prometheus.py` - Prometheus utilities and callback registration
+  - Integration code: `dingo/common/utils/prometheus.py` - Prometheus utilities and callback registration

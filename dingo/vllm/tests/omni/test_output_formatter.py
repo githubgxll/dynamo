@@ -153,7 +153,7 @@ class TestDiffusionFormatterPrepareImages:
 class TestDiffusionFormatterImage:
     @pytest.mark.asyncio
     async def test_chat_completion_format(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
 
         f = _make_diffusion_formatter()
         img = MagicMock()
@@ -166,7 +166,7 @@ class TestDiffusionFormatterImage:
 
     @pytest.mark.asyncio
     async def test_image_generation_b64_format(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
 
         f = _make_diffusion_formatter()
         img = MagicMock()
@@ -181,7 +181,7 @@ class TestDiffusionFormatterImage:
 
     @pytest.mark.asyncio
     async def test_image_generation_default_format_returns_b64(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
 
         f = _make_diffusion_formatter()
         img = MagicMock()
@@ -196,7 +196,7 @@ class TestDiffusionFormatterImage:
 
     @pytest.mark.asyncio
     async def test_empty_images_returns_error(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
 
         f = _make_diffusion_formatter()
         chunk = await f._encode_image(
@@ -208,7 +208,7 @@ class TestDiffusionFormatterImage:
 class TestDiffusionFormatterVideo:
     @pytest.mark.asyncio
     async def test_empty_frames_returns_none(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
 
         f = _make_diffusion_formatter()
         stage = MagicMock()
@@ -362,7 +362,7 @@ class TestOutputFormatter:
 
     @pytest.mark.asyncio
     async def test_routes_text(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import OutputFormatter
 
         f = OutputFormatter(model_name="test-model")
@@ -376,7 +376,7 @@ class TestOutputFormatter:
 
     @pytest.mark.asyncio
     async def test_routes_image(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import OutputFormatter
 
         f = OutputFormatter(model_name="test-model")
@@ -394,7 +394,7 @@ class TestOutputFormatter:
     async def test_routes_audio(self):
         import numpy as np
 
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import OutputFormatter
 
         f = OutputFormatter(model_name="test-model")
@@ -526,7 +526,7 @@ class TestDiffusionFormatterVideoOutputFormat:
 
     @pytest.mark.asyncio
     async def test_video_url_response_format(self):
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import DiffusionFormatter
 
         f = DiffusionFormatter(model_name="test", media_fs=None, media_http_url=None)
@@ -553,7 +553,7 @@ class TestDiffusionFormatterVideoOutputFormat:
     async def test_video_b64_response_format(self):
         import base64
 
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import DiffusionFormatter
 
         f = DiffusionFormatter(model_name="test", media_fs=None, media_http_url=None)
@@ -580,7 +580,7 @@ class TestDiffusionFormatterVideoOutputFormat:
     @pytest.mark.asyncio
     async def test_video_default_response_format_is_url(self):
         """Omitting response_format defaults to url."""
-        from dynamo.common.utils.output_modalities import RequestType
+        from dingo.common.utils.output_modalities import RequestType
         from dingo.vllm.omni.output_formatter import DiffusionFormatter
 
         f = DiffusionFormatter(model_name="test", media_fs=None, media_http_url=None)

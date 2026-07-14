@@ -13,14 +13,14 @@ from transformers import AutoImageProcessor
 from vllm.engine.arg_utils import AsyncEngineArgs
 
 import dynamo.nixl_connect as connect
-from dynamo.common.multimodal import (
+from dingo.common.multimodal import (
     LocalEmbeddingSender,
     NixlReadEmbeddingSender,
     NixlWriteEmbeddingSender,
 )
-from dynamo.common.multimodal.embedding_transfer import AbstractEmbeddingSender
-from dynamo.common.utils import nvtx_utils as _nvtx
-from dynamo.common.utils.time_section import time_and_log_code_section
+from dingo.common.multimodal.embedding_transfer import AbstractEmbeddingSender
+from dingo.common.utils import nvtx_utils as _nvtx
+from dingo.common.utils.time_section import time_and_log_code_section
 from dynamo.runtime import DistributedRuntime
 
 from ..constants import EmbeddingTransferMode

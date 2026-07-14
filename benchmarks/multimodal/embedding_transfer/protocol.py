@@ -3,8 +3,8 @@
 
 from pydantic import BaseModel
 
-from dynamo.common.constants import EmbeddingTransferMode
-from dynamo.common.multimodal.embedding_transfer import TransferRequest
+from dingo.common.constants import EmbeddingTransferMode
+from dingo.common.multimodal.embedding_transfer import TransferRequest
 
 
 class TransferConfig(BaseModel):

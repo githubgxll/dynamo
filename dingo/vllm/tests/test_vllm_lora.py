@@ -18,8 +18,8 @@ pytest.importorskip("vllm.lora.request")
 pytest.importorskip("vllm.usage.usage_lib")
 pytest.importorskip("vllm.v1.engine.async_llm")
 
-from dynamo.common.constants import DisaggregationMode  # noqa: E402
-from dynamo.common.lora.manager import LoRAInfo  # noqa: E402
+from dingo.common.constants import DisaggregationMode  # noqa: E402
+from dingo.common.lora.manager import LoRAInfo  # noqa: E402
 from dynamo.llm import ModelType, WorkerType  # noqa: E402
 from dingo.vllm import llm_engine as llm_engine_mod  # noqa: E402
 from dingo.vllm.llm_engine import VllmLLMEngine  # noqa: E402

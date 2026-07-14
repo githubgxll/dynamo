@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dingo.global_planner.scale_handler import PoolIntent, ScaleRequestHandler
-from dynamo.planner import SubComponentType, TargetReplica
-from dynamo.planner.connectors.protocol import ScaleRequest
+from dingo.planner import SubComponentType, TargetReplica
+from dingo.planner.connectors.protocol import ScaleRequest
 
 pytestmark = [
     pytest.mark.gpu_0,

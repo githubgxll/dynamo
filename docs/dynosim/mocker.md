@@ -30,17 +30,17 @@ The mocker simulates:
 
 ```bash
 # Launch a single mocker worker
-python -m dynamo.mocker --model-path Qwen/Qwen3-0.6B
+python -m dingo.mocker --model-path Qwen/Qwen3-0.6B
 
 # Launch with custom KV cache configuration
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --num-gpu-blocks-override 8192 \
     --block-size 64 \
     --max-num-seqs 256
 
 # Launch with timing speedup for faster testing
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --speedup-ratio 10.0
 ```
@@ -49,13 +49,13 @@ python -m dynamo.mocker \
 
 ```bash
 # Launch prefill worker
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --disaggregation-mode prefill \
     --bootstrap-ports 50100
 
 # Launch decode worker (in another terminal)
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --disaggregation-mode decode
 ```
@@ -64,7 +64,7 @@ python -m dynamo.mocker \
 
 ```bash
 # Launch 4 mocker workers sharing the same tokio runtime
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --num-workers 4
 ```
@@ -130,7 +130,7 @@ python -m dynamo.mocker \
 
 ## DynoSim Runs
 
-Mocker also powers DynoSim runs through the dedicated `python -m dynamo.replay` CLI, which exposes
+Mocker also powers DynoSim runs through the dedicated `python -m dingo.replay` CLI, which exposes
 `offline|online`, `round_robin|kv_router`, `arrival_speedup_ratio`, closed-loop concurrency
 admission, synthetic workload generation, and offline disaggregated prefill/decode simulation directly:
 
@@ -140,7 +140,7 @@ runs use `--extra-engine-args`. Offline disaggregated runs instead use
 `--num-prefill-workers` and `--num-decode-workers`.
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --num-workers 4 \
     --replay-mode offline \
     --router-mode kv_router \
@@ -154,7 +154,7 @@ python -m dynamo.replay /path/to/mooncake_trace.jsonl \
 The same CLI also supports synthetic workloads without a trace file:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 5000 \
     --output-tokens 500 \
     --request-count 1000 \
@@ -169,7 +169,7 @@ python -m dynamo.replay \
 Synthetic workloads also support shared-prefix and multi-turn tests:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 5000 \
     --output-tokens 500 \
     --request-count 200 \
@@ -221,7 +221,7 @@ Offline DynoSim runs also support disaggregated `kv_router` mode. In that mode:
 Example:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 4096 \
     --output-tokens 256 \
     --request-count 100 \
@@ -251,9 +251,9 @@ It also accepts older raw-data directories containing:
 - `decode_raw_data.json`
 
 ```bash
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path nvidia/Llama-3.1-8B-Instruct-FP8 \
-    --planner-profile-data components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D \
+    --planner-profile-data dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D \
     --speedup-ratio 1.0
 ```
 
@@ -264,7 +264,7 @@ To use the AIC SDK for latency prediction:
 ```bash
 uv pip install '.[mocker]'
 
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path nvidia/Llama-3.1-8B-Instruct-FP8 \
     --engine-type vllm \
     --aic-perf-model \
@@ -275,8 +275,8 @@ The AIC model automatically uses `--model-path` and `--engine-type` to select th
 
 Important notes:
 
-- AIC is opt-in. If you do not pass `--aic-perf-model`, `python -m dynamo.mocker` does not use AIC.
-- `python -m dynamo.replay` has two separate AIC surfaces:
+- AIC is opt-in. If you do not pass `--aic-perf-model`, `python -m dingo.mocker` does not use AIC.
+- `python -m dingo.replay` has two separate AIC surfaces:
   - engine timing AIC through `--extra-engine-args` / staged engine JSON
   - router-side prefill-load AIC through top-level `--aic-*` flags plus `router_prefill_load_model="aic"` in `--router-config`
 - The Python AIC session bridge is now shared with the live KV router path via the internal `dynamo._internal.aic` module. Mocker CLI behavior is unchanged; this just removes duplicate AIC session code.
@@ -292,14 +292,14 @@ mocked worker timing model itself to come from AIC.
 For aggregated DynoSim runs, engine timing AIC still comes from `--extra-engine-args`:
 
 ```bash
-python -m dynamo.replay /path/to/trace.jsonl \
+python -m dingo.replay /path/to/trace.jsonl \
     --extra-engine-args '{"aic_backend":"vllm","aic_system":"h200_sxm","aic_model_path":"nvidia/Llama-3.1-8B-Instruct-FP8","aic_tp_size":1}'
 ```
 
 For offline disaggregated DynoSim runs, pass the staged engine configs instead:
 
 ```bash
-python -m dynamo.replay /path/to/trace.jsonl \
+python -m dingo.replay /path/to/trace.jsonl \
     --replay-mode offline \
     --router-mode kv_router \
     --prefill-engine-args '{"worker_type":"prefill","aic_backend":"vllm","aic_system":"h200_sxm","aic_model_path":"nvidia/Llama-3.1-8B-Instruct-FP8","aic_tp_size":1,"block_size":512}' \
@@ -308,12 +308,12 @@ python -m dynamo.replay /path/to/trace.jsonl \
     --num-decode-workers 6
 ```
 
-The `aic_backend` field enables the AIC perf model and should match `engine_type` (`"vllm"` or `"sglang"`). The `aic_model_path` field is the equivalent of `--model-path` in `dynamo.mocker`.
+The `aic_backend` field enables the AIC perf model and should match `engine_type` (`"vllm"` or `"sglang"`). The `aic_model_path` field is the equivalent of `--model-path` in `dingo.mocker`.
 
 DynoSim router-side AIC prompt-load modeling is configured separately with top-level flags:
 
 ```bash
-python -m dynamo.replay /path/to/trace.jsonl \
+python -m dingo.replay /path/to/trace.jsonl \
     --replay-mode offline \
     --router-mode kv_router \
     --num-workers 4 \
@@ -336,7 +336,7 @@ the decode-stage router keeps prompt tracking disabled.
 Example `--reasoning` configuration:
 
 ```bash
-python -m dynamo.mocker \
+python -m dingo.mocker \
     --model-path Qwen/Qwen3-0.6B \
     --reasoning '{"start_thinking_token_id":123,"end_thinking_token_id":456,"thinking_ratio":0.6}'
 ```

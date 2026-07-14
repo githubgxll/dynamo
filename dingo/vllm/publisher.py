@@ -10,7 +10,7 @@ from vllm.config import VllmConfig
 from vllm.v1.metrics.loggers import StatLoggerBase
 from vllm.v1.metrics.stats import IterationStats, SchedulerStats
 
-from dynamo.common.utils.prometheus import LLMBackendMetrics
+from dingo.common.utils.prometheus import LLMBackendMetrics
 from dynamo.llm import WorkerMetricsPublisher
 from dynamo.runtime import Endpoint
 

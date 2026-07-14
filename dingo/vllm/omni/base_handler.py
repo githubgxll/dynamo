@@ -18,8 +18,8 @@ except ImportError:
     DiffusionParallelConfig = None  # type: ignore[assignment, misc]
 
 from dynamo._core import Context
-from dynamo.common.protocols.audio_protocol import NvAudioSpeechResponse
-from dynamo.common.utils.output_modalities import RequestType
+from dingo.common.protocols.audio_protocol import NvAudioSpeechResponse
+from dingo.common.utils.output_modalities import RequestType
 from dingo.vllm.handlers import BaseWorkerHandler, build_sampling_params
 
 logger = logging.getLogger(__name__)

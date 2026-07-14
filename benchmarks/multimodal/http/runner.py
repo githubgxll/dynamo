@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
-from dynamo.common.http import close_http_client, fetch_bytes
+from dingo.common.http import close_http_client, fetch_bytes
 
 
 @dataclass

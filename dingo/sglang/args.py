@@ -17,16 +17,16 @@ import yaml
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.server_args_config_parser import ConfigArgumentMerger
 
-from dynamo.common.config_dump import register_encoder
-from dynamo.common.configuration.groups import DynamoRuntimeConfig
-from dynamo.common.configuration.groups.runtime_args import DynamoRuntimeArgGroup
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.model_fetch import fetch_model
-from dynamo.common.snapshot.lifecycle import (
+from dingo.common.config_dump import register_encoder
+from dingo.common.configuration.groups import DynamoRuntimeConfig
+from dingo.common.configuration.groups.runtime_args import DynamoRuntimeArgGroup
+from dingo.common.constants import DisaggregationMode
+from dingo.common.model_fetch import fetch_model
+from dingo.common.snapshot.lifecycle import (
     configure_snapshot_capture_env,
     is_snapshot_enabled,
 )
-from dynamo.common.utils.runtime import parse_endpoint
+from dingo.common.utils.runtime import parse_endpoint
 from dynamo.runtime.logging import configure_dynamo_logging
 from dingo.sglang._compat import enable_disjoint_streaming_output
 from dingo.sglang.backend_args import DynamoSGLangArgGroup, DynamoSGLangConfig

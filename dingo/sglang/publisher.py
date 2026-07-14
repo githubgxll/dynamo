@@ -18,7 +18,7 @@ from sglang.srt.utils.network import NetworkAddress, get_local_ip_auto, get_zmq_
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
 
-from dynamo.common.utils.prometheus import (
+from dingo.common.utils.prometheus import (
     LLMBackendMetrics,
     register_engine_metrics_callback,
 )

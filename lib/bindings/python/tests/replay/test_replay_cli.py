@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import dynamo.replay.main as replay_main
+import dingo.replay.main as replay_main
 
 from .replay_utils import (
     _assert_basic_report_counts,

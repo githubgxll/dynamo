@@ -140,11 +140,11 @@ flowchart LR
 
 #### Code Examples
 
-See [NixlReadEmbeddingSender](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/multimodal/embedding_transfer.py),
+See [NixlReadEmbeddingSender](https://github.com/ai-dynamo/dynamo/blob/main/dingo/common/multimodal/embedding_transfer.py),
 for how they coordinate directly with the Encode Worker by creating a [`ReadableOperation`](readable-operation.md),
 sending the operation's metadata via Dynamo's round-robin dispatcher, and awaiting the operation for completion before making use of the transferred data.
 
-See [NixlReadEmbeddingReceiver](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/common/multimodal/embedding_transfer.py),
+See [NixlReadEmbeddingReceiver](https://github.com/ai-dynamo/dynamo/blob/main/dingo/common/multimodal/embedding_transfer.py),
 for how the resulting embeddings are registered with the NIXL subsystem by creating a [`Descriptor`](descriptor.md),
 a [`ReadOperation`](read-operation.md) is created using the metadata provided by the requesting worker,
 and the worker awaits for the data transfer to complete for yielding a response.

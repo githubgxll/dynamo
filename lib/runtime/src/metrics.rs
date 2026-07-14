@@ -229,7 +229,7 @@ pub fn create_metric<T: PrometheusMetric, H: MetricsHierarchy + ?Sized>(
     // Auto-label injection: Always add dynamo_namespace, dynamo_component, dynamo_endpoint labels
     // based on the hierarchy. Label constants defined in prometheus_names.rs labels module.
     //
-    // Python counterpart: components/src/dynamo/common/utils/prometheus.py register_engine_metrics_callback()
+    // Python counterpart: dingo/common/utils/prometheus.py register_engine_metrics_callback()
 
     // Validate that user-provided labels don't conflict with auto-generated labels
     for (key, _) in labels {

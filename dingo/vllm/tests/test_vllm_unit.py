@@ -332,7 +332,7 @@ def test_parse_args_does_not_track_logprobs_mode_presence(mock_vllm_cli):
 
 
 def test_unified_from_args_applies_rl_logprobs_default(monkeypatch):
-    from dynamo.common.constants import DisaggregationMode as CommonDisaggregationMode
+    from dingo.common.constants import DisaggregationMode as CommonDisaggregationMode
     from dingo.vllm import llm_engine
 
     config = SimpleNamespace(
@@ -368,7 +368,7 @@ def test_unified_from_args_applies_rl_logprobs_default(monkeypatch):
 
 
 def test_unified_generate_passes_enable_rl_to_sampling_params(monkeypatch):
-    from dynamo.common.constants import DisaggregationMode as CommonDisaggregationMode
+    from dingo.common.constants import DisaggregationMode as CommonDisaggregationMode
     from dingo.vllm import llm_engine
 
     captured: dict[str, bool] = {}
@@ -412,7 +412,7 @@ def test_unified_generate_passes_enable_rl_to_sampling_params(monkeypatch):
 @pytest.mark.asyncio
 async def test_unified_start_returns_normalized_served_model_name(monkeypatch):
     """Return the Dynamo-normalized served model name from EngineConfig."""
-    from dynamo.common.constants import DisaggregationMode as CommonDisaggregationMode
+    from dingo.common.constants import DisaggregationMode as CommonDisaggregationMode
     from dingo.vllm import llm_engine
 
     served_model_name = "Qwen/Qwen3-0.6B"
@@ -1007,7 +1007,7 @@ async def test_health_check_decode_opts_out_with_warning():
 
 @pytest.mark.asyncio
 async def test_health_check_aggregated_returns_canary():
-    from dynamo.common.backend.health_check import HEALTH_CHECK_KEY
+    from dingo.common.backend.health_check import HEALTH_CHECK_KEY
     from dingo.vllm.llm_engine import VllmLLMEngine
 
     engine = VllmLLMEngine(

@@ -92,10 +92,10 @@ core:
   - 'tests/**'
   - 'components/src/dynamo/router/**'
   - 'dingo/thunderagent_router/**'
-  - 'components/src/dynamo/mocker/**'
-  - 'components/src/dynamo/replay/**'
+  - 'dingo/mocker/**'
+  - 'dingo/replay/**'
   - 'components/src/dynamo/frontend/**'
-  - 'components/src/dynamo/common/**'
+  - 'dingo/common/**'
   - 'components/src/dynamo/gpu_memory_service/**'
   # TODO(will): Move TokenSpeed to a dedicated framework filter once CI has
   # TokenSpeed Docker images and backend-specific build/test jobs.
@@ -146,7 +146,7 @@ deploy:
 
 planner:
   - 'container/templates/planner.Dockerfile'
-  - 'components/src/dynamo/planner/**'
+  - 'dingo/planner/**'
   - 'dingo/global_planner/**'
   - 'dingo/profiler/**'
   - 'dingo/global_router/**'
@@ -192,10 +192,10 @@ frontend:
   - 'container/compliance/**'
   - 'components/src/dynamo/router/**'
   - 'dingo/thunderagent_router/**'
-  - 'components/src/dynamo/mocker/**'
-  - 'components/src/dynamo/replay/**'
+  - 'dingo/mocker/**'
+  - 'dingo/replay/**'
   - 'components/src/dynamo/frontend/**'
-  - 'components/src/dynamo/common/**'
+  - 'dingo/common/**'
   - 'deploy/inference-gateway/**'
   - 'container/templates/frontend.Dockerfile'
   - '!**/*.md'

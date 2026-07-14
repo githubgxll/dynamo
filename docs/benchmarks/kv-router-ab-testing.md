@@ -389,7 +389,7 @@ For this A/B comparison, we use the [**Mooncake FAST'25 Toolagent Trace**](https
 
 These two requests share blocks 46–57 (12 blocks × 512 tokens = ~6,144 tokens of shared prefix) — a tool agent continuing the same session with accumulated context. Each hash ID represents a **512-token block**, and the hash includes both the current block and all preceding blocks, preserving the pattern of prefix reuse while protecting user privacy. The **KV Smart Router** routes requests with matching hash IDs to the same worker, maximizing cache hits.
 
-If you reproduce this benchmark with `python -m dynamo.replay`, keep that dataset fact separate from
+If you reproduce this benchmark with `python -m dingo.replay`, keep that dataset fact separate from
 the replay engine configuration:
 
 - use `--trace-block-size 512` for the Mooncake/toolagent trace itself

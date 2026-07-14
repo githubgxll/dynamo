@@ -8,8 +8,8 @@ from typing import Awaitable, Callable
 import sglang as sgl
 
 from dynamo import prometheus_names
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.utils.prometheus import register_embedding_cache_metrics
+from dingo.common.constants import DisaggregationMode
+from dingo.common.utils.prometheus import register_embedding_cache_metrics
 from dynamo.llm import (
     ModelInput,
     ModelType,

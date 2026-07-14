@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dynamo.common.constants import DisaggregationMode
+from dingo.common.constants import DisaggregationMode
 
 # Guard the engine import directly: package metadata can be present without
 # submodules, and native-lib loads (e.g., libcuda.so.1) raise `ImportError`

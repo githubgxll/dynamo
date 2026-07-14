@@ -12,8 +12,8 @@ those SLA fields.
 import pytest
 
 try:
-    from dynamo.planner.config.defaults import SLAPlannerDefaults
-    from dynamo.planner.config.planner_config import PlannerConfig
+    from dingo.planner.config.defaults import SLAPlannerDefaults
+    from dingo.planner.config.planner_config import PlannerConfig
     from dingo.profiler.utils.dgd_generation import _build_planner_config
     from dingo.profiler.utils.dgdr_v1beta1_types import (
         DynamoGraphDeploymentRequestSpec,

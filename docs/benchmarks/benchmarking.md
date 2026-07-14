@@ -420,7 +420,7 @@ kubectl get endpoints <service-name> -n $NAMESPACE
 
 ## Testing with DynoSim / Mocker
 
-For development and testing purposes, Dynamo provides DynoSim and the [mocker backend](https://github.com/ai-dynamo/dynamo/blob/main/components/src/dynamo/mocker) to simulate LLM inference without requiring actual GPU resources. This is useful for:
+For development and testing purposes, Dynamo provides DynoSim and the [mocker backend](https://github.com/ai-dynamo/dynamo/blob/main/dingo/mocker) to simulate LLM inference without requiring actual GPU resources. This is useful for:
 
 - **Testing deployments** without expensive GPU infrastructure
 - **Developing and debugging** router, planner, or frontend logic

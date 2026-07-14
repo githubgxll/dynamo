@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dynamo._core import DistributedRuntime
-from dynamo.common.utils.runtime import create_runtime
+from dingo.common.utils.runtime import create_runtime
 from dynamo.runtime import dynamo_worker
 
 pytestmark = [
@@ -212,7 +212,7 @@ def test_create_runtime_accepts_use_kv_events_kwarg():
     assert param.default is None
 
 
-@patch("dynamo.common.utils.runtime.DistributedRuntime")
+@patch("dingo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_use_kv_events_true_emits_warning(mock_runtime_cls):
     """create_runtime(use_kv_events=True) should emit a DeprecationWarning.
 
@@ -241,7 +241,7 @@ def test_create_runtime_use_kv_events_true_emits_warning(mock_runtime_cls):
     asyncio.run(_run())
 
 
-@patch("dynamo.common.utils.runtime.DistributedRuntime")
+@patch("dingo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_use_kv_events_false_emits_warning(mock_runtime_cls):
     """create_runtime(use_kv_events=False) should also emit a DeprecationWarning.
 
@@ -267,7 +267,7 @@ def test_create_runtime_use_kv_events_false_emits_warning(mock_runtime_cls):
     asyncio.run(_run())
 
 
-@patch("dynamo.common.utils.runtime.DistributedRuntime")
+@patch("dingo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_no_use_kv_events_no_warning(mock_runtime_cls):
     """Omitting use_kv_events should not emit a DeprecationWarning.
 

@@ -22,7 +22,7 @@ dependencies = [
     "zstandard>=0.23.0,<1.0",
     "pyzmq>=26.0.0",
     # typing.Self is 3.11+; declared minimum is 3.10 (see requires-python),
-    # so back-port Self via typing_extensions in dynamo.common.configuration.
+    # so back-port Self via typing_extensions in dingo.common.configuration.
     "typing_extensions>=4.10.0",
 ]
 
@@ -355,7 +355,7 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 # Manual planner helpers are operational scripts, not typed library surfaces.
-module = ["dynamo.planner.manual.*"]
+module = ["dingo.planner.manual.*"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]

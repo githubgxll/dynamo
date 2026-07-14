@@ -15,7 +15,7 @@
 # Output: artifacts/obs_YYYYMMDD_HHMMSS/ with subdirs for each data source.
 #
 # Prerequisites:
-#   - dynamo.mocker and dingo.frontend installed
+#   - dingo.mocker and dingo.frontend installed
 #   - aiperf installed
 #   - Optional: nsys, perf, bpftrace, flamegraph tools (auto-detected)
 
@@ -409,7 +409,7 @@ for MN in "${MODEL_NAMES[@]}"; do
         fi
 
         MN_SAFE="${MN//\//_}"
-        HF_HUB_OFFLINE=1 DYN_SYSTEM_PORT=$WORKER_PORT DYN_EVENT_PLANE="$EVENT_PLANE" python -m dynamo.mocker "${MOCKER_ARGS[@]}" \
+        HF_HUB_OFFLINE=1 DYN_SYSTEM_PORT=$WORKER_PORT DYN_EVENT_PLANE="$EVENT_PLANE" python -m dingo.mocker "${MOCKER_ARGS[@]}" \
             > "$OUTPUT_DIR/logs/mocker_${MN_SAFE}_${i}.log" 2>&1 &
         ALL_PIDS+=($!)
         echo "  Worker $WORKER_IDX ($MN #$i): PID ${ALL_PIDS[-1]}, port $WORKER_PORT"

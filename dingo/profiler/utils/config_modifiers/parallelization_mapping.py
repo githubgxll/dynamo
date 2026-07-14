@@ -4,7 +4,7 @@
 """Profiler-internal parallelization helpers.
 
 ``PickedParallelConfig`` has been relocated to
-``dynamo.planner.config.parallelization`` so both the profiler and the planner
+``dingo.planner.config.parallelization`` so both the profiler and the planner
 can share it. It is re-exported here for back-compat.
 """
 
@@ -13,8 +13,8 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from dynamo.planner.config.defaults import SubComponentType
-from dynamo.planner.config.parallelization import PickedParallelConfig
+from dingo.planner.config.defaults import SubComponentType
+from dingo.planner.config.parallelization import PickedParallelConfig
 from dingo.profiler.utils.defaults import PREFILL_MAX_NUM_TOKENS
 from dingo.profiler.utils.model_info import MOE_ADDITIONAL_TP_ARCHITECTURES, ModelInfo
 

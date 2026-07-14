@@ -10,8 +10,8 @@ from typing import Awaitable, Callable, Optional
 import sglang as sgl
 from sglang.srt.observability.trace import set_global_trace_level
 
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.utils.endpoint_types import parse_endpoint_types
+from dingo.common.constants import DisaggregationMode
+from dingo.common.utils.endpoint_types import parse_endpoint_types
 from dynamo.llm import ModelInput, ModelType, WorkerType
 from dynamo.runtime import DistributedRuntime
 from dingo.sglang.args import Config

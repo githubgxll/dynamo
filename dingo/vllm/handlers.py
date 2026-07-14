@@ -45,38 +45,38 @@ from vllm.sampling_params import (
 from vllm.v1.engine.exceptions import EngineDeadError
 
 from dynamo._core import Context
-from dynamo.common.backend import logprobs as _shared_logprobs
-from dynamo.common.lora.manager import LoRAInfo, get_lora_manager
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.backend import logprobs as _shared_logprobs
+from dingo.common.lora.manager import LoRAInfo, get_lora_manager
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     MultimodalEmbeddingCacheManager,
 )
-from dynamo.common.multimodal.audio_loader import AudioLoader
-from dynamo.common.multimodal.embedding_transfer import (
+from dingo.common.multimodal.audio_loader import AudioLoader
+from dingo.common.multimodal.embedding_transfer import (
     LocalEmbeddingReceiver,
     NixlReadEmbeddingReceiver,
     NixlWriteEmbeddingReceiver,
 )
-from dynamo.common.multimodal.image_loader import ImageLoader
-from dynamo.common.multimodal.mm_kwargs_transfer import (
+from dingo.common.multimodal.image_loader import ImageLoader
+from dingo.common.multimodal.mm_kwargs_transfer import (
     MmKwargsNixlReceiver,
     MmKwargsReceiver,
     MmKwargsShmReceiver,
     MmKwargsShmTransferMetadata,
     MmKwargsTransferMetadata,
 )
-from dynamo.common.multimodal.video_loader import VideoLoader
-from dynamo.common.rl import (
+from dingo.common.multimodal.video_loader import VideoLoader
+from dingo.common.rl import (
     RLAdminValidationError,
     RLRouteRegistry,
     env_bool,
     require_lora_load_request,
     require_lora_unload_request,
 )
-from dynamo.common.utils import nvtx_utils as _nvtx
-from dynamo.common.utils.engine_response import normalize_finish_reason
-from dynamo.common.utils.input_params import InputParamManager
-from dynamo.common.utils.structural_tag import serialize_structural_tag
-from dynamo.common.utils.time_section import time_and_log_code_section
+from dingo.common.utils import nvtx_utils as _nvtx
+from dingo.common.utils.engine_response import normalize_finish_reason
+from dingo.common.utils.input_params import InputParamManager
+from dingo.common.utils.structural_tag import serialize_structural_tag
+from dingo.common.utils.time_section import time_and_log_code_section
 from dynamo.llm import (
     KvEventPublisher,
     ModelInput,

@@ -36,7 +36,7 @@ from vllm.outputs import CompletionOutput
 from vllm.sampling_params import SamplingParams
 from vllm.v1.metrics.stats import RequestStateStats
 
-from dynamo.common.multimodal.embedding_transfer import TransferRequest
+from dingo.common.multimodal.embedding_transfer import TransferRequest
 
 
 class Request(BaseModel):

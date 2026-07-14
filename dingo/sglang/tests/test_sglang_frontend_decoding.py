@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from dynamo.common.constants import DisaggregationMode, EmbeddingTransferMode
+from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
 from dingo.sglang.backend_args import DynamoSGLangConfig
 from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
 

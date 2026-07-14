@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("sglang", reason="sglang not installed in this container")
 
-from dynamo.common.constants import DisaggregationMode  # noqa: E402
+from dingo.common.constants import DisaggregationMode  # noqa: E402
 from dingo.sglang.llm_engine import SglangLLMEngine  # noqa: E402
 
 pytestmark = [

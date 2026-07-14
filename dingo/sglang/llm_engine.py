@@ -33,10 +33,10 @@ from sglang.srt.managers.io_struct import (
 from sglang.srt.utils.network import get_local_ip_auto, get_zmq_socket
 
 from dynamo._core import Context
-from dynamo.common.backend import logprobs as _shared_logprobs
-from dynamo.common.backend import telemetry
-from dynamo.common.backend.dp_rank import forced_dp_rank, validate_global_dp_rank
-from dynamo.common.backend.engine import (
+from dingo.common.backend import logprobs as _shared_logprobs
+from dingo.common.backend import telemetry
+from dingo.common.backend.dp_rank import forced_dp_rank, validate_global_dp_rank
+from dingo.common.backend.engine import (
     DYN_ENABLE_TEST_LOGITS_PROCESSOR,
     EngineConfig,
     GenerateChunk,
@@ -48,16 +48,16 @@ from dynamo.common.backend.engine import (
     logits_processors_for_request,
     resolve_test_logits_processor_spec,
 )
-from dynamo.common.backend.health_check import (
+from dingo.common.backend.health_check import (
     bos_token_id_or,
     build_health_check_payload,
     is_probe,
 )
-from dynamo.common.backend.publisher import ComponentSnapshot, KvEventSource, ZmqSource
-from dynamo.common.backend.worker import WorkerConfig
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.utils.input_params import InputParamManager
-from dynamo.common.utils.structural_tag import serialize_structural_tag
+from dingo.common.backend.publisher import ComponentSnapshot, KvEventSource, ZmqSource
+from dingo.common.backend.worker import WorkerConfig
+from dingo.common.constants import DisaggregationMode
+from dingo.common.utils.input_params import InputParamManager
+from dingo.common.utils.structural_tag import serialize_structural_tag
 from dynamo.llm import ModelInput
 from dingo.sglang._disagg import (
     SGLANG_WORKER_GROUP_ID_KEY,
@@ -914,7 +914,7 @@ class SglangLLMEngine(LLMEngine):
         if self.server_args.enable_metrics:
             from prometheus_client import CollectorRegistry, multiprocess
 
-            from dynamo.common.backend.metrics import register_engine_registry
+            from dingo.common.backend.metrics import register_engine_registry
 
             sgl_registry = CollectorRegistry()
             multiprocess.MultiProcessCollector(sgl_registry)

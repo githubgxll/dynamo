@@ -9,15 +9,15 @@ from typing import Any, Dict, List
 import torch
 from vllm.sampling_params import SamplingParams as VllmSamplingParams
 
-from dynamo.common.memory.multimodal_embedding_cache_manager import (
+from dingo.common.memory.multimodal_embedding_cache_manager import (
     CachedEmbedding,
     MultimodalEmbeddingCacheManager,
 )
-from dynamo.common.multimodal.embedding_transfer import (
+from dingo.common.multimodal.embedding_transfer import (
     AbstractEmbeddingReceiver,
     LocalEmbeddingReceiver,
 )
-from dynamo.common.utils.time_section import time_and_log_code_section
+from dingo.common.utils.time_section import time_and_log_code_section
 from dynamo.runtime import Client
 
 from .encode_utils import get_embedding_hash

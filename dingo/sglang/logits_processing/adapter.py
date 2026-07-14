@@ -59,7 +59,7 @@ from typing import Any, Optional, Sequence
 
 from sglang.srt.sampling.custom_logit_processor import CustomLogitProcessor
 
-from dynamo.common.backend.engine import (
+from dingo.common.backend.engine import (
     ForcedTokenSequenceSpec,
     LogitsProcessorEntry,
     deserialize_logits_processor_entries,

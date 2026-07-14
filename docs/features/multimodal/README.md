@@ -51,7 +51,7 @@ Dynamo provides support for improving latency and throughput for vision-and-lang
 ## Security: URL Validation
 
 All multimodal loaders route remote fetches through a shared URL policy
-(`dynamo.common.multimodal.url_validator`). Only
+(`dingo.common.multimodal.url_validator`). Only
 `https://` and `data:` URLs are allowed by default, private / internal IPs are blocked,
 and local file access is disabled. Every HTTP redirect hop is re-validated
 against the policy.

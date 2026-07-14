@@ -117,7 +117,7 @@ impl KvEventPublishers {
 }
 
 /// Per-iteration forward pass snapshot, mirroring the Python `ForwardPassMetrics`
-/// schema in `components/src/dynamo/common/forward_pass_metrics.py`.
+/// schema in `dingo/common/forward_pass_metrics.py`.
 ///
 /// Produced by the scheduler core after each `execute_pass_internal()` call.
 /// Runtime publishers may either stamp identity at serialization time or fill

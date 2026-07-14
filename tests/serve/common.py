@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from dynamo.common.utils.paths import WORKSPACE_DIR
+from dingo.common.utils.paths import WORKSPACE_DIR
 from tests.conftest import ServicePorts
 from tests.utils.client import send_request
 from tests.utils.constants import DefaultPort

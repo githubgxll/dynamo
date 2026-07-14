@@ -12,7 +12,7 @@ import pytest
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 from dynamo import prometheus_names
-from dynamo.common.utils.prometheus import get_prometheus_expfmt
+from dingo.common.utils.prometheus import get_prometheus_expfmt
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 

@@ -12,12 +12,12 @@ from vllm.sampling_params import SamplingParams
 from vllm_omni.inputs.data import OmniDiffusionSamplingParams, OmniTextPrompt
 
 from dynamo._core import Context
-from dynamo.common.multimodal import ImageLoader
-from dynamo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
-from dynamo.common.protocols.image_protocol import ImageNvExt, NvCreateImageRequest
-from dynamo.common.protocols.video_protocol import NvCreateVideoRequest, VideoNvExt
-from dynamo.common.utils.output_modalities import RequestType, parse_request_type
-from dynamo.common.utils.video_utils import compute_num_frames, parse_size
+from dingo.common.multimodal import ImageLoader
+from dingo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
+from dingo.common.protocols.image_protocol import ImageNvExt, NvCreateImageRequest
+from dingo.common.protocols.video_protocol import NvCreateVideoRequest, VideoNvExt
+from dingo.common.utils.output_modalities import RequestType, parse_request_type
+from dingo.common.utils.video_utils import compute_num_frames, parse_size
 from dynamo.llm.exceptions import EngineShutdown
 from dingo.vllm.omni.audio_handler import AudioGenerationHandler
 from dingo.vllm.omni.base_handler import BaseOmniHandler

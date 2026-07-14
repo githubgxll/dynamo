@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 
-from dynamo.planner.config.planner_config import PlannerPreDeploymentSweepMode
+from dingo.planner.config.planner_config import PlannerPreDeploymentSweepMode
 from dingo.profiler.utils.defaults import SearchStrategy
 from dingo.profiler.utils.dgdr_v1beta1_types import (
     DynamoGraphDeploymentRequestSpec,

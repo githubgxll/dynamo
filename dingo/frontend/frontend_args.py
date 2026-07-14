@@ -6,21 +6,21 @@ import os
 import pathlib
 from typing import Any, Dict, Optional
 
-from dynamo.common.config_dump import register_encoder
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.groups.aic_perf_args import (
+from dingo.common.config_dump import register_encoder
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.aic_perf_args import (
     AicPerfArgGroup,
     AicPerfConfigBase,
 )
-from dynamo.common.configuration.groups.kv_router_args import (
+from dingo.common.configuration.groups.kv_router_args import (
     KvRouterArgGroup,
     KvRouterConfigBase,
 )
-from dynamo.common.configuration.groups.router_args import (
+from dingo.common.configuration.groups.router_args import (
     RouterArgGroup,
     RouterConfigBase,
 )
-from dynamo.common.configuration.utils import (
+from dingo.common.configuration.utils import (
     add_argument,
     add_negatable_bool_argument,
     env_or_default,

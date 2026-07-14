@@ -210,7 +210,7 @@ async def _check_from_args_propagates_disaggregation_mode_to_worker_config(
     ``WorkerConfig`` the unified Worker sees, and onto the engine instance
     so ``generate()`` can branch on it. Without this hookup the prefill
     role would silently degrade to aggregated."""
-    from dynamo.common.constants import DisaggregationMode
+    from dingo.common.constants import DisaggregationMode
     from dingo.vllm.llm_engine import VllmLLMEngine
 
     extra_args: list[str] = []

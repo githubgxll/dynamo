@@ -3,7 +3,7 @@
 
 """End-to-end router tests against the **unified-backend** entrypoints
 (``python -m dingo.vllm.unified_main`` etc.) introduced under the
-``dynamo.common.backend`` abstraction.
+``dingo.common.backend`` abstraction.
 
 Each backend's existing legacy entrypoint already has e2e router tests in
 ``test_router_e2e_with_{vllm,sglang}.py``. This file mirrors a

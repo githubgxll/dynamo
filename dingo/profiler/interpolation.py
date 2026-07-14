@@ -28,7 +28,7 @@ import os
 import yaml
 
 from deploy.utils.dynamo_deployment import DeploymentFailedError, DynamoDeploymentClient
-from dynamo.planner.config.planner_config import PlannerPreDeploymentSweepMode
+from dingo.planner.config.planner_config import PlannerPreDeploymentSweepMode
 from dingo.profiler.utils.config_modifiers import CONFIG_MODIFIERS
 from dingo.profiler.utils.config_modifiers.parallelization_mapping import (
     PickedParallelConfig,

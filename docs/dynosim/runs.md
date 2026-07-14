@@ -6,14 +6,14 @@ subtitle: Run one trace or synthetic workload through a simulated Dynamo configu
 ---
 
 A DynoSim run evaluates one workload against one simulated Dynamo configuration. The current CLI is
-`python -m dynamo.replay`, which prints an AIPerf-style summary table, writes the full report JSON
+`python -m dingo.replay`, which prints an AIPerf-style summary table, writes the full report JSON
 to disk, and exposes `offline|online`, `round_robin|kv_router`, `arrival_speedup_ratio`,
 closed-loop concurrency, and synthetic workload inputs directly.
 
 The command keeps the existing `replay` name for now. The docs use "DynoSim run" for the product
 concept: one workload, one simulated configuration, one report.
 
-Unlike normal `dynamo.mocker` usage, offline mode does not launch workers, register endpoints, or
+Unlike normal `dingo.mocker` usage, offline mode does not launch workers, register endpoints, or
 require NATS, etcd, or a frontend. Online mode does exercise the live mock-worker runtime path.
 
 Use DynoSim runs when you want to:
@@ -73,7 +73,7 @@ See [`lib/mocker/src/replay/offline/README.md`](../../lib/mocker/src/replay/offl
 Run an offline DynoSim trial through the dedicated CLI:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --num-workers 4 \
     --replay-mode offline \
     --router-mode round_robin \
@@ -85,7 +85,7 @@ python -m dynamo.replay /path/to/mooncake_trace.jsonl \
 Run a synthetic DynoSim trial through the same CLI when you want fixed request shapes without a trace file:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 5000 \
     --output-tokens 500 \
     --request-count 1000 \
@@ -101,7 +101,7 @@ Run a synthetic workload when you want shared-prefix or multi-turn structure wit
 file:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 5000 \
     --output-tokens 500 \
     --request-count 200 \
@@ -115,7 +115,7 @@ python -m dynamo.replay \
     --report-json /tmp/dynosim-report.json
 ```
 
-`python -m dynamo.replay` prints an AIPerf-style summary table to stdout and writes the full
+`python -m dingo.replay` prints an AIPerf-style summary table to stdout and writes the full
 report JSON to disk.
 
 ## Input Format
@@ -170,7 +170,7 @@ block size from the records and builds the standard or agentic in-memory model
 based on `agent_context`. It does not create an intermediate Mooncake file.
 
 ```bash
-python -m dynamo.replay /tmp/dynamo-request-trace.*.jsonl.gz \
+python -m dingo.replay /tmp/dynamo-request-trace.*.jsonl.gz \
     --trace-format dynamo \
     --replay-mode offline \
     --router-mode kv_router \
@@ -208,7 +208,7 @@ child requests spawned by this row, and `prefix_reset` marks the first row in a 
 Run it with:
 
 ```bash
-python -m dynamo.replay /path/to/agentic-mooncake.jsonl \
+python -m dingo.replay /path/to/agentic-mooncake.jsonl \
     --trace-format agentic_mooncake \
     --trace-block-size 128 \
     --replay-mode offline \
@@ -235,7 +235,7 @@ Dynamo request traces embed their trace block size. DynoSim derives it when
 
 ## DynoSim Surfaces
 
-### `python -m dynamo.replay`
+### `python -m dingo.replay`
 
 The dedicated DynoSim CLI exposes:
 
@@ -280,7 +280,7 @@ Defaults:
 Example:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode online \
     --router-mode kv_router \
     --num-workers 4 \
@@ -348,7 +348,7 @@ Synthetic mode bypasses trace loading and generates in-memory requests with fixe
 lengths and optional synthetic arrival spacing:
 
 ```bash
-python -m dynamo.replay \
+python -m dingo.replay \
     --input-tokens 5000 \
     --output-tokens 500 \
     --request-count 200 \
@@ -381,7 +381,7 @@ Default trace mode preserves the timestamps from the trace and simulates arrival
 those timestamps:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --num-workers 4 \
     --trace-block-size 512 \
@@ -399,7 +399,7 @@ Use `--replay-concurrency` to ignore first-turn trace arrival timing and keep a 
 requests in flight:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --num-workers 4 \
     --replay-concurrency 16
@@ -421,7 +421,7 @@ is useful when you want the run to include live request dispatch, live output ha
 same async KV-event propagation model used by the current router integration.
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode online \
     --router-mode kv_router \
     --num-workers 4 \
@@ -436,7 +436,7 @@ Use `--arrival-speedup-ratio` to compress or stretch the trace arrival process w
 mocker compute model. Larger values make arrivals happen sooner relative to the original trace.
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --num-workers 4 \
     --arrival-speedup-ratio 5 \
@@ -466,7 +466,7 @@ To compare queue policies manually, keep the same trace and engine args fixed an
 `router_queue_policy` inside `--router-config`:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --router-mode kv_router \
     --num-workers 4 \
@@ -474,7 +474,7 @@ python -m dynamo.replay /path/to/mooncake_trace.jsonl \
     --extra-engine-args '{"block_size":64}' \
     --router-config '{"router_queue_policy":"fcfs"}'
 
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --router-mode kv_router \
     --num-workers 4 \
@@ -489,7 +489,7 @@ an expected production default.
 To enable router-side AIC prefill-load modeling during simulation:
 
 ```bash
-python -m dynamo.replay /path/to/mooncake_trace.jsonl \
+python -m dingo.replay /path/to/mooncake_trace.jsonl \
     --replay-mode offline \
     --router-mode kv_router \
     --num-workers 4 \
@@ -528,9 +528,9 @@ The report contains:
 - output-token-throughput-per-user summaries
 
 The dedicated DynoSim CLI returns the same report schema as the Python APIs
-`dynamo.replay.run_trace_replay(...)` and `dynamo.replay.run_synthetic_trace_replay(...)`.
+`dingo.replay.run_trace_replay(...)` and `dingo.replay.run_synthetic_trace_replay(...)`.
 
-If `--report-json` is not provided, `python -m dynamo.replay` writes a timestamped
+If `--report-json` is not provided, `python -m dingo.replay` writes a timestamped
 `dynamo_replay_report_*.json` file in the current working directory.
 
 ## Constraints
@@ -559,7 +559,7 @@ If you violate those constraints, DynoSim fails immediately with a validation er
 
 ## Practical Notes
 
-- `python -m dynamo.replay` requires exactly one of:
+- `python -m dingo.replay` requires exactly one of:
   either a trace file, or all of `--input-tokens`, `--output-tokens`, and `--request-count`
 - `--replay-concurrency` works with both trace-file and synthetic workloads
 - mocker compute-speed knobs such as `speedup_ratio` still affect simulated timing when passed via

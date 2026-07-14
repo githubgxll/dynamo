@@ -18,12 +18,12 @@ try:
 except ImportError:
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.groups.runtime_args import (
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.runtime_args import (
     DynamoRuntimeArgGroup,
     DynamoRuntimeConfig,
 )
-from dynamo.common.configuration.utils import add_argument, add_negatable_bool_argument
+from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
 
 logger = logging.getLogger(__name__)
 

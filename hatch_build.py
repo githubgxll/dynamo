@@ -24,19 +24,25 @@ def get_components():
         if os.path.isdir(item_path) and not item.startswith("."):
             components.append(item_path)
 
-    if not components:
-        raise RuntimeError(f"No components found in directory: {components_dir}")
-
     for component_name in (
+        "common",
         "frontend",
         "global_planner",
         "global_router",
+        "mocker",
+        "planner",
         "profiler",
+        "replay",
         "thunderagent_router",
     ):
         dingo_component = os.path.join(root, "dingo", component_name)
         if os.path.isdir(dingo_component):
             components.append(dingo_component)
+
+    if not components:
+        raise RuntimeError(
+            f"No components found in {components_dir} or {os.path.join(root, 'dingo')}"
+        )
 
     return components
 

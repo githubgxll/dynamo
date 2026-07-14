@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from dynamo.common.forward_pass_metrics import (
+from dingo.common.forward_pass_metrics import (
     ForwardPassMetrics,
     QueuedRequestMetrics,
     ScheduledRequestMetrics,
@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 try:
-    from dynamo.mocker import (
+    from dingo.mocker import (
         EngineCapacityRequest,
         EnginePerfLimits,
         RustEnginePerfModel,

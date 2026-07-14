@@ -6,8 +6,8 @@ from typing import Any, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
-from dynamo.common.multimodal import TransferRequest
-from dynamo.common.protocols.image_protocol import ImageNvExt
+from dingo.common.multimodal import TransferRequest
+from dingo.common.protocols.image_protocol import ImageNvExt
 
 TokenIdType = int
 

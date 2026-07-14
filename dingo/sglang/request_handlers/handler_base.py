@@ -26,11 +26,11 @@ import sglang as sgl
 from sglang.srt.utils.network import NetworkAddress, get_local_ip_auto
 
 from dynamo._core import Context
-from dynamo.common.constants import DisaggregationMode
-from dynamo.common.lora.manager import get_lora_manager
-from dynamo.common.utils.endpoint_types import parse_endpoint_types
-from dynamo.common.utils.input_params import InputParamManager
-from dynamo.common.utils.structural_tag import serialize_structural_tag
+from dingo.common.constants import DisaggregationMode
+from dingo.common.lora.manager import get_lora_manager
+from dingo.common.utils.endpoint_types import parse_endpoint_types
+from dingo.common.utils.input_params import InputParamManager
+from dingo.common.utils.structural_tag import serialize_structural_tag
 from dynamo.llm import (
     KvEventPublisher,
     ModelInput,

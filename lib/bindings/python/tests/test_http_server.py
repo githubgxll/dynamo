@@ -32,7 +32,7 @@ MSG_CONTAINS_INTERNAL_ERROR = "This message contains an internal server error."
 
 
 class _StatusLikeError(Exception):
-    """Mimics dynamo.common.http.HttpStatusError's .status + .message shape."""
+    """Mimics dingo.common.http.HttpStatusError's .status + .message shape."""
 
     def __init__(self, status: int, message: str):
         super().__init__(f"HTTP {status}: {message}")

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import yaml
 
-from dynamo.planner.config.defaults import SubComponentType
+from dingo.planner.config.defaults import SubComponentType
 from dingo.profiler.utils.config import (
     Config,
     append_argument,

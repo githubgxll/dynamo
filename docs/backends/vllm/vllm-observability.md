@@ -141,4 +141,4 @@ Troubleshooting LMCache-related metrics and logs is documented in:
 - Dynamo runtime metrics (prefixed with `dynamo_*`) are available at the same `/metrics` endpoint alongside vLLM metrics
   - Implementation: `lib/runtime/src/metrics.rs` (Rust runtime metrics)
   - Metric names: `lib/runtime/src/metrics/prometheus_names.rs` (metric name constants)
-  - Integration code: `components/src/dynamo/common/utils/prometheus.py` - Prometheus utilities and callback registration
+  - Integration code: `dingo/common/utils/prometheus.py` - Prometheus utilities and callback registration

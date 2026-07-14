@@ -23,7 +23,7 @@ from tests.utils.constants import QWEN
 
 class _StatusLikeError(Exception):
     """Duck-typed `.status` + `.message` — same shape as
-    `dynamo.common.http.HttpStatusError`."""
+    `dingo.common.http.HttpStatusError`."""
 
     def __init__(self, status: int, message: str):
         super().__init__(f"HTTP {status}: {message}")

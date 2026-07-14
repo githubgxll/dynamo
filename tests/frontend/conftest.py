@@ -230,7 +230,7 @@ def start_services_with_grpc(
 class MockerWorkerProcess(ManagedProcess):
     """Shared mocker worker process for frontend tests.
 
-    Uses dynamo.mocker with configurable model and speedup ratio.
+    Uses dingo.mocker with configurable model and speedup ratio.
     Can be used by any frontend test that needs a fast mock backend.
     """
 
@@ -252,7 +252,7 @@ class MockerWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.mocker",
+            "dingo.mocker",
             "--model-path",
             model,
             "--speedup-ratio",
@@ -286,7 +286,7 @@ class MockerWorkerProcess(ManagedProcess):
             display_output=True,
             terminate_all_matching_process_names=False,
             stragglers=["VLLM::EngineCore"],
-            straggler_commands=["-m dynamo.mocker"],
+            straggler_commands=["-m dingo.mocker"],
             log_dir=log_dir,
         )
 
@@ -339,7 +339,7 @@ def start_services_with_mocker(
 
 
 class SampleUnifiedWorkerProcess(ManagedProcess):
-    """Unified-backend sample worker (`dynamo.common.backend.sample_main`).
+    """Unified-backend sample worker (`dingo.common.backend.sample_main`).
 
     CPU-only Python reference engine that exercises the unified backend's
     `Worker.run()` path — the same code path real backends (vllm/trtllm/
@@ -370,7 +370,7 @@ class SampleUnifiedWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.common.backend.sample_main",
+            "dingo.common.backend.sample_main",
             "--model-name",
             model_name,
             "--component",
@@ -405,7 +405,7 @@ class SampleUnifiedWorkerProcess(ManagedProcess):
             timeout=120,
             display_output=True,
             terminate_all_matching_process_names=False,
-            straggler_commands=["-m dynamo.common.backend.sample_main"],
+            straggler_commands=["-m dingo.common.backend.sample_main"],
             log_dir=log_dir,
         )
 

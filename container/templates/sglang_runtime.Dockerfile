@@ -138,7 +138,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 # Install nvtx pinned in container/deps/requirements.common.txt so DYN_NVTX=1
 # profiling works in all targets (runtime, dev, local-dev) — see
-# components/src/dynamo/common/utils/nvtx_utils.py. --no-deps preserves the
+# dingo/common/utils/nvtx_utils.py. --no-deps preserves the
 # upstream lmsysorg/sglang Python stack.
 RUN --mount=type=bind,source=./container/deps/requirements.common.txt,target=/tmp/requirements.common.txt \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
@@ -161,10 +161,10 @@ COPY --chmod=775 --chown=dynamo:0 tests /workspace/tests
 COPY --chmod=775 --chown=dynamo:0 examples /workspace/examples
 COPY --chmod=775 --chown=dynamo:0 deploy /workspace/deploy
 COPY --chmod=775 --chown=dynamo:0 dev /workspace/dev
-COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/common /workspace/components/src/dynamo/common
+COPY --chmod=775 --chown=dynamo:0 dingo/common /workspace/dingo/common
 COPY --chmod=775 --chown=dynamo:0 dingo/frontend /workspace/dingo/frontend
 COPY --chmod=775 --chown=dynamo:0 dingo/sglang /workspace/dingo/sglang
-COPY --chmod=775 --chown=dynamo:0 components/src/dynamo/mocker /workspace/components/src/dynamo/mocker
+COPY --chmod=775 --chown=dynamo:0 dingo/mocker /workspace/dingo/mocker
 COPY --chmod=775 --chown=dynamo:0 recipes/ /workspace/recipes/
 COPY --chmod=664 --chown=dynamo:0 LICENSE /workspace/
 

@@ -172,7 +172,7 @@ Values you will see in the `dynamo_component` label on `dynamo_component_*` seri
 | Value | Meaning |
 |-------|---------|
 | `router` | The standalone KV router (`python -m dingo.router`). |
-| `Planner` | The planner component (`python -m dynamo.planner`). Note the capital `P`. |
+| `Planner` | The planner component (`python -m dingo.planner`). Note the capital `P`. |
 | `prefill` | The prefill worker in disaggregated serving (all backends). |
 | `backend` | The decode worker in disaggregated serving for all backends, **and** the combined worker for vLLM in aggregated mode. |
 | `encode` | The encode worker for vLLM, SGLang, and TRT-LLM. |

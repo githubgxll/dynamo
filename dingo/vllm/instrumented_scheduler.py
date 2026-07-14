@@ -100,7 +100,7 @@ from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 from vllm.v1.core.sched.output import CachedRequestData, NewRequestData, SchedulerOutput
 from vllm.v1.request import Request, RequestStatus
 
-from dynamo.common.forward_pass_metrics import (
+from dingo.common.forward_pass_metrics import (
     ForwardPassMetrics,
     QueuedRequestMetrics,
     ScheduledRequestMetrics,

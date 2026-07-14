@@ -14,7 +14,7 @@ For the general mechanics of DynoSim runs (input format, arrival speedup, router
 ### Build
 
 Install the Dynamo Python components and build the Rust runtime bindings. The
-`python -m dynamo.replay` CLI is part of the Python components, and it imports the
+`python -m dingo.replay` CLI is part of the Python components, and it imports the
 runtime `_core` module from the bindings package:
 
 ```bash
@@ -94,7 +94,7 @@ curl -sLO https://raw.githubusercontent.com/kvcache-ai/Mooncake/main/FAST25-rele
 Run agg (2 workers, TP=1):
 
 ```bash
-python -m dynamo.replay traces/mooncake_fast25/toolagent_trace.jsonl \
+python -m dingo.replay traces/mooncake_fast25/toolagent_trace.jsonl \
   --planner-config '{
     "mode": "agg",
     "optimization_target": "sla",
@@ -112,7 +112,7 @@ python -m dynamo.replay traces/mooncake_fast25/toolagent_trace.jsonl \
 Run disagg (1P1D, TP=1):
 
 ```bash
-python -m dynamo.replay traces/mooncake_fast25/toolagent_trace.jsonl \
+python -m dingo.replay traces/mooncake_fast25/toolagent_trace.jsonl \
   --planner-config '{
     "mode": "disagg",
     "optimization_target": "sla",
@@ -151,7 +151,7 @@ run_one() {
   else
     extra=$(printf '{"aic_backend":"vllm","aic_system":"h200_sxm","aic_model_path":"nvidia/Llama-3.1-8B-Instruct-FP8","aic_tp_size":1,"startup_time":%d}' "$s")
   fi
-  python -m dynamo.replay "$TRACE" \
+  python -m dingo.replay "$TRACE" \
     --planner-config "$(printf '{"mode":"agg","optimization_target":"sla","ttft_ms":1500,"itl_ms":50,"enable_throughput_scaling":true,"enable_load_scaling":true,"pre_deployment_sweeping_mode":"rapid","throughput_adjustment_interval_seconds":300,"load_adjustment_interval_seconds":10,"prefill_engine_num_gpu":1,"decode_engine_num_gpu":1,"report_filename":"%s"}' "$name")" \
     --extra-engine-args "$extra" \
     --num-workers 2 --arrival-speedup-ratio 1.0 \

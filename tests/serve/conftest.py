@@ -7,7 +7,7 @@ from io import BytesIO
 import pytest
 from pytest_httpserver import HTTPServer
 
-from dynamo.common.utils.paths import WORKSPACE_DIR
+from dingo.common.utils.paths import WORKSPACE_DIR
 from tests.serve.lora_utils import MinioLoraConfig, MinioService
 from tests.utils.port_utils import allocate_port, deallocate_port
 

@@ -13,8 +13,8 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from dynamo._core import Endpoint
-from dynamo.common.utils.output_modalities import get_output_modalities
-from dynamo.common.utils.topology import apply_topology_config
+from dingo.common.utils.output_modalities import get_output_modalities
+from dingo.common.utils.topology import apply_topology_config
 from dynamo.llm import (
     MediaDecoder,
     MediaFetcher,

@@ -13,7 +13,7 @@ All tests run inside containers. See the [Container Development Guide](../contai
 Each area can have one or more of the following types of tests:
 
 1. **Unit** -- Exercises a single function, class, or module in isolation. No external services, no GPU. Each test typically runs in milliseconds; all unit tests combined may take <5 minutes.
-2. **Integration** -- Wires multiple components together using **mock engines** (`dynamo.mocker`) and **real infrastructure** (ETCD for service discovery, NATS for messaging, if enabled). Validates that the router, planner, frontend gRPC, and similar subsystems work together without launching a real inference engine. No GPU required. Each test typically runs in seconds; all integration tests combined may take <30 minutes.
+2. **Integration** -- Wires multiple components together using **mock engines** (`dingo.mocker`) and **real infrastructure** (ETCD for service discovery, NATS for messaging, if enabled). Validates that the router, planner, frontend gRPC, and similar subsystems work together without launching a real inference engine. No GPU required. Each test typically runs in seconds; all integration tests combined may take <30 minutes.
 3. **End-to-End (E2E)** -- Starts a **real inference engine** (vLLM, SGLang, or TRT-LLM), sends requests through the frontend, and validates responses. Requires GPU. Each test typically runs in minutes; the full E2E suite may take several hours.
 
 It is absolutely important to be mindful of how long a test you write takes. Slow tests have a compounding cost: they burn GPU-hours in CI (GPUs are expensive and shared), they discourage engineers from running suites locally (so bugs slip through to CI), and they slow down the entire team's development velocity. A test suite that takes too long becomes a test suite that nobody runs. When adding or modifying tests, include a per-test time estimate in your PR description -- CI GPU resources are limited and these estimates help the team schedule tests across pre-merge, nightly, and weekly pipelines.
@@ -92,7 +92,7 @@ dynamo/
 | KVBM Integration   | KV block manager integration          | `tests/kvbm_integration/`                     |
 | GPU Memory Service | GPU Memory Service E2E                | `tests/gpu_memory_service/`                   |
 | Router             | Router E2E with backends              | `tests/router/`                               |
-| Planner            | Planner unit + integration tests      | `components/src/dynamo/planner/tests/`        |
+| Planner            | Planner unit + integration tests      | `dingo/planner/tests/`        |
 | Frontend           | Frontend HTTP/gRPC tests              | `tests/frontend/`                             |
 | Profiler           | Profiler unit + integration tests     | `dingo/profiler/tests/`       |
 | Global Planner     | Global planner unit tests             | `dingo/global_planner/tests/` |
@@ -548,7 +548,7 @@ Tests must be deterministic. A flaky test -- one that sometimes passes and somet
    - `tests/frontend/test_frontend_api_surface_compliance.py:_retry_network_op` -- sync, network-only exception list.
    - `tests/router/helper.py:send_request_with_retry` -- async, status-code-driven (aiohttp).
    - `tests/utils/managed_deployment.py` -- sync connect retry with 1.5x backoff.
-   - `components/src/dynamo/planner/connectors/remote_client.py` -- sync exponential backoff (`2**attempt`).
+   - `dingo/planner/connectors/remote_client.py` -- sync exponential backoff (`2**attempt`).
 3. **If retry is not enough either**, quarantine the test to prevent it from blocking other developers:
    - `@pytest.mark.skip(reason="Flaky: <ticket link>")` -- disables the test entirely. Use when the test provides no signal in its current state.
    - `@pytest.mark.xfail(reason="Flaky: <ticket link>", strict=False)` -- runs the test but does not fail the suite. Use when you still want visibility into pass/fail rates while you investigate.

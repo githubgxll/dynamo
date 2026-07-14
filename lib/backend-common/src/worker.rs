@@ -403,7 +403,7 @@ impl Worker {
     /// cannot be reused after `run()` returns.
     ///
     /// Shutdown sequence (mirrors `graceful_shutdown_with_discovery` in
-    /// `components/src/dynamo/common/utils/graceful_shutdown.py`):
+    /// `dingo/common/utils/graceful_shutdown.py`):
     ///   1. `endpoint.unregister_endpoint_instance()` — router stops routing.
     ///   2. Sleep `DYN_GRACEFUL_SHUTDOWN_GRACE_PERIOD_SECS` (default 5s) to
     ///      let in-flight router decisions complete.

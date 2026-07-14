@@ -30,7 +30,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.planner
+          - dingo.planner
           args:
             - --config
             - '{"environment": "kubernetes", "backend": "sglang", "optimization_target": "sla", "enable_throughput_scaling": true, "enable_load_scaling": true, "pre_deployment_sweeping_mode": "none", "throughput_adjustment_interval_seconds": 60, "load_adjustment_interval_seconds": 5}'

@@ -10,11 +10,11 @@ import os
 import uvloop
 
 from dynamo import prometheus_names
-from dynamo.common.config_dump import dump_config
-from dynamo.common.storage import get_fs
-from dynamo.common.utils.graceful_shutdown import install_signal_handlers
-from dynamo.common.utils.output_modalities import get_output_modalities
-from dynamo.common.utils.runtime import create_runtime
+from dingo.common.config_dump import dump_config
+from dingo.common.storage import get_fs
+from dingo.common.utils.graceful_shutdown import install_signal_handlers
+from dingo.common.utils.output_modalities import get_output_modalities
+from dingo.common.utils.runtime import create_runtime
 from dynamo.llm import ModelInput, ModelType, WorkerType, fetch_model, register_model
 from dynamo.runtime import DistributedRuntime
 from dynamo.runtime.logging import configure_dynamo_logging

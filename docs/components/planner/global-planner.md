@@ -21,7 +21,7 @@ Without `GlobalPlanner`, each DGD's local planner scales only its own deployment
 
 ## Terminology
 
-- **Planner**: The `dynamo.planner` component that computes desired replica counts to maintain latency SLAs. See the [Planner overview](README.md).
+- **Planner**: The `dingo.planner` component that computes desired replica counts to maintain latency SLAs. See the [Planner overview](README.md).
 - **Local Planner**: A pool-local instance of the Planner running inside a single DGD.
 - **Global Planner**: The centralized execution and policy layer that receives scale requests from local planners.
 - **Single-endpoint multi-pool deployment**: One model endpoint backed by multiple DGDs for the same model. This pattern uses both `GlobalRouter` and `GlobalPlanner`.
@@ -264,7 +264,7 @@ The planner inside each pool must be configured for `global-planner` mode so it 
   "ttft": 2000,
   "prefill_engine_num_gpu": 2,
   "model_name": "${MODEL_NAME}",
-  "profile_results_dir": "/workspace/components/src/dynamo/planner/tests/data/profiling_results/H200_TP1P_TP1D"
+  "profile_results_dir": "/workspace/dingo/planner/tests/data/profiling_results/H200_TP1P_TP1D"
 }
 ```
 

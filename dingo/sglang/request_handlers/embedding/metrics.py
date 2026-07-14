@@ -11,7 +11,7 @@ this module is loaded via ``dingo.sglang.request_handlers`` before
 Histograms are also bound to a caller-provided ``CollectorRegistry`` (NOT
 the default global ``REGISTRY``) because the Dynamo SGLang worker exposes
 metrics on ``/metrics`` only when the registry has been attached via
-``dynamo.common.utils.prometheus.register_engine_metrics_callback``. The
+``dingo.common.utils.prometheus.register_engine_metrics_callback``. The
 init function below should be called from ``init_embedding.py`` after
 engine setup, paired with that callback registration.
 """
@@ -51,7 +51,7 @@ def init_embedding_metrics(registry: "CollectorRegistry") -> None:
     the function without colliding with prior production registration.
     The caller is responsible for wiring ``registry`` to the worker's
     ``/metrics`` endpoint via
-    ``dynamo.common.utils.prometheus.register_engine_metrics_callback``.
+    ``dingo.common.utils.prometheus.register_engine_metrics_callback``.
     """
     from prometheus_client import Histogram
 
