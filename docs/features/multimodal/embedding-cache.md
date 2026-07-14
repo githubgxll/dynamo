@@ -25,14 +25,13 @@ If your workload consists entirely of unique multimodal content, the cache provi
 | Backend | Aggregated | Disaggregated (E/PD) | Notes |
 |---------|------------|----------------------|-------|
 | **vLLM** | ✅ | ✅ | Aggregated uses vLLM-native `ec_both`; disaggregated uses Dynamo `EmbeddingCacheManager` |
-| **TRT-LLM** | ❌ | ✅ | Dynamo `MultimodalEmbeddingCacheManager` in PD worker |
 | **SGLang** | ❌ | ✅ | Dynamo `MultimodalEmbeddingCacheManager` in the encode worker |
 
 This support requires vLLM `0.17.0` or newer.
 
 ## How It Works
 
-In vLLM/TRT-LLM disaggregated flows, the prefill worker owns the CPU-side LRU cache. On a hit, the encode worker is skipped entirely. On a miss, the encode worker produces the embedding, transfers it via NIXL, and the prefill worker saves it to the cache.
+In vLLM disaggregated flows, the prefill worker owns the CPU-side LRU cache. On a hit, the encode worker is skipped entirely. On a miss, the encode worker produces the embedding, transfers it via NIXL, and the prefill worker saves it to the cache.
 
 In SGLang E/PD, the encode worker owns the cache and skips re-encoding on cache hits before forwarding the cached image or video embeddings downstream.
 
@@ -53,13 +52,6 @@ cd $DYNAMO_HOME/examples/backends/vllm
 bash launch/disagg_multimodal_e_pd.sh --multimodal-embedding-cache-capacity-gb 10
 ```
 
-**Launch (TRT-LLM):**
-
-```bash
-cd $DYNAMO_HOME/examples/backends/trtllm
-./launch/disagg_e_pd.sh --multimodal-embedding-cache-capacity-gb 10
-```
-
 ## Configuration
 
 | Parameter | Description | Default |
@@ -68,4 +60,4 @@ cd $DYNAMO_HOME/examples/backends/trtllm
 
 Set the capacity based on your expected working set of unique multimodal content. A larger cache holds more embeddings but consumes more host memory.
 
-See the backend-specific documentation ([vLLM](multimodal-vllm.md#embedding-cache), [TRT-LLM](multimodal-trtllm.md#embedding-cache)) for more details.
+See the [vLLM backend documentation](multimodal-vllm.md#embedding-cache) for more details.

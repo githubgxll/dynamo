@@ -110,7 +110,6 @@ For basic Kubernetes deployment with the KV Router, see the [Kubernetes Deployme
 
 ### Complete K8s Examples
 
-- [TRT-LLM aggregated router example](https://github.com/ai-dynamo/dynamo/blob/main/examples/backends/trtllm/deploy/agg_router.yaml)
 - [vLLM aggregated router example](https://github.com/ai-dynamo/dynamo/blob/main/examples/backends/vllm/deploy/agg_router.yaml)
 - [SGLang aggregated router example](https://github.com/ai-dynamo/dynamo/blob/main/examples/backends/sglang/deploy/agg_router.yaml)
 - [Kubernetes deployment guide](../../kubernetes/README.md)

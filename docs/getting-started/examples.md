@@ -24,9 +24,3 @@ Presents examples and reference implementations for deploying Large Language Mod
 Presents examples and reference implementations for deploying Large Language Models (LLMs) in various configurations with SGLang.
 
 [View SGLang Backend Guide](../backends/sglang/README.md)
-
-## TensorRT-LLM
-
-Presents examples and reference implementations for deploying Large Language Models (LLMs) in various configurations with TensorRT-LLM.
-
-[View TensorRT-LLM Backend Guide](../backends/trtllm/README.md)

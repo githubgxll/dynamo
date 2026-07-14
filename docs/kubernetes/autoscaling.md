@@ -171,7 +171,6 @@ The recommended way to deploy Planner is via `DynamoGraphDeploymentRequest` (DGD
 Example configurations with Planner:
 - `examples/backends/vllm/deploy/disagg_planner.yaml`
 - `examples/backends/sglang/deploy/disagg_planner.yaml`
-- `examples/backends/trtllm/deploy/disagg_planner.yaml`
 
 For more details, see the [SLA Planner documentation](../components/planner/planner-guide.md).
 

@@ -77,7 +77,7 @@ We recommend using the TensorRT-LLM NGC container instead of the `ai-dynamo[trtl
 ### Container Images (NGC)
 
 > [!TIP]
-> For detailed run instructions, see the backend-specific guides: [vLLM](../backends/vllm/README.md) | [SGLang](../backends/sglang/README.md) | [TensorRT-LLM](../backends/trtllm/README.md)
+> For detailed run instructions, see the backend-specific guides: [vLLM](../backends/vllm/README.md) | [SGLang](../backends/sglang/README.md)
 
 ```bash
 # Runtime containers

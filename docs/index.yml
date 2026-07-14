@@ -329,8 +329,6 @@ navigation:
                 path: features/multimodal/multimodal-kv-routing.md
               - page: SGLang Multimodal
                 path: features/multimodal/multimodal-sglang.md
-              - page: TensorRT-LLM Multimodal
-                path: features/multimodal/multimodal-trtllm.md
               - page: vLLM Multimodal
                 path: features/multimodal/multimodal-vllm.md
           - section: Diffusion
@@ -365,19 +363,6 @@ navigation:
                 path: backends/sglang/sglang-observability.md
               - page: Agentic Workloads
                 path: backends/sglang/agents.md
-          - section: TensorRT-LLM
-            path: backends/trtllm/README.md
-            contents:
-              - page: Reference Guide
-                path: backends/trtllm/trtllm-reference-guide.md
-              - page: Examples
-                path: backends/trtllm/trtllm-examples.md
-              - page: Observability
-                path: backends/trtllm/trtllm-observability.md
-              - page: Diffusion (Experimental)
-                path: backends/trtllm/trtllm-diffusion.md
-              - page: Known Issues and Mitigations
-                path: backends/trtllm/trtllm-known-issues.md
           - section: vLLM
             path: backends/vllm/README.md
             contents:
@@ -570,25 +555,6 @@ navigation:
           # -- Frontend (hidden sub-pages) --
           - page: NVIDIA Request Extensions (nvext)
             path: components/frontend/nvext.md
-          # -- Backend detail pages --
-          - section: TensorRT-LLM Details
-            contents:
-              - page: Building a Custom Container
-                path: backends/trtllm/trtllm-building-custom-container.md
-              - page: KV Cache Transfer
-                path: backends/trtllm/trtllm-kv-cache-transfer.md
-              - page: Logits Processing
-                path: backends/trtllm/trtllm-logits-processing.md
-              - page: DP Rank Routing
-                path: backends/trtllm/trtllm-dp-rank-routing.md
-              - page: Multinode Examples
-                path: backends/trtllm/multinode/trtllm-multinode-examples.md
-              - page: Llama4 + Eagle
-                path: backends/trtllm/trtllm-llama4-plus-eagle.md
-              - page: Gemma3 Sliding Window
-                path: backends/trtllm/trtllm-gemma3-sliding-window-attention.md
-              - page: GPT-OSS
-                path: backends/trtllm/trtllm-gpt-oss.md
           # -- Features (hidden sub-pages) --
           - section: Speculative Decoding
             path: features/speculative-decoding/README.md

@@ -86,7 +86,7 @@ SGLang is optimized for high-throughput serving with fast primitives, providing 
 
 TensorRT-LLM delivers maximum inference performance and optimization, with full KVBM integration and robust disaggregated serving support.
 
-*Source: [docs/backends/trtllm/README.md][trtllm-readme]*
+*Source: TensorRT-LLM backend documentation*
 
 | Feature | Disaggregated Serving | KV-Aware Routing | SLA-Based Planner | KV Block Manager | Multimodal | Request Migration | Request Cancellation | LoRA | Tool Calling | Speculative Decoding |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -102,7 +102,7 @@ TensorRT-LLM delivers maximum inference performance and optimization, with full 
 | **Speculative Decoding** | ✅ | ✅ | — | ✅ | — | ✅ | ✅ | | ✅ | — |
 
 > **Notes:**
-> 1. **Multimodal Disaggregation**: Supports **EP/D** (Traditional) and **E/P/D** (Full Disaggregation) image flows, including image URLs and pre-computed embeddings. ([Source][mm-trtllm])
+> 1. **Multimodal Disaggregation**: Supports **EP/D** (Traditional) and **E/P/D** (Full Disaggregation) image flows, including image URLs and pre-computed embeddings.
 > 2. **Multimodal + KV-Aware Routing**: Image-aware KV routing is supported through the dedicated TRT-LLM MM Router Worker. It requires KV event publishing on the TRT-LLM workers. ([Source][mm-kv-routing])
 > 3. **Request Cancellation**: Due to known issues, the TensorRT-LLM engine is temporarily not notified of request cancellations, meaning allocated resources for cancelled requests are not freed.
 
@@ -112,7 +112,6 @@ TensorRT-LLM delivers maximum inference performance and optimization, with full 
 {/* Backend READMEs — paths relative to rendered URL /resources/feature-matrix */}
 [vllm-readme]: ../backends/v-llm
 [sglang-readme]: ../backends/sg-lang
-[trtllm-readme]: ../backends/tensor-rt-llm
 
 {/* Design Docs */}
 [disagg]: ../design-docs/disaggregated-serving
@@ -125,7 +124,6 @@ TensorRT-LLM delivers maximum inference performance and optimization, with full 
 {/* Multimodal */}
 [mm]: ../user-guides/multimodal
 [mm-vllm]: ../features/multimodal/multimodal-vllm.md
-[mm-trtllm]: ../features/multimodal/multimodal-trtllm.md
 [mm-sglang]: ../features/multimodal/multimodal-sglang.md
 [mm-kv-routing]: ../features/multimodal/multimodal-kv-routing.md
 

@@ -8,7 +8,7 @@ subtitle: Deploy multimodal models with image, video, and audio support in Dynam
 Dynamo supports multimodal inference across multiple LLM backends, enabling models to process images, video, and audio alongside text.
 
 <Warning>
-**Security Requirement**: Multimodal processing must be explicitly enabled at startup. See the relevant backend documentation ([vLLM](multimodal-vllm.md), [SGLang](multimodal-sglang.md), [TRT-LLM](multimodal-trtllm.md)) for the necessary flags. This prevents unintended processing of multimodal data from untrusted sources.
+**Security Requirement**: Multimodal processing must be explicitly enabled at startup. See the relevant backend documentation ([vLLM](multimodal-vllm.md), [SGLang](multimodal-sglang.md)) for the necessary flags. This prevents unintended processing of multimodal data from untrusted sources.
 </Warning>
 
 ```mermaid
@@ -43,7 +43,6 @@ Dynamo provides support for improving latency and throughput for vision-and-lang
 | Stack | Image | Video | Audio |
 |-------|-------|-------|-------|
 | **[vLLM](multimodal-vllm.md)** | ✅ | 🧪  | 🧪 |
-| **[TRT-LLM](multimodal-trtllm.md)** | ✅ | ❌ | ❌ |
 | **[SGLang](multimodal-sglang.md)** | ✅ | 🧪 | ❌ |
 
 **Status:** ✅ Supported | 🧪 Experimental | ❌ Not supported
@@ -72,7 +71,6 @@ Two environment variables loosen the defaults for non-public deployments:
 Reference implementations for deploying multimodal models:
 
 - [vLLM multimodal examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/vllm/launch) (image, video)
-- [TRT-LLM multimodal examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/launch)
 - [SGLang multimodal examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/sglang/launch)
 
 ## Backend Documentation
@@ -80,5 +78,4 @@ Reference implementations for deploying multimodal models:
 Detailed deployment guides, configuration, and examples for each backend:
 
 - **[vLLM Multimodal](multimodal-vllm.md)**
-- **[TensorRT-LLM Multimodal](multimodal-trtllm.md)**
 - **[SGLang Multimodal](multimodal-sglang.md)**

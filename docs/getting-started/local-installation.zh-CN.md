@@ -54,7 +54,7 @@ docker run --gpus all --network host --rm -it nvcr.io/nvidia/ai-dynamo/vllm-runt
 
 如需查看可用版本，请参阅[发布产物](../reference/release-artifacts.md#container-images)；
 如需运行说明，请参阅各后端指南：[SGLang](../backends/sglang/README.md) |
-[TensorRT-LLM](../backends/trtllm/README.md) | [vLLM](../backends/vllm/README.md)
+[vLLM](../backends/vllm/README.md)
 
 ### 选项 B：从 PyPI 安装
 
@@ -90,7 +90,6 @@ pip install --pre --extra-index-url https://pypi.nvidia.com "ai-dynamo[trtllm]"
 
 由于传递性 Git URL 依赖项 `uv` 无法解析，TensorRT-LLM 需要使用 `pip`。
 为获得更广泛的兼容性，我们建议使用 TensorRT-LLM 容器。
-详情请参阅 [TRT-LLM 后端指南](../backends/trtllm/README.md)。
 
 **vLLM**
 

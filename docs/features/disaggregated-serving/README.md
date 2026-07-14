@@ -278,7 +278,6 @@ transfer settings:
 | Backend | Examples |
 |---|---|
 | vLLM | [Deployment examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/vllm/deploy), including `disagg.yaml`, `disagg_router.yaml`, and `disagg_planner.yaml` |
-| TensorRT-LLM | [Deployment examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/trtllm/deploy), including disaggregated, router, and planner variants |
 | SGLang | [Deployment examples](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/sglang/deploy), including NIXL-based disaggregated serving |
 
 ## Operational Notes

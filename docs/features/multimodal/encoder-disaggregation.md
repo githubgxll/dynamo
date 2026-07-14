@@ -30,7 +30,6 @@ For simple deployments or development/testing, the aggregated (EPD) pattern is e
 | Backend | E/PD | E/P/D | Notes |
 |---------|------|-------|-------|
 | **vLLM** | ✅ | ✅ | Separate encode worker currently handles `image_url` inputs; `video_url` inputs stay on the prefill/PD path |
-| **TRT-LLM** | ❌ | ✅ | Supports image URLs (via `MultimodalEncoder`) and pre-computed embeddings (via NIXL) |
 | **SGLang** | ✅ | ✅ | NIXL for embeddings; bootstrap mechanism for P/D KV transfer |
 
 ## Deployment Patterns
@@ -67,18 +66,6 @@ bash launch/disagg_multimodal_e_pd.sh --model "Qwen/Qwen3-VL-30B-A3B-Instruct-FP
 bash launch/disagg_multimodal_epd.sh --model "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 ```
 
-### TRT-LLM
-
-```bash
-cd $DYNAMO_HOME/examples/backends/trtllm
-
-# E/PD
-bash launch/disagg_e_pd.sh
-
-# E/P/D
-./launch/epd_multimodal_image_and_embeddings.sh
-```
-
 ### SGLang
 
 ```bash
@@ -91,4 +78,4 @@ cd $DYNAMO_HOME/examples/backends/sglang
 ./launch/multimodal_disagg.sh
 ```
 
-See the backend-specific documentation ([vLLM](multimodal-vllm.md), [TRT-LLM](multimodal-trtllm.md), [SGLang](multimodal-sglang.md)) for full configuration details and component flags.
+See the backend-specific documentation ([vLLM](multimodal-vllm.md), [SGLang](multimodal-sglang.md)) for full configuration details and component flags.

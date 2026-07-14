@@ -53,7 +53,7 @@ To run frontend and worker in the same container, either:
 
 See [Release Artifacts](../reference/release-artifacts.md#container-images) for available
 versions and backend guides for run instructions: [SGLang](../backends/sglang/README.md) |
-[TensorRT-LLM](../backends/trtllm/README.md) | [vLLM](../backends/vllm/README.md)
+[vLLM](../backends/vllm/README.md)
 
 ### Option B: Install from PyPI
 
@@ -89,8 +89,7 @@ pip install --pre --extra-index-url https://pypi.nvidia.com "ai-dynamo[trtllm]"
 
 TensorRT-LLM requires `pip` due to a transitive Git URL dependency that
 `uv` doesn't resolve. We recommend using the TensorRT-LLM container for
-broader compatibility. See the [TRT-LLM backend guide](../backends/trtllm/README.md)
-for details.
+broader compatibility.
 
 **vLLM**
 

@@ -12,7 +12,6 @@ For Dynamo's own runtime metrics (`dynamo_*`), see the [Metrics Guide](metrics.m
 
 - [vLLM Observability](../backends/vllm/vllm-observability.md)
 - [SGLang Observability](../backends/sglang/sglang-observability.md)
-- [TensorRT-LLM Observability](../backends/trtllm/trtllm-observability.md)
 
 | Framework | Metric Prefix | Unique Metrics | Version Tested | Required Flags |
 |-----------|---------------|----------------|----------------|----------------|
@@ -145,4 +144,3 @@ These are **pass-through metrics from the engines themselves** — Dynamo expose
 | | KV transfer total (MB) | - | `kv_transfer_total_mb` | - |
 | | KV transfer bytes | - | - | `kv_transfer_bytes` |
 | | KV transfer success | - | - | `kv_transfer_success_total` |
-

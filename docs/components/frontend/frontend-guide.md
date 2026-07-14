@@ -156,7 +156,6 @@ Backends auto-register with the frontend when they call `register_model()`. Supp
 
 - [vLLM Backend](../../backends/vllm/README.md)
 - [SGLang Backend](../../backends/sglang/README.md)
-- [TensorRT-LLM Backend](../../backends/trtllm/README.md)
 
 ## See Also
 
