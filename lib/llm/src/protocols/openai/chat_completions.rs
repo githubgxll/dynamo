@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use dynamo_runtime::protocols::annotated::{Annotated, AnnotationsProvider};
 use serde::{Deserialize, Serialize};
+use serde::ser::{SerializeMap, Serializer};
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -75,6 +77,51 @@ pub(crate) fn tool_call_response_chunk_to_protocol(
             arguments: f.arguments,
         }),
     }
+}
+
+/// Internal carrier key for SGLang extension (`sglext`) passthrough.
+///
+/// The Python chat processor stashes the backend's `cached_tokens_details`
+/// (and any other SGLang-native extension payload) under this key inside the
+/// response `nvext`. The Rust-side custom `Serialize` impls pull it back out
+/// and promote it to a top-level `sglext` field on the wire — matching the
+/// field name SGLang's own router returns — so clients see the same shape
+/// regardless of whether they hit SGLang directly or through DingoRouter.
+///
+/// Clients never see this key: it is stripped from `nvext` before
+/// serialization and re-emitted as `sglext`.
+pub const INTERNAL_SGLEXT_KEY: &str = "__dynamo_internal_sglext";
+
+/// Split the internal SGLang extension carrier out of a response `nvext`.
+///
+/// Returns `(visible_nvext, sglext)`:
+/// - `visible_nvext`: the `nvext` value with the internal key removed, or
+///   `None` once nothing but the internal key remained. When `nvext` is not a
+///   JSON object (e.g. a bare scalar passthrough), it is returned unchanged.
+/// - `sglext`: the carrier value extracted from under the internal key, or
+///   `None` when the key is absent.
+///
+/// This is shared by the unary and streaming response `Serialize` impls so the
+/// promotion rule lives in exactly one place.
+pub fn split_sglext(
+    nvext: &Option<serde_json::Value>,
+) -> (Option<Cow<'_, serde_json::Value>>, Option<serde_json::Value>) {
+    let Some(value) = nvext.as_ref() else {
+        return (None, None);
+    };
+    let serde_json::Value::Object(fields) = value else {
+        // Non-object nvext is passed through verbatim; there is no key to strip.
+        return (Some(Cow::Borrowed(value)), None);
+    };
+    let Some(sglext) = fields.get(INTERNAL_SGLEXT_KEY) else {
+        return (Some(Cow::Borrowed(value)), None);
+    };
+
+    let mut visible_fields = fields.clone();
+    visible_fields.remove(INTERNAL_SGLEXT_KEY);
+    let visible_nvext = (!visible_fields.is_empty())
+        .then(|| Cow::Owned(serde_json::Value::Object(visible_fields)));
+    (visible_nvext, Some(sglext.clone()))
 }
 
 /// A request structure for creating a chat completion, extending OpenAI's
@@ -218,7 +265,12 @@ fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<Open
 
 /// A response structure for unary chat completion responses, embedding OpenAI's
 /// `CreateChatCompletionResponse` with optional NVIDIA extension metadata.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+///
+/// `Serialize` is implemented by hand (not derived) so the internal SGLang
+/// extension carrier stashed under `nvext.__dynamo_internal_sglext` can be
+/// promoted to a top-level `sglext` field on the wire — see
+/// [`split_sglext`] and [`INTERNAL_SGLEXT_KEY`].
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionResponse {
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionResponse,
@@ -228,7 +280,10 @@ pub struct NvCreateChatCompletionResponse {
 
 /// A response structure for streamed chat completions, embedding OpenAI's
 /// `CreateChatCompletionStreamResponse` with optional NVIDIA extension metadata.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+///
+/// `Serialize` is implemented by hand for the same SGLang `sglext` promotion
+/// reason as [`NvCreateChatCompletionResponse`].
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionStreamResponse {
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionStreamResponse,
@@ -238,6 +293,59 @@ pub struct NvCreateChatCompletionStreamResponse {
     /// client-facing OpenAI-compatible streams.
     #[serde(skip)]
     pub llm_metrics: Option<crate::protocols::common::metrics::LLMMetricAnnotation>,
+}
+
+/// Serialize a chat completion response (unary or streaming) with the internal
+/// SGLang extension carrier promoted to a top-level `sglext` field.
+///
+/// `inner` is serialized first so its `#[serde(flatten)]` fields land at the
+/// root, then `nvext` (with the internal key stripped) and `sglext` are added
+/// when present. Both response types share this so the wire shape stays
+/// identical across unary and streaming paths.
+fn serialize_chat_completion_response<S, Inner>(
+    inner: &Inner,
+    nvext: &Option<serde_json::Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    Inner: Serialize,
+{
+    // Serialize `inner` to a JSON value so we can splice in the extension
+    // fields at the root. `inner` flattens the OpenAI response fields, so this
+    // reproduces the derived `#[serde(flatten)]` layout exactly.
+    let inner_value = serde_json::to_value(inner).map_err(serde::ser::Error::custom)?;
+    let serde_json::Value::Object(mut map) = inner_value else {
+        // `inner` always serializes to a JSON object; fall back to serializing
+        // it directly if a future change breaks that invariant.
+        return inner.serialize(serializer);
+    };
+
+    let (visible_nvext, sglext) = split_sglext(nvext);
+    
+    if let Some(sglext) = sglext {
+        map.insert("sglext".to_string(), sglext);
+    }
+
+    let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+    for (key, value) in map {
+        ser_map.serialize_entry(&key, &value)?;
+    }
+    ser_map.end()
+}
+
+impl Serialize for NvCreateChatCompletionResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_chat_completion_response(&self.inner, &self.nvext, serializer)
+    }
+}
+
+impl Serialize for NvCreateChatCompletionStreamResponse {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // `llm_metrics` is `#[serde(skip)]` and must never reach the client; it
+        // is intentionally not serialized here.
+        serialize_chat_completion_response(&self.inner, &self.nvext, serializer)
+    }
 }
 
 /// Build one synthetic stream choice from an existing response template.
@@ -582,6 +690,131 @@ mod tests {
     use crate::protocols::common::{OutputOptionsProvider, StopConditionsProvider};
     use dynamo_protocols::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
     use serde_json::json;
+
+    #[test]
+    fn test_split_sglext_no_nvext() {
+        let (visible, sglext) = split_sglext(&None);
+        assert!(visible.is_none());
+        assert!(sglext.is_none());
+    }
+
+    #[test]
+    fn test_split_sglext_no_carrier_key() {
+        // nvext without the internal key passes through unchanged.
+        let nvext = Some(json!({"stop_reason": "eos"}));
+        let (visible, sglext) = split_sglext(&nvext);
+        assert_eq!(visible.as_deref(), Some(&json!({"stop_reason": "eos"})));
+        assert!(sglext.is_none());
+    }
+
+    #[test]
+    fn test_split_sglext_only_carrier_key() {
+        // nvext carrying only the internal key yields no visible nvext and the
+        // promoted sglext payload.
+        let payload = json!({"cached_tokens_details": {"device": 64, "host": 32}});
+        let nvext = Some(json!({INTERNAL_SGLEXT_KEY: payload}));
+        let (visible, sglext) = split_sglext(&nvext);
+        assert!(visible.is_none());
+        assert_eq!(sglext, Some(payload));
+    }
+
+    #[test]
+    fn test_split_sglext_carrier_alongside_visible_fields() {
+        // Both a client-visible nvext field and the carrier: the carrier is
+        // removed from the visible nvext and returned separately.
+        let payload = json!({"cached_tokens_details": {"device": 1, "host": 0}});
+        let nvext = Some(json!({"stop_reason": "eos", INTERNAL_SGLEXT_KEY: payload}));
+        let (visible, sglext) = split_sglext(&nvext);
+        assert_eq!(visible.as_deref(), Some(&json!({"stop_reason": "eos"})));
+        assert_eq!(sglext, Some(payload));
+    }
+
+    #[test]
+    fn test_split_sglext_non_object_nvext_passes_through() {
+        // A non-object nvext (unexpected but defensive) is returned verbatim.
+        let nvext = Some(json!("scalar"));
+        let (visible, sglext) = split_sglext(&nvext);
+        assert_eq!(visible.as_deref(), Some(&json!("scalar")));
+        assert!(sglext.is_none());
+    }
+
+    #[test]
+    fn test_stream_response_serializes_sglext_promotion() {
+        // Build a streaming response whose nvext carries the internal sglext
+        // key plus a visible field, then assert the wire JSON promotes the
+        // carrier to a top-level `sglext` and strips it from `nvext`.
+        let payload = json!({"cached_tokens_details": {"device": 64, "host": 32}});
+        let response = NvCreateChatCompletionStreamResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
+                id: "chatcmpl-1".to_string(),
+                created: 0,
+                model: "test-model".to_string(),
+                object: "chat.completion.chunk".to_string(),
+                system_fingerprint: None,
+                choices: vec![],
+                service_tier: None,
+                usage: None,
+            },
+            nvext: Some(json!({"stop_reason": "eos", INTERNAL_SGLEXT_KEY: payload})),
+            llm_metrics: None,
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        let obj = wire.as_object().unwrap();
+        // Carrier promoted to a top-level sglext field.
+        assert_eq!(obj.get("sglext"), Some(&payload));
+        // Carrier stripped from nvext; visible field remains.
+        let nvext = obj.get("nvext").unwrap().as_object().unwrap();
+        assert!(!nvext.contains_key(INTERNAL_SGLEXT_KEY));
+        assert_eq!(nvext.get("stop_reason"), Some(&json!("eos")));
+    }
+
+    #[test]
+    fn test_stream_response_without_sglext_has_no_sglext_field() {
+        // No carrier -> no top-level sglext field, and no nvext when empty.
+        let response = NvCreateChatCompletionStreamResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
+                id: "chatcmpl-2".to_string(),
+                created: 0,
+                model: "test-model".to_string(),
+                object: "chat.completion.chunk".to_string(),
+                system_fingerprint: None,
+                choices: vec![],
+                service_tier: None,
+                usage: None,
+            },
+            nvext: None,
+            llm_metrics: None,
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        let obj = wire.as_object().unwrap();
+        assert!(!obj.contains_key("sglext"));
+        assert!(!obj.contains_key("nvext"));
+        // llm_metrics must never leak to the wire.
+        assert!(!obj.contains_key("llm_metrics"));
+    }
+
+    #[test]
+    fn test_unary_response_serializes_sglext_promotion() {
+        let payload = json!({"cached_tokens_details": {"device": 2, "host": 1}});
+        let response = NvCreateChatCompletionResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionResponse {
+                id: "chatcmpl-3".to_string(),
+                created: 0,
+                model: "test-model".to_string(),
+                object: "chat.completion".to_string(),
+                system_fingerprint: None,
+                choices: vec![],
+                service_tier: None,
+                usage: None,
+            },
+            nvext: Some(json!({INTERNAL_SGLEXT_KEY: payload})),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        let obj = wire.as_object().unwrap();
+        assert_eq!(obj.get("sglext"), Some(&payload));
+        // Only the carrier was present -> no nvext on the wire.
+        assert!(!obj.contains_key("nvext"));
+    }
 
     #[test]
     fn test_skip_special_tokens_none() {

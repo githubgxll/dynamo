@@ -46,6 +46,40 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+# Internal carrier key mirroring the Rust constant in
+# lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
+# The Python processor stashes SGLang's cached_tokens_details under this key
+# inside the response nvext; the Rust serializer promotes it to a top-level
+# `sglext` field on the wire. Clients never see this key.
+_INTERNAL_SGLEXT_KEY = "__dynamo_internal_sglext"
+
+
+def _cached_tokens_details_from_engine_data(
+    engine_data: Any,
+) -> dict[str, Any] | None:
+    """Extract and normalize cached_tokens_details from engine_data.
+
+    The decode handler copies sglang's ``meta_info.cached_tokens_details`` into
+    ``engine_data.cached_tokens_details`` on the finish chunk. This normalizes
+    the shape so the carrier payload matches sglang's native ``sglext`` field.
+    Returns ``None`` when the detail is absent or malformed.
+    """
+    if not isinstance(engine_data, dict):
+        return None
+    details = engine_data.get("cached_tokens_details")
+    if not isinstance(details, dict):
+        return None
+
+    normalized: dict[str, Any] = {
+        "device": details.get("device", 0),
+        "host": details.get("host", 0),
+    }
+    if "storage" in details:
+        normalized["storage"] = details.get("storage", 0)
+        normalized["storage_backend"] = details.get("storage_backend")
+    return normalized
+
+
 
 def _cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     if not isinstance(usage, dict):
@@ -569,7 +603,6 @@ class SglangProcessor:
                 if usage := engine_response.get("completion_usage"):
                     pending_usage = usage
                 engine_data = engine_response.get("engine_data")
-
                 pending_token_ids.extend(new_ids)
 
                 # Flush on finish or when we've accumulated enough tokens.
@@ -613,6 +646,23 @@ class SglangProcessor:
                             nvext_extra_field_requested(request, "engine_data")
                         ):
                             response_nvext["engine_data"] = engine_data
+                        
+                        # Promote SGLang's cached_tokens_details to the
+                        # sglext carrier on the finish chunk. The decode
+                        # handler only populates engine_data.cached_tokens_details
+                        # on the terminal chunk, so this naturally fires once.
+                        # Routed as an internal nvext key that the Rust
+                        # serializer lifts to a top-level `sglext` field,
+                        # matching sglang's native protocol — independent of
+                        # the client's engine_data opt-in.
+                        if finish_reason:
+                            cached_tokens_details = (
+                                _cached_tokens_details_from_engine_data(engine_data)
+                            )
+                            if cached_tokens_details is not None:
+                                response_nvext[_INTERNAL_SGLEXT_KEY] = {
+                                    "cached_tokens_details": cached_tokens_details
+                                }
                         if response_nvext:
                             dynamo_out["nvext"] = response_nvext
 

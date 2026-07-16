@@ -514,6 +514,12 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         # With n>1, chunks for different choices are interleaved, so track the
         # cumulative-logprob cursor per choice index instead of globally.
         output_logprobs_per_choice: dict[int, int] = {}
+        # SGLang reports cached_tokens_details on each chunk's meta_info, but
+        # the frontend only emits it to the client on the terminal chunk. Track
+        # the latest value per choice (n>1 interleaves choices) and fold it
+        # into engine_data on the finish chunk so the processor can promote it
+        # to the sglext carrier.
+        cached_tokens_details_per_choice: dict[int, dict[str, Any]] = {}
         async with self._cancellation_monitor(request_id_future, context):
             async for res in stream_source:
                 meta_info = res.get("meta_info", {})
@@ -531,6 +537,15 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 # SGLang omits index for non-n/legacy chunks; treat those as
                 # choice 0 while preserving explicit indices for n>1.
                 output_idx = res.get("index") or 0
+
+                # Capture SGLang's per-dimension cache hit breakdown. SGLang
+                # populates this on every chunk once the radix-tree lookup is
+                # known; keep the latest per choice and emit it on the finish
+                # chunk below. Requested via return_cached_tokens_details
+                # (sglang patch forces it on for all requests).
+                cached_tokens_details = meta_info.get("cached_tokens_details")
+                if isinstance(cached_tokens_details, dict):
+                    cached_tokens_details_per_choice[output_idx] = cached_tokens_details
 
                 out: dict[str, Any] = {"index": output_idx}
                 finish_reason = meta_info["finish_reason"]
@@ -574,11 +589,15 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                         out["top_logprobs"] = top_logprobs
 
                 routed_experts = meta_info.get("routed_experts")
+                engine_data: Dict[str, Any] = {}
                 if routed_experts is not None and metadata_uploader is None:
-                    # sglang >= 0.5.11 base64-encodes routed_experts upstream. It rides
-                    # the engine's opaque engine_data passthrough (surfaced by the frontend
-                    # as nvext.routed_experts); disaggregated_params stays KV-transfer only.
-                    out["engine_data"] = {"routed_experts": routed_experts}
+                    engine_data["routed_experts"] = routed_experts
+                if finish_reason and output_idx in cached_tokens_details_per_choice:
+                    engine_data["cached_tokens_details"] = (
+                        cached_tokens_details_per_choice.pop(output_idx)
+                    )
+                if engine_data:
+                    out["engine_data"] = engine_data
                 if finish_reason:
                     input_tokens = meta_info["prompt_tokens"]
                     completion_tokens = meta_info["completion_tokens"]
