@@ -104,13 +104,12 @@ fn make_synthetic_payload_blobs() -> Vec<Vec<u8>> {
     batches.iter().map(|b| b.encode()).collect()
 }
 
-/// Write fixture files from synthetic payload blobs.
+/// Write the VLLM fixture file from synthetic payload blobs.
 #[allow(dead_code)]
 fn regenerate_fixtures() -> anyhow::Result<()> {
     let blobs = make_synthetic_payload_blobs();
     let bytes = rmp_serde::to_vec(&blobs)?;
     std::fs::write("tests/fixtures/vllm_capture.msgpack", &bytes)?;
-    std::fs::write("tests/fixtures/trtllm_capture.msgpack", &bytes)?;
     Ok(())
 }
 
@@ -245,20 +244,6 @@ async fn e2e_full_vllm_replay() {
             "tests/fixtures/vllm_capture.msgpack",
             EventSource::Vllm,
             "vllm_replay",
-        ),
-    )
-    .await
-    .expect("test timed out");
-}
-
-#[tokio::test]
-async fn e2e_full_trtllm_replay() {
-    timeout(
-        Duration::from_secs(10),
-        run_replay(
-            "tests/fixtures/trtllm_capture.msgpack",
-            EventSource::Trtllm,
-            "trtllm_replay",
         ),
     )
     .await

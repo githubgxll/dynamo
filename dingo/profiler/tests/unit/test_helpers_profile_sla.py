@@ -73,7 +73,7 @@ def _make_dgdr(**overrides) -> DynamoGraphDeploymentRequestSpec:
     """Build a minimal dgdr with all required fields set."""
     base = dict(
         model="Qwen/Qwen3-32B",
-        backend="trtllm",
+        backend="vllm",
         image="nvcr.io/nvidia/ai-dynamo/dynamo-frontend:latest",
         hardware=HardwareSpec(gpuSku="h200_sxm", totalGpus=8, numGpusPerNode=8),
         workload=WorkloadSpec(isl=4000, osl=1000),
@@ -90,7 +90,7 @@ def _make_planner(**overrides) -> PlannerConfig:
         enable_load_scaling=False,
         pre_deployment_sweeping_mode=PlannerPreDeploymentSweepMode.Rapid,
         mode="disagg",
-        backend="trtllm",
+        backend="vllm",
     )
     base.update(overrides)
     return PlannerConfig(**base)
@@ -129,7 +129,7 @@ class TestExtractProfilerParams:
         ) = _extract_profiler_params(dgdr)
 
         assert model == "Qwen/Qwen3-32B"
-        assert backend == "trtllm"
+        assert backend == "vllm"
         assert system == "h200_sxm"
         assert total_gpus == 8
         assert isl == 4000
@@ -162,9 +162,9 @@ class TestExtractProfilerParams:
     @pytest.mark.gpu_0
     def test_backend_lowercased(self):
         """backend value is always lower-cased."""
-        dgdr = _make_dgdr(backend="trtllm")
+        dgdr = _make_dgdr(backend="vllm")
         _, backend, _, _, _, _, _, _, _, _, _ = _extract_profiler_params(dgdr)
-        assert backend == "trtllm"
+        assert backend == "vllm"
         assert backend == backend.lower()
 
     @pytest.mark.pre_merge
@@ -194,7 +194,7 @@ class TestValidDgdrSpec:
     @pytest.mark.gpu_0
     def test_thorough_concrete_backend_passes(self):
         """THOROUGH + concrete backend is fine."""
-        dgdr = _make_dgdr(searchStrategy="thorough", backend="trtllm")
+        dgdr = _make_dgdr(searchStrategy="thorough", backend="vllm")
         valid_dgdr_spec(dgdr)
 
     @pytest.mark.pre_merge
@@ -1008,7 +1008,7 @@ class TestNaiveFallbackResolvedBackend:
         assert resolved in (
             "vllm",
             "sglang",
-            "trtllm",
+            "vllm",
         ), f"resolved_backend must be a concrete backend, got {resolved!r}"
 
     @pytest.mark.pre_merge

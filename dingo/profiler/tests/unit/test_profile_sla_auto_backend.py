@@ -89,4 +89,4 @@ def test_default_sim_returns_resolved_backend() -> None:
 def test_default_naive_backend_is_concrete() -> None:
     """_DEFAULT_NAIVE_BACKEND must be a concrete backend string, not 'auto'."""
     assert _DEFAULT_NAIVE_BACKEND != "auto"
-    assert _DEFAULT_NAIVE_BACKEND in ("vllm", "sglang", "trtllm")
+    assert _DEFAULT_NAIVE_BACKEND in ("vllm", "sglang")

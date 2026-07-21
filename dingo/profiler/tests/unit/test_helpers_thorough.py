@@ -41,7 +41,7 @@ except ImportError as e:
 def _make_dgdr(**overrides) -> DynamoGraphDeploymentRequestSpec:
     base = dict(
         model="Qwen/Qwen3-32B",
-        backend="trtllm",
+        backend="vllm",
         image="nvcr.io/nvidia/ai-dynamo/dynamo-frontend:latest",
         hardware=HardwareSpec(gpuSku="h200_sxm", totalGpus=8, numGpusPerNode=8),
         workload=WorkloadSpec(isl=4000, osl=1000),
@@ -68,7 +68,7 @@ def _stub_dfs():
         dp=1,
         moe_tp=1,
         moe_ep=1,
-        backend="trtllm",
+        backend="vllm",
         system="h200_sxm",
     )
     decode_row = build_decode_row(
@@ -82,7 +82,7 @@ def _stub_dfs():
         dp=1,
         moe_tp=1,
         moe_ep=1,
-        backend="trtllm",
+        backend="vllm",
         system="h200_sxm",
     )
     prefill_df = pd.DataFrame([prefill_row])

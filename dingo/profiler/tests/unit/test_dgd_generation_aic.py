@@ -67,14 +67,14 @@ class TestBuildAICInterpolationSpec:
             isl=3000,
             osl=300,
             sweep_max_context_length=8192,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=16,
             decode_interpolation_granularity=6,
         )
         assert isinstance(spec, AICInterpolationSpec)
         assert spec.hf_id == "Qwen/Qwen3-32B"
-        assert spec.backend == "trtllm"
+        assert spec.backend == "vllm"
         assert spec.system == "h200_sxm"
         assert spec.prefill_pick == pick
         assert spec.decode_pick == pick
@@ -95,7 +95,7 @@ class TestBuildAICInterpolationSpec:
             isl=3000,
             osl=300,
             sweep_max_context_length=8192,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=16,
             decode_interpolation_granularity=6,
@@ -117,7 +117,7 @@ class TestBuildAICInterpolationSpec:
             isl=1000,
             osl=100,
             sweep_max_context_length=4096,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=8,
             decode_interpolation_granularity=4,
@@ -133,7 +133,7 @@ class TestBuildAICInterpolationSpec:
             isl=1000,
             osl=100,
             sweep_max_context_length=4096,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=8,
             decode_interpolation_granularity=4,
@@ -167,7 +167,7 @@ class TestBuildAICInterpolationSpec:
             isl=1000,
             osl=100,
             sweep_max_context_length=4096,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=8,
             decode_interpolation_granularity=4,
@@ -191,17 +191,17 @@ class TestBuildAICInterpolationSpec:
             isl=1000,
             osl=100,
             sweep_max_context_length=4096,
-            resolved_backend="trtllm",
+            resolved_backend="vllm",
             system="h200_sxm",
             prefill_interpolation_granularity=8,
             decode_interpolation_granularity=4,
         )
         assert isinstance(spec, AICInterpolationSpec)
-        assert spec.backend == "trtllm"
+        assert spec.backend == "vllm"
 
 
 class TestInjectMockerAicArgs:
-    def _spec(self, backend: str = "trtllm") -> AICInterpolationSpec:
+    def _spec(self, backend: str = "vllm") -> AICInterpolationSpec:
         pick = PickedParallelConfig(tp=1, dp=8, moe_tp=1, moe_ep=8)
         return AICInterpolationSpec(
             hf_id="Qwen/Qwen3-235B",
@@ -216,6 +216,7 @@ class TestInjectMockerAicArgs:
             decode_pick=pick,
         )
 
+    @pytest.mark.skip(reason="TRT-LLM support has been removed")
     def test_injects_all_required_flags(self):
         spec = self._spec("trtllm")
         args = ["--model-path", "Qwen/Qwen3-235B", "--disaggregation-mode", "prefill"]
@@ -256,7 +257,7 @@ class TestBuildPlannerConfigEmbedsAicSpec:
         spec = AICInterpolationSpec(
             hf_id="x",
             system="h200_sxm",
-            backend="trtllm",
+            backend="vllm",
             isl=1000,
             osl=100,
             sweep_max_context_length=4096,

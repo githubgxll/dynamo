@@ -656,7 +656,7 @@ async def test_run_profile_applies_dgd_overrides_before_interpolation(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_build_dgd_config_pvc_without_model_path_uses_hf_model_name(
     backend,
 ) -> None:
@@ -710,7 +710,7 @@ def test_build_dgd_config_pvc_without_model_path_uses_hf_model_name(
         ), f"Service '{svc_name}' is missing volumeMount for PVC '{pvc_name}'"
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_build_dgd_config_pvc_with_model_path_uses_pvc_path(backend) -> None:
     """When both pvc_name and model_path are set (pvcModelPath provided),
     workers must receive the full PVC path — not the HF model ID.

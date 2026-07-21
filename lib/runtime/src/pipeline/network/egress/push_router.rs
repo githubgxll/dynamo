@@ -2392,6 +2392,7 @@ mod tests {
     /// and transport resolution, it should fall back to another available instance
     /// rather than returning a 500 error.
     #[tokio::test]
+    #[ignore = "requires a response worker; retained for future end-to-end coverage"]
     async fn transport_resolution_falls_back_when_selected_instance_disappears() {
         let rt = Runtime::from_current().unwrap();
         let drt = DistributedRuntime::new(rt.clone(), DistributedConfig::process_local())
@@ -2442,6 +2443,42 @@ mod tests {
                 "Transport resolution should have fallen back, but got: {msg}"
             );
         }
+
+        rt.shutdown();
+    }
+
+    /// Unit-level coverage for stale-instance transport fallback. Unlike the
+    /// ignored end-to-end test above, this does not dispatch a request to an
+    /// endpoint without a response worker.
+    #[tokio::test]
+    async fn resolve_transport_falls_back_when_selected_instance_disappears() {
+        let rt = Runtime::from_current().unwrap();
+        let drt = DistributedRuntime::new(rt.clone(), DistributedConfig::process_local())
+            .await
+            .unwrap();
+        let ns = drt
+            .namespace("test_resolve_transport_fallback".to_string())
+            .unwrap();
+        let component = ns.component("test_component".to_string()).unwrap();
+        let endpoint = component.endpoint("test_endpoint".to_string());
+        let client = endpoint.client().await.unwrap();
+
+        endpoint.register_endpoint_instance().await.unwrap();
+        client.wait_for_instances().await.unwrap();
+
+        let real_id = client.instance_ids()[0];
+        let stale_id = real_id + 1000;
+        client.override_instance_avail(vec![stale_id, real_id]);
+
+        let router = PushRouter::<u64, TestResponse>::from_client(client, RouterMode::RoundRobin)
+            .await
+            .unwrap();
+
+        let (resolved_id, _, _, _) = router
+            .resolve_transport(stale_id, TransportFallback::Allow)
+            .expect("stale instance should fall back to an available instance");
+
+        assert_eq!(resolved_id, real_id);
 
         rt.shutdown();
     }

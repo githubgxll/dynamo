@@ -30,7 +30,7 @@ except ImportError as e:
 def _make_dgdr(image: str) -> DynamoGraphDeploymentRequestSpec:
     return DynamoGraphDeploymentRequestSpec(
         model="Qwen/Qwen3-32B",
-        backend="trtllm",
+        backend="vllm",
         image=image,
         hardware=HardwareSpec(gpuSku="h200_sxm", totalGpus=8, numGpusPerNode=8),
         workload=WorkloadSpec(isl=4000, osl=1000),
@@ -93,10 +93,11 @@ def test_derive_planner_image_preserves_registry_tag_and_digest(
             "sglang",
             "nvcr.io/nvidia/ai-dynamo/sglang-runtime@sha256:deadbeef",
         ),
-        (
+        pytest.param(
             "nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.2.3@sha256:deadbeef",
             "trtllm",
             "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.2.3@sha256:deadbeef",
+            marks=pytest.mark.skip(reason="TRT-LLM support has been removed"),
         ),
     ],
 )

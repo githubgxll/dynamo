@@ -49,7 +49,7 @@ _HF_ID = "Qwen/Qwen3-32B"
 def _make_dgdr(**overrides) -> DynamoGraphDeploymentRequestSpec:
     base = dict(
         model=_HF_ID,
-        backend="trtllm",
+        backend="vllm",
         image="nvcr.io/nvidia/ai-dynamo/dynamo-frontend:latest",
         hardware=HardwareSpec(gpuSku="h200_sxm", totalGpus=8, numGpusPerNode=8),
         workload=WorkloadSpec(isl=4000, osl=1000),
@@ -189,7 +189,7 @@ class TestRapidResolvesModelPath:
                 dgdr,
                 _HF_ID,
                 "h200_sxm",
-                "trtllm",
+                "vllm",
                 8,
                 4000,
                 1000,
@@ -219,7 +219,7 @@ class TestRapidResolvesModelPath:
                 dgdr,
                 _HF_ID,
                 "h200_sxm",
-                "trtllm",
+                "vllm",
                 8,
                 4000,
                 1000,
@@ -245,7 +245,7 @@ class TestRapidResolvesModelPath:
             patch("dingo.profiler.rapid._generate_dgd_from_pick", return_value=None),
         ):
             _run_autoscale_sim(
-                dgdr, _HF_ID, "h200_sxm", "trtllm", 8, 4000, 1000, 2000.0, 50.0, None
+                dgdr, _HF_ID, "h200_sxm", "vllm", 8, 4000, 1000, 2000.0, 50.0, None
             )
 
         assert mock_task_config.call_args.kwargs["model_path"] == str(local_dir)
@@ -262,7 +262,7 @@ class TestRapidResolvesModelPath:
             patch("dingo.profiler.rapid._generate_dgd_from_pick", return_value=None),
         ):
             _run_autoscale_sim(
-                dgdr, _HF_ID, "h200_sxm", "trtllm", 8, 4000, 1000, 2000.0, 50.0, None
+                dgdr, _HF_ID, "h200_sxm", "vllm", 8, 4000, 1000, 2000.0, 50.0, None
             )
 
         assert mock_task_config.call_args.kwargs["model_path"] == _HF_ID
@@ -293,7 +293,7 @@ class TestGenerateDgdKeepsServedModelName:
     def _task_config() -> MagicMock:
         tc = MagicMock()
         tc.total_gpus = 8
-        tc.backend_name = "trtllm"
+        tc.backend_name = "vllm"
         tc.backend_version = None
         return tc
 
@@ -371,7 +371,7 @@ class TestThoroughResolvesModelPath:
                 "default",
                 _HF_ID,
                 "h200_sxm",
-                "trtllm",
+                "vllm",
                 8,
                 4000,
                 1000,
@@ -436,7 +436,7 @@ class TestThoroughResolvesModelPath:
                 "default",
                 _HF_ID,
                 "h200_sxm",
-                "trtllm",
+                "vllm",
                 8,
                 4000,
                 1000,
