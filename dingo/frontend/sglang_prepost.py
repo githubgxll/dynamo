@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, TypeAlias
 
+from sglang.srt.environ import ToolStrictLevel, envs
 from sglang.srt.entrypoints.openai.protocol import Function as SglangFunction
 from sglang.srt.entrypoints.openai.protocol import Tool as SglangTool
 from sglang.srt.entrypoints.openai.protocol import ToolChoice as SglangToolChoice
@@ -185,9 +186,23 @@ def convert_tools(tools: list[dict[str, Any]] | None) -> list[SglangTool] | None
     """Convert OpenAI tool dicts to SGLang Tool objects."""
     if not tools:
         return None
-    sglang_tools = []
+
+    # GLM47 uses xgrammar's native structural-tag path when available. That
+    # path returns before FunctionCallParser's legacy level-2 schema upgrade,
+    # so a global PARAMETER setting would otherwise enable the tag while still
+    # leaving non-strict tools with a permissive ``json_schema: true`` body.
+    # Promote each copied tool here so both native and legacy paths receive the
+    # parameter schema. The caller-owned request remains unchanged.
+    force_parameter_strict = (
+        envs.SGLANG_TOOL_STRICT_LEVEL.get() >= ToolStrictLevel.PARAMETER
+    )
+
+    sglang_tools: list[SglangTool] = []
     for tool in tools:
         func = tool.get("function", {})
+        strict = func.get("strict", False)
+        if force_parameter_strict:
+            strict = True
         sglang_tools.append(
             SglangTool(
                 type=tool.get("type", "function"),
@@ -195,7 +210,7 @@ def convert_tools(tools: list[dict[str, Any]] | None) -> list[SglangTool] | None
                     name=func.get("name", ""),
                     description=func.get("description"),
                     parameters=func.get("parameters"),
-                    strict=func.get("strict", False),
+                    strict=strict,
                 ),
             )
         )
@@ -921,12 +936,18 @@ class SglangStreamingPostProcessor:
             self.history_tool_calls_count,
         )
 
-    def _incremental_decode(self, new_token_ids: list[int]) -> str:
+    def _incremental_decode(
+        self,
+        new_token_ids: list[int],
+        *,
+        finished: bool = False,
+    ) -> str:
         """Decode new tokens with lookback window for multi-byte char boundaries.
 
         Re-decodes a small window of previous tokens alongside new tokens so that
         multi-byte characters spanning token boundaries are correctly resolved.
-        Only retains the last LOOKBACK tokens to bound memory usage.
+        A non-final trailing replacement character is withheld until the next
+        chunk can either resolve it or the stream finishes.
         """
         prev_count = len(self._all_token_ids)
         self._all_token_ids.extend(new_token_ids)
@@ -957,6 +978,18 @@ class SglangStreamingPostProcessor:
             window_tokens, skip_special_tokens=self._skip_special_tokens
         )
 
+        # Byte-level tokenizers decode an incomplete UTF-8 suffix as U+FFFD.
+        # The previous suffix was intentionally not emitted, so exclude it
+        # when calculating the already-sent prefix length. For a non-final
+        # window, hold its last U+FFFD until another token resolves it.
+        #
+        # Remove at most one character: only the final replacement can
+        # represent the currently incomplete suffix. Any preceding U+FFFD is
+        # legitimate output, or an already-complete invalid byte sequence.
+        prefix_text = prefix_text.removesuffix("\ufffd")
+        if not finished:
+            window_text = window_text.removesuffix("\ufffd")
+
         return window_text[len(prefix_text) :]
 
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
@@ -971,10 +1004,17 @@ class SglangStreamingPostProcessor:
         raw_ids = engine_response.get("token_ids")
         token_ids = raw_ids if isinstance(raw_ids, list) else list(raw_ids or [])
         finish_reason = engine_response.get("finish_reason")
-        if finish_reason:
+        finished = finish_reason is not None
+        if finished:
             token_ids = self._strip_trailing_eos_token_ids(list(token_ids))
 
-        delta_text = self._incremental_decode(token_ids) if token_ids else ""
+        # A terminal engine chunk commonly contains no token_ids. Still run
+        # detokenization so a previously withheld suffix can be flushed.
+        delta_text = (
+            self._incremental_decode(token_ids, finished=finished)
+            if token_ids or finished
+            else ""
+        )
 
         if self._fast_plain_text:
             if delta_text:

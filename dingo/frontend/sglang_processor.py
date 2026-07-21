@@ -16,7 +16,11 @@ from concurrent.futures import wait as _futures_wait
 from dataclasses import dataclass
 from typing import Any
 
-from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+from sglang.srt.utils.hf_transformers_utils import (
+    get_config,
+    get_generation_config,
+    get_tokenizer,
+)
 
 from dynamo._internal import ModelDeploymentCard
 from dingo.frontend.frontend_args import FrontendConfig
@@ -106,11 +110,94 @@ def _normalize_eos_token_ids(value: Any) -> list[int]:
     return []
 
 
+def _merge_eos_token_ids(*values: Any) -> list[int]:
+    """Normalize, merge, and stably deduplicate EOS token ID sources."""
+    token_ids: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        for token_id in _normalize_eos_token_ids(value):
+            if token_id not in seen:
+                token_ids.append(token_id)
+                seen.add(token_id)
+    return token_ids
+
+
 def _tokenizer_eos_token_ids(tokenizer: Any) -> list[int]:
-    eos_token_ids = _normalize_eos_token_ids(getattr(tokenizer, "eos_token_ids", None))
-    if eos_token_ids:
-        return eos_token_ids
-    return _normalize_eos_token_ids(getattr(tokenizer, "eos_token_id", None))
+    return _merge_eos_token_ids(
+        getattr(tokenizer, "eos_token_ids", None),
+        getattr(tokenizer, "eos_token_id", None),
+    )
+
+
+def _resolve_model_eos_token_ids(
+    *,
+    tokenizer: Any,
+    source_path: str,
+    trust_remote_code: bool,
+) -> list[int]:
+    """Resolve every model EOS ID used by SGLang and the tokenizer.
+
+    A Hugging Face tokenizer commonly exposes only its primary EOS token,
+    while model ``config.json`` and ``generation_config.json`` can declare
+    additional stop tokens. SGLang unions both model-level sources, so Dingo's
+    post-processor must do the same or those control tokens can leak when tool
+    parsing requires ``skip_special_tokens=False``.
+
+    Config-loading failures retain the previous tokenizer-only behavior rather
+    than preventing the frontend from starting.
+    """
+    config_eos_token_ids: list[int] = []
+    generation_eos_token_ids: list[int] = []
+    tokenizer_eos_token_ids = _tokenizer_eos_token_ids(tokenizer)
+
+    try:
+        config = get_config(
+            source_path,
+            trust_remote_code=trust_remote_code,
+        )
+        config_eos_token_ids = _normalize_eos_token_ids(
+            getattr(config, "eos_token_id", None)
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to load model config EOS token IDs from %s; "
+            "falling back to remaining sources: %s",
+            source_path,
+            exc,
+        )
+
+    try:
+        generation_config = get_generation_config(
+            source_path,
+            trust_remote_code=trust_remote_code,
+        )
+        if generation_config is not None:
+            generation_eos_token_ids = _normalize_eos_token_ids(
+                getattr(generation_config, "eos_token_id", None)
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to load generation config EOS token IDs from %s; "
+            "falling back to remaining sources: %s",
+            source_path,
+            exc,
+        )
+
+    eos_token_ids = _merge_eos_token_ids(
+        config_eos_token_ids,
+        generation_eos_token_ids,
+        tokenizer_eos_token_ids,
+    )
+    logger.info(
+        "Resolved SGLang EOS token IDs for %s: %s "
+        "(model_config=%s generation_config=%s tokenizer=%s)",
+        source_path,
+        eos_token_ids,
+        config_eos_token_ids,
+        generation_eos_token_ids,
+        tokenizer_eos_token_ids,
+    )
+    return eos_token_ids
 
 
 def _load_tokenizer(source_path: str, trust_remote_code: bool):
@@ -753,7 +840,11 @@ class SglangEngineFactory:
         logger.info("Loading SGLang tokenizer from %s", local_dir)
         tokenizer = _load_tokenizer(local_dir, self.trust_remote_code)
 
-        eos_token_ids = _tokenizer_eos_token_ids(tokenizer)
+        eos_token_ids = _resolve_model_eos_token_ids(
+            tokenizer=tokenizer,
+            source_path=local_dir,
+            trust_remote_code=self.trust_remote_code,
+        )
 
         # Static reasoning-template scan (mirrors sglang's template_manager).
         # Shared with worker-pool processes via initargs so they compute the
