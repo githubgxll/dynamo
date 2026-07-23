@@ -165,7 +165,6 @@ COPY --chmod=775 --chown=dynamo:0 dingo/common /workspace/dingo/common
 COPY --chmod=775 --chown=dynamo:0 dingo/frontend /workspace/dingo/frontend
 COPY --chmod=775 --chown=dynamo:0 dingo/sglang /workspace/dingo/sglang
 COPY --chmod=775 --chown=dynamo:0 dingo/mocker /workspace/dingo/mocker
-COPY --chmod=775 --chown=dynamo:0 recipes/ /workspace/recipes/
 COPY --chmod=664 --chown=dynamo:0 LICENSE /workspace/
 
 # Enable forceful shutdown of inflight requests

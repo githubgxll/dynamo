@@ -31,7 +31,10 @@ def get_components():
         "planner",
         "profiler",
         "replay",
+        "router",
+        "sglang",
         "thunderagent_router",
+        "vllm",
     ):
         dingo_component = os.path.join(root, "dingo", component_name)
         if os.path.isdir(dingo_component):

@@ -498,7 +498,7 @@ FROM wheel_builder_base AS runtime_wheel_builder
 COPY .cargo/ /opt/dynamo/.cargo/
 COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml hatch_build.py /opt/dynamo/
 COPY lib/ /opt/dynamo/lib/
-COPY components/ /opt/dynamo/components/
+COPY dingo/ /opt/dynamo/dingo/
 
 # Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels
 ARG USE_SCCACHE
@@ -709,7 +709,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 COPY .cargo/ /opt/dynamo/.cargo/
 COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml hatch_build.py /opt/dynamo/
 COPY lib/ /opt/dynamo/lib/
-COPY components/ /opt/dynamo/components/
+COPY dingo/ /opt/dynamo/dingo/
 
 # Build kvbm wheel (with nixl linkage via auditwheel repair)
 ARG ENABLE_KVBM

@@ -24,6 +24,12 @@
 # the policy gate will reject it.
 
 overrides:
+  # --- SGLang runtime Python packages with non-SPDX metadata ---
+  - ecosystem: python
+    name: tokenspeed-mla
+    license: MIT
+    source: "Wheel metadata embeds the MIT license; upstream LICENSE - https://github.com/lightseekorg/tokenspeed/blob/main/LICENSE"
+
   # --- NVIDIA CUDA Python wheels ---
   # Most ship via pypi.nvidia.com; the wheel METADATA's License field is empty
   # or contains marketing prose. The actual EULA is bundled in the wheel

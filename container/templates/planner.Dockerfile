@@ -109,7 +109,7 @@ ENV DYNAMO_COMMIT_SHA=${DYNAMO_COMMIT_SHA} \
     VIRTUAL_ENV=/opt/dynamo/venv \
     LD_LIBRARY_PATH="/opt/dynamo/lib" \
     PATH="/opt/dynamo/venv/bin:/usr/local/bin/etcd:/usr/local/bin:/bin" \
-    PYTHONPATH="/workspace/components/src:/workspace"
+    PYTHONPATH="/workspace"
 
 WORKDIR /workspace
 USER dynamo
