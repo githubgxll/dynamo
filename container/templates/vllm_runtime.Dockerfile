@@ -151,8 +151,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # Use --no-deps to prevent dependency conflicts (e.g., KVBM downgrading nixl).
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     export UV_CACHE_DIR=/root/.cache/uv && \
-    uv pip install {{ pip_target }} --no-deps /opt/dynamo/wheelhouse/ai_dynamo_runtime*.whl && \
-    uv pip install {{ pip_target }} --no-deps /opt/dynamo/wheelhouse/ai_dynamo*any.whl && \
+    uv pip install {{ pip_target }} --no-deps /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl && \
+    uv pip install {{ pip_target }} --no-deps /opt/dynamo/wheelhouse/ai_dingo*any.whl && \
     if [ "${ENABLE_KVBM}" = "true" ]; then \
         KVBM_WHEEL=$(ls /opt/dynamo/wheelhouse/kvbm*.whl 2>/dev/null | head -1); \
         if [ -n "$KVBM_WHEEL" ]; then uv pip install {{ pip_target }} --no-deps "$KVBM_WHEEL"; fi; \

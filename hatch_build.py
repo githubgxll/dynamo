@@ -15,14 +15,12 @@ def get_components():
     root = os.path.dirname(__file__)
     components_dir = os.path.join(root, "components", "src", "dynamo")
 
-    if not os.path.exists(components_dir):
-        raise RuntimeError(f"Components directory not found: {components_dir}")
-
     components = []
-    for item in os.listdir(components_dir):
-        item_path = os.path.join(components_dir, item)
-        if os.path.isdir(item_path) and not item.startswith("."):
-            components.append(item_path)
+    if os.path.exists(components_dir):
+        for item in os.listdir(components_dir):
+            item_path = os.path.join(components_dir, item)
+            if os.path.isdir(item_path) and not item.startswith("."):
+                components.append(item_path)
 
     for component_name in (
         "common",

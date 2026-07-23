@@ -29,6 +29,6 @@ except Exception:
     try:
         from importlib.metadata import version as _pkg_version
 
-        __version__ = _pkg_version("ai-dynamo")
+        __version__ = _pkg_version("ai-dingo")
     except Exception:
         __version__ = "0.0.0+unknown"

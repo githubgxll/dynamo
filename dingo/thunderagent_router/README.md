@@ -1,7 +1,7 @@
 # `dingo.thunderagent_router` (experimental)
 
 > **Experimental — not a released component.** Run it from a source checkout
-> (see [Install](#install)), not from a `pip install ai-dynamo`. The CLI
+> (see [Install](#install)), not from a `pip install ai-dingo`. The CLI
 > flags, session headers, and the lifecycle hooks are all unstable and will
 > change.
 

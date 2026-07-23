@@ -79,13 +79,13 @@ System info (hostname=jensen-linux, IP=10.111.122.133)
 │  └─ PYTHONPATH: not set
 └─ Dynamo: $HOME/dynamo
    ├─ Git HEAD: a03d29066, branch=main, Date: 2025-08-30 16:22:29 PDT
-   ├─ ✅ Runtime components: ai-dynamo-runtime 0.4.1
+   ├─ ✅ Runtime components: ai-dingo-runtime 0.4.1
    │  ├─ ✅ dynamo._core             $HOME/dynamo/lib/bindings/python/src/dynamo/_core.cpython-312-x86_64-linux-gnu.so
    │  ├─ ✅ dynamo.logits_processing $HOME/dynamo/lib/bindings/python/src/dynamo/logits_processing/__init__.py
    │  ├─ ✅ dynamo.nixl_connect      $HOME/dynamo/lib/bindings/python/src/dynamo/nixl_connect/__init__.py
    │  ├─ ✅ dynamo.llm               $HOME/dynamo/lib/bindings/python/src/dynamo/llm/__init__.py
    │  └─ ✅ dynamo.runtime           $HOME/dynamo/lib/bindings/python/src/dynamo/runtime/__init__.py
-   └─ ✅ Framework components: ai-dynamo 0.5.0
+   └─ ✅ Framework components: ai-dingo 0.5.0
       ├─ ✅ dingo.frontend  $HOME/dynamo/dingo/frontend/__init__.py
       ├─ ✅ dynamo.llama_cpp $HOME/dynamo/components/src/dynamo/llama_cpp/__init__.py
       ├─ ✅ dingo.sglang    $HOME/dynamo/dingo/sglang/__init__.py
@@ -142,7 +142,7 @@ Options:
     --terse                       Enable terse output mode (show only essential info and errors)
     --json-output                 Output a JSON representation (terse subset) suitable for copy/paste
     --runtime-check-only          Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers
-                                  and validate ai-dynamo packages (ai-dynamo-runtime and ai-dynamo)
+                                  and validate Dynamo packages (ai-dingo-runtime and ai-dingo)
     --no-gpu-check                Skip GPU detection and information collection (useful for environments without GPU access)
     --no-framework-check          Skip LLM framework package checks (vllm, sglang)
 """
@@ -2707,11 +2707,11 @@ class DynamoRuntimeInfo(NodeInfo):
         import importlib.metadata
 
         try:
-            version = importlib.metadata.version("ai-dynamo-runtime")
-            runtime_value = f"ai-dynamo-runtime {version}"
+            version = importlib.metadata.version("ai-dingo-runtime")
+            runtime_value = f"ai-dingo-runtime {version}"
             is_installed = True
         except Exception:
-            runtime_value = "ai-dynamo-runtime - Not installed"
+            runtime_value = "ai-dingo-runtime - Not installed"
             is_installed = False
 
         super().__init__(
@@ -2803,18 +2803,18 @@ class DynamoRuntimeInfo(NodeInfo):
                     )
                     if essential_failed:
                         self.status = NodeStatus.ERROR
-                        self.desc = "ai-dynamo-runtime - FAILED (essential modules not importable)"
+                        self.desc = "ai-dingo-runtime - FAILED (essential modules not importable)"
                     else:
                         self.status = NodeStatus.OK
                 else:
                     self.status = NodeStatus.OK
                 # If not installed but components work via PYTHONPATH, update the message
                 if not is_installed and self.status == NodeStatus.OK:
-                    self.desc = "ai-dynamo-runtime (via PYTHONPATH)"
+                    self.desc = "ai-dingo-runtime (via PYTHONPATH)"
             else:
                 self.status = NodeStatus.ERROR
                 if self.runtime_check:
-                    self.desc = "ai-dynamo-runtime - FAILED (no components found)"
+                    self.desc = "ai-dingo-runtime - FAILED (no components found)"
         else:
             # No components discovered at all
             self.status = NodeStatus.ERROR
@@ -2867,7 +2867,7 @@ class DynamoRuntimeInfo(NodeInfo):
         return None
 
     def _discover_runtime_components(self, workspace_dir: Optional[str]) -> list:
-        """Discover ai-dynamo-runtime components from filesystem.
+        """Discover ai-dingo-runtime components from filesystem.
 
         Returns:
             List of runtime component module names
@@ -2896,11 +2896,11 @@ class DynamoRuntimeInfo(NodeInfo):
         return components
 
     def _find_dist_info(self) -> Optional[NodeInfo]:
-        """Find the dist-info directory for ai-dynamo-runtime."""
+        """Find the dist-info directory for ai-dingo-runtime."""
         import site
 
         for site_dir in site.getsitepackages():
-            pattern = os.path.join(site_dir, "ai_dynamo_runtime*.dist-info")
+            pattern = os.path.join(site_dir, "ai_dingo_runtime*.dist-info")
             matches = glob.glob(pattern)
             if matches:
                 path = matches[0]
@@ -2923,11 +2923,11 @@ class DynamoRuntimeInfo(NodeInfo):
         return None
 
     def _find_pth_file(self) -> Optional[NodeInfo]:
-        """Find the .pth file for ai-dynamo-runtime."""
+        """Find the .pth file for ai-dingo-runtime."""
         import site
 
         for site_dir in site.getsitepackages():
-            pth_path = os.path.join(site_dir, "ai_dynamo_runtime.pth")
+            pth_path = os.path.join(site_dir, "ai_dingo_runtime.pth")
             if os.path.exists(pth_path):
                 display_path = self._replace_home_with_var(pth_path)
                 try:
@@ -2971,11 +2971,11 @@ class DynamoFrameworkInfo(NodeInfo):
         import importlib.metadata
 
         try:
-            version = importlib.metadata.version("ai-dynamo")
-            framework_value = f"ai-dynamo {version}"
+            version = importlib.metadata.version("ai-dingo")
+            framework_value = f"ai-dingo {version}"
             is_installed = True
         except Exception:
-            framework_value = "ai-dynamo - Not installed"
+            framework_value = "ai-dingo - Not installed"
             is_installed = False
 
         super().__init__(
@@ -2987,8 +2987,8 @@ class DynamoFrameworkInfo(NodeInfo):
         # Add package info if installed
         if is_installed:
             for site_dir in site.getsitepackages():
-                # Look specifically for ai_dynamo (not ai_dynamo_runtime)
-                dist_pattern = os.path.join(site_dir, "ai_dynamo-*.dist-info")
+                # Look specifically for ai_dingo (not ai_dingo_runtime)
+                dist_pattern = os.path.join(site_dir, "ai_dingo-*.dist-info")
                 matches = glob.glob(dist_pattern)
                 if matches:
                     path = matches[0]
@@ -3144,22 +3144,22 @@ class DynamoFrameworkInfo(NodeInfo):
                 # For runtime check, we need at least one component to work
                 if self.runtime_check and len(import_failures) == len(components):
                     self.status = NodeStatus.ERROR
-                    self.desc = "ai-dynamo - FAILED (no components importable)"
+                    self.desc = "ai-dingo - FAILED (no components importable)"
                 else:
                     self.status = NodeStatus.OK
                 # If not installed but components work via PYTHONPATH, update the message
                 if not is_installed and self.status == NodeStatus.OK:
-                    self.desc = "ai-dynamo (via PYTHONPATH)"
+                    self.desc = "ai-dingo (via PYTHONPATH)"
             else:
                 self.status = NodeStatus.ERROR
                 if self.runtime_check:
-                    self.desc = "ai-dynamo - FAILED (no components found)"
+                    self.desc = "ai-dingo - FAILED (no components found)"
         else:
             # No components discovered at all
             self.status = NodeStatus.ERROR
 
     def _discover_framework_components(self, workspace_dir: Optional[str]) -> list:
-        """Discover ai-dynamo framework components from filesystem.
+        """Discover ai-dingo framework components from filesystem.
 
         Returns:
             List of framework component module names
@@ -3483,7 +3483,7 @@ def main():
         "--runtime",
         dest="runtime_check",
         action="store_true",
-        help="Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers and validate ai-dynamo packages",
+        help="Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers and validate Dynamo packages",
     )
     parser.add_argument(
         "--no-gpu-check",

@@ -489,7 +489,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 ##################################
 ##### runtime_wheel_builder ######
 ##################################
-# Builds ai-dynamo, ai-dynamo-runtime, and gpu_memory_service wheels, sans nixl.
+# Builds ai-dingo, ai-dingo-runtime, and gpu_memory_service wheels, sans nixl.
 
 FROM wheel_builder_base AS runtime_wheel_builder
 
@@ -500,7 +500,7 @@ COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml 
 COPY lib/ /opt/dynamo/lib/
 COPY components/ /opt/dynamo/components/
 
-# Build ai-dynamo (pure Python) and ai-dynamo-runtime (maturin) wheels
+# Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels
 ARG USE_SCCACHE
 ARG ENABLE_MEDIA_FFMPEG
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
@@ -554,7 +554,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
 # leaves the wheel with its SBOM intact rather than breaking the build.
 COPY container/compliance /opt/compliance
 RUN set -u; injected=0; \
-    for whl in /opt/dynamo/dist/ai_dynamo_runtime*.whl; do \
+    for whl in /opt/dynamo/dist/ai_dingo_runtime*.whl; do \
         [ -e "$whl" ] || continue; \
         PYTHONPATH=/opt python3 -m compliance.bundle_wheel_notices \
             --wheel "$whl" --licenses-dir /opt/dynamo/rust-licenses -v \
@@ -752,7 +752,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 COPY --from=runtime_wheel_builder /opt/dynamo/dist/ /opt/dynamo/dist/
 
 # Compliance: bundle third-party Rust NOTICES into the kvbm wheel built in this
-# stage (the ai-dynamo-runtime wheel was already bundled in runtime_wheel_builder
+# stage (the ai-dingo-runtime wheel was already bundled in runtime_wheel_builder
 # and arrives consolidated above). Harvest kvbm's crate licenses from the cargo
 # registry, then inject into its auditwheel-repaired wheel. Best-effort/non-fatal.
 COPY container/compliance /opt/compliance

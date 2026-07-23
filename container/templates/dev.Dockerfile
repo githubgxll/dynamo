@@ -161,7 +161,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 #        cd /workspace/lib/bindings/python && maturin develop --uv
 #        uv pip install --no-deps -e /workspace
 #
-# The pre-built ai-dynamo / ai-dynamo-runtime wheels from the runtime
+# The pre-built ai-dingo / ai-dingo-runtime wheels from the runtime
 # stage are uninstalled below to avoid conflicts with the source build.
 # ======================================================================
 FROM runtime AS dev
@@ -441,9 +441,9 @@ RUN mkdir -p ${WORKSPACE_DIR} && chmod g+w ${WORKSPACE_DIR}
 # Space is only recovered if the image is later squashed / compacted (e.g. docker-squash,
 # `docker build --squash`, or export/import).
 {% if device == "xpu" and framework == "sglang" %}
-RUN uv pip uninstall --python ${VIRTUAL_ENV}/bin/python ai-dynamo ai-dynamo-runtime kvbm 2>/dev/null || true
+RUN uv pip uninstall --python ${VIRTUAL_ENV}/bin/python ai-dingo ai-dingo-runtime kvbm 2>/dev/null || true
 {% else %}
-RUN uv pip uninstall ai-dynamo ai-dynamo-runtime kvbm 2>/dev/null || true
+RUN uv pip uninstall ai-dingo ai-dingo-runtime kvbm 2>/dev/null || true
 {% endif %}
 
 # Install maturin only (no editable install of the dynamo package).

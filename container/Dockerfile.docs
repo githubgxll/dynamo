@@ -38,7 +38,7 @@ COPY pyproject.toml .
 
 # Create venv and install docs dependencies from dependency group
 # Note: We use `uv pip install --group` instead of `uv run --only-group` because
-# uv run always tries to resolve project dependencies (including ai-dynamo-runtime),
+# uv run always tries to resolve project dependencies (including ai-dingo-runtime),
 # even with --only-group flag. Using a dedicated venv lets us build the docs without
 # needing to build the runtime first.
 ENV VIRTUAL_ENV=/workspace/dynamo/.venv-docs

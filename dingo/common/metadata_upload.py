@@ -46,7 +46,7 @@ def _serialize_metadata(metadata: dict[str, Any]) -> bytes:
     except ImportError as exc:
         raise RuntimeError(
             "Metadata upload requires zstandard. "
-            "Install ai-dynamo with the selected backend extra or add the zstandard package."
+            "Install ai-dingo with the selected backend extra or add the zstandard package."
         ) from exc
 
     try:

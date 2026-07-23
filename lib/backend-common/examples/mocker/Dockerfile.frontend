@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust toolchain for building ai-dynamo-runtime (maturin-backed Python wheel).
+# Rust toolchain for building ai-dingo-runtime (maturin-backed Python wheel).
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal \
     && /root/.cargo/bin/cargo --version
@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir maturin
 WORKDIR /build
 COPY . .
 
-# Build the ai-dynamo-runtime wheel. Share the cargo registry cache across
+# Build the ai-dingo-runtime wheel. Share the cargo registry cache across
 # concurrent builds, but lock the mutable target/ dir while it is being
 # written so incremental rebuilds don't trample each other. The wheel
 # output goes to /tmp/wheels which is NOT a cache mount, so it persists into

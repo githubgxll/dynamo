@@ -14,7 +14,7 @@ pytestmark = [
 
 
 def test_no_bundled_shared_libraries():
-    """Ensure ai-dynamo-runtime does not bundle any shared libraries.
+    """Ensure ai-dingo-runtime does not bundle any shared libraries.
 
     All .so dependencies should come from system installs or pip packages,
     not be bundled inside the wheel by auditwheel.  If this test fails,
@@ -22,17 +22,17 @@ def test_no_bundled_shared_libraries():
     container/templates/wheel_builder.Dockerfile.
     """
     try:
-        installed_files = files("ai-dynamo-runtime")
+        installed_files = files("ai-dingo-runtime")
     except PackageNotFoundError:
-        pytest.fail("ai-dynamo-runtime is not installed")
+        pytest.fail("ai-dingo-runtime is not installed")
 
-    assert installed_files is not None, "ai-dynamo-runtime has no recorded files"
+    assert installed_files is not None, "ai-dingo-runtime has no recorded files"
     bundled_libs = [
         str(f) for f in installed_files if ".libs/" in str(f) and ".so" in str(f)
     ]
 
     assert (
         not bundled_libs
-    ), "Unexpected shared libraries bundled in ai-dynamo-runtime:\n" + "\n".join(
+    ), "Unexpected shared libraries bundled in ai-dingo-runtime:\n" + "\n".join(
         f"  {lib}" for lib in bundled_libs
     )

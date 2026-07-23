@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [project]
-name = "ai-dynamo"
+name = "ai-dingo"
 version = "1.3.0"
 description = "Distributed Inference Framework"
 readme = "README.md"
@@ -13,7 +13,7 @@ license = { text = "Apache-2.0" }
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
-    "ai-dynamo-runtime==1.3.0",
+    "ai-dingo-runtime==1.3.0",
     "aiohttp>=3.9.0,<4.0",
     "transformers>=4.56.0",
     "kubernetes>=32.0.1,<33.0.0",
@@ -50,7 +50,7 @@ vllm = [
     "uvloop",
     "nixl[cu13]==1.1.0",
     "vllm[flashinfer,runai,otel]==0.24.0",
-    # vllm-omni is not part of ai-dynamo[vllm]: container builds inherit the
+    # vllm-omni is not part of ai-dingo[vllm]: container builds inherit the
     # framework stack from vllm/vllm-openai, and pip/uv dependency resolution
     # for omni can override the vLLM torch stack.
     # "vllm-omni==...",
@@ -110,7 +110,6 @@ path = "hatch_build.py"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "components/src/dynamo",
     "dingo",
 ]
 

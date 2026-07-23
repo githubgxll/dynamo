@@ -118,7 +118,7 @@ sglang:
     nixl_ref: v1.1.0
   # Builds the NIXL C++ SDK in wheel_builder so the dev stage can link nixl-sys
   # (see templates/dev.Dockerfile). Runtime stays on the upstream lmsysorg/sglang
-  # NIXL Python stack — its wheel COPY is narrowed to ai_dynamo*.whl so the SDK
+  # NIXL Python stack — its wheel COPY is narrowed to ai_dingo*.whl so the SDK
   # build doesn't leak into the runtime image.
   nixl_ref: v1.0.1
   enable_media_ffmpeg: "true"

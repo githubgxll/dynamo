@@ -483,9 +483,9 @@ container/run.sh --image dynamo:latest-sglang-xpu-local-dev --device=xpu \
 # to the dynamo user (the image grants NOPASSWD sudo) before installing.
 sudo chown -R dynamo:0 /opt/miniforge3/envs/sglang
 cargo build --locked --features dynamo-llm/block-manager --workspace
-# 3a. ai_dynamo_runtime (Rust bindings: dynamo._core)
+# 3a. ai_dingo_runtime (Rust bindings: dynamo._core)
 cd lib/bindings/python && maturin develop --uv && cd -
-# 3b. ai-dynamo (Python namespace packages: dingo.frontend, dingo.sglang, ...)
+# 3b. ai-dingo (Python namespace packages: dingo.frontend, dingo.sglang, ...)
 uv pip install --no-deps -e /workspace
 # 3c. NIXL python bindings (C++ libs are already baked in at /opt/intel/intel_nixl;
 #     local-dev intentionally skips installing the wheel into the env)
@@ -570,4 +570,3 @@ DYN_SYSTEM_PORT=8081 python -m dynamo.trtllm --model Qwen/Qwen3-0.6B --free-gpu-
 - **vLLM**: `--gpu-memory-utilization 0.20` (use 20% GPU memory), `--enforce-eager` (disable CUDA graphs), `--no-enable-prefix-caching` (save memory), `--max-num-seqs 64` (max concurrent sequences)
 - **SGLang**: `--mem-fraction-static 0.20` (20% GPU memory for static allocation), `--max-running-requests 64` (max concurrent requests)
 - **TensorRT-LLM**: `--free-gpu-memory-fraction 0.20` (reserve 20% GPU memory), `--max-num-tokens 8192` (max tokens in batch), `--max-batch-size 64` (max batch size)
-

@@ -19,7 +19,7 @@ limitations under the License.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![GitHub Release](https://img.shields.io/github/v/release/ai-dynamo/dynamo)](https://github.com/ai-dynamo/dynamo/releases/latest)
-[![PyPI](https://img.shields.io/pypi/v/ai-dynamo)](https://pypi.org/project/ai-dynamo/)
+[![PyPI](https://img.shields.io/pypi/v/ai-dingo)](https://pypi.org/project/ai-dingo/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ai-dynamo/dynamo)
 [![Discord](https://dcbadge.limes.pink/api/server/D92uqZRjCZ?style=flat)](https://discord.gg/D92uqZRjCZ)
 ![Community Contributors](https://img.shields.io/badge/community_contributors-70%2B-brightgreen)
@@ -151,7 +151,7 @@ Also available: [`tensorrtllm-runtime:1.2.1`](https://docs.nvidia.com/dynamo/res
 Install [uv](https://github.com/astral-sh/uv) (`curl -LsSf https://astral.sh/uv/install.sh | sh`), then:
 
 ```bash
-uv pip install --prerelease=allow "ai-dynamo[sglang]"   # or [vllm]
+uv pip install --prerelease=allow "ai-dingo[sglang]"   # or [vllm]
 ```
 
 > **Note:** TensorRT-LLM requires `pip` with `--extra-index-url https://pypi.nvidia.com`. See the [install guide](docs/getting-started/local-installation.md) for TRT-LLM-specific instructions.

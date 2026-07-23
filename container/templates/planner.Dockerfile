@@ -77,8 +77,8 @@ RUN --mount=type=bind,source=./container/deps/requirements.planner.txt,target=/t
     uv pip install \
         --requirement /tmp/requirements.planner.txt \
         --requirement /tmp/requirements.benchmark.txt \
-        /opt/dynamo/wheelhouse/ai_dynamo_runtime*.whl \
-        /opt/dynamo/wheelhouse/ai_dynamo*any.whl
+        /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
+        /opt/dynamo/wheelhouse/ai_dingo*any.whl
 
 # Copy only the subset of the repository needed for planner/profiler service
 # startup and the component-local planner-family test suites.
