@@ -1,0 +1,29 @@
+{
+  "registry": "registry.hd-04.alayanew.com:8443",
+  "namespace": "openclaw",
+  "platform": "linux/amd64",
+  "cuda_version": "13.0",
+  "commit_sha_length": 12,
+  "keep_buildkit_state": false,
+  "images": [
+    {
+      "framework": "dynamo",
+      "enabled": false,
+      "repository": "ai-dingo",
+      "tag_prefix": "cu130-runtime"
+    },
+    {
+      "framework": "vllm",
+      "enabled": false,
+      "repository": "ai-dingo-vllm",
+      "tag_prefix": "v0.24.0-cu130-runtime"
+    },
+    {
+      "framework": "sglang",
+      "enabled": true,
+      "repository": "ai-dingo-sglang",
+      "tag_prefix": "kimi-k3",
+      "docker_target": "pre_runtime"
+    }
+  ]
+}

@@ -1,137 +1,120 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: DingoRouter CI Pipeline
+name: Dingo runtime images
 
-# 自动触发：当代码合并（push）到 DingoRouter-base 分支时构建镜像。
-# 也可手动触发以便调试。
 on:
   push:
     branches:
       - DingoRouter-base
   workflow_dispatch:
     inputs:
-      build_vllm:
-        description: 'Build vllm-runtime image'
-        type: boolean
-        default: true
-      build_sglang:
-        description: 'Build sglang-runtime image'
-        type: boolean
-        default: true
+      frameworks:
+        description: Images to build (configured uses dingo-images.json)
+        type: choice
+        options:
+          - configured
+          - dynamo
+          - vllm
+          - sglang
+          - all
+        default: configured
 
 permissions:
   contents: read
 
-env:
-  BUILDER_NAME: b-${{ github.run_id }}-${{ github.run_attempt }}
+# Preserve an image for every pushed commit while preventing two workflow runs
+# from competing for the same local Docker daemon.
+concurrency:
+  group: dingo-runtime-images-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # ============================================================================
-  # INIT
-  # 导出 builder 名 & 规范化分支名（DingoRouter-base → dingorouter-base）。
-  # Docker tag 字符集为 [a-zA-Z0-9._-]，原始分支名合法但统一小写更易管理。
-  # ============================================================================
-  init:
-    name: Config
-    runs-on: ubuntu-latest
+  prepare:
+    name: Prepare image matrix
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
     outputs:
-      builder_name: ${{ steps.export.outputs.builder_name }}
-      sanitized_ref_name: ${{ steps.sanitize.outputs.sanitized_ref_name }}
-      run_vllm: ${{ steps.flags.outputs.run_vllm }}
-      run_sglang: ${{ steps.flags.outputs.run_sglang }}
-    steps:
-      - id: export
-        run: echo "builder_name=${{ env.BUILDER_NAME }}" >> "$GITHUB_OUTPUT"
-      - id: sanitize
-        shell: bash
-        run: |
-          sanitized=$(echo "${{ github.ref_name }}" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-zA-Z0-9._-]/-/g' \
-            | sed 's/^-//;s/-$//' \
-            | cut -c1-128)
-          echo "sanitized_ref_name=${sanitized}" >> "$GITHUB_OUTPUT"
-      - id: flags
-        shell: bash
-        env:
-          BV: ${{ github.event.inputs.build_vllm == 'true' || github.event_name == 'push' }}
-          BS: ${{ github.event.inputs.build_sglang == 'true' || github.event_name == 'push' }}
-        run: |
-          echo "run_vllm=${BV}"   >> "$GITHUB_OUTPUT"
-          echo "run_sglang=${BS}" >> "$GITHUB_OUTPUT"
-
-  # ============================================================================
-  # BUILD JOBS
-  # 通过 shared-build-image.yml 复用所有构建逻辑（render.py、BuildKit、
-  # ECR push、compliance extract 等）。extra_tags 用分支名前缀作为浮动 tag，
-  # 模仿 main-* 模式但区分 DingoRouter 分支产物。
-  #
-  # 不可变 SHA tag（<sha>-vllm-runtime）由 shared-build-image.yml 自动产生，
-  # extra_tags 额外推送两个浮动 tag：
-  #   - dingorouter-base-vllm-runtime            （mutable latest）
-  #   - dingorouter-base-vllm-runtime-<sha>      （immutable pin）
-  # ============================================================================
-
-  vllm-build:
-    name: vllm-runtime
-    needs: [init]
-    if: needs.init.outputs.run_vllm == 'true'
-    uses: ./.github/workflows/shared-build-image.yml
-    with:
-      framework: vllm
-      target: runtime
-      cuda_version: '["13.0"]'
-      platform: 'linux/amd64,linux/arm64'
-      builder_name: ${{ needs.init.outputs.builder_name }}
-      inline_compliance: true
-      build_timeout_minutes: 120
-      extra_tags: |
-        ${{ needs.init.outputs.sanitized_ref_name }}-vllm-runtime
-        ${{ needs.init.outputs.sanitized_ref_name }}-vllm-runtime-${{ github.sha }}
-      archive_sources: false
-    secrets: inherit
-
-  sglang-build:
-    name: sglang-runtime
-    needs: [init]
-    if: needs.init.outputs.run_sglang == 'true'
-    uses: ./.github/workflows/shared-build-image.yml
-    with:
-      framework: sglang
-      target: runtime
-      cuda_version: '["13.0"]'
-      platform: 'linux/amd64,linux/arm64'
-      builder_name: ${{ needs.init.outputs.builder_name }}
-      inline_compliance: true
-      build_timeout_minutes: 120
-      extra_tags: |
-        ${{ needs.init.outputs.sanitized_ref_name }}-sglang-runtime
-        ${{ needs.init.outputs.sanitized_ref_name }}-sglang-runtime-${{ github.sha }}
-      archive_sources: false
-    secrets: inherit
-
-  # ============================================================================
-  # CLEANUP
-  # shared-build-image.yml 内部不会清理 caller 创建的 builder，这里保证
-  # 无论构建成功与否都回收 K8s BuildKit builder，避免资源泄漏。
-  # ============================================================================
-  clean-k8s-builder:
-    name: Clean K8s builder
-    runs-on: prod-default-small-v2
-    if: always()
-    needs: [init, vllm-build, sglang-build]
+      has_images: ${{ steps.matrix.outputs.has_images }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Create K8s builders (skip bootstrap)
-        uses: ./.github/actions/bootstrap-buildkit
-        continue-on-error: true
-        with:
-          builder_name: ${{ needs.init.outputs.builder_name }}
-          buildkit_worker_addresses: ''
-          skip_bootstrap: true
-      - name: Builder cleanup
+
+      - name: Read and validate image configuration
+        id: matrix
+        env:
+          FRAMEWORK_SELECTION: ${{ inputs.frameworks || 'configured' }}
+        run: |
+          python3 .github/scripts/prepare_dingo_image_matrix.py \
+            --config .github/dingo-images.json \
+            --github-sha "${GITHUB_SHA}" \
+            --selection "${FRAMEWORK_SELECTION}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.framework }} runtime
+    needs: prepare
+    if: needs.prepare.outputs.has_images == 'true'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Check self-hosted runner prerequisites
         shell: bash
         run: |
-          docker buildx rm ${{ needs.init.outputs.builder_name }} || true
+          docker version
+          docker buildx version
+          python3 -c "import jinja2, yaml"
+
+      - name: Render ${{ matrix.framework }} runtime Dockerfile
+        shell: bash
+        env:
+          CUDA_VERSION: ${{ matrix.cuda_version }}
+          FRAMEWORK: ${{ matrix.framework }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          python3 container/render.py \
+            --framework "${FRAMEWORK}" \
+            --target runtime \
+            --cuda-version "${CUDA_VERSION}" \
+            --platform "${PLATFORM}"
+
+      - name: Log in to the private registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ matrix.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          name: dingo-${{ matrix.framework }}-builder
+          driver: docker-container
+          keep-state: ${{ matrix.keep_buildkit_state }}
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          target: ${{ matrix.docker_target }}
+          push: true
+          tags: ${{ matrix.image }}
+          provenance: false
+          sbom: false
+
+      - name: Publish job summary
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          echo "### Published image" >> "${GITHUB_STEP_SUMMARY}"
+          echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"

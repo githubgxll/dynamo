@@ -326,8 +326,22 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     make install && \
     ldconfig && \
     cd /tmp && \
-    curl --retry 5 --retry-delay 3 -LO https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz && \
-    tar xf ffmpeg-${FFMPEG_VERSION}.tar.xz && \
+    # The manylinux curl is too old for --retry-all-errors, so use a shell loop
+    # that also retries TLS handshake failures such as curl exit 35.
+    FFMPEG_ARCHIVE="ffmpeg-${FFMPEG_VERSION}.tar.xz" && \
+    for attempt in 1 2 3 4 5; do \
+        if curl --fail --location --connect-timeout 30 --max-time 300 \
+            --output "${FFMPEG_ARCHIVE}.part" \
+            "https://ffmpeg.org/releases/${FFMPEG_ARCHIVE}"; then \
+            mv "${FFMPEG_ARCHIVE}.part" "${FFMPEG_ARCHIVE}"; \
+            break; \
+        fi; \
+        rm -f "${FFMPEG_ARCHIVE}.part"; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "FFmpeg download attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done && \
+    tar xf "${FFMPEG_ARCHIVE}" && \
     cd ffmpeg-${FFMPEG_VERSION} && \
     ./configure \
         --prefix=/usr/local \

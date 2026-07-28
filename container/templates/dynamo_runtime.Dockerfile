@@ -60,7 +60,7 @@ COPY --chown=dynamo: --from=wheel_builder $CARGO_TARGET_DIR $CARGO_TARGET_DIR
 {% endif %}
 COPY --chown=dynamo: --from=wheel_builder /opt/dynamo/dist/*.whl /opt/dynamo/wheelhouse/
 
-# Install Python for framework=none runtime (cuda-dl-base doesn't include Python)
+# Install Python for the standalone Dynamo runtime (cuda-dl-base doesn't include Python)
 # This is needed to create venv and install dynamo packages
 ARG PYTHON_VERSION
 # Cache apt downloads; sharing=locked avoids apt/dpkg races with concurrent builds.
@@ -145,10 +145,15 @@ RUN git lfs install
 # Frontend deps (tritonclient + grpcio/protobuf pins) are installed here so the resolver
 # sees all constraints in one pass, avoiding grpcio downgrades in the test layer.
 # Test and dev dependencies are NOT installed here — they go in the test and dev images.
-RUN --mount=type=bind,source=./container/deps/requirements.common.txt,target=/tmp/requirements.common.txt \
-    --mount=type=bind,source=./container/deps/requirements.planner.txt,target=/tmp/requirements.planner.txt \
-    --mount=type=bind,source=./container/deps/requirements.frontend.txt,target=/tmp/requirements.frontend.txt \
-    --mount=type=cache,target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
+# COPY with explicit ownership instead of bind-mounting these files: remote BuildKit
+# workers may expose single-file context mounts as root-only, while this stage runs
+# as the non-root dynamo user.
+COPY --chmod=0644 --chown=dynamo:0 \
+    container/deps/requirements.common.txt \
+    container/deps/requirements.planner.txt \
+    container/deps/requirements.frontend.txt \
+    /tmp/
+RUN --mount=type=cache,target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
     export UV_CACHE_DIR=/home/dynamo/.cache/uv UV_GIT_LFS=1 UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 && \
     uv pip install \
         --index-strategy unsafe-best-match \
@@ -170,9 +175,7 @@ ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
 CMD []
 
 
-# Compliance stages are intentionally NOT included here: dynamo-runtime is an
-# UNPUBLISHED wheel-builder image (release.yml ships vllm/sglang/trtllm-runtime,
-# frontend, operator, planner, snapshot-agent — not this), so it carries no
-# shipped-NOTICES obligation. The Rust-crate attribution that matters lives in
-# the published wheels themselves (maturin SBOM + bundled THIRD-PARTY-RUST-
-# LICENSES, see wheel_builder) and in the published framework images' /legal.
+# Compliance stages are intentionally not included in this standalone template.
+# Workflows that publish this image for formal distribution must add the required
+# compliance scan and policy gate. Rust attribution is bundled in the wheels
+# (maturin SBOM + THIRD-PARTY-RUST-LICENSES; see wheel_builder).
