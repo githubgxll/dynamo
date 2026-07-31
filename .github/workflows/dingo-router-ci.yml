@@ -96,14 +96,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          name: dingo-${{ matrix.framework }}-builder
-          driver: docker-container
-          # Persist the builder and its BuildKit cache between runs so base-image
-          # layers and build artifacts are reused instead of re-downloaded
-          # (each full build otherwise takes 1h+). Cache grows over time, so prune
-          # periodically on the runner (e.g. docker buildx prune -f).
-          keep-state: ${{ matrix.keep_buildkit_state }}
-          cleanup: false
+          # Use the host docker daemon's BuildKit. Base-image layers are cached in
+          # the daemon's image store (not a builder container), so they survive
+          # across builds/reboots and are not subject to BuildKit GC or builder
+          # removal. This avoids re-pulling the ~10GB base images (nvcr.io
+          # cuda-dl-base, lmsysorg/sglang) on every run. Single-platform (amd64)
+          # is compatible; cache mounts/secrets still work.
+          driver: docker
 
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
