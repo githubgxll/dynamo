@@ -1131,7 +1131,7 @@ impl ModelDeploymentCard {
                         "wrapping tokenizer in L1 prefix cache",
                     );
                     Arc::new(
-                        crate::tokenizers::CachedTokenizer::new(raw, specials, cache_bytes)
+                        crate::tokenizers::CachedTokenizer::new(raw, specials, cache_bytes)?
                             .with_extend(cache_extend)
                             .with_observer(
                                 Arc::new(|| {
@@ -1169,7 +1169,7 @@ impl ModelDeploymentCard {
                         "wrapping tiktoken tokenizer in L1 cache (no special tokens registered; L1 will not hit until tiktoken special-token extraction is added)",
                     );
                     Arc::new(
-                        crate::tokenizers::CachedTokenizer::new(raw, Vec::new(), cache_bytes)
+                        crate::tokenizers::CachedTokenizer::new(raw, Vec::new(), cache_bytes)?
                             .with_extend(cache_extend)
                             .with_observer(
                                 Arc::new(|| {

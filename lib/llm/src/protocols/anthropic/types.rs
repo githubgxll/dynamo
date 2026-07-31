@@ -198,11 +198,12 @@ fn convert_user_blocks(
                     .map_err(|e| anyhow::anyhow!("invalid image data URI: {e}"))?;
                 content_parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
                     ChatCompletionRequestMessageContentPartImage {
-                        image_url: ImageUrl {
+                        image_url: Some(ImageUrl {
                             url,
                             detail: None,
                             uuid: None,
-                        },
+                        }),
+                        uuid: None,
                     },
                 ));
             }

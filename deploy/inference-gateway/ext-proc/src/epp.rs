@@ -215,12 +215,10 @@ impl Router {
         let priority_jump = extract_priority_jump(&request);
         let strict_priority = extract_strict_priority(&request);
 
-        let formatted_prompt = self
-            .preprocessor
-            .apply_template(&request)?
-            .unwrap_or_default();
-
-        let encoding = self.preprocessor.tokenize(&formatted_prompt)?;
+        let encoding = match self.preprocessor.apply_template(&request)? {
+            Some(prompt) => self.preprocessor.tokenize_rendered_prompt(&prompt)?,
+            None => self.preprocessor.tokenize("")?,
+        };
         Ok((
             encoding.token_ids().to_vec(),
             priority_jump,

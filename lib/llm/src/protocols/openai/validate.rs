@@ -191,7 +191,7 @@ pub fn validate_response_format(
             }
 
             // Validate schema presence
-            if json_schema.schema.is_none() {
+            if json_schema.schema.is_null() {
                 anyhow::bail!(
                     "`response_format.json_schema.schema` is required when `response_format.type` is `json_schema`"
                 );
@@ -546,6 +546,15 @@ pub fn validate_tools(
             anyhow::bail!(
                 "Function at index {} has an invalid name: \"{}\". \
                  Only a-z, A-Z, 0-9, underscores, and dashes are allowed.",
+                i,
+                tool.function.name,
+            );
+        }
+        if let Some(parameters) = &tool.function.parameters
+            && !parameters.is_object()
+        {
+            anyhow::bail!(
+                "Function parameters at index {} for \"{}\" must be a JSON Schema object",
                 i,
                 tool.function.name,
             );

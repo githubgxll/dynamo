@@ -1151,7 +1151,9 @@ unsafe fn preprocess_request(
         let priority_jump = extract_priority_jump(request.nvext.as_ref());
         let strict_priority = extract_strict_priority(request.nvext.as_ref());
         let routing_constraints = extract_routing_constraints(request.nvext.as_ref());
-        let (token_ids, _) = match preprocessor.gather_tokens(&request, None, None) {
+        let (token_ids, _) = match handles.runtime.secondary().block_on(async {
+            preprocessor.gather_tokens(&request, None, None).await
+        }) {
             Ok(tokens) => tokens,
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to collect completion prompt tokens");
@@ -1187,16 +1189,15 @@ unsafe fn preprocess_request(
     let strict_priority = extract_strict_priority(request.nvext.as_ref());
     let routing_constraints = extract_routing_constraints(request.nvext.as_ref());
 
-    let formatted_prompt = match preprocessor.apply_template(&request) {
-        Ok(Some(prompt)) => prompt,
-        Ok(None) => String::new(),
+    let encoding = match preprocessor.apply_template(&request) {
+        Ok(Some(prompt)) => preprocessor.tokenize_rendered_prompt(&prompt),
+        Ok(None) => preprocessor.tokenize(""),
         Err(e) => {
             tracing::error!(error = ?e, "Failed to apply chat template");
             return Err(QueryRouterResult::ErrQueryFailed);
         }
     };
-
-    let encoding = match preprocessor.tokenize(&formatted_prompt) {
+    let encoding = match encoding {
         Ok(enc) => enc,
         Err(e) => {
             tracing::error!(error = ?e, "Failed to tokenize");

@@ -473,7 +473,7 @@ impl MediaLoader {
             // cache to stay correct; in practice it's None on the common
             // path so the hit rate is unaffected.
             if media_io_kwargs.is_none() {
-                let key = Self::cache_key(image_part.image_url.url.as_str());
+                let key = Self::cache_key(image_part.image_url.as_ref().unwrap().url.as_str());
                 if let Some(hit) = cache.lock().get(&key) {
                     tracing::debug!(url_hash = key, "[mm-cache] hit");
                     return Ok(hit);
@@ -490,7 +490,7 @@ impl MediaLoader {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Model does not support image inputs"))?;
 
-                let url = &image_part.image_url.url;
+                let url = &image_part.image_url.as_ref().unwrap().url;
                 self.media_fetcher
                     .check_if_url_allowed_with_dns(url)
                     .await?;
@@ -543,7 +543,7 @@ impl MediaLoader {
             (self.cache.as_ref(), oai_content_part)
             && media_io_kwargs.is_none()
         {
-            let key = Self::cache_key(image_part.image_url.url.as_str());
+            let key = Self::cache_key(image_part.image_url.as_ref().unwrap().url.as_str());
             let bytes = descriptor_bytes(&rdma_descriptor);
             cache.lock().put(key, rdma_descriptor.clone());
             tracing::debug!(url_hash = key, bytes, "[mm-cache] insert");
