@@ -30,9 +30,16 @@ RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64")
     mv "sccache-${SCCACHE_VERSION}-${ARCH_ALT}-unknown-linux-musl/sccache" /usr/local/bin/ && \
     rm -rf sccache*
 
-# Install uv package manager
-# TODO: Pin uv image to a specific version tag for reproducibility (e.g. ghcr.io/astral-sh/uv:0.10.7)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install uv package manager.
+# Download the uv release tarball directly from GitHub instead of pulling the
+# ghcr.io/astral-sh/uv image: ghcr.io is unreachable (TLS handshake timeout) from
+# some CI/build networks, and pinning the version keeps builds reproducible.
+ARG UV_VERSION=0.10.7
+RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
+    wget --tries=3 --waitretry=5 \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" && \
+    tar -xzf "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" -C /usr/local/bin --strip-components=1 && \
+    rm -f "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz"
 
 # Install NATS server
 ARG NATS_VERSION
