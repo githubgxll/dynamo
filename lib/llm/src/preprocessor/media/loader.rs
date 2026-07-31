@@ -513,7 +513,7 @@ impl MediaLoader {
                             anyhow::anyhow!("Model does not support video inputs")
                         })?;
 
-                    let url = &video_part.video_url.url;
+                    let url = &video_part.video_url.as_ref().unwrap().url;
                     self.media_fetcher
                         .check_if_url_allowed_with_dns(url)
                         .await?;

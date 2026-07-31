@@ -1372,7 +1372,7 @@ impl OpenAIPreprocessor {
                         let w = shape[1] as u32;
                         let url_str = match _content_part {
                             ChatCompletionRequestUserMessageContentPart::ImageUrl(p) => {
-                                p.image_url.url.as_str()
+                                p.image_url.as_ref().unwrap().url.as_str()
                             }
                             _ => unreachable!(
                                 "rdma image_url descriptor only originates from ImageUrl content parts"
