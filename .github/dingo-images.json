@@ -4,7 +4,7 @@
   "platform": "linux/amd64",
   "cuda_version": "13.0",
   "commit_sha_length": 12,
-  "keep_buildkit_state": false,
+  "keep_buildkit_state": true,
   "images": [
     {
       "framework": "dynamo",

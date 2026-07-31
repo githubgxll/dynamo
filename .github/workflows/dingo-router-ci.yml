@@ -98,7 +98,12 @@ jobs:
         with:
           name: dingo-${{ matrix.framework }}-builder
           driver: docker-container
+          # Persist the builder and its BuildKit cache between runs so base-image
+          # layers and build artifacts are reused instead of re-downloaded
+          # (each full build otherwise takes 1h+). Cache grows over time, so prune
+          # periodically on the runner (e.g. docker buildx prune -f).
           keep-state: ${{ matrix.keep_buildkit_state }}
+          cleanup: false
 
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
