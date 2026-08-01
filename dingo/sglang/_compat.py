@@ -113,9 +113,36 @@ def enable_disjoint_streaming_output(server_args: Any) -> None:
 
     Diffusion workers pass a ``SimpleNamespace`` stub that does not carry the
     field, so this is a no-op when the attribute is absent.
+
+    Compatibility notes:
+    * sglang >= 0.5.16 makes ``ServerArgs`` fields read-only after materialization
+      and routes runtime mutations through ``ServerArgs.override(source, **fields)``.
+      Calling plain ``server_args.<field> = value`` raises ``AttributeError``.
+    * Older sglang (< 0.5.16) has no such protection; plain assignment works.
+    * Diffusion workers pass a ``SimpleNamespace`` without ``override``; for those
+      we fall back to direct setattr (no protection in place).
     """
-    if hasattr(server_args, "incremental_streaming_output"):
+    if not hasattr(server_args, "incremental_streaming_output"):
+        return
+
+    override_fn = getattr(server_args, "override", None)
+    if callable(override_fn):
+        # sglang >= 0.5.16 legal mutation path
+        try:
+            override_fn("dingo.enable_disjoint_streaming_output", incremental_streaming_output=True)
+            return
+        except Exception as e:  # pragma: no cover - defensive against signature drift
+            logger.warning("server_args.override(...) failed (%s); falling back to setattr", e)
+
+    # Legacy sglang (< 0.5.16) or duck-typed stub: bare assignment
+    try:
         server_args.incremental_streaming_output = True
+    except AttributeError:
+        # Last resort: bypass the read-only guard via object.__setattr__.
+        # This is identical in effect to a successful setattr on a mutable
+        # object and only runs when the read-only protection is in place but
+        # ``override`` was unusable (e.g. signature changed).
+        object.__setattr__(server_args, "incremental_streaming_output", True)
 
 
 __all__ = [
