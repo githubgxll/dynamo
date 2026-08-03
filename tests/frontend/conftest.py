@@ -275,13 +275,25 @@ class MockerWorkerProcess(ManagedProcess):
         except FileNotFoundError:
             pass
 
+        # In disaggregated mode, skip /v1/models check to avoid deadlock:
+        # prefill worker's health_check waits for /v1/models to list models,
+        # but /v1/models only returns models after both prefill + decode workers
+        # register — and decode worker hasn't started yet (blocked by prefill's
+        # `with` statement).  Only check /health in disagg mode.
+        has_disagg_mode = extra_args and "--disaggregation-mode" in extra_args
+
+        if has_disagg_mode:
+            health_urls = [(f"http://localhost:{system_port}/health", self.is_ready)]
+        else:
+            health_urls = [
+                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
+                (f"http://localhost:{system_port}/health", self.is_ready),
+            ]
+
         super().__init__(
             command=command,
             env=env,
-            health_check_urls=[
-                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
-                (f"http://localhost:{system_port}/health", self.is_ready),
-            ],
+            health_check_urls=health_urls,
             timeout=300,
             display_output=True,
             terminate_all_matching_process_names=False,
@@ -395,13 +407,23 @@ class SampleUnifiedWorkerProcess(ManagedProcess):
         except FileNotFoundError:
             pass
 
+        # In disaggregated mode (prefill/decode), skip /v1/models check to
+        # avoid the same deadlock as MockerWorkerProcess: prefill worker
+        # waits for /v1/models while decode hasn't registered yet.
+        has_disagg_mode = disaggregation_mode in ("prefill", "decode")
+
+        if has_disagg_mode:
+            health_urls = [(f"http://localhost:{system_port}/health", self.is_ready)]
+        else:
+            health_urls = [
+                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
+                (f"http://localhost:{system_port}/health", self.is_ready),
+            ]
+
         super().__init__(
             command=command,
             env=env,
-            health_check_urls=[
-                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
-                (f"http://localhost:{system_port}/health", self.is_ready),
-            ],
+            health_check_urls=health_urls,
             timeout=120,
             display_output=True,
             terminate_all_matching_process_names=False,
