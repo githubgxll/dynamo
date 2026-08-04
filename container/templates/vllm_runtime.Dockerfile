@@ -70,7 +70,7 @@ ENV LD_LIBRARY_PATH=${NIXL_LIB_DIR}:${NIXL_PLUGIN_DIR}:${LD_LIBRARY_PATH:-}
 # Install NATS and ETCD
 COPY --from=dynamo_base /usr/bin/nats-server /usr/bin/nats-server
 COPY --from=dynamo_base /usr/local/bin/etcd/ /usr/local/bin/etcd/
-COPY --from=dynamo_base /bin/uv /bin/uvx /bin/
+COPY --from=dynamo_base /usr/local/bin/uv /usr/local/bin/uvx /bin/
 
 # Create dynamo user with group 0 for OpenShift compatibility.
 # Pin -u 1000 explicitly: the vllm/vllm-openai >=0.22 image ships a `vllm` user at
