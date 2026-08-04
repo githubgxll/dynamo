@@ -37,6 +37,16 @@ overrides:
   # LicenseRef-NVIDIA-Proprietary (matches what the modern nvidia-*-cu13
   # wheels publish in License-Expression).
   - ecosystem: python
+    name: nvidia-cutlass-dsl-libs-core
+    license: LicenseRef-NVIDIA-Proprietary
+    source: "NVIDIA CUTLASS DSL Software License Agreement — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html"
+
+  - ecosystem: python
+    name: nvidia-cutlass-dsl-libs-cu12
+    license: LicenseRef-NVIDIA-Proprietary
+    source: "NVIDIA CUTLASS DSL Software License Agreement — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html"
+
+  - ecosystem: python
     name: nvidia-cuda-cupti
     license: LicenseRef-NVIDIA-Proprietary
     source: "NVIDIA CUDA Toolkit EULA — https://docs.nvidia.com/cuda/eula/index.html"
