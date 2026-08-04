@@ -20,7 +20,7 @@
     },
     {
       "framework": "sglang",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo-sglang",
       "tag_prefix": "kimi-k3",
       "docker_target": "pre_runtime"
