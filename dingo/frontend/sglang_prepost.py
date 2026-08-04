@@ -29,7 +29,7 @@ from sglang.srt.parser.jinja_template_utils import (
 )
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 
-from .utils import random_call_id
+from .utils import extract_mm_urls, random_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +352,56 @@ def _should_use_deepseek_v4_encoding(
             reasoning_parser_name,
         )
     )
+
+
+def _normalize_kimi_k3_hint(value: Any) -> str:
+    return str(value or "").lower().replace("-", "_")
+
+
+def _is_kimi_k3_request(
+    request: dict[str, Any],
+    *,
+    tokenizer: Any,
+    tool_call_parser_name: str | None,
+    reasoning_parser_name: str | None,
+) -> bool:
+    return any(
+        "kimi_k3" in _normalize_kimi_k3_hint(value)
+        for value in (
+            request.get("model"),
+            tool_call_parser_name,
+            reasoning_parser_name,
+            getattr(tokenizer, "name_or_path", None),
+        )
+    )
+
+
+def _kimi_k3_image_prompt_count(messages: list[dict[str, Any]]) -> int:
+    mm_data = extract_mm_urls(messages) or {}
+    image_items = mm_data.get("image_url") or []
+    return len(image_items)
+
+
+def _reject_kimi_k3_reserved_image_placeholder(
+    messages: list[dict[str, Any]],
+) -> None:
+    for msg in messages:
+        content = msg.get("content")
+        parts = (
+            content
+            if isinstance(content, list)
+            else [{"type": "text", "text": content}]
+        )
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") not in ("text", "input_text"):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and "<|kimi_image_placeholder|>" in text:
+                raise ValueError(
+                    "<|kimi_image_placeholder|> is reserved for Kimi-K3 image input"
+                )
 
 
 def _filter_template_tools(
@@ -741,7 +791,18 @@ def preprocess_chat_request(
         if (reasoning_effort := request.get("reasoning_effort")) is not None:
             template_kwargs["reasoning_effort"] = reasoning_effort
 
-        template_messages = _normalize_messages_for_template(messages, tokenizer)
+        if _is_kimi_k3_request(
+            request,
+            tokenizer=tokenizer,
+            tool_call_parser_name=tool_call_parser_name,
+            reasoning_parser_name=reasoning_parser_name,
+        ):
+            _reject_kimi_k3_reserved_image_placeholder(messages)
+            image_prompt_count = _kimi_k3_image_prompt_count(messages)
+            template_kwargs["image_prompts"] = ["<|media_pad|>"] * image_prompt_count
+            template_messages = messages
+        else:
+            template_messages = _normalize_messages_for_template(messages, tokenizer)
 
         prompt_token_ids = _normalize_prompt_token_ids(
             tokenizer.apply_chat_template(template_messages, **template_kwargs)

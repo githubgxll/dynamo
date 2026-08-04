@@ -8,6 +8,8 @@ OpenAI messages: VLM templates branch on ``type == 'image'`` while OpenAI
 sends ``image_url``, so placeholders never rendered.
 """
 
+from typing import Any
+
 import pytest
 
 from dingo.frontend.sglang_prepost import (
@@ -96,3 +98,87 @@ def test_preprocess_feeds_normalized_chunks_to_template():
 
     assert 42 in result.prompt_token_ids
     assert [c["type"] for c in tok.seen] == ["text", "image"]
+
+
+def test_kimi_k3_preserves_image_url_and_injects_media_pad_prompt():
+    class KimiK3Tokenizer:
+        chat_template = None
+        name_or_path = "/models/Kimi-K3"
+
+        def apply_chat_template(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> list[int]:
+            self.seen = messages[0]["content"]
+            self.kwargs = kwargs
+            image_prompts = kwargs.get("image_prompts") or []
+            image_parts = [
+                c
+                for c in self.seen
+                if isinstance(c, dict) and c.get("type") == "image_url"
+            ]
+            if len(image_prompts) != len(image_parts):
+                raise ValueError(
+                    f"image prompt count {len(image_prompts)} != "
+                    f"consumed placeholder count {len(image_parts)}"
+                )
+            return [1, *([163605] * len(image_prompts)), 2]
+
+    tok = KimiK3Tokenizer()
+    request = {
+        "model": "kimi-k3",
+        "chat_template_kwargs": {"image_prompts": ["bad", "extra"]},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    _url_chunk("image"),
+                ],
+            }
+        ],
+    }
+
+    result = preprocess_chat_request(
+        request,
+        tokenizer=tok,
+        tool_call_parser_name=None,
+        reasoning_parser_name=None,
+    )
+
+    assert result.prompt_token_ids.count(163605) == 1
+    assert tok.kwargs["image_prompts"] == ["<|media_pad|>"]
+    assert [c["type"] for c in tok.seen] == ["text", "image_url"]
+
+
+def test_kimi_k3_rejects_literal_image_placeholder_in_user_text():
+    class KimiK3Tokenizer:
+        chat_template = None
+        name_or_path = "/models/Kimi-K3"
+
+        def apply_chat_template(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> list[int]:
+            raise AssertionError("reserved placeholder should fail before rendering")
+
+    request = {
+        "model": "kimi-k3",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "literal <|kimi_image_placeholder|> should fail",
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="reserved for Kimi-K3 image input"):
+        preprocess_chat_request(
+            request,
+            tokenizer=KimiK3Tokenizer(),
+            tool_call_parser_name=None,
+            reasoning_parser_name=None,
+        )
