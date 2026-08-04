@@ -611,6 +611,7 @@ def test_normalize_sglang_parser_name_accepts_minimax_m3_aliases():
     assert _normalize_sglang_parser_name("minimax_m3_nom") == "minimax-m3"
     assert _normalize_sglang_parser_name("minimax-m3-nom") == "minimax-m3"
     assert _normalize_sglang_parser_name("kimi_k2") == "kimi_k2"
+    assert _normalize_sglang_parser_name("kimi-k3") == "kimi_k3"
 
 
 def test_minimax_m3_force_reasoning_uses_thinking_mode():
@@ -2070,6 +2071,32 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
             reasoning_parser_name="qwen3",
         )
         assert result.force_reasoning is True
+        assert result.reasoning_parser is not None
+
+    def test_kimi_k3_defaults_to_thinking_mode(self, tokenizer):
+        """Kimi-K3 emits reasoning before its close marker, so force parsing on."""
+        result = preprocess_chat_request(
+            {"model": MODEL, "messages": [{"role": "user", "content": "Hello"}]},
+            tokenizer=tokenizer,
+            tool_call_parser_name=None,
+            reasoning_parser_name="kimi_k3",
+        )
+        assert result.force_reasoning is True
+        assert result.reasoning_parser is not None
+
+    def test_kimi_k3_thinking_false_disables_thinking_mode(self, tokenizer):
+        request = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "chat_template_kwargs": {"thinking": False},
+        }
+        result = preprocess_chat_request(
+            request,
+            tokenizer=tokenizer,
+            tool_call_parser_name=None,
+            reasoning_parser_name="kimi-k3",
+        )
+        assert result.force_reasoning is False
         assert result.reasoning_parser is not None
 
 
