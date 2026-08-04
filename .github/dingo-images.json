@@ -14,7 +14,7 @@
     },
     {
       "framework": "vllm",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo-vllm",
       "tag_prefix": "v0.26.0-cu130-runtime"
     },
