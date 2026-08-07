@@ -24,6 +24,7 @@ import zmq.asyncio
 from sglang.srt.disaggregation.kv_events import ZmqEventPublisher
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
 from sglang.srt.managers.io_struct import (
+    ProfileReq,
     UpdateWeightFromDiskReqInput,
     UpdateWeightsFromDistributedReqInput,
     UpdateWeightsFromIPCReqInput,
@@ -630,7 +631,7 @@ class SglangLLMEngine(LLMEngine):
     async def start_profile(self, body: dict) -> dict:
         assert self.engine is not None, "Engine not initialized"
         body = body or {}
-        await self.engine.tokenizer_manager.start_profile(**body)
+        await self.engine.tokenizer_manager.start_profile(ProfileReq(**body))
         return {"status": "ok", "message": "Profiling started"}
 
     async def stop_profile(self, body: dict) -> dict:

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
+from sglang.srt.managers.io_struct import ProfileReq
 
 import dingo.sglang._compat as sglang_compat
 from dingo.common.constants import EmbeddingTransferMode
@@ -29,6 +30,7 @@ from dingo.sglang.health_check import (
     SglangDisaggHealthCheckPayload,
     SglangPrefillHealthCheckPayload,
 )
+from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
 from dingo.sglang.tests.conftest import make_cli_args_fixture
 
@@ -472,6 +474,78 @@ async def test_forward_pass_metrics_enabled_from_env(monkeypatch, mock_sglang_cl
 
     config = await parse_args(sys.argv[1:])
     assert config.server_args.enable_forward_pass_metrics is True
+
+
+@pytest.mark.asyncio
+async def test_parse_args_sets_streaming_before_server_args_resolution(
+    monkeypatch, mock_sglang_cli
+):
+    server_args = SimpleNamespace(
+        disaggregation_mode="null",
+        dllm_algorithm=None,
+        kv_events_config=None,
+    )
+
+    def resolve(parsed_args):
+        assert parsed_args.incremental_streaming_output is True
+        server_args.incremental_streaming_output = (
+            parsed_args.incremental_streaming_output
+        )
+        return server_args
+
+    monkeypatch.setattr("dingo.sglang.args.ServerArgs.from_cli_args", resolve)
+    mock_sglang_cli("--model", "/tmp")
+
+    config = await parse_args(sys.argv[1:])
+
+    assert config.server_args.incremental_streaming_output is True
+
+
+@pytest.mark.asyncio
+async def test_parse_args_sets_dynamo_defaults_before_server_args_resolution(
+    monkeypatch, mock_sglang_cli
+):
+    monkeypatch.setenv("DYN_FORWARDPASS_METRIC_PORT", "23456")
+    server_args = SimpleNamespace(
+        disaggregation_mode="null",
+        dllm_algorithm="dream",
+        enable_forward_pass_metrics=True,
+        kv_events_config=None,
+        max_running_requests=8,
+    )
+
+    def resolve(parsed_args):
+        assert parsed_args.enable_forward_pass_metrics is True
+        assert parsed_args.max_running_requests == 8
+        return server_args
+
+    monkeypatch.setattr("dingo.sglang.args.ServerArgs.from_cli_args", resolve)
+    mock_sglang_cli("--model", "/tmp", "--dllm-algorithm", "dream")
+
+    await parse_args(sys.argv[1:])
+
+
+@pytest.mark.asyncio
+async def test_start_profile_forwards_profile_request():
+    class TokenizerManager:
+        request = None
+
+        async def start_profile(self, request):
+            self.request = request
+
+    tokenizer_manager = TokenizerManager()
+    handler = SimpleNamespace(
+        engine=SimpleNamespace(tokenizer_manager=tokenizer_manager)
+    )
+    body = {"output_dir": "/tmp/profile", "start_step": 10, "num_steps": 5}
+
+    response = await BaseWorkerHandler.start_profile(handler, body)
+
+    assert isinstance(tokenizer_manager.request, ProfileReq)
+    assert tokenizer_manager.request.output_dir == body["output_dir"]
+    assert tokenizer_manager.request.start_step == body["start_step"]
+    assert tokenizer_manager.request.num_steps == body["num_steps"]
+    assert response == {"status": "ok", "message": "Profiling started"}
 
 
 @pytest.mark.asyncio

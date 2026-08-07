@@ -52,7 +52,7 @@ def major_from_text(text: str) -> int | None:
         r"\bcuda\s*>=\s*(1[23])\.",           # cuda>=13.0 ...
         r"\brelease\s+(1[23])\.",             # nvcc: release 13.0
         r"-(1[23])-\d\b",                     # dpkg: ...-13-0
-        r"\bcuda(1[23])x\b",                  # cupy-cuda12x (from name)
+        r"\bcuda(1[23])x\b",                  # cupy-cuda12x / cupy-cuda13x
         r"[-+]cu(1[23])",                     # -cu13 or +cu13 in name
     ]
     # fmt: on

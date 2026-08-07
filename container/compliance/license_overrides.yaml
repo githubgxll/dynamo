@@ -337,8 +337,10 @@ overrides:
   - { ecosystem: dpkg, name: python3-lib2to3,   license: "PSF-2.0",          source: "CPython stdlib (lib2to3) — PSF" }
   - { ecosystem: dpkg, name: python3-tk,        license: "PSF-2.0",          source: "CPython stdlib (tkinter bindings) — PSF" }
 
-  # --- Sglang cuda12.9 — Python wheel additions ---
+  # --- SGLang Python wheel additions ---
   # Wheel METADATA missing or non-parseable; verified upstream license per entry.
+  - { ecosystem: python, name: helion,                    license: "BSD-3-Clause",  source: "PyTorch Helion — https://github.com/pytorch/helion/blob/main/LICENSE" }
+  - { ecosystem: python, name: hpc-ops,                   license: "MIT AND BSD-3-Clause",  source: "Tencent HPC-Ops and bundled CUTLASS — https://github.com/Tencent/hpc-ops/blob/main/LICENSE.txt" }
   - { ecosystem: python, name: addict,                    license: "MIT",       source: "addict upstream — https://github.com/mewwts/addict/blob/master/LICENSE" }
   - { ecosystem: python, name: annotated-types,           license: "MIT",       source: "annotated-types upstream — https://github.com/annotated-types/annotated-types/blob/main/LICENSE" }
   - { ecosystem: python, name: blinker,                   license: "MIT",       source: "blinker upstream — https://github.com/pallets-eco/blinker/blob/main/LICENSE.rst" }

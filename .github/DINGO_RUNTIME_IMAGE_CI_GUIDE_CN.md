@@ -1,32 +1,32 @@
 # Dingo Runtime 镜像自动化构建说明
 
 本文档说明 `DingoRouter-base` 分支当前的 Runtime 镜像构建流程。默认流程只构建
-standalone Dynamo，不继承或安装任何推理框架 Runtime；原有的 vLLM、SGLang
-Runtime 构建能力继续保留，可在手动触发时选择。
+基于 `lmsysorg/sglang:v0.5.16-cu130-runtime` 的 SGLang Runtime；standalone
+Dynamo 和 vLLM Runtime 构建能力继续保留，可在手动触发时选择。
 
 ## 1. 构建流程
 
 代码推送到 `DingoRouter-base` 或手动触发工作流后，self-hosted Runner 会：
 
 1. 读取并校验 `.github/dingo-images.json`。
-2. 按触发参数生成镜像矩阵；默认配置只包含 Dynamo。
+2. 按触发参数生成镜像矩阵；默认配置只包含 SGLang。
 3. 默认执行以下 Dockerfile 渲染命令：
 
    ```bash
    python3 container/render.py \
-     --framework dynamo \
+     --framework sglang \
      --target runtime \
      --cuda-version 13.0 \
      --platform linux/amd64
    ```
 
-4. 从 `container/context.yaml` 的 `dynamo.cuda13.0` 读取 Dynamo 基础镜像。
+4. 从 `container/context.yaml` 的 `sglang.cuda13.0` 读取 SGLang Runtime 镜像。
 5. 使用 Docker Buildx 构建并推送镜像。
 6. 在 GitHub Actions Job Summary 中输出最终镜像地址。
 
-`dynamo` 配置只声明 `base_image`，不声明 `runtime_image`。因此默认构建的
-Dockerfile 直接从 NVIDIA CUDA 基础镜像构建，不会继承推理框架镜像。手动选择
-其他 Runtime 时仍沿用原来的对应模板和 `context.yaml` 配置。
+`sglang` 配置同时声明 `base_image` 和 `runtime_image`，生成的 Dockerfile 从
+`lmsysorg/sglang:v0.5.16-cu130-runtime` 继承框架环境。手动选择 standalone
+Dynamo 时，Dockerfile 才会直接从 NVIDIA CUDA 基础镜像构建。
 
 ## 2. 相关文件
 
@@ -36,10 +36,10 @@ Dockerfile 直接从 NVIDIA CUDA 基础镜像构建，不会继承推理框架�
 | `.github/dingo-images.json` | Registry、镜像名、标签和平台配置 |
 | `.github/scripts/prepare_dingo_image_matrix.py` | 校验配置并生成构建矩阵 |
 | `container/render.py` | 渲染所选 Runtime Dockerfile |
-| `container/context.yaml` | 提供 `dynamo.cuda13.0` 基础镜像和构建参数 |
-| `container/templates/dynamo_runtime.Dockerfile` | standalone Dynamo Runtime 模板 |
+| `container/context.yaml` | 提供 `sglang.cuda13.0` Runtime 镜像和构建参数 |
+| `container/templates/sglang_runtime.Dockerfile` | SGLang Runtime 模板 |
 
-默认工作流只使用 `container/context.yaml` 的 `dynamo` 段；手动覆盖选择会使用
+默认工作流使用 `container/context.yaml` 的 `sglang` 段；手动覆盖选择会使用
 相应的其他配置段。
 
 ## 3. 触发方式
@@ -63,7 +63,7 @@ on:
 
 | 选项 | 行为 |
 |---|---|
-| `configured` | 按 `enabled` 构建，当前默认只有 Dynamo |
+| `configured` | 按 `enabled` 构建，当前默认只有 SGLang |
 | `dynamo` | 只构建 standalone Dynamo |
 | `vllm` | 只构建 vLLM Runtime |
 | `sglang` | 只构建 SGLang Runtime |
@@ -78,11 +78,11 @@ on:
   "platform": "linux/amd64",
   "cuda_version": "13.0",
   "commit_sha_length": 12,
-  "keep_buildkit_state": false,
+  "keep_buildkit_state": true,
   "images": [
     {
       "framework": "dynamo",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo",
       "tag_prefix": "cu130-runtime"
     },
@@ -90,13 +90,14 @@ on:
       "framework": "vllm",
       "enabled": false,
       "repository": "ai-dingo-vllm",
-      "tag_prefix": "v0.24.0-cu130-runtime"
+      "tag_prefix": "v0.26.0-cu130-runtime"
     },
     {
       "framework": "sglang",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo-sglang",
-      "tag_prefix": "v0.5.14-cu130-runtime"
+      "tag_prefix": "v0.5.16-cu130-runtime",
+      "docker_target": "pre_runtime"
     }
   ]
 }
@@ -111,7 +112,7 @@ CUDA:      13.0
 ```
 
 其他 Framework 会在构建开始前直接失败。默认 `configured` 模式只选择
-`enabled: true` 的 Dynamo 项。
+`enabled: true` 的 SGLang 项。
 
 ## 5. 镜像命名
 
@@ -124,7 +125,7 @@ CUDA:      13.0
 例如提交 SHA 为 `0123456789abcdef...` 时：
 
 ```text
-registry.hd-04.alayanew.com:8443/openclaw/ai-dingo:cu130-runtime-0123456789ab
+registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-sglang:v0.5.16-cu130-runtime-0123456789ab
 ```
 
 当前不推送 `latest` 等浮动标签，每个镜像都可以追溯到具体 Git Commit。
@@ -138,7 +139,8 @@ registry.hd-04.alayanew.com:8443/openclaw/ai-dingo:cu130-runtime-0123456789ab
 - 构建成功后直接推送内部 Registry。
 - 当前设置 `provenance: false` 和 `sbom: false`。
 - 当前未接入完整的 compliance extract 和 policy gate。
-- `keep_buildkit_state` 默认为 `false`，避免 self-hosted Runner 长期积累缓存。
+- `keep_buildkit_state` 默认为 `true`，复用 self-hosted Runner 上的大型基础镜像层；
+  需要定期检查并清理 Docker 缓存占用。
 
 ## 7. 常见调整
 
@@ -257,7 +259,7 @@ python3 -c "import jinja2, yaml"
 
 ## 10. 当前限制
 
-- 默认只构建 standalone Dynamo，并保留手动构建其他已配置 Runtime 的能力。
+- 默认只构建 SGLang Runtime，并保留手动构建其他已配置 Runtime 的能力。
 - 只支持 CUDA 13.0 和 `linux/amd64`。
 - 每次 Push 都会构建，没有路径过滤。
 - 不推送浮动标签。

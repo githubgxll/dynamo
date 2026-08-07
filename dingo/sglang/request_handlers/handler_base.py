@@ -23,6 +23,7 @@ from typing import (
 )
 
 import sglang as sgl
+from sglang.srt.managers.io_struct import ProfileReq
 from sglang.srt.utils.network import NetworkAddress, get_local_ip_auto
 
 from dynamo._core import Context
@@ -878,7 +879,7 @@ class BaseWorkerHandler(LoraMixin, RLMixin, BaseGenerativeHandler[RequestT, Resp
         Args:
             body: Dict with profiling parameters passed to start_profile.
         """
-        await self.engine.tokenizer_manager.start_profile(**body)
+        await self.engine.tokenizer_manager.start_profile(ProfileReq(**body))
         return {"status": "ok", "message": "Profiling started"}
 
     async def stop_profile(self, body: dict) -> dict:
