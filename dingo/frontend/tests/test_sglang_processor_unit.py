@@ -43,6 +43,7 @@ from dingo.frontend.sglang_processor import (
     _init_worker,
     _map_finish_reason,
     _normalize_eos_token_ids,
+    _request_stop_strings,
     _runtime_config_parser_name,
     _tokenizer_eos_token_ids,
 )
@@ -96,6 +97,26 @@ class TestBuildDynamoPreproc:  # FRONTEND.7 — worker subprocess preproc constr
         assert sampling["frequency_penalty"] == 0.0
         assert sampling["repetition_penalty"] == 1.0
         assert sampling["seed"] is None
+        assert sampling["include_stop_str_in_output"] is False
+
+    def test_include_stop_str_in_output_is_forwarded(self):
+        result = _build_dynamo_preproc(
+            {"model": "test", "include_stop_str_in_output": True},
+            prompt_token_ids=[1],
+            model_name="test",
+            eos_token_ids=None,
+        )
+
+        assert result["sampling_options"]["include_stop_str_in_output"] is True
+
+    def test_request_stop_strings_respects_visible_stop_setting(self):
+        assert _request_stop_strings({"stop": ["END", 1, ""]}) == {"END"}
+        assert (
+            _request_stop_strings(
+                {"stop": ["END"], "include_stop_str_in_output": True}
+            )
+            == set()
+        )
 
     def test_top_k_zero_maps_to_negative_one(self):
         """SGLang uses -1 for disabled top_k, OpenAI uses 0."""
@@ -2159,6 +2180,45 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         assert choice is not None
         assert choice["finish_reason"] == "stop"
 
+    def test_split_stop_string_suffix_is_not_emitted(self, tokenizer):
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=None,
+            stop_strings={"<|user|>"},
+        )
+
+        first = post.process_output(
+            {"token_ids": tokenizer.encode("Hello<|us"), "finish_reason": None}
+        )
+        final = post.process_output(
+            {"token_ids": tokenizer.encode("er|>"), "finish_reason": "stop"}
+        )
+
+        assert first is not None
+        assert first["delta"]["content"] == "Hello"
+        assert final is not None
+        assert final["delta"] == {}
+        assert final["finish_reason"] == "stop"
+
+    def test_visible_stop_string_is_emitted(self, tokenizer):
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=None,
+            stop_strings=set(),
+        )
+
+        final = post.process_output(
+            {
+                "token_ids": tokenizer.encode("Hello<|user|>"),
+                "finish_reason": "stop",
+            }
+        )
+
+        assert final is not None
+        assert final["delta"]["content"] == "Hello<|user|>"
+
     def test_stop_reason_not_emitted_on_choice(self, tokenizer):
         """Backend stop_reason is not part of the OpenAI choice shape."""
         post = SglangStreamingPostProcessor(
@@ -2402,6 +2462,20 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         assert delta.get("content", "") == ""
         assert delta["reasoning_content"] == "IDTHOOK_OUTPUT"
         assert "<|" not in delta["reasoning_content"]
+
+    def test_kimi_k3_is_recognized_from_reasoning_parser_name(self) -> None:
+        text = "<|close|>thinkIDTHOOK_OUTPUT<|close|>message<|sep|>"
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: text}),
+            tool_call_parser=None,
+            reasoning_parser=self._AllReasoningParser(),
+            reasoning_parser_name="kimi-k3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["reasoning_content"] == "IDTHOOK_OUTPUT"
 
     def test_kimi_k3_recovers_response_misclassified_as_reasoning(self) -> None:
         text = (

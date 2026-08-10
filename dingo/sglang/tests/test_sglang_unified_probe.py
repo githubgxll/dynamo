@@ -70,6 +70,55 @@ def _probe_request() -> dict[str, Any]:
     }
 
 
+def test_unified_sampling_params_preserve_stop_controls_without_tokenizer():
+    from dingo.sglang.llm_engine import SglangLLMEngine
+
+    engine = SglangLLMEngine.__new__(SglangLLMEngine)
+    engine._use_sglang_tokenizer = False
+    engine._skip_tokenizer_init = True
+
+    params = engine._build_sampling_params(
+        {
+            "sampling_options": {"include_stop_str_in_output": True},
+            "stop_conditions": {
+                "stop": ["END"],
+                "stop_token_ids": [32],
+                "stop_token_ids_hidden": [128001],
+                "min_tokens": 4,
+                "ignore_eos": True,
+            },
+        }
+    )
+
+    assert "stop" not in params
+    assert "min_new_tokens" not in params
+    assert set(params["stop_token_ids"]) == {32, 128001}
+    assert params["ignore_eos"] is True
+    assert params["no_stop_trim"] is True
+
+
+def test_unified_sampling_params_preserve_text_stop_controls():
+    from dingo.sglang.llm_engine import SglangLLMEngine
+
+    engine = SglangLLMEngine.__new__(SglangLLMEngine)
+    engine._use_sglang_tokenizer = True
+    engine._skip_tokenizer_init = False
+
+    params = engine._build_sampling_params(
+        {
+            "stop": ["END"],
+            "min_tokens": 2,
+            "ignore_eos": False,
+            "include_stop_str_in_output": True,
+        }
+    )
+
+    assert params["stop"] == ["END"]
+    assert params["min_new_tokens"] == 2
+    assert params["ignore_eos"] is False
+    assert params["no_stop_trim"] is True
+
+
 async def test_prefill_probe_drains_stream_then_yields_single_terminal():
     consumed: list[dict] = []
 

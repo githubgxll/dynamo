@@ -2044,13 +2044,12 @@ impl OpenAIPreprocessor {
             .filter(|prompt| prompt.segments().is_some())
             .cloned()
         else {
-            return self
-                .encode_with_timing(
-                    formatted_prompt
-                        .map(RenderedPrompt::as_str)
-                        .unwrap_or(raw_prompt),
-                    tracker,
-                );
+            return self.encode_with_timing(
+                formatted_prompt
+                    .map(RenderedPrompt::as_str)
+                    .unwrap_or(raw_prompt),
+                tracker,
+            );
         };
 
         let encode_start = Instant::now();
@@ -3433,7 +3432,9 @@ impl
         } else {
             // Normal path: tokenize the prompt; embeddings don't need MM routing,
             // so install tokens on the builder right away.
-            let (token_ids, ann) = self.gather_tokens(&request, None, tracker.as_deref()).await?;
+            let (token_ids, ann) = self
+                .gather_tokens(&request, None, tracker.as_deref())
+                .await?;
             builder.token_ids(token_ids);
             ann
         };

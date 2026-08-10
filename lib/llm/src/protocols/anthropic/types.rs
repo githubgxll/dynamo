@@ -1827,7 +1827,10 @@ mod tests {
                     // Second part: image with data URI
                     match &parts[1] {
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(img) => {
-                            let url_str = img.image_url.url.to_string();
+                            // `image_url` is `Option<ImageUrl>` (dynamo-protocols
+                            // made the URL optional); this part already matched
+                            // an image-url part, so unwrap is safe.
+                            let url_str = img.image_url.as_ref().unwrap().url.to_string();
                             assert!(
                                 url_str.starts_with("data:image/png;base64,"),
                                 "expected data URI, got: {url_str}"

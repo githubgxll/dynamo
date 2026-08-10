@@ -62,6 +62,8 @@ def _sampling_option_params(values: Dict[str, Any]) -> Dict[str, Any]:
 
 def _preprocessed_stop_sampling_params(
     stop_conditions: Dict[str, Any],
+    *,
+    allow_string_stops: bool = True,
 ) -> Dict[str, Any]:
     """Map Dynamo stop conditions to SGLang sampling parameters.
 
@@ -72,14 +74,15 @@ def _preprocessed_stop_sampling_params(
     """
     params: Dict[str, Any] = {}
 
-    stop = stop_conditions.get("stop")
-    if isinstance(stop, str):
-        if stop:
+    if allow_string_stops:
+        stop = stop_conditions.get("stop")
+        if isinstance(stop, str):
+            if stop:
+                params["stop"] = stop
+        elif isinstance(stop, list) and stop and all(
+            isinstance(item, str) for item in stop
+        ):
             params["stop"] = stop
-    elif isinstance(stop, list) and stop and all(
-        isinstance(item, str) for item in stop
-    ):
-        params["stop"] = stop
 
     hidden_stop_token_ids = stop_conditions.get("stop_token_ids_hidden") or []
     plain_stop_token_ids = stop_conditions.get("stop_token_ids") or []
@@ -110,6 +113,97 @@ def _user_stop_token_ids(request: Dict[str, Any]) -> set[int]:
         for token_id in (request.get("stop_token_ids") or [])
         if isinstance(token_id, int) and not isinstance(token_id, bool)
     }
+
+
+def _include_stop_str_in_output(request: Dict[str, Any]) -> bool:
+    sampling_options = request.get("sampling_options")
+    if isinstance(sampling_options, dict):
+        value = sampling_options.get("include_stop_str_in_output")
+    else:
+        value = request.get("include_stop_str_in_output")
+    return value is True
+
+
+def _suppressed_stop_token_ids(request: Dict[str, Any]) -> set[int]:
+    """Return engine-generated system stop IDs that must never reach clients."""
+    stop_conditions = request.get("stop_conditions") or {}
+    if not isinstance(stop_conditions, dict):
+        return set()
+
+    return {
+        token_id
+        for token_id in (stop_conditions.get("stop_token_ids_hidden") or [])
+        if isinstance(token_id, int) and not isinstance(token_id, bool)
+    }
+
+
+def _stop_strings(request: Dict[str, Any]) -> set[str]:
+    if _include_stop_str_in_output(request):
+        return set()
+
+    stop_conditions = request.get("stop_conditions")
+    stop = (
+        stop_conditions.get("stop")
+        if isinstance(stop_conditions, dict)
+        else request.get("stop")
+    )
+    if isinstance(stop, str):
+        return {stop} if stop else set()
+    if isinstance(stop, list):
+        return {item for item in stop if isinstance(item, str) and item}
+    return set()
+
+
+def _trailing_stop_prefix_len(text: str, stop_strings: set[str]) -> int:
+    if not text or not stop_strings:
+        return 0
+    max_len = min(len(text), max(len(stop) for stop in stop_strings))
+    for suffix_len in range(max_len, 0, -1):
+        suffix = text[-suffix_len:]
+        if any(stop.startswith(suffix) for stop in stop_strings):
+            return suffix_len
+    return 0
+
+
+def _remove_suppressed_stop_tokens(
+    output_ids: list[int],
+    matched: Any,
+    suppressed_stop_token_ids: set[int] | None,
+) -> tuple[list[int], int]:
+    if not output_ids or not suppressed_stop_token_ids:
+        return output_ids, 0
+
+    if isinstance(matched, int) and not isinstance(matched, bool):
+        matched_ids = [matched]
+    elif isinstance(matched, list) and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in matched
+    ):
+        matched_ids = matched
+    else:
+        return output_ids, 0
+
+    if (
+        matched_ids
+        and all(token_id in suppressed_stop_token_ids for token_id in matched_ids)
+        and len(output_ids) >= len(matched_ids)
+        and output_ids[-len(matched_ids) :] == matched_ids
+    ):
+        return output_ids[: -len(matched_ids)], len(matched_ids)
+
+    return output_ids, 0
+
+
+def _split_trailing_suppressed_stop_tokens(
+    output_ids: list[int],
+    suppressed_stop_token_ids: set[int] | None,
+) -> tuple[list[int], list[int]]:
+    if not output_ids or not suppressed_stop_token_ids:
+        return output_ids, []
+
+    split_at = len(output_ids)
+    while split_at > 0 and output_ids[split_at - 1] in suppressed_stop_token_ids:
+        split_at -= 1
+    return output_ids[:split_at], output_ids[split_at:]
 
 
 def _openai_stop_sampling_params(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -300,12 +394,23 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             # Token-based request format
             sampling_opts = request.get("sampling_options", {})
             stop_conditions = request.get("stop_conditions", {})
+            sglang_has_tokenizer = not getattr(
+                self.config.server_args, "skip_tokenizer_init", False
+            )
 
             param_mapping = {
                 "n": sampling_opts.get("n"),
                 "max_new_tokens": stop_conditions.get("max_tokens"),
+                "min_new_tokens": (
+                    stop_conditions.get("min_tokens")
+                    if sglang_has_tokenizer
+                    else None
+                ),
                 "ignore_eos": stop_conditions.get("ignore_eos"),
-                **_preprocessed_stop_sampling_params(stop_conditions),
+                "no_stop_trim": sampling_opts.get("include_stop_str_in_output"),
+                **_preprocessed_stop_sampling_params(
+                    stop_conditions, allow_string_stops=sglang_has_tokenizer
+                ),
                 **_sampling_option_params(sampling_opts),
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")
@@ -316,6 +421,9 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             param_mapping = {
                 "n": request.get("n"),
                 "max_new_tokens": request.get("max_tokens"),
+                "min_new_tokens": request.get("min_tokens"),
+                "ignore_eos": request.get("ignore_eos"),
+                "no_stop_trim": request.get("include_stop_str_in_output"),
                 **_sampling_option_params(request),
                 **_openai_stop_sampling_params(request),
                 **self._get_guided_decoding_params(request.get("guided_decoding")),
@@ -375,6 +483,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             output_options.get("return_tokens_as_token_ids")
         )
         user_stop_token_ids = _user_stop_token_ids(request)
+        suppressed_stop_token_ids = _suppressed_stop_token_ids(request)
 
         lora_path = self._resolve_lora(request)
         if lora_path:
@@ -431,6 +540,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     context,
                     return_tokens_as_token_ids,
                     user_stop_token_ids=user_stop_token_ids,
+                    suppressed_stop_token_ids=suppressed_stop_token_ids,
                     metadata_uploader=metadata_uploader,
                 ):
                     yield out
@@ -499,6 +609,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     context,
                     return_tokens_as_token_ids,
                     user_stop_token_ids=user_stop_token_ids,
+                    suppressed_stop_token_ids=suppressed_stop_token_ids,
                     metadata_uploader=metadata_uploader,
                 ):
                     yield out
@@ -518,6 +629,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         context: Context,
         return_tokens_as_token_ids: bool = False,
         user_stop_token_ids: set[int] | None = None,
+        suppressed_stop_token_ids: set[int] | None = None,
         metadata_uploader: MetadataUploader | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process token-based stream output.
@@ -539,6 +651,9 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         # With n>1, chunks for different choices are interleaved, so track the
         # cumulative-logprob cursor per choice index instead of globally.
         output_logprobs_per_choice: dict[int, int] = {}
+        pending_stop_tokens_per_choice: dict[int, list[int]] = {}
+        pending_log_probs_per_choice: dict[int, list[Any]] = {}
+        pending_top_logprobs_per_choice: dict[int, list[Any]] = {}
         # SGLang reports cached_tokens_details on each chunk's meta_info, but
         # the frontend only emits it to the client on the terminal chunk. Track
         # the latest value per choice (n>1 interleaves choices) and fold it
@@ -584,18 +699,10 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     if stop_reason is not None:
                         out["stop_reason"] = stop_reason
 
-                # With stream_output=True, output_ids contains only new tokens (disjoint)
-                output_ids = res.get("output_ids", [])
-                # Empty, non-final chunks can happen during scheduler idle ticks.
-                # Keep waiting for the next chunk unless cancellation was requested.
-                if not output_ids and not finish_reason:
-                    if context.is_stopped():
-                        break
-                    continue
-
-                # Pass through disjoint token segments directly
-                out["token_ids"] = output_ids
-
+                # With stream_output=True, output_ids contains only new tokens (disjoint).
+                raw_output_ids = list(res.get("output_ids", []))
+                log_probs = None
+                top_logprobs = None
                 if metadata_uploader is None:
                     # Extract logprobs for new tokens if available
                     (
@@ -607,11 +714,67 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                         output_logprobs_per_choice.get(output_idx, 0),
                         return_tokens_as_token_ids=return_tokens_as_token_ids,
                     )
+                    # Advance over SGLang's original segment even if a hidden
+                    # stop suffix is buffered or suppressed before emission.
                     output_logprobs_per_choice[output_idx] = next_logprobs_total
+
+                output_ids = pending_stop_tokens_per_choice.pop(output_idx, [])
+                output_ids.extend(raw_output_ids)
+
+                pending_log_probs = pending_log_probs_per_choice.pop(output_idx, None)
+                if pending_log_probs is not None:
+                    log_probs = pending_log_probs + list(log_probs or [])
+                elif log_probs is not None:
+                    log_probs = list(log_probs)
+
+                pending_top_logprobs = pending_top_logprobs_per_choice.pop(
+                    output_idx, None
+                )
+                if pending_top_logprobs is not None:
+                    top_logprobs = pending_top_logprobs + list(top_logprobs or [])
+                elif top_logprobs is not None:
+                    top_logprobs = list(top_logprobs)
+
+                matched = finish_reason.get("matched") if finish_reason else None
+                output_ids, removed_count = _remove_suppressed_stop_tokens(
+                    output_ids, matched, suppressed_stop_token_ids
+                )
+                if removed_count:
                     if log_probs is not None:
-                        out["log_probs"] = log_probs
+                        log_probs = log_probs[:-removed_count]
                     if top_logprobs is not None:
-                        out["top_logprobs"] = top_logprobs
+                        top_logprobs = top_logprobs[:-removed_count]
+                elif not finish_reason:
+                    output_ids, pending_stop_tokens = (
+                        _split_trailing_suppressed_stop_tokens(
+                            output_ids, suppressed_stop_token_ids
+                        )
+                    )
+                    if pending_stop_tokens:
+                        pending_stop_tokens_per_choice[output_idx] = pending_stop_tokens
+                        if log_probs is not None:
+                            pending_log_probs_per_choice[output_idx] = log_probs[
+                                -len(pending_stop_tokens) :
+                            ]
+                            log_probs = log_probs[: -len(pending_stop_tokens)]
+                        if top_logprobs is not None:
+                            pending_top_logprobs_per_choice[output_idx] = top_logprobs[
+                                -len(pending_stop_tokens) :
+                            ]
+                            top_logprobs = top_logprobs[: -len(pending_stop_tokens)]
+
+                # Empty, non-final chunks can happen while an ambiguous stop
+                # suffix is buffered. Wait until it matches or becomes visible.
+                if not output_ids and not finish_reason:
+                    if context.is_stopped():
+                        break
+                    continue
+
+                out["token_ids"] = output_ids
+                if log_probs is not None:
+                    out["log_probs"] = log_probs
+                if top_logprobs is not None:
+                    out["top_logprobs"] = top_logprobs
 
                 routed_experts = meta_info.get("routed_experts")
                 engine_data: Dict[str, Any] = {}
@@ -664,6 +827,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             OpenAI-formatted chat completion chunk dicts.
         """
         request = request or {}
+        stop_strings = _stop_strings(request)
         # SGLang text chunks are cumulative per choice. Keep independent text
         # offsets so interleaved n>1 choices do not compute deltas from each
         # other's previous text.
@@ -699,7 +863,18 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 )
                 next_count = len(text)
                 count = text_counts_per_choice.get(index, 0)
-                delta = text[count:]
+                visible_text_len = next_count
+                matched = finish_reason.get("matched") if finish_reason else None
+                if (
+                    isinstance(matched, str)
+                    and matched in stop_strings
+                    and text.endswith(matched)
+                ):
+                    visible_text_len = len(text) - len(matched)
+                elif not finish_reason:
+                    visible_text_len -= _trailing_stop_prefix_len(text, stop_strings)
+
+                delta = text[count:visible_text_len] if visible_text_len > count else ""
 
                 choice_data = {
                     "index": index,
@@ -737,4 +912,4 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     response["nvext"] = response_nvext
                 if not context.is_stopped():
                     yield response
-                text_counts_per_choice[index] = next_count
+                text_counts_per_choice[index] = visible_text_len

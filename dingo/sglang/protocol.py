@@ -38,6 +38,7 @@ class SamplingOptions(BaseModel):
     use_beam_search: Optional[bool] = None
     length_penalty: Optional[float] = None
     seed: Optional[int] = None
+    include_stop_str_in_output: Optional[bool] = None
 
 
 class PreprocessedRequest(BaseModel):

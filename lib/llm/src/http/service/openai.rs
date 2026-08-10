@@ -1651,6 +1651,14 @@ async fn chat_completions(
         return Err(err_response);
     }
 
+    // Normalize Anthropic `stop_sequences` (forwarded verbatim by some
+    // Anthropic->OpenAI gateways) into OpenAI `stop` before unsupported-field
+    // validation rejects it.
+    if let Err(err_response) = normalize_chat_anthropic_stop_sequences(&mut request) {
+        inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+        return Err(err_response);
+    }
+
     // Handle unsupported fields - if Some(resp) is returned by
     // validate_chat_completion_unsupported_fields,
     // then a field was used that is unsupported. We will log an error message
@@ -1895,6 +1903,18 @@ fn normalize_chat_reasoning_template_args(
     request: &mut NvCreateChatCompletionRequest,
 ) -> Result<(), ErrorResponse> {
     request.normalize_reasoning_template_args().map_err(|e| {
+        ErrorMessage::from_http_error(HttpError {
+            code: 400,
+            message: VALIDATION_PREFIX.to_string() + &e.to_string(),
+        })
+    })
+}
+
+/// Normalizes Anthropic stop aliases forwarded by Anthropic-to-OpenAI gateways.
+fn normalize_chat_anthropic_stop_sequences(
+    request: &mut NvCreateChatCompletionRequest,
+) -> Result<(), ErrorResponse> {
+    request.normalize_anthropic_stop_sequences().map_err(|e| {
         ErrorMessage::from_http_error(HttpError {
             code: 400,
             message: VALIDATION_PREFIX.to_string() + &e.to_string(),
@@ -3742,6 +3762,50 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn test_normalize_chat_anthropic_stop_sequences_success() {
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(serde_json::json!({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stop_sequences": ["</block>"]
+            }))
+            .unwrap();
+
+        normalize_chat_anthropic_stop_sequences(&mut request)
+            .expect("valid gateway stop alias should normalize");
+
+        assert!(request.unsupported_fields.is_empty());
+        assert!(matches!(
+            request.inner.stop,
+            Some(dynamo_protocols::types::Stop::StringArray(ref stops))
+                if stops == &["</block>".to_string()]
+        ));
+        validate_chat_completion_fields_generic(&request)
+            .expect("normalized request should pass generic validation");
+    }
+
+    #[test]
+    fn test_normalize_chat_anthropic_stop_sequences_error_response() {
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(serde_json::json!({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stop": ["END"],
+                "stop_sequences": ["</block>"]
+            }))
+            .unwrap();
+
+        let error_response = normalize_chat_anthropic_stop_sequences(&mut request)
+            .expect_err("conflicting stop fields must return a client error");
+
+        assert_eq!(error_response.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error_response.1.message,
+            format!("{VALIDATION_PREFIX}`stop` and `stop_sequences` cannot be used together")
+        );
     }
 
     #[test]

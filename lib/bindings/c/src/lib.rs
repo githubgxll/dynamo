@@ -1151,9 +1151,11 @@ unsafe fn preprocess_request(
         let priority_jump = extract_priority_jump(request.nvext.as_ref());
         let strict_priority = extract_strict_priority(request.nvext.as_ref());
         let routing_constraints = extract_routing_constraints(request.nvext.as_ref());
-        let (token_ids, _) = match handles.runtime.secondary().block_on(async {
-            preprocessor.gather_tokens(&request, None, None).await
-        }) {
+        let (token_ids, _) = match handles
+            .runtime
+            .secondary()
+            .block_on(async { preprocessor.gather_tokens(&request, None, None).await })
+        {
             Ok(tokens) => tokens,
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to collect completion prompt tokens");

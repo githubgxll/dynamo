@@ -957,25 +957,54 @@ class SglangLLMEngine(LLMEngine):
         if not self._use_sglang_tokenizer:
             sampling_opts = request.get("sampling_options", {})
             stop_conditions = request.get("stop_conditions", {})
+            hidden_stop_token_ids = stop_conditions.get("stop_token_ids_hidden") or []
+            plain_stop_token_ids = stop_conditions.get("stop_token_ids") or []
+            stop_token_ids = list(
+                set(hidden_stop_token_ids).union(plain_stop_token_ids)
+            )
             param_mapping = {
                 "temperature": sampling_opts.get("temperature"),
                 "top_p": sampling_opts.get("top_p"),
                 "top_k": sampling_opts.get("top_k"),
                 "n": sampling_opts.get("n"),
                 "max_new_tokens": stop_conditions.get("max_tokens"),
+                "min_new_tokens": (
+                    None
+                    if self._skip_tokenizer_init
+                    else stop_conditions.get("min_tokens")
+                ),
                 "ignore_eos": stop_conditions.get("ignore_eos"),
-                "stop": stop_conditions.get("stop") or None,
+                "stop": (
+                    None
+                    if self._skip_tokenizer_init
+                    else stop_conditions.get("stop") or None
+                ),
+                "stop_token_ids": stop_token_ids or None,
+                "no_stop_trim": sampling_opts.get("include_stop_str_in_output"),
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")
                 ),
             }
         else:
+            request_stop = request.get("stop")
+            request_stop_token_ids = request.get("stop_token_ids") or []
+            if isinstance(request_stop, list) and all(
+                isinstance(item, int) and not isinstance(item, bool)
+                for item in request_stop
+            ):
+                request_stop_token_ids = [*request_stop_token_ids, *request_stop]
+                request_stop = None
             param_mapping = {
                 "temperature": request.get("temperature"),
                 "top_p": request.get("top_p"),
                 "top_k": request.get("top_k"),
                 "n": request.get("n"),
                 "max_new_tokens": request.get("max_tokens"),
+                "min_new_tokens": request.get("min_tokens"),
+                "ignore_eos": request.get("ignore_eos"),
+                "stop": request_stop or None,
+                "stop_token_ids": request_stop_token_ids or None,
+                "no_stop_trim": request.get("include_stop_str_in_output"),
                 **self._get_guided_decoding_params(request.get("guided_decoding")),
             }
         return {k: v for k, v in param_mapping.items() if v is not None}

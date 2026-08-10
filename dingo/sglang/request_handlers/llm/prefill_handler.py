@@ -90,10 +90,22 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             inner_request = request
             sampling_opts = request.get("sampling_options", {})
             stop_conditions = request.get("stop_conditions", {})
+            sglang_has_tokenizer = not getattr(
+                self.config.server_args, "skip_tokenizer_init", False
+            )
             sampling_params = {
                 "n": sampling_opts.get("n"),
                 "max_new_tokens": stop_conditions.get("max_tokens"),
-                **_preprocessed_stop_sampling_params(stop_conditions),
+                "min_new_tokens": (
+                    stop_conditions.get("min_tokens")
+                    if sglang_has_tokenizer
+                    else None
+                ),
+                "ignore_eos": stop_conditions.get("ignore_eos"),
+                "no_stop_trim": sampling_opts.get("include_stop_str_in_output"),
+                **_preprocessed_stop_sampling_params(
+                    stop_conditions, allow_string_stops=sglang_has_tokenizer
+                ),
                 **_sampling_option_params(sampling_opts),
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")

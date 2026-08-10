@@ -110,6 +110,17 @@ def _normalize_eos_token_ids(value: Any) -> list[int]:
     return []
 
 
+def _request_stop_strings(request: dict[str, Any]) -> set[str]:
+    if request.get("include_stop_str_in_output") is True:
+        return set()
+    stop = request.get("stop")
+    if isinstance(stop, str):
+        return {stop} if stop else set()
+    if isinstance(stop, list):
+        return {item for item in stop if isinstance(item, str) and item}
+    return set()
+
+
 def _merge_eos_token_ids(*values: Any) -> list[int]:
     """Normalize, merge, and stably deduplicate EOS token ID sources."""
     token_ids: list[int] = []
@@ -392,6 +403,9 @@ def _build_dynamo_preproc(
             "top_k": request.get("top_k", 0) or -1,
             "min_p": request.get("min_p", 0.0),
             "seed": request.get("seed"),
+            "include_stop_str_in_output": request.get(
+                "include_stop_str_in_output", False
+            ),
             "guided_decoding": guided_decoding,
         },
         "output_options": {
@@ -555,7 +569,9 @@ class SglangProcessor:
             ),
             sglang_tools=convert_tools(request.get("tools")),
             tool_call_parser_name=self.tool_call_parser_name,
+            reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
+            stop_strings=_request_stop_strings(request),
         )
 
         async for item in self._generate_and_stream(
@@ -612,7 +628,9 @@ class SglangProcessor:
             ),
             sglang_tools=convert_tools(request.get("tools")),
             tool_call_parser_name=self.tool_call_parser_name,
+            reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
+            stop_strings=_request_stop_strings(request),
         )
 
         async for item in self._generate_and_stream(

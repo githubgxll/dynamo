@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use dynamo_runtime::protocols::annotated::{Annotated, AnnotationsProvider};
-use serde::{Deserialize, Serialize};
 use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -105,7 +105,10 @@ pub const INTERNAL_SGLEXT_KEY: &str = "__dynamo_internal_sglext";
 /// promotion rule lives in exactly one place.
 pub fn split_sglext(
     nvext: &Option<serde_json::Value>,
-) -> (Option<Cow<'_, serde_json::Value>>, Option<serde_json::Value>) {
+) -> (
+    Option<Cow<'_, serde_json::Value>>,
+    Option<serde_json::Value>,
+) {
     let Some(value) = nvext.as_ref() else {
         return (None, None);
     };
@@ -119,8 +122,8 @@ pub fn split_sglext(
 
     let mut visible_fields = fields.clone();
     visible_fields.remove(INTERNAL_SGLEXT_KEY);
-    let visible_nvext = (!visible_fields.is_empty())
-        .then(|| Cow::Owned(serde_json::Value::Object(visible_fields)));
+    let visible_nvext =
+        (!visible_fields.is_empty()).then(|| Cow::Owned(serde_json::Value::Object(visible_fields)));
     (visible_nvext, Some(sglext.clone()))
 }
 
@@ -230,6 +233,44 @@ impl NvCreateChatCompletionRequest {
         self.thinking = None;
         Ok(())
     }
+
+    /// Normalize the Anthropic `stop_sequences` field into OpenAI `stop`.
+    ///
+    /// Upstream gateways (e.g. one-api / nexus) that translate
+    /// `/anthropic/v1/messages` into OpenAI `/v1/chat/completions` sometimes
+    /// forward the Anthropic-native `stop_sequences` field verbatim instead of
+    /// renaming it to OpenAI's `stop`. Because `stop_sequences` is not an
+    /// OpenAI chat-completion field, it lands in `unsupported_fields` and is
+    /// rejected by `validate_no_unsupported_fields` with a 400
+    /// `Unsupported parameter(s): \`stop_sequences\``.
+    ///
+    /// This mirrors the conversion already performed by the Anthropic request
+    /// path (`anthropic/types.rs`: `stop_sequences -> Stop::StringArray`): move
+    /// the field out of `unsupported_fields` into `inner.stop` so it flows
+    /// through the normal stop-conditions pipeline to the engine. The alias is
+    /// intentionally strict: Anthropic defines it as an array of strings. A
+    /// conflicting OpenAI `stop` or a malformed value is rejected rather than
+    /// silently dropping one of the stopping conditions.
+    pub fn normalize_anthropic_stop_sequences(&mut self) -> anyhow::Result<()> {
+        let Some(value) = self.unsupported_fields.remove("stop_sequences") else {
+            return Ok(());
+        };
+
+        // Match `Option<Vec<String>>` on the native Anthropic request: an
+        // explicit JSON null is equivalent to the field being absent.
+        if value.is_null() {
+            return Ok(());
+        }
+
+        if self.inner.stop.is_some() {
+            anyhow::bail!("`stop` and `stop_sequences` cannot be used together");
+        }
+
+        let stop_sequences = serde_json::from_value::<Vec<String>>(value)
+            .map_err(|_| anyhow::anyhow!("`stop_sequences` must be an array of strings"))?;
+        self.inner.stop = Some(dynamo_protocols::types::Stop::StringArray(stop_sequences));
+        Ok(())
+    }
 }
 
 enum OpenAiThinkingMode {
@@ -322,7 +363,7 @@ where
     };
 
     let (visible_nvext, sglext) = split_sglext(nvext);
-    
+
     if let Some(sglext) = sglext {
         map.insert("sglext".to_string(), sglext);
     }
@@ -961,6 +1002,117 @@ mod tests {
             serde_json::from_value(invalid_stop_token_ids).expect("Failed to deserialize request");
         let err = ValidateRequest::validate(&request).expect_err("invalid stop_token_ids");
         assert!(err.to_string().contains("stop_token_ids"));
+    }
+
+    #[test]
+    fn test_normalize_anthropic_stop_sequences_array() {
+        // Upstream Anthropic->OpenAI gateways forward `stop_sequences` verbatim;
+        // it lands in unsupported_fields and would be rejected by validate().
+        let json_value = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop_sequences": ["</block>", "</answer>"]
+        });
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_value).expect("Failed to deserialize request");
+        assert!(request.inner.stop.is_none());
+        assert!(request.unsupported_fields.contains_key("stop_sequences"));
+
+        request
+            .normalize_anthropic_stop_sequences()
+            .expect("valid Anthropic stop sequences");
+
+        assert!(!request.unsupported_fields.contains_key("stop_sequences"));
+        assert_eq!(
+            request.get_stop(),
+            Some(vec!["</block>".to_string(), "</answer>".to_string()])
+        );
+        let normalized_json =
+            serde_json::to_value(&request).expect("Failed to serialize normalized request");
+        assert_eq!(
+            normalized_json.get("stop"),
+            Some(&json!(["</block>", "</answer>"]))
+        );
+        assert!(normalized_json.get("stop_sequences").is_none());
+        // The adopted request must now pass unsupported-field validation.
+        ValidateRequest::validate(&request).expect("adopted request should validate");
+    }
+
+    #[test]
+    fn test_normalize_anthropic_stop_sequences_rejects_scalar_string() {
+        let json_value = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop_sequences": "</block>"
+        });
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_value).expect("Failed to deserialize request");
+        let error = request
+            .normalize_anthropic_stop_sequences()
+            .expect_err("Anthropic stop_sequences must be an array");
+        assert_eq!(
+            error.to_string(),
+            "`stop_sequences` must be an array of strings"
+        );
+        assert!(request.inner.stop.is_none());
+    }
+
+    #[test]
+    fn test_normalize_anthropic_stop_sequences_rejects_explicit_openai_stop() {
+        let json_value = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop": ["A"],
+            "stop_sequences": ["</block>"]
+        });
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_value).expect("Failed to deserialize request");
+        let error = request
+            .normalize_anthropic_stop_sequences()
+            .expect_err("conflicting stop fields must fail");
+        assert_eq!(request.get_stop(), Some(vec!["A".to_string()]));
+        assert_eq!(
+            error.to_string(),
+            "`stop` and `stop_sequences` cannot be used together"
+        );
+    }
+
+    #[test]
+    fn test_normalize_anthropic_stop_sequences_accepts_null() {
+        let json_value = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop_sequences": null
+        });
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_value).expect("Failed to deserialize request");
+
+        request
+            .normalize_anthropic_stop_sequences()
+            .expect("null is equivalent to an omitted optional field");
+
+        assert!(request.inner.stop.is_none());
+        assert!(!request.unsupported_fields.contains_key("stop_sequences"));
+        ValidateRequest::validate(&request).expect("request with null alias should validate");
+    }
+
+    #[test]
+    fn test_normalize_anthropic_stop_sequences_rejects_non_string_member() {
+        let json_value = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop_sequences": ["END", 7]
+        });
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_value).expect("Failed to deserialize request");
+
+        let error = request
+            .normalize_anthropic_stop_sequences()
+            .expect_err("non-string members must fail");
+        assert_eq!(
+            error.to_string(),
+            "`stop_sequences` must be an array of strings"
+        );
     }
 
     #[test]

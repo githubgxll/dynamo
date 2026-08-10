@@ -40,6 +40,17 @@ logger = logging.getLogger(__name__)
 ToolCallParserType: TypeAlias = FunctionCallParser | JsonArrayParser
 
 
+def _trailing_stop_prefix_len(text: str, stop_strings: set[str]) -> int:
+    if not text or not stop_strings:
+        return 0
+    max_len = min(len(text), max(len(stop) for stop in stop_strings))
+    for suffix_len in range(max_len, 0, -1):
+        suffix = text[-suffix_len:]
+        if any(stop.startswith(suffix) for stop in stop_strings):
+            return suffix_len
+    return 0
+
+
 @dataclass
 class SglangPreprocessResult:
     """Result of SGLang preprocessing."""
@@ -1007,7 +1018,9 @@ class SglangStreamingPostProcessor:
         history_tool_calls_count: int = 0,
         sglang_tools: list[SglangTool] | None = None,
         tool_call_parser_name: str | None = None,
+        reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
+        stop_strings: set[str] | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1017,13 +1030,21 @@ class SglangStreamingPostProcessor:
         self._tool_call_parser_name = _normalize_sglang_parser_name(
             tool_call_parser_name
         )
-        self._is_kimi_k3 = self._tool_call_parser_name == "kimi_k3"
+        self._reasoning_parser_name = _normalize_sglang_parser_name(
+            reasoning_parser_name
+        )
+        self._is_kimi_k3 = "kimi_k3" in {
+            self._tool_call_parser_name,
+            self._reasoning_parser_name,
+        }
         self._fast_plain_text = tool_call_parser is None and reasoning_parser is None
         # Preserve special tokens when a tool call parser is active so
         # delimiter tokens (e.g. <|tool_call|>) remain visible to the parser.
         self._skip_special_tokens = tool_call_parser is None
         self._is_json_array_parser = isinstance(tool_call_parser, JsonArrayParser)
         self._eos_token_ids = set(eos_token_ids or [])
+        self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
+        self._pending_stop_text = ""
 
         self._all_token_ids: list[int] = []
         # Tool call accumulation.  SGLang's streaming parser returns
@@ -1113,6 +1134,27 @@ class SglangStreamingPostProcessor:
 
         return window_text[len(prefix_text) :]
 
+    def _strip_stop_string_suffix(self, text: str, finish_reason: str | None) -> str:
+        if finish_reason != "stop" or not text or not self._stop_strings:
+            return text
+        for stop in sorted(self._stop_strings, key=len, reverse=True):
+            if text.endswith(stop):
+                return text[: -len(stop)]
+        return text
+
+    def _filter_stop_string_delta(self, text: str, finish_reason: str | None) -> str:
+        text = self._pending_stop_text + text
+        self._pending_stop_text = ""
+        text = self._strip_stop_string_suffix(text, finish_reason)
+        if finish_reason or not text or not self._stop_strings:
+            return text
+
+        pending_len = _trailing_stop_prefix_len(text, self._stop_strings)
+        if pending_len:
+            self._pending_stop_text = text[-pending_len:]
+            return text[:-pending_len]
+        return text
+
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
 
@@ -1136,6 +1178,7 @@ class SglangStreamingPostProcessor:
             if token_ids or finished
             else ""
         )
+        delta_text = self._filter_stop_string_delta(delta_text, finish_reason)
         if self._is_kimi_k3 and delta_text:
             self._kimi_k3_raw_text_parts.append(delta_text)
 

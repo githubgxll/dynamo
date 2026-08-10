@@ -1535,10 +1535,7 @@ impl ModelWatcher {
                 let card_for_task = card.clone();
                 let key_for_task = key.clone();
                 let handle = tokio::spawn(async move {
-                    match watcher
-                        .handle_put(&mcid_for_task, &mut card)
-                        .await
-                    {
+                    match watcher.handle_put(&mcid_for_task, &mut card).await {
                         Ok(()) => {
                             watcher.pending_retries.remove(&key_for_task);
                             watcher.notify_on_model.notify_waiters();
@@ -1559,12 +1556,7 @@ impl ModelWatcher {
             // This catches the case where a `Removed` event was observed but the matching
             // `Added` never arrived (watch reorder, reconnect, compaction), so the local
             // state says "no worker" while etcd clearly says "this model has live instances".
-            let instances = match self
-                .drt
-                .discovery()
-                .list(DiscoveryQuery::AllModels)
-                .await
-            {
+            let instances = match self.drt.discovery().list(DiscoveryQuery::AllModels).await {
                 Ok(instances) => instances,
                 Err(err) => {
                     tracing::warn!(
