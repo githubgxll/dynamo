@@ -452,7 +452,7 @@ async def parse_args(args: list[str]) -> Config:
     image_diffusion_worker = dynamo_config.image_diffusion_worker
     video_generation_worker = dynamo_config.video_generation_worker
 
-    # SGLang 0.5.16 makes ServerArgs read-only after resolution. Apply Dynamo's
+    # SGLang 0.5.16+ makes ServerArgs read-only after resolution. Apply Dynamo's
     # defaults to the argparse namespace before ServerArgs.from_cli_args().
     if os.environ.get("DYN_FORWARDPASS_METRIC_PORT") and not getattr(
         parsed_args, "enable_forward_pass_metrics", False

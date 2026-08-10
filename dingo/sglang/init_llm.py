@@ -71,7 +71,9 @@ async def init_decode(
                 "created before the endpoint existed, so its FPM publisher bound "
                 "a different IPC path than the relay would subscribe to."
             )
-            server_args.enable_forward_pass_metrics = False
+            server_args.override(
+                "dynamo.snapshot", enable_forward_pass_metrics=False
+            )
     else:
         set_forward_pass_metrics_worker_id(server_args, generate_endpoint)
         start_time = time.time()
@@ -227,7 +229,9 @@ async def init_prefill(
                 "created before the endpoint existed, so its FPM publisher bound "
                 "a different IPC path than the relay would subscribe to."
             )
-            server_args.enable_forward_pass_metrics = False
+            server_args.override(
+                "dynamo.snapshot", enable_forward_pass_metrics=False
+            )
     else:
         set_forward_pass_metrics_worker_id(server_args, generate_endpoint)
         start_time = time.time()

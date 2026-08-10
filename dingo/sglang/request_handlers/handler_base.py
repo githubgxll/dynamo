@@ -951,7 +951,9 @@ class BaseWorkerHandler(LoraMixin, RLMixin, BaseGenerativeHandler[RequestT, Resp
         if req.abort_all_requests:
             self.engine.tokenizer_manager.abort_request(abort_all=True)
 
-        self.engine.tokenizer_manager.server_args.weight_version = req.new_version
+        self.engine.tokenizer_manager.server_args.override(
+            "dynamo.weight_update", weight_version=req.new_version
+        )
         return {
             "success": True,
             "message": f"Weight version updated to {req.new_version}",

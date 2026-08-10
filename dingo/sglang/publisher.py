@@ -44,9 +44,15 @@ def set_forward_pass_metrics_worker_id(
 
     import tempfile
 
-    server_args.forward_pass_metrics_worker_id = str(generate_endpoint.connection_id())
+    server_args.override(
+        "dynamo.forward_pass_metrics",
+        forward_pass_metrics_worker_id=str(generate_endpoint.connection_id()),
+    )
     ipc_path = tempfile.NamedTemporaryFile(delete=False).name
-    server_args.forward_pass_metrics_ipc_name = f"ipc://{ipc_path}"
+    server_args.override(
+        "dynamo.forward_pass_metrics",
+        forward_pass_metrics_ipc_name=f"ipc://{ipc_path}",
+    )
 
 
 async def _resolve_multinode_leader_worker_id(

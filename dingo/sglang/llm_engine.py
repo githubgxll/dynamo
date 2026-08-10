@@ -160,8 +160,11 @@ class SglangLLMEngine(LLMEngine):
         if os.getenv(DYN_ENABLE_TEST_LOGITS_PROCESSOR) == "1" and is_generation_stage(
             config.serving_mode
         ):
-            server_args.enable_custom_logit_processor = True
-            server_args.skip_tokenizer_init = False
+            server_args.override(
+                "dynamo.test_logits_processor",
+                enable_custom_logit_processor=True,
+                skip_tokenizer_init=False,
+            )
 
         model_input = (
             ModelInput.Text if dynamo_args.use_sglang_tokenizer else ModelInput.Tokens
@@ -688,7 +691,9 @@ class SglangLLMEngine(LLMEngine):
         req = UpdateWeightVersionReqInput(**(body or {}))
         if req.abort_all_requests:
             self.engine.tokenizer_manager.abort_request(abort_all=True)
-        self.engine.tokenizer_manager.server_args.weight_version = req.new_version
+        self.engine.tokenizer_manager.server_args.override(
+            "dynamo.weight_update", weight_version=req.new_version
+        )
         return {
             "success": True,
             "message": f"Weight version updated to {req.new_version}",

@@ -22,7 +22,7 @@
       "framework": "sglang",
       "enabled": true,
       "repository": "ai-dingo-sglang",
-      "tag_prefix": "v0.5.16-cu130-runtime",
+      "tag_prefix": "v0.5.17-cu130-runtime",
       "docker_target": "pre_runtime"
     }
   ]

@@ -138,7 +138,7 @@ async def prepare_snapshot_engine(
     # Enable memory_saver so GPU memory can be released for CRIU.
     # When using GMS, weights use VA-stable unmap/remap (no CPU backup); GMS
     # forbids enable_weights_cpu_backup. Otherwise use CPU backup for weights.
-    server_args.enable_memory_saver = True
+    server_args.override("dynamo.snapshot", enable_memory_saver=True)
     try:
         from gpu_memory_service.integrations.sglang import is_gms_active
 
@@ -146,7 +146,7 @@ async def prepare_snapshot_engine(
     except ImportError:
         _using_gms = False
     if not _using_gms:
-        server_args.enable_weights_cpu_backup = True
+        server_args.override("dynamo.snapshot", enable_weights_cpu_backup=True)
 
     start_time = time.time()
     engine = sgl.Engine(server_args=server_args)
