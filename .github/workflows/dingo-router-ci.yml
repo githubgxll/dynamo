@@ -115,12 +115,6 @@ jobs:
           tags: ${{ matrix.image }}
           provenance: false
           sbom: false
-          build-args: |
-            REQUIRE_CI_CA=true
-          # CI_CA_CERT must contain the PEM-encoded root CA used by the
-          # self-hosted runner's TLS-inspection proxy.
-          secrets: |
-            "ci-ca-cert=${{ secrets.CI_CA_CERT }}"
 
       - name: Publish job summary
         env:

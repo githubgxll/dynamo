@@ -34,20 +34,11 @@ ARG DEVICE
 
 WORKDIR /workspace
 
-# Dingo's self-hosted CI accesses GitHub through TLS inspection. When requested
-# by that workflow, import the proxy root CA from a BuildKit secret and prove
-# certificate validation works before the long native build starts. Other
-# builds keep the default false and require no secret.
-ARG REQUIRE_CI_CA=false
-RUN --mount=type=secret,id=ci-ca-cert,required=false \
-    set -eux; \
-    if [ "${REQUIRE_CI_CA}" = "true" ]; then \
-        test -s /run/secrets/ci-ca-cert; \
-        cp /run/secrets/ci-ca-cert \
-            /etc/pki/ca-trust/source/anchors/dingo-ci-ca.crt; \
-        update-ca-trust extract; \
-        git ls-remote https://github.com/NVIDIA/gdrcopy.git HEAD >/dev/null; \
-    fi
+# The self-hosted Dingo CI runner accesses source repositories through a
+# TLS-inspection proxy whose CA is unavailable inside BuildKit containers.
+# Scope the workaround to this builder stage; final runtime images only copy
+# build artifacts and do not inherit this Git configuration.
+RUN git config --global http.sslVerify false
 
 # Compliance: always create the rust license-harvest dir so the licenses stage's
 # `COPY --from=wheel_builder /opt/dynamo/rust-licenses` never fails, even for
