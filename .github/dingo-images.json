@@ -14,13 +14,13 @@
     },
     {
       "framework": "vllm",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo-vllm",
-      "tag_prefix": "v0.26.0-cu130-runtime"
+      "tag_prefix": "v0.27.1-cu130-runtime"
     },
     {
       "framework": "sglang",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo-sglang",
       "tag_prefix": "v0.5.17-cu130-runtime",
       "docker_target": "pre_runtime"

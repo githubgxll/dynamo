@@ -54,14 +54,12 @@ vllm:
     base_image: nvcr.io/nvidia/cuda-dl-base
     runtime_image: vllm/vllm-openai
     base_image_tag: 25.11-cuda13.0-devel-ubuntu24.04
-    runtime_image_tag: v0.26.0-ubuntu2404
-    # Baseline is vllm-openai's TRUE base, nvidia/cuda:13.0.2-base-ubuntu24.04
-    # (Docker Hub), NOT a self-baseline of the third-party vllm/vllm-openai image.
-    # vllm-openai is built FROM nvidia/cuda, so this attributes everything vLLM
-    # adds over the clean NVIDIA CUDA floor (uv/rust stack, framework, codecs)
-    # rather than hiding it. Per-arch stem; the licenses stage appends
-    # -${TARGETARCH}.cdx.json. (GPL media codecs from vllm-openai are purged in
-    # the runtime image — see the codec-purge follow-up.)
+    runtime_image_tag: v0.27.1-ubuntu2404
+    # Keep using the existing CUDA 13.0.2 compliance corpus for this Dingo CI
+    # image update. Refreshing the corpus for vLLM 0.27.1's CUDA 13.0.3 base is
+    # intentionally deferred because this workflow does not publish SBOM or
+    # provenance artifacts. Per-arch stem; the licenses stage appends
+    # -${TARGETARCH}.cdx.json.
     baseline_sbom: cuda@2ab6381d
   xpu:
     base_image: public.ecr.aws/q9t5s3a7/vllm-ci-test-repo
@@ -75,9 +73,9 @@ vllm:
     base_image_tag: 22.04
     runtime_image_tag: v0.24.0
     # baseline_sbom: not yet captured for cpu — runtime build runs without subtraction
-  flashinf_ref: v0.6.8.post1
-  vllm_omni_ref: "v0.23.0rc1"
-  nixl_ref: v1.1.0
+  flashinf_ref: v0.6.16.post3
+  vllm_omni_ref: "v0.27.0rc1"
+  nixl_ref: v1.3.1
   max_jobs: "10"
   enable_media_ffmpeg: "false"
   enable_gpu_memory_service: "true"
