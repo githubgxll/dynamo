@@ -34,6 +34,20 @@ ARG DEVICE
 
 WORKDIR /workspace
 
+# Some CI jobs need an extra trusted CA to reach GitHub through a TLS-inspecting
+# proxy. The CA is provided as an optional BuildKit secret.
+ARG REQUIRE_CI_CA=false
+RUN --mount=type=secret,id=ci-ca-cert,required=false \
+    set -eux; \
+    if [ "${REQUIRE_CI_CA}" = "true" ] && [ -s /run/secrets/ci-ca-cert ]; then \
+        cp /run/secrets/ci-ca-cert \
+            /etc/pki/ca-trust/source/anchors/dingo-ci-ca.crt; \
+        update-ca-trust extract; \
+        git ls-remote https://github.com/NVIDIA/gdrcopy.git HEAD >/dev/null; \
+    elif [ "${REQUIRE_CI_CA}" = "true" ]; then \
+        echo "REQUIRE_CI_CA=true but /run/secrets/ci-ca-cert is missing; skipping CI CA injection"; \
+    fi
+
 # Compliance: always create the rust license-harvest dir so the licenses stage's
 # `COPY --from=wheel_builder /opt/dynamo/rust-licenses` never fails, even for
 # targets that build no wheels. runtime_wheel_builder populates it post-build.
