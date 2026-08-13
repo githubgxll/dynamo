@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: DingoRouter Tests
+
+on:
+  pull_request:
+    branches:
+      - DingoRouter-base
+  push:
+    branches:
+      - DingoRouter-base
+  workflow_dispatch:
+    inputs:
+      quick_mode:
+        description: "Test scope: smoke (~3min) / standard (~8min) / full (~15min)"
+        type: choice
+        options:
+          - smoke
+          - standard
+          - full
+        default: smoke
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dingo-router-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run tests (QUICK_MODE=${{ inputs.quick_mode || 'smoke' }})
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Check runner prerequisites
+        shell: bash
+        run: |
+          echo "user: $(whoami) (uid=$(id -u))"
+          command -v cargo   >/dev/null 2>&1 && echo "cargo:   $(cargo --version)"   || echo "cargo:   NOT FOUND"
+          command -v rustc   >/dev/null 2>&1 && echo "rustc:   $(rustc --version)"   || echo "rustc:   NOT FOUND"
+          command -v python3 >/dev/null 2>&1 && echo "python3: $(python3 --version)" || echo "python3: NOT FOUND"
+          command -v protoc  >/dev/null 2>&1 && echo "protoc:  $(protoc --version)"  || echo "protoc:  NOT FOUND"
+          command -v sudo    >/dev/null 2>&1 && echo "sudo:    available"            || echo "sudo:    NOT FOUND"
+          nproc
+          df -h / | tail -1
+
+      - name: Run tests (includes env setup)
+        shell: bash
+        env:
+          QUICK_MODE: ${{ inputs.quick_mode || 'smoke' }}
+          DOWNLOAD_MODEL: '0'
+          CARGO_BUILD_JOBS: '16'
+          # 自托管 runner 无 root、缺 libclang，无法构建 ai-dingo-runtime（Rust pyo3 binding）。
+          # SKIP_RUNTIME_BUILD=1 跳过 binding 构建与所有 Python 测试，只跑 Rust 测试。
+          # 如需跑 Python 测试：先在 runner 预装 libclang（clang-devel/libclang-dev），再改为 '0'。
+          SKIP_RUNTIME_BUILD: '1'
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          QUICK_MODE="${QUICK_MODE}" DOWNLOAD_MODEL="${DOWNLOAD_MODEL}" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" SKIP_RUNTIME_BUILD="${SKIP_RUNTIME_BUILD}" bash tests/scripts/run-all-tests-oneclick.sh
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ inputs.quick_mode || 'smoke' }}
+          path: |
+            /tmp/oneclick-*.log
+          retention-days: 7
+          if-no-files-found: warn
