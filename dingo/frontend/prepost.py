@@ -136,7 +136,10 @@ def _prepare_request(
         )
         else None
     )
-    chat_template_kwargs = dict(request_for_sampling.chat_template_kwargs or {})
+    raw_ctk = (
+        request.get("chat_template_args") if isinstance(request, dict) else None
+    )
+    chat_template_kwargs = dict(request_for_sampling.chat_template_kwargs or raw_ctk or {})
     chat_template_kwargs["reasoning_effort"] = request_for_sampling.reasoning_effort
 
     # Mistral warns that tokenize=False is unsafe for chat templates.
