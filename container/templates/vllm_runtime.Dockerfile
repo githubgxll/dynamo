@@ -186,6 +186,27 @@ RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target
     export VLLM_OMNI_TARGET_DEVICE={{ device }}; \
     bash /tmp/install_vllm_omni.sh
 
+# Apply Dingo's MiniMax-H3 vLLM-Omni patches (source overlays + runtime overlay
+# modules) to the installed vllm-omni site-packages.  Pinned checksums in the
+# install script fail the build if vllm-omni is upgraded without re-validating
+# the overlays.  The generated sitecustomize.py loads runtime overlays on
+# worker startup gated by environment flags (FP8+HSDP, community DiT overlay,
+# VAE uint8/regional compile, Ref2VA media probe/decode are on by default).
+#
+# Intentionally limited to CUDA builds: the source overlays replace H3
+# transformer/denoise_loop files from CUDA-specific upstream PRs (#5990/#6173),
+# and the runtime overlays (VAE regional compile, FP8+HSDP, Ref2VA FFmpeg
+# decode) depend on CUDA-only code paths.  CPU/XPU workers that later need H3
+# support must re-evaluate these overlays against their device backend before
+# enabling them.
+{% if device == "cuda" %}
+RUN --mount=type=bind,source=./container/deps/vllm/install_vllm_omni_patches.sh,target=/tmp/install_vllm_omni_patches.sh \
+    --mount=type=bind,source=./container/deps/vllm/patches,target=/tmp/vllm_omni_patches,readonly \
+    set -eux; \
+    export PYTHON_SITE_PACKAGES="${SITE_PACKAGES}"; \
+    bash /tmp/install_vllm_omni_patches.sh
+{% endif %}
+
 {% if device == "xpu" %}
 # Remove conflicting standard triton package for XPU and reinstall triton-xpu
 # This must be done after vLLM-Omni installation to ensure no dependencies re-install triton
