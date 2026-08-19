@@ -11,7 +11,6 @@ output without creating an engine or loading model weights.
 import asyncio
 import base64
 import logging
-import tempfile
 import time
 import uuid
 from io import BytesIO
@@ -20,8 +19,6 @@ from typing import Any, Dict, Optional
 import numpy as np
 import soundfile as sf
 import torch
-from diffusers.utils.export_utils import export_to_video
-
 from dingo.common.protocols.audio_protocol import AudioData, NvAudioSpeechResponse
 from dingo.common.protocols.image_protocol import ImageData, NvImagesResponse
 from dingo.common.protocols.video_protocol import NvVideosResponse, VideoData
@@ -105,12 +102,15 @@ class DiffusionFormatter:
             return None
 
         if request_type == RequestType.VIDEO_GENERATION:
+            audio, audio_sample_rate = self._extract_audio(stage_output)
             return await self._encode_video(
                 images,
                 request_id,
                 fps=ctx.get("fps", self._default_fps),
                 response_format=ctx.get("response_format"),
                 output_format=ctx.get("output_format"),
+                audio=audio,
+                audio_sample_rate=audio_sample_rate,
             )
         return await self._encode_image(
             images,
@@ -119,6 +119,51 @@ class DiffusionFormatter:
             response_format=ctx.get("response_format"),
         )
 
+    @staticmethod
+    def _extract_audio(stage_output: Any) -> tuple[Any, Optional[int]]:
+        """Extract audio tensor and sample rate from stage_output.multimodal_output.
+
+        vLLM-Omni's diffusion post-process returns a dict-like
+        ``multimodal_output`` containing the generated audio and its sample
+        rate. Returns ``(None, None)`` when the stage produced no audio, so the
+        caller falls back to the audio-less MP4 path.
+        """
+        mm_output = getattr(stage_output, "multimodal_output", None)
+        if not isinstance(mm_output, dict):
+            request_output = getattr(stage_output, "request_output", None)
+            if request_output is not None:
+                mm_output = getattr(request_output, "multimodal_output", None)
+        if not isinstance(mm_output, dict):
+            return None, None
+
+        audio = mm_output.get("audio")
+        if audio is None:
+            return None, None
+
+        metadata = mm_output.get("metadata")
+        audio_metadata = (
+            metadata.get("audio") if isinstance(metadata, dict) else None
+        )
+        for candidate in (
+            mm_output.get("audio_sample_rate"),
+            mm_output.get("sr"),
+            audio_metadata.get("sample_rate") if isinstance(audio_metadata, dict) else None,
+        ):
+            if candidate is None:
+                continue
+            if hasattr(candidate, "item"):
+                candidate = candidate.item()
+            try:
+                value = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return audio, value
+        logger.warning(
+            "Audio output did not include a sample rate; falling back to 24000 Hz"
+        )
+        return audio, 24000
+
     async def _encode_video(
         self,
         images: list,
@@ -126,6 +171,8 @@ class DiffusionFormatter:
         fps: int,
         response_format: Optional[str] = None,
         output_format: Optional[str] = None,
+        audio: Any = None,
+        audio_sample_rate: Optional[int] = None,
     ) -> Dict[str, Any] | None:
         output_format = output_format or "mp4"
         response_format = response_format or "url"
@@ -140,11 +187,44 @@ class DiffusionFormatter:
         try:
             start_time = time.time()
             frame_list = normalize_video_frames(images)
-            with tempfile.NamedTemporaryFile(
-                suffix=f".{output_format}", delete=True
-            ) as tmp:
-                await asyncio.to_thread(export_to_video, frame_list, tmp.name, fps)
-                video_bytes = tmp.read()
+
+            encode_kwargs: Dict[str, Any] = {
+                "video_codec_options": {"preset": "ultrafast", "threads": "0"},
+            }
+            if audio is not None:
+                if audio_sample_rate is None or audio_sample_rate <= 0:
+                    raise ValueError(
+                        "audio_sample_rate must be a positive integer when audio "
+                        "is provided"
+                    )
+                encode_kwargs["audio"] = audio
+                encode_kwargs["audio_sample_rate"] = audio_sample_rate
+
+            # vllm-omni's _encode_video_bytes muxes H.264 video and (optional)
+            # AAC audio into an MP4 byte string. It handles the conversion from
+            # normalized frame tensors to the byte format expected by the
+            # frontend, including audio sample rate negotiation for AAC encoding.
+            from vllm_omni.entrypoints.openai.video_api_utils import (
+                _encode_video_bytes,
+            )
+
+            from vllm_omni.entrypoints.openai.serving_video import (
+                OmniOpenAIServingVideo,
+            )
+
+            normalized = OmniOpenAIServingVideo._normalize_video_outputs(frame_list)
+            if len(normalized) != 1:
+                raise ValueError(
+                    f"Expected exactly one video, got {len(normalized)}; "
+                    f"video encoding requires a single normalized video tensor"
+                )
+
+            video_bytes = await asyncio.to_thread(
+                _encode_video_bytes,
+                normalized[0],
+                fps=fps,
+                **encode_kwargs,
+            )
 
             if response_format == "b64_json":
                 video_data = VideoData(

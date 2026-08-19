@@ -102,3 +102,53 @@ class TestDiffusionParallelConfigCoverage:
         kwargs = _build_kwargs(config)
 
         assert kwargs["output_modalities"] == ["image"]
+
+
+class TestErrorChunk:
+    """B3: _error_chunk returns the correct failure schema per request type."""
+
+    def _make_handler(self):
+        handler = BaseOmniHandler.__new__(BaseOmniHandler)
+        handler.config = MagicMock()
+        handler.config.served_model_name = None
+        handler.config.model = "test-model"
+        return handler
+
+    def test_video_error_returns_nv_videos_response_failed(self):
+        from dingo.common.utils.output_modalities import RequestType
+
+        handler = self._make_handler()
+        chunk = handler._error_chunk(
+            "req-1", "boom", request_type=RequestType.VIDEO_GENERATION
+        )
+        assert chunk["object"] == "video"
+        assert chunk["status"] == "failed"
+        assert chunk["model"] == "test-model"
+        assert chunk["error"] == "boom"
+        assert chunk["data"] == []
+
+    def test_audio_error_returns_nv_audio_speech_response_failed(self):
+        from dingo.common.utils.output_modalities import RequestType
+
+        handler = self._make_handler()
+        chunk = handler._error_chunk(
+            "req-1", "boom", request_type=RequestType.AUDIO_GENERATION
+        )
+        assert chunk["status"] == "failed"
+        assert chunk["error"] == "boom"
+
+    def test_chat_error_returns_chat_completion_chunk(self):
+        from dingo.common.utils.output_modalities import RequestType
+
+        handler = self._make_handler()
+        chunk = handler._error_chunk(
+            "req-1", "boom", request_type=RequestType.CHAT_COMPLETION
+        )
+        assert chunk["object"] == "chat.completion.chunk"
+        assert chunk["choices"][0]["finish_reason"] == "error"
+        assert "boom" in chunk["choices"][0]["delta"]["content"]
+
+    def test_unknown_request_type_returns_chat_completion_chunk(self):
+        handler = self._make_handler()
+        chunk = handler._error_chunk("req-1", "boom", request_type=None)
+        assert chunk["object"] == "chat.completion.chunk"

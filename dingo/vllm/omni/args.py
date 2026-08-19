@@ -5,9 +5,10 @@
 
 import argparse
 import dataclasses
+import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import huggingface_hub
 from vllm.transformers_utils.repo_utils import get_model_path
@@ -26,6 +27,29 @@ from dingo.common.configuration.groups.runtime_args import (
 from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_diffusion_quantization_config(value: str) -> Optional[dict[str, Any]]:
+    """Parse a JSON string into a diffusion quantization config dict.
+
+    Accepts the same shape vLLM-Omni expects (e.g.
+    ``{"method":"fp8","activation_scheme":"dynamic"}``). Returns ``None`` for
+    empty values so the Optional default semantics are preserved and an empty
+    config is not forwarded to AsyncOmni.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"diffusion_quantization_config must be valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError(
+            "diffusion_quantization_config must be a JSON object"
+        )
+    return parsed
 
 
 @dataclasses.dataclass
@@ -49,6 +73,13 @@ class OmniDiffusionKwargs:
     enable_cache_dit_summary: bool = False
     enable_cpu_offload: bool = False
     enforce_eager: bool = False
+    # vLLM-Omni diffusion pipeline knobs that Dynamo previously injected via a
+    # runtime wrapper. Exposing them here lets deployments set them through the
+    # CLI / env vars without monkey-patching _build_omni_kwargs.
+    diffusion_compile_dynamic: bool = False
+    enable_diffusion_pipeline_profiler: bool = False
+    diffusion_attention_backend: Optional[str] = None
+    diffusion_quantization_config: Optional[dict] = None
 
 
 @dataclasses.dataclass
@@ -67,6 +98,10 @@ class OmniParallelKwargs:
     use_hsdp: bool = False
     hsdp_shard_size: int = -1
     hsdp_replicate_size: int = 1
+    # Text-encoder tensor parallelism and VAE parallel mode are DiffusionParallelConfig
+    # fields that Dynamo previously injected via a runtime wrapper.
+    text_encoder_tp_size: int = 1
+    vae_parallel_mode: str = "tile"
 
 
 class OmniArgGroup(ArgGroup):
@@ -187,6 +222,52 @@ class OmniArgGroup(ArgGroup):
             default=False,
             help="Disable torch.compile and force eager execution for diffusion models.",
         )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--diffusion-compile-dynamic",
+            env_var="DYN_OMNI_DIFFUSION_COMPILE_DYNAMIC",
+            default=False,
+            help=(
+                "Enable dynamic shape for torch.compile of the diffusion "
+                "transformer. When False (default), the compile uses a fixed "
+                "shape, which is faster but requires consistent input "
+                "dimensions across requests."
+            ),
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enable-diffusion-pipeline-profiler",
+            env_var="DYN_OMNI_ENABLE_DIFFUSION_PIPELINE_PROFILER",
+            default=False,
+            help=(
+                "Enable the diffusion pipeline profiler. When True, the "
+                "pipeline records detailed timing for each stage (e.g. "
+                "text_encoder, dit, vae)."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--diffusion-attention-backend",
+            env_var="DYN_OMNI_DIFFUSION_ATTENTION_BACKEND",
+            default=None,
+            help=(
+                "Attention backend for the diffusion transformer. Supported "
+                "values: FLASH_ATTN, FLASH_ATTN_3, TORCH_SDPA, CUTLASS, "
+                "TRITON_ATTN"
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--diffusion-quantization-config",
+            env_var="DYN_OMNI_DIFFUSION_QUANTIZATION_CONFIG",
+            default=None,
+            arg_type=_parse_diffusion_quantization_config,
+            help=(
+                "Quantization configuration for the diffusion transformer. "
+                "Accepts a JSON string (e.g. "
+                '{"method":"fp8","activation_scheme":"dynamic"}).'
+            ),
+        )
 
         # TTS parameters
         tts_g = parser.add_argument_group(
@@ -293,6 +374,29 @@ class OmniArgGroup(ArgGroup):
             default=1,
             arg_type=int,
             help="Number of HSDP replica groups (default: 1).",
+        )
+        add_argument(
+            g,
+            flag_name="--text-encoder-tp-size",
+            env_var="DYN_OMNI_TEXT_ENCODER_TP_SIZE",
+            default=1,
+            arg_type=int,
+            help=(
+                "Tensor parallel size for the diffusion text encoder. "
+                "Defaults to 1; set to 8 to match the MiniMax-H3 optimized config."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--vae-parallel-mode",
+            env_var="DYN_OMNI_VAE_PARALLEL_MODE",
+            default="tile",
+            choices=["tile", "context"],
+            help=(
+                "Parallel mode for the video VAE. "
+                "'tile' (default) splits the VAE decode into tiles; "
+                "'context' uses context parallelism."
+            ),
         )
 
         # Disaggregated stage worker flags

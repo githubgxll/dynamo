@@ -144,26 +144,60 @@ class OmniHandler(BaseOmniHandler):
         )
 
         # Pre-load input image for I2V requests (async I/O before sync build)
-        image = None
+        image: Union[PIL.Image.Image, list[PIL.Image.Image], None] = None
         if (
             request_type == RequestType.VIDEO_GENERATION
             and isinstance(parsed_request, NvCreateVideoRequest)
-            and parsed_request.input_reference
         ):
-            try:
-                image = await self._image_loader.load_image(
-                    parsed_request.input_reference
+            if (
+                parsed_request.input_reference is not None
+                and parsed_request.input_references is not None
+            ):
+                yield self._error_chunk(
+                    request_id,
+                    "input_reference and input_references are mutually exclusive",
+                    request_type,
                 )
-            except Exception as e:
-                logger.warning("Failed to load I2V input_reference: %s", e)
-                yield {
-                    "id": request_id,
-                    "object": "video",
-                    "model": self.config.model,
-                    "status": "failed",
-                    "error": f"Failed to load input_reference: {e}",
-                }
                 return
+
+            if parsed_request.input_reference is not None:
+                try:
+                    image = await self._image_loader.load_image(
+                        parsed_request.input_reference
+                    )
+                except Exception as e:
+                    logger.warning("Failed to load I2V input_reference: %s", e)
+                    yield self._error_chunk(
+                        request_id,
+                        f"Failed to load input_reference: {e}",
+                        request_type,
+                    )
+                    return
+            elif parsed_request.input_references is not None:
+                references = parsed_request.input_references
+                if not references:
+                    yield self._error_chunk(
+                        request_id,
+                        "input_references must not be empty",
+                        request_type,
+                    )
+                    return
+                try:
+                    loaded = await asyncio.gather(
+                        *(
+                            self._image_loader.load_image(reference)
+                            for reference in references
+                        )
+                    )
+                    image = list(loaded)
+                except Exception as e:
+                    logger.warning("Failed to load I2V input_references: %s", e)
+                    yield self._error_chunk(
+                        request_id,
+                        f"Failed to load input_references: {e}",
+                        request_type,
+                    )
+                    return
 
         try:
             inputs = await self.build_engine_inputs(
@@ -351,16 +385,22 @@ class OmniHandler(BaseOmniHandler):
     def _engine_inputs_from_video(
         self,
         req: NvCreateVideoRequest,
-        image: PIL.Image.Image | None = None,
+        image: Union[PIL.Image.Image, list[PIL.Image.Image], None] = None,
     ) -> EngineInputs:
         """Build engine inputs from an NvCreateVideoRequest.
 
         Args:
             req: Parsed video generation request.
-            image: Pre-loaded PIL Image for I2V. When provided, the image is
-                attached to the prompt via ``multi_modal_data`` so vllm-omni's
-                I2V pipeline pre-process can use it.
+            image: Pre-loaded PIL Image for I2V, or an ordered list of images
+                for FL2VA-style multi-keyframe generation. When provided, the
+                image(s) are attached to the prompt via ``multi_modal_data`` so
+                vllm-omni's I2V pipeline pre-process can use them.
         """
+        if req.input_reference is not None and req.input_references is not None:
+            raise ValueError(
+                "input_reference and input_references are mutually exclusive"
+            )
+
         width, height = parse_size(req.size)
         nvext = req.nvext or VideoNvExt()
 
@@ -376,7 +416,20 @@ class OmniHandler(BaseOmniHandler):
         if nvext.negative_prompt is not None:
             prompt.negative_prompt = nvext.negative_prompt
 
-        if image is not None:
+        if isinstance(image, list):
+            if not image:
+                raise ValueError("input_references resolved to an empty image list")
+            prompt["multi_modal_data"] = {"image": list(image)}
+            logger.info(
+                "I2V: attached %d image(s) to multi_modal_data (first %dx%d, "
+                "last %dx%d)",
+                len(image),
+                image[0].size[0],
+                image[0].size[1],
+                image[-1].size[0],
+                image[-1].size[1],
+            )
+        elif image is not None:
             prompt["multi_modal_data"] = {"image": image}
             logger.info(
                 "I2V: attached image (%dx%d) to multi_modal_data",
@@ -398,6 +451,21 @@ class OmniHandler(BaseOmniHandler):
         self._update_if_not_none(sp, "guidance_scale_2", nvext.guidance_scale_2)
         self._update_if_not_none(sp, "fps", fps)
 
+        # Forward named aspect_ratio and per-keyframe frame_indices to the
+        # diffusion sampling params. Both are optional vLLM-Omni extension
+        # fields; models that require them (e.g. MiniMax-H3 T2VA/FL2VA) read
+        # them from ``extra_args``. When ``aspect_ratio`` is not provided the
+        # request is still passed through so models that can derive it from
+        # size (or that do not require it) keep working.
+        extra_args = getattr(sp, "extra_args", None)
+        if extra_args is None:
+            extra_args = {}
+            sp.extra_args = extra_args
+        if nvext.aspect_ratio is not None:
+            extra_args["aspect_ratio"] = nvext.aspect_ratio
+        if nvext.frame_indices is not None:
+            extra_args["frame_indices"] = list(nvext.frame_indices)
+
         logger.info(
             f"Video diffusion request: prompt='{req.prompt[:50]}...', "
             f"size={width}x{height}, frames={num_frames}, fps={fps}"
@@ -408,4 +476,6 @@ class OmniHandler(BaseOmniHandler):
             sampling_params_list=self._build_sampling_params_list(sp),
             request_type=RequestType.VIDEO_GENERATION,
             fps=fps,
+            response_format=req.response_format,
+            output_format=req.output_format,
         )

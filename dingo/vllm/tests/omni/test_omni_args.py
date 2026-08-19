@@ -192,3 +192,93 @@ def test_omni_config_imports_cleanly():
 
     assert OmniConfig is not None
     assert callable(parse_omni_args)
+
+
+# --- vLLM-Omni diffusion / parallel CLI passthrough (runtime wrapper removal) ---
+
+
+def test_diffusion_kwargs_expose_runtime_wrapper_fields():
+    """Fields previously injected by launch_worker._build_h3_tuned_omni_kwargs
+    are now first-class OmniDiffusionKwargs members."""
+    expected = {
+        "diffusion_compile_dynamic",
+        "enable_diffusion_pipeline_profiler",
+        "diffusion_attention_backend",
+        "diffusion_quantization_config",
+    }
+    assert expected.issubset(_DIFFUSION_FIELDS), (
+        f"Missing diffusion kwargs: {expected - _DIFFUSION_FIELDS}"
+    )
+
+
+def test_parallel_kwargs_expose_runtime_wrapper_fields():
+    """Fields previously injected by launch_worker._build_h3_tuned_omni_kwargs
+    are now first-class OmniParallelKwargs members."""
+    expected = {"text_encoder_tp_size", "vae_parallel_mode"}
+    assert expected.issubset(_PARALLEL_FIELDS), (
+        f"Missing parallel kwargs: {expected - _PARALLEL_FIELDS}"
+    )
+
+
+def test_diffusion_kwargs_defaults_match_vllm_omni():
+    """Defaults match the vLLM-Omni AsyncOmni constructor so existing
+    deployments that don't set the new flags see no behavior change."""
+    defaults = OmniDiffusionKwargs()
+    assert defaults.diffusion_compile_dynamic is False
+    assert defaults.enable_diffusion_pipeline_profiler is False
+    assert defaults.diffusion_attention_backend is None
+    assert defaults.diffusion_quantization_config is None
+
+
+def test_parallel_kwargs_defaults_match_vllm_omni():
+    """Defaults match the vLLM-Omni DiffusionParallelConfig so existing
+    deployments that don't set the new flags see no behavior change."""
+    defaults = OmniParallelKwargs()
+    assert defaults.text_encoder_tp_size == 1
+    assert defaults.vae_parallel_mode == "tile"
+
+
+def test_diffusion_quantization_config_accepts_fp8_json():
+    from dingo.vllm.omni.args import _parse_diffusion_quantization_config
+
+    parsed = _parse_diffusion_quantization_config(
+        '{"method":"fp8","activation_scheme":"dynamic"}'
+    )
+    assert parsed == {"method": "fp8", "activation_scheme": "dynamic"}
+
+
+def test_diffusion_quantization_config_empty_returns_none():
+    from dingo.vllm.omni.args import _parse_diffusion_quantization_config
+
+    assert _parse_diffusion_quantization_config("") is None
+
+
+def test_diffusion_quantization_config_rejects_non_object():
+    import argparse
+
+    from dingo.vllm.omni.args import _parse_diffusion_quantization_config
+
+    with pytest.raises(argparse.ArgumentTypeError, match="JSON object"):
+        _parse_diffusion_quantization_config('["fp8"]')
+
+
+def test_diffusion_quantization_config_rejects_invalid_json():
+    import argparse
+
+    from dingo.vllm.omni.args import _parse_diffusion_quantization_config
+
+    with pytest.raises(argparse.ArgumentTypeError, match="valid JSON"):
+        _parse_diffusion_quantization_config("not-json")
+
+
+def test_omni_config_with_runtime_wrapper_fields_validates():
+    """Config with the wrapper fields set validates cleanly."""
+    config = _make_omni_config(
+        diffusion_compile_dynamic=False,
+        enable_diffusion_pipeline_profiler=True,
+        diffusion_attention_backend="FLASH_ATTN",
+        diffusion_quantization_config={"method": "fp8"},
+        text_encoder_tp_size=8,
+        vae_parallel_mode="tile",
+    )
+    config.validate()

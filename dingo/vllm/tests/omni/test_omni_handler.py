@@ -126,15 +126,22 @@ class TestBuildEngineInputs:
 
     @pytest.mark.asyncio
     async def test_video_generation(self):
-        """Video request parses prompt, size, seconds, and sets fps."""
+        """Video request preserves output delivery fields for the formatter."""
         handler = _make_handler()
         req = NvCreateVideoRequest(
-            prompt="a drone", model="test", size="832x480", seconds=2
+            prompt="a drone",
+            model="test",
+            size="832x480",
+            seconds=2,
+            response_format="b64_json",
+            output_format="mp4",
         )
         inputs = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
         assert inputs.request_type == RequestType.VIDEO_GENERATION
         assert inputs.prompt["prompt"] == "a drone"
         assert inputs.fps > 0
+        assert inputs.response_format == "b64_json"
+        assert inputs.output_format == "mp4"
 
     @pytest.mark.asyncio
     async def test_audio_generation_delegates_toaudio(self):
@@ -216,6 +223,87 @@ class TestI2VEngineInputs:
         empty = VideoNvExt()
         assert empty.boundary_ratio is None
         assert empty.guidance_scale_2 is None
+
+    @pytest.mark.asyncio
+    async def test_aspect_ratio_forwarded_to_sampling_params(self):
+        """B1: nvext.aspect_ratio is forwarded to extra_args.aspect_ratio."""
+        handler = _make_handler()
+        req = NvCreateVideoRequest(
+            prompt="a drone",
+            model="test",
+            size="1344x768",
+            seconds=2,
+            nvext=VideoNvExt(aspect_ratio="16:9"),
+        )
+        inputs = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        sp = inputs.sampling_params_list[0]
+        assert sp.extra_args["aspect_ratio"] == "16:9"
+
+    @pytest.mark.asyncio
+    async def test_frame_indices_forwarded_to_sampling_params(self):
+        """B4: nvext.frame_indices is forwarded to extra_args.frame_indices."""
+        handler = _make_handler()
+        req = NvCreateVideoRequest(
+            prompt="a drone",
+            model="test",
+            size="1344x768",
+            seconds=2,
+            nvext=VideoNvExt(frame_indices=[0, -1]),
+        )
+        inputs = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        sp = inputs.sampling_params_list[0]
+        assert sp.extra_args["frame_indices"] == [0, -1]
+
+    @pytest.mark.asyncio
+    async def test_input_references_attaches_image_list(self):
+        """B4: list of images is attached to multi_modal_data.image in order."""
+        handler = _make_handler()
+        first = Image.new("RGB", (64, 64), color="red")
+        last = Image.new("RGB", (64, 64), color="blue")
+        inputs = await handler.build_engine_inputs(
+            NvCreateVideoRequest(
+                prompt="a drone",
+                model="test",
+                size="1344x768",
+                seconds=2,
+            ),
+            RequestType.VIDEO_GENERATION,
+            image=[first, last],
+        )
+        attached = inputs.prompt["multi_modal_data"]["image"]
+        assert attached == [first, last]
+
+    @pytest.mark.asyncio
+    async def test_input_reference_and_input_references_mutually_exclusive(self):
+        """B4: setting both input_reference and input_references raises."""
+        handler = _make_handler()
+        req = NvCreateVideoRequest(
+            prompt="a drone",
+            model="test",
+            size="1344x768",
+            seconds=2,
+            input_reference="data:image/png;base64,AAA",
+            input_references=["data:image/png;base64,BBB"],
+        )
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+
+    def test_video_protocol_aspect_ratio_and_frame_indices_roundtrip(self):
+        """B1+B4: VideoNvExt and NvCreateVideoRequest carry the new fields."""
+        req = NvCreateVideoRequest(
+            prompt="bear",
+            model="test",
+            size="1344x768",
+            input_references=["data:image/png;base64,AAA", "data:image/png;base64,BBB"],
+            nvext=VideoNvExt(aspect_ratio="16:9", frame_indices=[0, -1]),
+        )
+        data = req.model_dump()
+        assert data["input_references"] == [
+            "data:image/png;base64,AAA",
+            "data:image/png;base64,BBB",
+        ]
+        assert data["nvext"]["aspect_ratio"] == "16:9"
+        assert data["nvext"]["frame_indices"] == [0, -1]
 
 
 class TestBuildSamplingParamsList:

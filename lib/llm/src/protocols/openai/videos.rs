@@ -23,6 +23,13 @@ pub struct NvCreateVideoRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_reference: Option<String>,
 
+    /// Optional ordered image references for image-to-video generation.
+    /// Models that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume
+    /// the list as first/last frame pairs. Mutually exclusive with
+    /// ``input_reference``; the handler rejects requests that set both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_references: Option<Vec<String>>,
+
     /// Clip duration in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seconds: Option<i32>,
@@ -206,6 +213,7 @@ mod tests {
             prompt: "cat".into(),
             model: "wan".into(),
             input_reference: None,
+            input_references: None,
             seconds: None,
             size: None,
             user: None,
@@ -272,5 +280,43 @@ mod tests {
         assert_eq!(d2.output_format, "webm");
         assert_eq!(d2.url.as_deref(), Some("http://x/v.webm"));
         assert!(d2.b64_json.is_none());
+    }
+
+    #[test]
+    fn video_request_input_references_round_trips() {
+        let json = r#"{"prompt":"cat","model":"wan","input_references":["data:image/png;base64,AAA","data:image/png;base64,BBB"]}"#;
+        let req: NvCreateVideoRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.input_references.as_deref(),
+            Some(
+                &[
+                    "data:image/png;base64,AAA".to_string(),
+                    "data:image/png;base64,BBB".to_string()
+                ][..]
+            )
+        );
+        let out = serde_json::to_string(&req).unwrap();
+        assert!(out.contains("\"input_references\""));
+    }
+
+    #[test]
+    fn video_request_input_references_absent_is_none() {
+        let json = r#"{"prompt":"cat","model":"wan"}"#;
+        let req: NvCreateVideoRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.input_references, None);
+    }
+
+    #[test]
+    fn nvext_aspect_ratio_round_trips() {
+        let json = r#"{"fps":24,"aspect_ratio":"16:9"}"#;
+        let nv: NvExt = serde_json::from_str(json).unwrap();
+        assert_eq!(nv.aspect_ratio.as_deref(), Some("16:9"));
+    }
+
+    #[test]
+    fn nvext_frame_indices_round_trips() {
+        let json = r#"{"frame_indices":[0,-1]}"#;
+        let nv: NvExt = serde_json::from_str(json).unwrap();
+        assert_eq!(nv.frame_indices.as_deref(), Some(&[0, -1][..]));
     }
 }

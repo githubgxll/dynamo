@@ -232,6 +232,80 @@ class TestDiffusionFormatterVideo:
         assert "boom" in chunk["error"]
 
 
+class TestDiffusionFormatterAudioExtraction:
+    """B2: DiffusionFormatter._extract_audio pulls audio + sample rate from
+    stage_output.multimodal_output."""
+
+    def test_returns_none_when_no_multimodal_output(self):
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        stage.multimodal_output = None
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert audio is None
+        assert sr is None
+
+    def test_returns_none_when_no_audio_key(self):
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        stage.multimodal_output = {"video": "x"}
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert audio is None
+        assert sr is None
+
+    def test_extracts_audio_and_sample_rate_from_top_level(self):
+        import numpy as np
+
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        audio_tensor = np.random.randn(2400).astype(np.float32)
+        stage.multimodal_output = {
+            "audio": audio_tensor,
+            "audio_sample_rate": 32000,
+        }
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert audio is audio_tensor
+        assert sr == 32000
+
+    def test_extracts_sample_rate_from_sr_key(self):
+        import numpy as np
+
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        audio_tensor = np.random.randn(2400).astype(np.float32)
+        stage.multimodal_output = {"audio": audio_tensor, "sr": 48000}
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert sr == 48000
+
+    def test_extracts_sample_rate_from_metadata_audio(self):
+        import numpy as np
+
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        audio_tensor = np.random.randn(2400).astype(np.float32)
+        stage.multimodal_output = {
+            "audio": audio_tensor,
+            "metadata": {"audio": {"sample_rate": 44100}},
+        }
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert sr == 44100
+
+    def test_falls_back_to_24000_when_sample_rate_missing(self):
+        import numpy as np
+
+        from dingo.vllm.omni.output_formatter import DiffusionFormatter
+
+        stage = MagicMock()
+        audio_tensor = np.random.randn(2400).astype(np.float32)
+        stage.multimodal_output = {"audio": audio_tensor}
+        audio, sr = DiffusionFormatter._extract_audio(stage)
+        assert sr == 24000
+
+
 class TestBuildCompletionUsage:
     def test_basic(self):
         ro = _make_request_output("hello", finish_reason="stop")

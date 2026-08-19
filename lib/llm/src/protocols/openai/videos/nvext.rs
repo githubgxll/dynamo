@@ -60,6 +60,24 @@ pub struct NvExt {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(default, setter(strip_option))]
     pub guidance_scale_2: Option<f32>,
+
+    /// Named output aspect ratio for video generation (e.g. "16:9", "1:1").
+    /// Required by some models (e.g. MiniMax-H3 T2VA) when the pipeline cannot
+    /// derive it from pixel dimensions alone; when provided it is forwarded to
+    /// the diffusion sampling params as ``extra_args.aspect_ratio``.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    pub aspect_ratio: Option<String>,
+
+    /// Per-keyframe semantic indices for FL2VA-style image-to-video generation.
+    /// The list length must match the number of reference images and use
+    /// model-native semantics (e.g. ``[0]`` for first frame, ``[-1]`` for last
+    /// frame, ``[0, -1]`` for both). When ``input_references`` carries multiple
+    /// images, the handler attaches them to ``multi_modal_data.image`` in order
+    /// and writes this list to ``extra_args.frame_indices``.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    pub frame_indices: Option<Vec<i32>>,
 }
 
 impl Default for NvExt {

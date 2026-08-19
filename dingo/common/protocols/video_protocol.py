@@ -46,6 +46,24 @@ class VideoNvExt(BaseModel):
     guidance_scale_2: Optional[float] = None
     """CFG scale for the low-noise expert (vLLM-Omni I2V dual-guidance)."""
 
+    aspect_ratio: Optional[str] = None
+    """Named output aspect ratio for video generation (e.g. '16:9', '1:1').
+
+    Required by some models (e.g. MiniMax-H3 T2VA) when the pipeline cannot
+    derive it from pixel dimensions alone; when provided it is forwarded to the
+    diffusion sampling params as ``extra_args.aspect_ratio``.
+    """
+
+    frame_indices: Optional[list[int]] = None
+    """Per-keyframe semantic indices for FL2VA-style image-to-video generation.
+
+    The list length must match the number of reference images and use
+    model-native semantics (e.g. ``[0]`` for first frame, ``[-1]`` for last
+    frame, ``[0, -1]`` for both). When ``input_references`` carries multiple
+    images, the handler attaches them to ``multi_modal_data.image`` in order
+    and writes this list to ``extra_args.frame_indices``.
+    """
+
 
 class NvCreateVideoRequest(BaseModel):
     """Request for video generation (/v1/videos endpoint).
@@ -63,6 +81,14 @@ class NvCreateVideoRequest(BaseModel):
     # Optional fields
     input_reference: Optional[str] = None
     """Optional image reference that guides generation (for I2V)."""
+
+    input_references: Optional[list[str]] = None
+    """Ordered image references for image-to-video generation.
+
+    Models that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume the
+    list as first/last frame pairs. Mutually exclusive with ``input_reference``;
+    the handler rejects requests that set both.
+    """
 
     seconds: Optional[int] = None
     """Clip duration in seconds."""

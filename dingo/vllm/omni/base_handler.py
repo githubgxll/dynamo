@@ -19,6 +19,7 @@ except ImportError:
 
 from dynamo._core import Context
 from dingo.common.protocols.audio_protocol import NvAudioSpeechResponse
+from dingo.common.protocols.video_protocol import NvVideosResponse
 from dingo.common.utils.output_modalities import RequestType
 from dingo.vllm.handlers import BaseWorkerHandler, build_sampling_params
 
@@ -159,6 +160,7 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         """Create an error response matching the expected protocol for the request type.
 
         For AUDIO_GENERATION returns NvAudioSpeechResponse format.
+        For VIDEO_GENERATION returns NvVideosResponse format with status=failed.
         For all other types returns OpenAI chat.completion.chunk format.
         """
         if request_type == RequestType.AUDIO_GENERATION:
@@ -167,6 +169,18 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
                 model=self.config.served_model_name or self.config.model,
                 status="failed",
                 created=int(time.time()),
+                error=error_message,
+            ).model_dump()
+
+        if request_type == RequestType.VIDEO_GENERATION:
+            return NvVideosResponse(
+                id=request_id,
+                object="video",
+                model=self.config.served_model_name or self.config.model,
+                status="failed",
+                progress=0,
+                created=int(time.time()),
+                data=[],
                 error=error_message,
             ).model_dump()
 
