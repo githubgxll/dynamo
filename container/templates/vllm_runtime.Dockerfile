@@ -188,10 +188,13 @@ RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target
 
 # Apply Dingo's MiniMax-H3 vLLM-Omni patches (source overlays + runtime overlay
 # modules) to the installed vllm-omni site-packages.  Pinned checksums in the
-# install script fail the build if vllm-omni is upgraded without re-validating
-# the overlays.  The generated sitecustomize.py loads runtime overlays on
-# worker startup gated by environment flags (FP8+HSDP, community DiT overlay,
-# VAE uint8/regional compile, Ref2VA media probe/decode are on by default).
+# install script enforces the exact validated vLLM + vLLM-Omni version pair and
+# pinned file hashes, failing the build if either package is upgraded without
+# re-validating every overlay. The generated .pth-triggered bootstrap
+# (dingo_vllm_omni_patches.py)
+# loads runtime overlays only when DINGO_ENABLE_MINIMAX_H3_PATCHES=1. Individual
+# hooks are additionally opt-in through H3_* flags, so unrelated GLM/DeepSeek
+# model processes do not import the H3 bootstrap or mutate vLLM-Omni modules.
 #
 # Intentionally limited to CUDA builds: the source overlays replace H3
 # transformer/denoise_loop files from CUDA-specific upstream PRs (#5990/#6173),

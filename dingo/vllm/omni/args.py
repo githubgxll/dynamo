@@ -132,6 +132,47 @@ class OmniArgGroup(ArgGroup):
             help="Default frames per second for generated videos.",
         )
 
+        add_argument(
+            g,
+            flag_name="--request-adapter",
+            env_var="DYN_OMNI_REQUEST_ADAPTER",
+            default=None,
+            choices=["minimax_h3"],
+            help=(
+                "Optional model-specific request adapter. Disabled by default, "
+                "so non-video and non-MiniMax workers keep the generic request path."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-workflow",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_WORKFLOW",
+            default=None,
+            choices=["fl2va", "ref2va"],
+            help=(
+                "Checkpoint workflow served by the request adapter. MiniMax-H3 "
+                "workers must declare either fl2va or ref2va explicitly."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-media-dir",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_MEDIA_DIR",
+            default="/tmp/dynamo_media",
+            help="Local directory used for validated request-adapter media inputs.",
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-media-max-bytes",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_MEDIA_MAX_BYTES",
+            default=2 * 1024 * 1024 * 1024,
+            arg_type=int,
+            help=(
+                "Maximum aggregate bytes retained by the request-adapter media "
+                "cache. New unique media is rejected when the cache is full."
+            ),
+        )
+
         # OmniDiffusionKwargs fields
         add_negatable_bool_argument(
             g,
@@ -447,6 +488,10 @@ class OmniConfig(DynamoRuntimeConfig):
 
     stage_configs_path: Optional[str] = None
     default_video_fps: int = 16
+    request_adapter: Optional[str] = None
+    request_adapter_workflow: Optional[str] = None
+    request_adapter_media_dir: str = "/tmp/dynamo_media"
+    request_adapter_media_max_bytes: int = 2 * 1024 * 1024 * 1024
 
     # Nested structs — each group of fields has a clear destination
     diffusion: OmniDiffusionKwargs = dataclasses.field(
@@ -493,6 +538,20 @@ class OmniConfig(DynamoRuntimeConfig):
         DynamoRuntimeConfig.validate(self)
         if self.default_video_fps <= 0:
             raise ValueError("--default-video-fps must be > 0")
+        if self.request_adapter is None and self.request_adapter_workflow is not None:
+            raise ValueError("--request-adapter-workflow requires --request-adapter")
+        if (
+            self.request_adapter == "minimax_h3"
+            and self.request_adapter_workflow not in {"fl2va", "ref2va"}
+        ):
+            raise ValueError(
+                "--request-adapter minimax_h3 requires "
+                "--request-adapter-workflow fl2va or ref2va"
+            )
+        if self.request_adapter is not None and not self.request_adapter_media_dir:
+            raise ValueError("--request-adapter-media-dir must not be empty")
+        if self.request_adapter_media_max_bytes <= 0:
+            raise ValueError("--request-adapter-media-max-bytes must be > 0")
         if self.parallel.ulysses_degree <= 0:
             raise ValueError("--ulysses-degree must be > 0")
         if self.parallel.ring_degree <= 0:

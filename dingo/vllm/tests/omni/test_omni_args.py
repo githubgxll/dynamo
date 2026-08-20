@@ -69,6 +69,10 @@ def _make_omni_config(**overrides) -> OmniConfig:
         "engine_args": SimpleNamespace(),
         "stage_configs_path": None,
         "default_video_fps": 16,
+        "request_adapter": None,
+        "request_adapter_workflow": None,
+        "request_adapter_media_dir": "/tmp/dynamo_media",
+        "request_adapter_media_max_bytes": 2 * 1024 * 1024 * 1024,
         "tts_max_instructions_length": 500,
         "tts_max_new_tokens_min": 1,
         "tts_max_new_tokens_max": 4096,
@@ -90,6 +94,40 @@ def _make_omni_config(**overrides) -> OmniConfig:
 def test_omni_config_valid_defaults():
     config = _make_omni_config()
     config.validate()
+
+
+def test_request_adapter_is_disabled_by_default():
+    config = _make_omni_config()
+    assert config.request_adapter is None
+    assert config.request_adapter_workflow is None
+    config.validate()
+
+
+@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
+def test_minimax_h3_request_adapter_requires_explicit_valid_workflow(workflow):
+    config = _make_omni_config(
+        request_adapter="minimax_h3", request_adapter_workflow=workflow
+    )
+    config.validate()
+
+
+def test_minimax_h3_request_adapter_rejects_missing_workflow():
+    config = _make_omni_config(request_adapter="minimax_h3")
+    with pytest.raises(ValueError, match="requires.*workflow"):
+        config.validate()
+
+
+def test_workflow_without_request_adapter_is_rejected():
+    config = _make_omni_config(request_adapter_workflow="fl2va")
+    with pytest.raises(ValueError, match="requires --request-adapter"):
+        config.validate()
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_request_adapter_media_limit_must_be_positive(limit):
+    config = _make_omni_config(request_adapter_media_max_bytes=limit)
+    with pytest.raises(ValueError, match="media-max-bytes must be > 0"):
+        config.validate()
 
 
 @pytest.mark.parametrize("fps", [0, -1, -100])
@@ -206,18 +244,18 @@ def test_diffusion_kwargs_expose_runtime_wrapper_fields():
         "diffusion_attention_backend",
         "diffusion_quantization_config",
     }
-    assert expected.issubset(_DIFFUSION_FIELDS), (
-        f"Missing diffusion kwargs: {expected - _DIFFUSION_FIELDS}"
-    )
+    assert expected.issubset(
+        _DIFFUSION_FIELDS
+    ), f"Missing diffusion kwargs: {expected - _DIFFUSION_FIELDS}"
 
 
 def test_parallel_kwargs_expose_runtime_wrapper_fields():
     """Fields previously injected by launch_worker._build_h3_tuned_omni_kwargs
     are now first-class OmniParallelKwargs members."""
     expected = {"text_encoder_tp_size", "vae_parallel_mode"}
-    assert expected.issubset(_PARALLEL_FIELDS), (
-        f"Missing parallel kwargs: {expected - _PARALLEL_FIELDS}"
-    )
+    assert expected.issubset(
+        _PARALLEL_FIELDS
+    ), f"Missing parallel kwargs: {expected - _PARALLEL_FIELDS}"
 
 
 def test_diffusion_kwargs_defaults_match_vllm_omni():

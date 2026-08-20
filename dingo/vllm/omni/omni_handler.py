@@ -22,6 +22,7 @@ from dynamo.llm.exceptions import EngineShutdown
 from dingo.vllm.omni.audio_handler import AudioGenerationHandler
 from dingo.vllm.omni.base_handler import BaseOmniHandler
 from dingo.vllm.omni.output_formatter import OutputFormatter
+from dingo.vllm.omni.request_adapters import create_request_adapter
 from dingo.vllm.omni.utils import (
     build_image_generation_prompt,
     image_generation_negative_prompt_from_request,
@@ -95,6 +96,22 @@ class OmniHandler(BaseOmniHandler):
         self.media_output_fs = media_output_fs
         self.media_output_http_url = media_output_http_url
         self._image_loader = ImageLoader()
+        self.request_adapter = create_request_adapter(
+            getattr(config, "request_adapter", None),
+            getattr(config, "request_adapter_workflow", None),
+            getattr(config, "request_adapter_media_dir", "/tmp/dynamo_media"),
+            getattr(
+                config,
+                "request_adapter_media_max_bytes",
+                2 * 1024 * 1024 * 1024,
+            ),
+        )
+        if self.request_adapter is not None:
+            logger.info(
+                "Enabled Omni request adapter %s for workflow %s",
+                config.request_adapter,
+                config.request_adapter_workflow,
+            )
 
         self.output_formatter = OutputFormatter(
             model_name=config.served_model_name or config.model,
@@ -145,9 +162,8 @@ class OmniHandler(BaseOmniHandler):
 
         # Pre-load input image for I2V requests (async I/O before sync build)
         image: Union[PIL.Image.Image, list[PIL.Image.Image], None] = None
-        if (
-            request_type == RequestType.VIDEO_GENERATION
-            and isinstance(parsed_request, NvCreateVideoRequest)
+        if request_type == RequestType.VIDEO_GENERATION and isinstance(
+            parsed_request, NvCreateVideoRequest
         ):
             if (
                 parsed_request.input_reference is not None
@@ -160,7 +176,16 @@ class OmniHandler(BaseOmniHandler):
                 )
                 return
 
-            if parsed_request.input_reference is not None:
+            if self.request_adapter is not None:
+                try:
+                    image = await self.request_adapter.load_reference(
+                        parsed_request, self._image_loader
+                    )
+                except Exception as e:
+                    logger.warning("Failed to adapt video input reference: %s", e)
+                    yield self._error_chunk(request_id, str(e), request_type)
+                    return
+            elif parsed_request.input_reference is not None:
                 try:
                     image = await self._image_loader.load_image(
                         parsed_request.input_reference
@@ -278,6 +303,11 @@ class OmniHandler(BaseOmniHandler):
             return self._engine_inputs_from_image(parsed_request)
         elif request_type == RequestType.VIDEO_GENERATION:
             assert isinstance(parsed_request, NvCreateVideoRequest)
+            adapter = getattr(self, "request_adapter", None)
+            if adapter is not None:
+                return adapter.build_engine_inputs(
+                    parsed_request, image, self._engine_inputs_from_video
+                )
             return self._engine_inputs_from_video(parsed_request, image=image)
         elif request_type == RequestType.AUDIO_GENERATION:
             assert isinstance(parsed_request, NvCreateAudioSpeechRequest)
