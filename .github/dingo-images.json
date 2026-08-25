@@ -8,13 +8,13 @@
   "images": [
     {
       "framework": "dynamo",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo",
       "tag_prefix": "cu130-runtime"
     },
     {
       "framework": "vllm",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo-vllm",
       "tag_prefix": "v0.27.1-cu130-runtime"
     },

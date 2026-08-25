@@ -7,6 +7,14 @@
 ##### Wheel Build Image ##########
 ##################################
 
+{% if builder_image %}
+# This image contains the complete reusable_builder_base stage (toolchains,
+# Python build tools, gdrcopy, FFmpeg, UCX, libfabric and NIXL). It is versioned
+# by the CI from the files that define those dependencies, so ordinary Dynamo
+# source changes can start from the published image on any runner.
+FROM {{ builder_image }} AS wheel_builder_base
+{% else %}
+
 {% if platform == "multi" and device == "cuda" %}
 # Multi-arch: declare both manylinux base images with explicit --platform so each is
 # always pulled as the correct native arch regardless of the current TARGETPLATFORM.
@@ -249,16 +257,17 @@ RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64")
 # sccache binary is pre-installed in dynamo_base; stage it off-PATH so
 # Meson doesn't auto-detect it as a CUDA compiler launcher
 # (https://github.com/mesonbuild/meson/issues/11118).
-# When USE_SCCACHE=true the RUN below symlinks it onto PATH before install.
+# Compiler integrations use SCCACHE_EXECUTABLE explicitly when enabled.
 COPY --from=dynamo_base /usr/local/bin/sccache /opt/sccache/sccache
 
 ARG USE_SCCACHE
 ARG SCCACHE_BUCKET
 ARG SCCACHE_REGION
+ARG SCCACHE_GHA_ENABLED
+ARG SCCACHE_GHA_VERSION
 COPY container/use-sccache.sh /tmp/use-sccache.sh
 RUN if [ "$USE_SCCACHE" = "true" ]; then \
-        ln -s /opt/sccache/sccache /usr/local/bin/sccache && \
-        /tmp/use-sccache.sh install; \
+        SCCACHE_EXECUTABLE=/opt/sccache/sccache /tmp/use-sccache.sh install; \
     fi
 
 # Compliance: native source archives drop here. RUN git clone / wget …tar lines
@@ -291,7 +300,10 @@ RUN mkdir -p /tmp/native-sources
 # Set SCCACHE environment variables (RUSTC_WRAPPER is set dynamically by
 # setup-env only when the sccache server starts successfully)
 ENV SCCACHE_BUCKET=${USE_SCCACHE:+${SCCACHE_BUCKET}} \
-    SCCACHE_REGION=${USE_SCCACHE:+${SCCACHE_REGION}}
+    SCCACHE_REGION=${USE_SCCACHE:+${SCCACHE_REGION}} \
+    SCCACHE_GHA_ENABLED=${USE_SCCACHE:+${SCCACHE_GHA_ENABLED}} \
+    SCCACHE_GHA_VERSION=${USE_SCCACHE:+${SCCACHE_GHA_VERSION}} \
+    SCCACHE_EXECUTABLE=${USE_SCCACHE:+/opt/sccache/sccache}
 
 # Always build FFmpeg so libs are available for Rust checks in CI.
 # We also build the ffmpeg CLI with h264_nvenc + libvpx_vp9 encoders so Python
@@ -305,6 +317,8 @@ ARG NV_CODEC_HEADERS_REF
 ARG LIBVPX_REF
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}} && \
     if [ "$USE_SCCACHE" = "true" ]; then \
@@ -379,6 +393,8 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 # Build and install UCX
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}}" && \
     if [ "$USE_SCCACHE" = "true" ]; then \
@@ -447,6 +463,8 @@ ARG NIXL_LIBFABRIC_REPO
 ARG NIXL_LIBFABRIC_REF
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}}" && \
     if [ "$USE_SCCACHE" = "true" ]; then \
@@ -482,6 +500,8 @@ ENV PKG_CONFIG_PATH="/usr/local/libfabric/lib/pkgconfig:${PKG_CONFIG_PATH}"
 ARG AWS_SDK_CPP_VERSION
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}}" && \
     if [ "$USE_SCCACHE" = "true" ]; then \
@@ -505,6 +525,8 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     /tmp/use-sccache.sh show-stats "AWS SDK C++"
 {% endif %}
 
+{% endif %}{# builder_image #}
+
 
 ##################################
 ##### runtime_wheel_builder ######
@@ -525,6 +547,8 @@ ARG USE_SCCACHE
 ARG ENABLE_MEDIA_FFMPEG
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     --mount=type=cache,target=/root/.cargo/git,sharing=shared \
     --mount=type=cache,target=/root/.cache/uv,sharing=shared \
@@ -640,7 +664,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared \
 # Note: XPU triggers this path even when the framework section lacks nixl_ref,
 # because no upstream XPU runtime image ships pre-built NIXL.
 
-FROM wheel_builder_base AS wheel_builder
+FROM wheel_builder_base AS reusable_builder_base
 
 # Build and install nixl
 ARG TARGETARCH
@@ -651,8 +675,11 @@ ARG USE_SCCACHE
 ARG CUDA_MAJOR
 {% endif %}
 
+{% if not builder_image %}
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}}" && \
     if [ "$USE_SCCACHE" = "true" ]; then \
@@ -713,6 +740,8 @@ RUN echo "$NIXL_LIB_DIR" > /etc/ld.so.conf.d/nixl.conf && \
 ARG PYTHON_VERSION
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export UV_CACHE_DIR=/root/.cache/uv && \
@@ -723,6 +752,16 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     cd /workspace/nixl && \
     uv build . --wheel --out-dir /opt/dynamo/dist/nixl --python $PYTHON_VERSION
 {% endif %}
+
+{% endif %}{# not builder_image #}
+
+# Dynamo source is intentionally copied only after the reusable builder stage,
+# so code-only commits never invalidate the published dependency image.
+FROM reusable_builder_base AS wheel_builder
+
+ARG TARGETARCH
+ARG DEVICE
+ARG USE_SCCACHE
 
 {% if target not in ("dev", "local-dev") %}
 # Copy source code (order matters for layer caching)
@@ -735,6 +774,8 @@ COPY dingo/ /opt/dynamo/dingo/
 ARG ENABLE_KVBM
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
+    --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     --mount=type=cache,target=/root/.cargo/git,sharing=shared \
     --mount=type=cache,target=/root/.cache/uv,sharing=shared \
@@ -801,5 +842,6 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
 # COPY Dynamo wheels and build tools from a common wheel_builder stage name.
 # SGLang dev/source builds may link nixl-sys against stubs when native NIXL is
 # absent; block-manager/KVBM runtime work should use vllm/trtllm/none images.
+FROM wheel_builder_base AS reusable_builder_base
 FROM runtime_wheel_builder AS wheel_builder
 {% endif %}

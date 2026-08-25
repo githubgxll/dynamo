@@ -10,6 +10,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 _VALID_ARCHS = {"amd64", "arm64"}
+_BUILDER_IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
 
 
 def parse_platform(platform_str: str) -> str:
@@ -93,11 +94,27 @@ def parse_args():
         action="store_true",
         help="Prints the rendered Dockerfile to stdout.",
     )
+    parser.add_argument(
+        "--builder-image",
+        type=str,
+        default="",
+        help=(
+            "Reuse a previously published reusable_builder_base image instead "
+            "of rebuilding the native toolchain and dependencies."
+        ),
+    )
     args = parser.parse_args()
     return args
 
 
 def validate_args(args):
+    if args.builder_image and not _BUILDER_IMAGE_PATTERN.fullmatch(
+        args.builder_image
+    ):
+        raise ValueError(
+            "--builder-image must be a container image reference without whitespace"
+        )
+
     valid_inputs = {
         "vllm": {
             "device": ["cuda", "xpu", "cpu"],
@@ -195,6 +212,7 @@ def _render_context(args, context=None):
         platform=args.platform,
         cuda_version=args.cuda_version,
         make_efa=args.make_efa,
+        builder_image=args.builder_image,
         compliance_base_stage=compliance_base_stage,
         compliance_baseline_sbom=compliance_baseline_sbom,
     )

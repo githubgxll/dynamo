@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -29,6 +30,21 @@ REPOSITORY_PATH_PATTERN = re.compile(
 )
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+# These files define the reusable_builder_base stage. Dynamo application
+# source is deliberately excluded, so ordinary code-only commits keep using the
+# same builder image. Any toolchain, native dependency or rendering change gets
+# a new immutable builder tag automatically.
+BUILDER_INPUTS = (
+    ".dockerignore",
+    "container/Dockerfile.template",
+    "container/context.yaml",
+    "container/render.py",
+    "container/templates/args.Dockerfile",
+    "container/templates/dynamo_base.Dockerfile",
+    "container/templates/wheel_builder.Dockerfile",
+    "container/use-sccache.sh",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +81,19 @@ def select_image(enabled: bool, framework: str, selection: str) -> bool:
     return framework == selection
 
 
+def compute_builder_fingerprint(repo_root: Path) -> str:
+    digest = hashlib.sha256()
+    for relative_name in BUILDER_INPUTS:
+        path = repo_root / relative_name
+        if not path.is_file():
+            raise ValueError(f"builder input does not exist: {relative_name}")
+        digest.update(relative_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:12]
+
+
 def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str, str]]:
     if not GIT_SHA_PATTERN.fullmatch(github_sha):
         raise ValueError("--github-sha must be a full 40-character Git commit SHA")
@@ -91,6 +120,8 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
     if not isinstance(sha_length, int) or not 7 <= sha_length <= 40:
         raise ValueError("commit_sha_length must be an integer between 7 and 40")
     short_sha = github_sha[:sha_length].lower()
+    repo_root = Path(__file__).resolve().parents[2]
+    builder_fingerprint = compute_builder_fingerprint(repo_root)
 
     keep_buildkit_state = config.get("keep_buildkit_state", False)
     if not isinstance(keep_buildkit_state, bool):
@@ -147,6 +178,14 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
 
         architecture = platform.rsplit("/", 1)[-1]
         image_repository = f"{registry}/{namespace}/{repository}"
+        cache_tag = f"buildcache-cu{cuda_version.replace('.', '')}-{architecture}"
+        builder_tag = (
+            f"builder-cu{cuda_version.replace('.', '')}-{architecture}-"
+            f"{builder_fingerprint}"
+        )
+        sccache_cache_version = (
+            f"dingo-{framework}-cu{cuda_version.replace('.', '')}-{architecture}-v1"
+        )
         matrix.append(
             {
                 "framework": framework,
@@ -162,6 +201,9 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                 ),
                 "docker_target": docker_target,
                 "image": f"{image_repository}:{tag}",
+                "cache_image": f"{image_repository}:{cache_tag}",
+                "builder_image": f"{image_repository}:{builder_tag}",
+                "sccache_cache_version": sccache_cache_version,
             }
         )
 

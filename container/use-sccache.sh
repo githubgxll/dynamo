@@ -32,8 +32,15 @@ Environment variables:
     USE_SCCACHE             Set to 'true' to enable sccache
     SCCACHE_BUCKET          S3 bucket name (fallback if not passed as parameter)
     SCCACHE_REGION          S3 region (fallback if not passed as parameter)
+    SCCACHE_GHA_ENABLED     Set to 'on' to use the GitHub Actions cache backend
+    SCCACHE_GHA_VERSION     Cache namespace/version used for manual invalidation
+    ACTIONS_RESULTS_URL     GitHub Actions cache service URL (pass as a secret)
+    ACTIONS_RUNTIME_TOKEN   GitHub Actions cache token (pass as a secret)
     ARCH                    Architecture for S3 key prefix (fallback if not passed as parameter)
-    SCCACHE_BIN_DIR         Override the install dir for sccache + wrappers.
+    SCCACHE_EXECUTABLE      Existing sccache binary to invoke explicitly.
+                            Keeping it outside PATH prevents Meson from
+                            automatically wrapping unsupported compilers.
+    SCCACHE_BIN_DIR         Override the install dir for sccache and wrappers.
                             Default: /usr/local/bin when running as root
                             (image builds), \$HOME/.local/bin otherwise
                             (e.g. CI containers running as a non-root uid).
@@ -61,6 +68,29 @@ sccache_bin_dir() {
     fi
 }
 
+# Resolve the sccache binary without requiring it to be on PATH. Image builds
+# deliberately keep it under /opt/sccache because Meson otherwise detects the
+# executable and automatically prepends it to nvcc.
+sccache_executable() {
+    if [ -n "${SCCACHE_EXECUTABLE:-}" ]; then
+        if [ ! -x "${SCCACHE_EXECUTABLE}" ]; then
+            echo "SCCACHE_EXECUTABLE is not executable: ${SCCACHE_EXECUTABLE}" >&2
+            return 1
+        fi
+        printf '%s' "${SCCACHE_EXECUTABLE}"
+    elif command -v sccache >/dev/null 2>&1; then
+        command -v sccache
+    else
+        local candidate
+        candidate="$(sccache_bin_dir)/sccache"
+        if [ ! -x "${candidate}" ]; then
+            echo "sccache executable not found" >&2
+            return 1
+        fi
+        printf '%s' "${candidate}"
+    fi
+}
+
 install_sccache() {
     # Derive arch from TARGETARCH (set by BuildKit) with uname -m fallback
     local arch_alt
@@ -74,8 +104,13 @@ install_sccache() {
     bin_dir=$(sccache_bin_dir)
     mkdir -p "${bin_dir}"
 
-    if command -v sccache >/dev/null 2>&1; then
-        echo "sccache already installed at $(command -v sccache), skipping download"
+    local sccache_exe
+    if [ -n "${SCCACHE_EXECUTABLE:-}" ]; then
+        sccache_exe=$(sccache_executable)
+        echo "sccache already available at ${sccache_exe}, skipping download"
+    elif command -v sccache >/dev/null 2>&1; then
+        sccache_exe=$(command -v sccache)
+        echo "sccache already installed at ${sccache_exe}, skipping download"
     else
         echo "Installing sccache ${SCCACHE_VERSION} for architecture ${arch_alt} into ${bin_dir}..."
         wget --tries=3 --waitretry=5 \
@@ -83,6 +118,7 @@ install_sccache() {
         tar -xzf "sccache-${SCCACHE_VERSION}-${arch_alt}-unknown-linux-musl.tar.gz"
         mv "sccache-${SCCACHE_VERSION}-${arch_alt}-unknown-linux-musl/sccache" "${bin_dir}/"
         rm -rf sccache*
+        sccache_exe="${bin_dir}/sccache"
     fi
 
     # Create compiler wrapper scripts for autotools/Meson compatibility.
@@ -96,7 +132,7 @@ install_sccache() {
 # can interfere with those tests. sccache only caches compilations anyway,
 # so routing linking/other invocations directly to gcc loses nothing.
 case " $* " in
-    *" -c "*) exec sccache "${SCCACHE_CC_REAL:-gcc}" "$@" ;;
+    *" -c "*) exec "${SCCACHE_EXECUTABLE:-sccache}" "${SCCACHE_CC_REAL:-gcc}" "$@" ;;
     *)        exec "${SCCACHE_CC_REAL:-gcc}" "$@" ;;
 esac
 WRAPPER
@@ -105,13 +141,13 @@ WRAPPER
     cat > "${bin_dir}/sccache-cxx" <<'WRAPPER'
 #!/bin/sh
 case " $* " in
-    *" -c "*) exec sccache "${SCCACHE_CXX_REAL:-g++}" "$@" ;;
+    *" -c "*) exec "${SCCACHE_EXECUTABLE:-sccache}" "${SCCACHE_CXX_REAL:-g++}" "$@" ;;
     *)        exec "${SCCACHE_CXX_REAL:-g++}" "$@" ;;
 esac
 WRAPPER
     chmod +x "${bin_dir}/sccache-cxx"
 
-    echo "sccache installed successfully (bin_dir=${bin_dir})"
+    echo "sccache installed successfully (executable=${sccache_exe}, bin_dir=${bin_dir})"
 }
 
 setup_env() {
@@ -119,28 +155,31 @@ setup_env() {
 
     local bin_dir
     bin_dir=$(sccache_bin_dir)
+    local sccache_exe
+    sccache_exe=$(sccache_executable)
 
-    # Prepend bin_dir to PATH so the wrappers (and sccache itself, when it
-    # lives there) resolve as bare names. Harmless when bin_dir is already on
-    # PATH (e.g. /usr/local/bin during image builds).
+    # Prepend bin_dir to PATH for the compiler wrappers. sccache itself may
+    # intentionally remain outside PATH to avoid Meson's automatic detection.
     echo "export PATH=\"${bin_dir}:\${PATH}\";"
+    echo "export SCCACHE_EXECUTABLE=\"${sccache_exe}\";"
 
     # Output a conditional block: only configure sccache if the server starts
-    # successfully. The server needs working S3 credentials (mounted via
-    # --mount=type=secret); if they're missing or invalid, we skip sccache
+    # successfully. The server needs working remote-cache credentials (for
+    # example S3/IRSA credentials or a GitHub Actions runtime token, mounted
+    # via --mount=type=secret); if they're missing or invalid, we skip sccache
     # entirely so the build continues with normal compilers.
     #
     # Use a per-step Unix domain socket so concurrent builds on the same
     # buildkit worker don't collide on the default TCP port 4226.
     echo 'export SCCACHE_SERVER_UDS="/tmp/sccache-$(mktemp -u XXXXXX).sock";'
-    echo 'if sccache --start-server; then'
+    echo 'if "${SCCACHE_EXECUTABLE}" --start-server; then'
     echo '  export SCCACHE_IDLE_TIMEOUT=0;'
-    echo '  export RUSTC_WRAPPER="sccache";'
+    echo '  export RUSTC_WRAPPER="${SCCACHE_EXECUTABLE}";'
 
     if [ "$mode" = "cmake" ]; then
-        echo '  export CMAKE_C_COMPILER_LAUNCHER="sccache";'
-        echo '  export CMAKE_CXX_COMPILER_LAUNCHER="sccache";'
-        echo '  export CMAKE_CUDA_COMPILER_LAUNCHER="sccache";'
+        echo '  export CMAKE_C_COMPILER_LAUNCHER="${SCCACHE_EXECUTABLE}";'
+        echo '  export CMAKE_CXX_COMPILER_LAUNCHER="${SCCACHE_EXECUTABLE}";'
+        echo '  export CMAKE_CUDA_COMPILER_LAUNCHER="${SCCACHE_EXECUTABLE}";'
     else
         # Wrapper scripts (installed during sccache install) route only pure
         # compilations (-c flag) through sccache; linking goes directly to
@@ -157,13 +196,14 @@ setup_env() {
 }
 
 show_stats() {
-    if command -v sccache >/dev/null 2>&1; then
+    local sccache_exe
+    if sccache_exe=$(sccache_executable 2>/dev/null); then
         # Generate timestamp in ISO 8601 format
         local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
         # Output human-readable text format first
         echo "=== sccache statistics AFTER $1 ==="
-        sccache --show-stats
+        "${sccache_exe}" --show-stats
         echo ""
 
         # Output JSON markers for deterministic parsing
@@ -174,7 +214,7 @@ show_stats() {
 {
   "section": "$1",
   "timestamp": "$timestamp",
-  "sccache_stats": $(sccache --show-stats --stats-format json)
+  "sccache_stats": $("${sccache_exe}" --show-stats --stats-format json)
 }
 EOF
 
