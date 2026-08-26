@@ -10,7 +10,8 @@
       "framework": "dynamo",
       "enabled": true,
       "repository": "ai-dingo",
-      "tag_prefix": "cu130-runtime"
+      "tag_prefix": "router-text-noble",
+      "docker_target": "router"
     },
     {
       "framework": "vllm",

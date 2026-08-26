@@ -23,6 +23,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+# Preserve the historical Linux runtime wheel when explicitly requested by
+# container builds. The dedicated text frontend uses --no-default-features.
+full-runtime = ["dynamo-llm/block-manager", "dynamo-llm/nixl-media"]
 media-ffmpeg = ["dynamo-llm/media-ffmpeg"]
 kv-indexer = ["dep:clap", "dep:tracing-subscriber", "dynamo-kv-router/standalone-indexer"]
 kv-indexer-metrics = ["kv-indexer", "dynamo-kv-router/metrics"]
@@ -102,7 +105,7 @@ pythonize = "0.23"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-dynamo-llm = { path = "../../llm" }
+dynamo-llm = { path = "../../llm", default-features = false }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 dynamo-llm = { path = "../../llm", default-features = false }

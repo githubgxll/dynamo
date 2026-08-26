@@ -146,6 +146,7 @@ def validate_args(args):
                 "local-dev",
                 "frontend",
                 "planner",
+                "router",
                 "wheel_builder",
                 "base",
             ],

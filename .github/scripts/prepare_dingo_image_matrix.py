@@ -17,7 +17,7 @@ SUPPORTED_SELECTIONS = {"configured", "dynamo", "vllm", "sglang", "all"}
 SUPPORTED_PLATFORMS = {"linux/amd64"}
 SUPPORTED_CUDA_VERSIONS = {"13.0"}
 SUPPORTED_DOCKER_TARGETS = {
-    "dynamo": {"runtime"},
+    "dynamo": {"router", "runtime"},
     "vllm": {"runtime", "pre_runtime"},
     "sglang": {"runtime", "pre_runtime"},
 }
@@ -176,6 +176,12 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                 f"{sorted(SUPPORTED_DOCKER_TARGETS[framework])} for {framework}"
             )
 
+        render_target = (
+            "router"
+            if framework == "dynamo" and docker_target == "router"
+            else "runtime"
+        )
+
         architecture = platform.rsplit("/", 1)[-1]
         image_repository = f"{registry}/{namespace}/{repository}"
         cache_tag = f"buildcache-cu{cuda_version.replace('.', '')}-{architecture}"
@@ -196,13 +202,18 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                     "true" if keep_buildkit_state else "false"
                 ),
                 "dockerfile": (
-                    f"container/{framework}-runtime-cuda{cuda_version}-"
+                    f"container/{framework}-{render_target}-cuda{cuda_version}-"
                     f"{architecture}-rendered.Dockerfile"
                 ),
+                "render_target": render_target,
                 "docker_target": docker_target,
                 "image": f"{image_repository}:{tag}",
                 "cache_image": f"{image_repository}:{cache_tag}",
-                "builder_image": f"{image_repository}:{builder_tag}",
+                "builder_image": (
+                    f"{image_repository}:{builder_tag}"
+                    if render_target != "router"
+                    else ""
+                ),
                 "sccache_cache_version": sccache_cache_version,
             }
         )

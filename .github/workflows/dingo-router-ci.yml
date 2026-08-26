@@ -53,7 +53,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
   build:
-    name: Build ${{ matrix.framework }} runtime
+    name: Build ${{ matrix.framework }} ${{ matrix.render_target }}
     needs: prepare
     if: needs.prepare.outputs.has_images == 'true'
     runs-on: [self-hosted, linux, x64]
@@ -100,6 +100,7 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
       - name: Check reusable builder image
+        if: matrix.builder_image != ''
         id: builder
         shell: bash
         env:
@@ -114,7 +115,7 @@ jobs:
           fi
 
       - name: Render ${{ matrix.framework }} builder Dockerfile
-        if: steps.builder.outputs.exists != 'true'
+        if: matrix.builder_image != '' && steps.builder.outputs.exists != 'true'
         shell: bash
         env:
           CUDA_VERSION: ${{ matrix.cuda_version }}
@@ -128,7 +129,7 @@ jobs:
             --platform "${PLATFORM}"
 
       - name: Build and publish reusable builder image
-        if: steps.builder.outputs.exists != 'true'
+        if: matrix.builder_image != '' && steps.builder.outputs.exists != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -147,17 +148,18 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Render ${{ matrix.framework }} runtime Dockerfile
+      - name: Render ${{ matrix.framework }} ${{ matrix.render_target }} Dockerfile
         shell: bash
         env:
           BUILDER_IMAGE: ${{ matrix.builder_image }}
           CUDA_VERSION: ${{ matrix.cuda_version }}
           FRAMEWORK: ${{ matrix.framework }}
           PLATFORM: ${{ matrix.platform }}
+          RENDER_TARGET: ${{ matrix.render_target }}
         run: |
           python3 container/render.py \
             --framework "${FRAMEWORK}" \
-            --target runtime \
+            --target "${RENDER_TARGET}" \
             --cuda-version "${CUDA_VERSION}" \
             --platform "${PLATFORM}" \
             --builder-image "${BUILDER_IMAGE}"
@@ -192,6 +194,8 @@ jobs:
         run: |
           echo "### Published image" >> "${GITHUB_STEP_SUMMARY}"
           echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
-          echo "\`${BUILDER_IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          if [ -n "${BUILDER_IMAGE}" ]; then
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+            echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
+            echo "\`${BUILDER_IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          fi

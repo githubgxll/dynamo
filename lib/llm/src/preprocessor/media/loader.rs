@@ -11,15 +11,25 @@ use ipnet::IpNet;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
 
+#[cfg(feature = "nixl-media")]
 use dynamo_memory::nixl::NixlAgent;
 use dynamo_protocols::types::ChatCompletionRequestUserMessageContentPart;
 
+#[cfg(feature = "nixl-media")]
 use super::common::EncodedMediaData;
-use super::decoders::{Decoder, MediaDecoder};
-use super::rdma::{DataType, RdmaMediaDataDescriptor, get_nixl_agent};
+#[cfg(feature = "nixl-media")]
+use super::decoders::Decoder;
+use super::decoders::MediaDecoder;
+use super::rdma::RdmaMediaDataDescriptor;
+#[cfg(feature = "nixl-media")]
+use super::rdma::{DataType, get_nixl_agent};
+#[cfg(feature = "nixl-media")]
 use lru::LruCache;
+#[cfg(feature = "nixl-media")]
 use parking_lot::Mutex;
+#[cfg(feature = "nixl-media")]
 use std::collections::hash_map::DefaultHasher;
+#[cfg(feature = "nixl-media")]
 use std::hash::{Hash, Hasher};
 
 const DEFAULT_HTTP_USER_AGENT: &str = "dynamo-ai/dynamo";
@@ -301,12 +311,14 @@ impl Resolve for BlocklistResolver {
 /// `tensor_info.shape * dtype`). Insertion evicts oldest entries until the
 /// running total fits the budget; entries larger than the whole budget are
 /// inserted and immediately evicted (i.e. effectively not cached).
+#[cfg(feature = "nixl-media")]
 struct LoaderCache {
     lru: LruCache<u64, RdmaMediaDataDescriptor>,
     bytes_used: u64,
     budget_bytes: u64,
 }
 
+#[cfg(feature = "nixl-media")]
 impl LoaderCache {
     fn new(budget_bytes: u64) -> Self {
         // `unbounded` capacity — eviction is driven by the byte budget.
@@ -347,6 +359,7 @@ impl LoaderCache {
 /// Raw decoded byte size of a descriptor — what the NIXL registration holds.
 /// Per-entry bookkeeping (struct fields, NIXL metadata string) is negligible
 /// compared to a single decoded image.
+#[cfg(feature = "nixl-media")]
 fn descriptor_bytes(d: &RdmaMediaDataDescriptor) -> u64 {
     let elem = match d.tensor_info.dtype {
         DataType::UINT8 => 1u64,
@@ -359,6 +372,7 @@ fn descriptor_bytes(d: &RdmaMediaDataDescriptor) -> u64 {
         .saturating_mul(elem)
 }
 
+#[cfg(feature = "nixl-media")]
 pub struct MediaLoader {
     #[allow(dead_code)]
     media_decoder: MediaDecoder,
@@ -375,6 +389,7 @@ pub struct MediaLoader {
     cache: Option<Arc<Mutex<LoaderCache>>>,
 }
 
+#[cfg(feature = "nixl-media")]
 impl MediaLoader {
     fn cache_budget_bytes(value: Option<&str>) -> u64 {
         let gb = value
@@ -550,6 +565,31 @@ impl MediaLoader {
         }
 
         Ok(rdma_descriptor)
+    }
+}
+
+/// Placeholder used by text-only frontend wheels. Model cards can still carry
+/// media configuration, but startup fails clearly instead of pulling the
+/// CUDA/NIXL stack into a service that only routes text requests.
+#[cfg(not(feature = "nixl-media"))]
+pub struct MediaLoader;
+
+#[cfg(not(feature = "nixl-media"))]
+impl MediaLoader {
+    pub fn new(_media_decoder: MediaDecoder, _media_fetcher: Option<MediaFetcher>) -> Result<Self> {
+        anyhow::bail!(
+            "this text-only frontend wheel does not support frontend-side multimodal decoding"
+        )
+    }
+
+    pub async fn fetch_and_decode_media_part(
+        &self,
+        _oai_content_part: &ChatCompletionRequestUserMessageContentPart,
+        _media_io_kwargs: Option<&MediaDecoder>,
+    ) -> Result<RdmaMediaDataDescriptor> {
+        anyhow::bail!(
+            "this text-only frontend wheel does not support frontend-side multimodal decoding"
+        )
     }
 }
 
