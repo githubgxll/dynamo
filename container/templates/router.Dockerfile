@@ -28,6 +28,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates \
         clang \
         cmake \
+        curl \
         git \
         libclang-dev \
         patchelf \
