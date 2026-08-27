@@ -12,10 +12,13 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 SUPPORTED_FRAMEWORKS = {"dynamo", "vllm", "sglang"}
 SUPPORTED_SELECTIONS = {"configured", "dynamo", "vllm", "sglang", "all"}
 SUPPORTED_PLATFORMS = {"linux/amd64"}
 SUPPORTED_CUDA_VERSIONS = {"13.0"}
+CONTEXT_PATH = Path(__file__).resolve().parents[2] / "container/context.yaml"
 SUPPORTED_DOCKER_TARGETS = {
     "dynamo": {"router", "runtime"},
     "vllm": {"runtime", "pre_runtime"},
@@ -98,6 +101,9 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
     if not GIT_SHA_PATTERN.fullmatch(github_sha):
         raise ValueError("--github-sha must be a full 40-character Git commit SHA")
 
+    with CONTEXT_PATH.open(encoding="utf-8") as context_file:
+        context = yaml.safe_load(context_file)
+
     registry = require_string(config, "registry").rstrip("/")
     if "://" in registry or not REGISTRY_PATTERN.fullmatch(registry):
         raise ValueError("registry must be a host[:port] without a URL scheme or path")
@@ -159,7 +165,17 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                 f"images[{index}].repository is not a valid lowercase repository name"
             )
 
-        tag_prefix = require_string(image, "tag_prefix")
+        if framework in {"vllm", "sglang"}:
+            if "tag_prefix" in image:
+                raise ValueError(
+                    f"images[{index}].tag_prefix must be omitted for {framework}; "
+                    "it is derived from container/context.yaml runtime_image_tag"
+                )
+            device_key = f"cuda{cuda_version}"
+            tag_context = context.get(framework, {}).get(device_key, {})
+            tag_prefix = require_string(tag_context, "runtime_image_tag")
+        else:
+            tag_prefix = require_string(image, "tag_prefix")
         tag = f"{tag_prefix}-{short_sha}"
         if not TAG_PATTERN.fullmatch(tag):
             raise ValueError(
