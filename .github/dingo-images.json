@@ -8,21 +8,26 @@
   "images": [
     {
       "framework": "dynamo",
+      "enabled": true,
+      "repository": "ai-dingo",
+      "tag_prefix": "router-noble",
+      "docker_target": "router"
+    },
+    {
+      "framework": "dynamo",
       "enabled": false,
       "repository": "ai-dingo",
-      "tag_prefix": "cu130-runtime"
+      "tag_prefix": "router-official"
     },
     {
       "framework": "vllm",
-      "enabled": true,
-      "repository": "ai-dingo-vllm",
-      "tag_prefix": "v0.27.1-cu130-runtime"
+      "enabled": false,
+      "repository": "ai-dingo-vllm"
     },
     {
       "framework": "sglang",
       "enabled": false,
       "repository": "ai-dingo-sglang",
-      "tag_prefix": "v0.5.17-cu130-runtime",
       "docker_target": "pre_runtime"
     }
   ]

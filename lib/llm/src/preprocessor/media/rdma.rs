@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
+#[cfg(feature = "nixl-media")]
 use base64::{Engine as _, engine::general_purpose};
+#[cfg(feature = "nixl-media")]
 use dynamo_memory::SystemStorage;
+#[cfg(feature = "nixl-media")]
 use dynamo_memory::nixl::{self, NixlAgent, NixlDescriptor, RegisteredView};
+#[cfg(feature = "nixl-media")]
 use flate2::{Compression, write::ZlibEncoder};
 use ndarray::{ArrayBase, Dimension, OwnedRepr};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "nixl-media")]
 use std::io::Write;
+#[cfg(feature = "nixl-media")]
 use std::sync::Arc;
 
 use super::decoders::DecodedMediaMetadata;
@@ -29,7 +35,11 @@ pub struct MediaTensorInfo {
 // Decoded media data (image RGB, video frames pixels, ...)
 #[derive(Debug)]
 pub struct DecodedMediaData {
+    #[cfg(feature = "nixl-media")]
     pub(crate) data: SystemStorage,
+    #[cfg(not(feature = "nixl-media"))]
+    #[allow(dead_code)]
+    pub(crate) data: Vec<u8>,
     pub(crate) tensor_info: MediaTensorInfo,
 }
 
@@ -38,14 +48,17 @@ pub struct DecodedMediaData {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RdmaMediaDataDescriptor {
     // b64 agent metadata
+    #[cfg(feature = "nixl-media")]
     pub(crate) nixl_metadata: String,
     // tensor descriptor
+    #[cfg(feature = "nixl-media")]
     pub(crate) nixl_descriptor: NixlDescriptor,
 
     #[serde(flatten)]
     pub(crate) tensor_info: MediaTensorInfo,
 
     // reference to the actual data, kept alive while the rdma descriptor is alive
+    #[cfg(feature = "nixl-media")]
     #[serde(skip, default)]
     #[allow(dead_code)]
     pub(crate) source_storage: Option<Arc<nixl::NixlRegistered<SystemStorage>>>,
@@ -99,6 +112,7 @@ impl RdmaMediaDataDescriptor {
 }
 
 impl DecodedMediaData {
+    #[cfg(feature = "nixl-media")]
     pub fn into_rdma_descriptor(self, nixl_agent: &NixlAgent) -> Result<RdmaMediaDataDescriptor> {
         let source_storage = self.data;
         let registered = nixl::register_with_nixl(source_storage, nixl_agent, None)
@@ -127,13 +141,24 @@ impl<D: Dimension> TryFrom<ArrayBase<OwnedRepr<u8>, D>> for DecodedMediaData {
         let shape = array.shape().to_vec();
 
         let (data_vec, _) = array.into_raw_vec_and_offset();
-        let mut storage = SystemStorage::new(data_vec.len())?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(data_vec.as_ptr(), storage.as_mut_ptr(), data_vec.len());
-        }
+        #[cfg(feature = "nixl-media")]
+        let data = {
+            let mut storage = SystemStorage::new(data_vec.len())?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data_vec.as_ptr(),
+                    storage.as_mut_ptr(),
+                    data_vec.len(),
+                );
+            }
+            storage
+        };
+
+        #[cfg(not(feature = "nixl-media"))]
+        let data = data_vec;
 
         Ok(Self {
-            data: storage,
+            data,
             tensor_info: MediaTensorInfo {
                 shape,
                 dtype: DataType::UINT8,
@@ -147,6 +172,7 @@ impl<D: Dimension> TryFrom<ArrayBase<OwnedRepr<u8>, D>> for DecodedMediaData {
 // Returns zlib-compressed, base64-encoded metadata in format: "b64:<compressed_base64>"
 // This format matches what Python nixl_connect expects for RdmaMetadata.nixl_metadata
 // TODO: pre-allocate a fixed NIXL-registered RAM pool so metadata can be cached on the target?
+#[cfg(feature = "nixl-media")]
 pub fn get_nixl_metadata(agent: &NixlAgent, _storage: &SystemStorage) -> Result<String> {
     // WAR: Until https://github.com/ai-dynamo/nixl/pull/970 is merged, can't use get_local_partial_md
     let nixl_md = agent.raw_agent().get_local_md()?;
@@ -163,6 +189,7 @@ pub fn get_nixl_metadata(agent: &NixlAgent, _storage: &SystemStorage) -> Result<
     Ok(format!("b64:{}", b64_encoded))
 }
 
+#[cfg(feature = "nixl-media")]
 pub fn get_nixl_agent() -> Result<NixlAgent> {
     let name = format!("media-loader-{}", uuid::Uuid::new_v4());
     let nixl_agent = NixlAgent::with_backends(&name, &["UCX"])?;
