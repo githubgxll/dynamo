@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 import aiohttp
 
 from dingo.video_gateway.errors import StoreUnavailable
+from dingo.video_gateway.telemetry import GatewayTelemetry
 
 
 def _b64(value: bytes | str) -> str:
@@ -84,9 +86,16 @@ class EtcdWatchCompacted(StoreUnavailable):
 
 
 class EtcdHttpClient:
-    def __init__(self, url: str, *, timeout_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_s: float = 5.0,
+        telemetry: GatewayTelemetry | None = None,
+    ) -> None:
         self.url = url.rstrip("/")
         self.timeout = aiohttp.ClientTimeout(total=timeout_s)
+        self.telemetry = telemetry
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -109,6 +118,8 @@ class EtcdHttpClient:
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         session = await self._get_session()
+        started = time.monotonic()
+        succeeded = False
         try:
             async with session.post(self.url + path, json=payload) as response:
                 body = await response.text()
@@ -117,6 +128,7 @@ class EtcdHttpClient:
                         f"etcd {path} returned HTTP {response.status}: {body[:512]}"
                     )
                 if not body:
+                    succeeded = True
                     return {}
                 try:
                     value = await response.json()
@@ -126,11 +138,19 @@ class EtcdHttpClient:
                     ) from exc
                 if "error" in value:
                     raise StoreUnavailable(f"etcd {path} failed: {value['error']}")
+                succeeded = True
                 return value
         except StoreUnavailable:
             raise
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise StoreUnavailable(f"etcd {path} request failed: {exc}") from exc
+        finally:
+            if self.telemetry is not None:
+                self.telemetry.record_etcd_request(
+                    path.removeprefix("/v3/"),
+                    time.monotonic() - started,
+                    succeeded=succeeded,
+                )
 
     async def _stream_post(
         self, path: str, payload: dict[str, Any]

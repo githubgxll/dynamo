@@ -6,10 +6,71 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import json
 
 import pytest
 
 from dingo.video_gateway.artifact_store import FileArtifactStore
+
+
+class _Consumer:
+    def __init__(self):
+        self.values = []
+
+    def consume(self, value):
+        self.values.append(value)
+
+
+async def test_detached_status_and_response_are_identity_and_checksum_checked(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    token = "a" * 32
+    root = store.detached_attempt_root("deployment", "pool", "task", 1, token)
+    root.mkdir(parents=True)
+    response = root / "worker-response.jsonl"
+    payload = (json.dumps({"status": "completed"}) + "\n").encode()
+    response.write_bytes(payload)
+    status = {
+        "schema_version": 1,
+        "deployment_id": "deployment",
+        "pool_id": "pool",
+        "task_id": "task",
+        "attempt": 1,
+        "execution_token": token,
+        "state": "completed",
+        "response_bytes": len(payload),
+        "response_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    (root / "worker-status.json").write_text(json.dumps(status))
+
+    loaded = await store.read_detached_status(
+        "deployment", "pool", "task", 1, token
+    )
+    consumer = _Consumer()
+    consumed = await store.consume_detached_response(
+        "deployment",
+        "pool",
+        "task",
+        1,
+        token,
+        consumer,
+        expected_sha256=status["response_sha256"],
+        max_response_bytes=1024,
+    )
+    assert loaded == status
+    assert consumed == len(payload)
+    assert consumer.values == [{"status": "completed"}]
+
+    with pytest.raises(RuntimeError, match="checksum"):
+        await store.consume_detached_response(
+            "deployment",
+            "pool",
+            "task",
+            1,
+            token,
+            _Consumer(),
+            expected_sha256="0" * 64,
+            max_response_bytes=1024,
+        )
 
 
 async def test_finalize_decodes_validated_mp4_atomically(tmp_path):
@@ -30,6 +91,40 @@ async def test_finalize_decodes_validated_mp4_atomically(tmp_path):
     assert sha256 == hashlib.sha256(payload).hexdigest()
     assert media == {"magic": "ftyp"}
     assert list((task_root / "tmp").glob("*.part")) == []
+
+
+async def test_finalize_publishes_distinct_immutable_candidates(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    upload = await store.create_upload()
+    task_root = await store.commit_upload(upload, "deployment", "pool", "video-id")
+    left_payload = b"\x00\x00\x00\x18ftypisomleft"
+    right_payload = b"\x00\x00\x00\x18ftypisomright"
+
+    left, *_ = await store.finalize_b64_mp4(
+        task_root,
+        base64.b64encode(left_payload).decode(),
+        {},
+        lambda _path, _normalized: {},
+        publication_scope="a1-token",
+    )
+    right, *_ = await store.finalize_b64_mp4(
+        task_root,
+        base64.b64encode(right_payload).decode(),
+        {},
+        lambda _path, _normalized: {},
+        publication_scope="a1-token",
+    )
+
+    assert left != right
+    assert left.parent == right.parent == task_root / "result"
+    assert left.name.startswith("video-a1-token-")
+    assert right.name.startswith("video-a1-token-")
+    assert left.read_bytes() == left_payload
+    assert right.read_bytes() == right_payload
+
+    # A stale owner discards only its own candidate; the CAS winner survives.
+    left.unlink()
+    assert right.read_bytes() == right_payload
 
 
 async def test_invalid_base64_leaves_no_partial_result(tmp_path):

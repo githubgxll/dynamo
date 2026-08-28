@@ -19,6 +19,7 @@ from dingo.video_gateway.etcd_http import EtcdHttpClient, EtcdValue
 from dingo.video_gateway.models import (
     ACTIVE_STATUSES,
     ALLOWED_TRANSITIONS,
+    TERMINAL_STATUSES,
     StoredTask,
     TaskError,
     TaskStatus,
@@ -27,7 +28,7 @@ from dingo.video_gateway.models import (
     now_ms,
 )
 
-_INDEX_SCHEMA_VERSION = 2
+_INDEX_SCHEMA_VERSION = 3
 _SEQUENCE_WIDTH = 20
 
 
@@ -97,6 +98,10 @@ class TaskStore(ABC):
     def task_watch_supported(self) -> bool:
         return False
 
+    @property
+    def gateway_owner_supported(self) -> bool:
+        return False
+
     async def lease_snapshot(
         self, pool_id: str
     ) -> tuple[dict[str, WorkerLease], int]:
@@ -117,6 +122,27 @@ class TaskStore(ABC):
     ) -> AsyncIterator[TaskWatchEvent]:
         del start_revision
         raise NotImplementedError("this TaskStore does not support task watches")
+
+    async def register_gateway(self, gateway_id: str, *, ttl_s: int) -> int:
+        del gateway_id, ttl_s
+        raise NotImplementedError("this TaskStore does not support Gateway owners")
+
+    async def keepalive_gateway(self, lease_id: int) -> None:
+        del lease_id
+        raise NotImplementedError("this TaskStore does not support Gateway owners")
+
+    async def unregister_gateway(self, lease_id: int) -> None:
+        del lease_id
+        raise NotImplementedError("this TaskStore does not support Gateway owners")
+
+    async def iter_orphaned_active_tasks(self) -> AsyncIterator[StoredTask]:
+        raise NotImplementedError("this TaskStore does not support Gateway owners")
+
+    async def claim_orphaned_active(
+        self, stored: StoredTask, *, new_owner_generation: str
+    ) -> StoredTask | None:
+        del stored, new_owner_generation
+        raise NotImplementedError("this TaskStore does not support Gateway owners")
 
     @abstractmethod
     async def create_task(
@@ -470,6 +496,7 @@ class MemoryTaskStore(TaskStore):
                     "worker_instance_id": lease.worker_instance_id,
                     "worker_key": lease.worker_key,
                     "owner_generation": lease.owner_generation,
+                    "execution_token": lease.execution_token,
                     "assigned_at_ms": now_ms(),
                     "deadline_at_ms": deadline_at_ms,
                 },
@@ -513,12 +540,31 @@ class MemoryTaskStore(TaskStore):
             if release_lease and current[0].worker_key:
                 key = (current[0].pool_id, current[0].worker_key)
                 lease = self._leases.get(key)
-                if lease is not None and quarantine_until_ms is not None:
+                owns_lease = lease is not None and lease.task_id == task_id
+                if owns_lease and quarantine_until_ms is not None:
+                    assert lease is not None
                     lease.state = "quarantined"
                     lease.reuse_after_ms = quarantine_until_ms
                     lease.heartbeat_at_ms = now_ms()
-                else:
+                elif owns_lease:
                     self._leases.pop(key, None)
+                elif lease is None and quarantine_until_ms is not None:
+                    if current[0].worker_instance_id is None:
+                        raise StoreConflict(
+                            "cannot quarantine a task without a Worker instance"
+                        )
+                    self._leases[key] = WorkerLease(
+                        pool_id=current[0].pool_id,
+                        worker_key=current[0].worker_key,
+                        worker_instance_id=current[0].worker_instance_id,
+                        backend_target=current[0].backend_target,
+                        task_id=current[0].id,
+                        owner_generation=current[0].owner_generation or "unknown",
+                        execution_token=current[0].execution_token,
+                        state="quarantined",
+                        heartbeat_at_ms=now_ms(),
+                        reuse_after_ms=quarantine_until_ms,
+                    )
             revision = self._next_revision()
             self._tasks[task_id] = (updated, revision)
             self._publish_task_event(task_id, revision)
@@ -581,9 +627,10 @@ class MemoryTaskStore(TaskStore):
         del lease_id
         async with self._lock:
             lease = self._leases.get((pool_id, worker_key_value))
-            if lease is not None and lease.task_id == task_id:
-                lease.heartbeat_at_ms = now_ms()
-                lease.owner_expires_at_ms = now_ms() + 15_000
+            if lease is None or lease.task_id != task_id:
+                raise StoreConflict("Worker execution lease ownership was lost")
+            lease.heartbeat_at_ms = now_ms()
+            lease.owner_expires_at_ms = now_ms() + 15_000
 
     async def delete_expired(self, stored: StoredTask) -> bool:
         async with self._lock:
@@ -616,7 +663,7 @@ class MemoryTaskStore(TaskStore):
 
 
 class EtcdTaskStore(TaskStore):
-    """etcd-backed single-Gateway task state with optimistic transactions."""
+    """etcd-backed multi-Gateway task state with leases and optimistic CAS."""
 
     def __init__(
         self,
@@ -638,6 +685,10 @@ class EtcdTaskStore(TaskStore):
 
     @property
     def task_watch_supported(self) -> bool:
+        return True
+
+    @property
+    def gateway_owner_supported(self) -> bool:
         return True
 
     def _task_key(self, task_id: str) -> str:
@@ -666,6 +717,18 @@ class EtcdTaskStore(TaskStore):
 
     def _lease_prefix(self, pool_id: str) -> str:
         return f"{self.root}/pools/{pool_id}/worker-leases/"
+
+    def _lease_heartbeat_key(self, pool_id: str, worker_key_value: str) -> str:
+        return f"{self.root}/pools/{pool_id}/worker-heartbeats/{worker_key_value}"
+
+    def _gateway_key(self, gateway_id: str) -> str:
+        return f"{self.root}/gateways/{gateway_id}"
+
+    def _owner_task_key(self, gateway_id: str, task_id: str) -> str:
+        return f"{self.root}/gateway-owners/{gateway_id}/tasks/{task_id}"
+
+    def _owner_task_prefix(self) -> str:
+        return f"{self.root}/gateway-owners/"
 
     def _idempotency_key(self, principal_hash: str, key_hash: str) -> str:
         return f"{self.root}/idempotency/{principal_hash}/{key_hash}"
@@ -757,9 +820,14 @@ class EtcdTaskStore(TaskStore):
         marker_key = self._index_schema_key()
         marker = await self.client.get(marker_key)
         if marker is not None:
-            if marker.value != str(_INDEX_SCHEMA_VERSION).encode():
+            try:
+                marker_version = int(marker.value.decode())
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise RuntimeError("invalid task index schema marker") from exc
+            if marker_version == _INDEX_SCHEMA_VERSION:
+                return
+            if not 1 <= marker_version < _INDEX_SCHEMA_VERSION:
                 raise RuntimeError("unsupported task index schema marker")
-            return
 
         # The Gateway calls prepare before it accepts traffic. Multiple new
         # Gateways may run this deterministic migration concurrently; every
@@ -801,6 +869,13 @@ class EtcdTaskStore(TaskStore):
                     success.append(
                         self.client.put(self._ordered_queue_key(task), task.id)
                     )
+                if task.status in ACTIVE_STATUSES and task.owner_generation:
+                    success.append(
+                        self.client.put(
+                            self._owner_task_key(task.owner_generation, task.id),
+                            task.id,
+                        )
+                    )
                 succeeded, _revision = await self.client.txn(
                     [
                         self.client.compare_mod(
@@ -833,8 +908,13 @@ class EtcdTaskStore(TaskStore):
                 if not succeeded:
                     continue
 
+            marker_compare = (
+                [self.client.compare_version(marker_key, 0)]
+                if marker is None
+                else [self.client.compare_mod(marker_key, marker.mod_revision)]
+            )
             succeeded, _revision = await self.client.txn(
-                [self.client.compare_version(marker_key, 0)],
+                marker_compare,
                 [self.client.put(marker_key, str(_INDEX_SCHEMA_VERSION))],
             )
             if succeeded:
@@ -1148,6 +1228,7 @@ class EtcdTaskStore(TaskStore):
         queue_key = self._queue_key(stored.task.pool_id, stored.task.id)
         counter_key = self._counter_key(stored.task.pool_id)
         lease_key = self._lease_key(lease.pool_id, lease.worker_key)
+        heartbeat_key = self._lease_heartbeat_key(lease.pool_id, lease.worker_key)
         count, counter = await self._counter(stored.task.pool_id)
         if count <= 0:
             return None
@@ -1163,6 +1244,7 @@ class EtcdTaskStore(TaskStore):
                 "worker_key": lease.worker_key,
                 "worker_lease_id": native_lease.lease_id,
                 "owner_generation": lease.owner_generation,
+                "execution_token": lease.execution_token,
                 "assigned_at_ms": now_ms(),
                 "deadline_at_ms": deadline_at_ms,
             },
@@ -1171,6 +1253,10 @@ class EtcdTaskStore(TaskStore):
             self.client.compare_mod(task_key, stored.revision),
             self.client.compare_version(queue_key, 0, result="GREATER"),
             self.client.compare_version(lease_key, 0),
+            self.client.compare_version(heartbeat_key, 0),
+            self.client.compare_version(
+                self._gateway_key(lease.owner_generation), 0, result="GREATER"
+            ),
             *self._counter_compare(counter_key, counter),
         ]
         success = [
@@ -1178,11 +1264,23 @@ class EtcdTaskStore(TaskStore):
             self.client.put(
                 lease_key,
                 self._encode(lease.to_dict()),
+            ),
+            self.client.put(
+                heartbeat_key,
+                self._encode(
+                    {
+                        "task_id": updated.id,
+                        "lease_id": native_lease.lease_id,
+                    }
+                ),
                 lease_id=native_lease.lease_id,
             ),
             self.client.delete(queue_key),
             self.client.delete(self._ordered_queue_key(stored.task)),
             self.client.put(counter_key, str(count - 1)),
+            self.client.put(
+                self._owner_task_key(lease.owner_generation, updated.id), updated.id
+            ),
             *[
                 self.client.delete(key)
                 for key in self._status_task_index_keys(
@@ -1248,6 +1346,16 @@ class EtcdTaskStore(TaskStore):
                 self.client.put(key, updated.id)
                 for key in self._status_task_index_keys(updated, updated.status)
             )
+        if (
+            stored.task.owner_generation
+            and updated.status in TERMINAL_STATUSES
+            and stored.task.status not in TERMINAL_STATUSES
+        ):
+            success.append(
+                self.client.delete(
+                    self._owner_task_key(stored.task.owner_generation, task_id)
+                )
+            )
         if stored.task.expires_at_ms != updated.expires_at_ms:
             success.extend(
                 [
@@ -1281,21 +1389,57 @@ class EtcdTaskStore(TaskStore):
 
         if release_lease and stored.task.worker_key is not None:
             lease_key = self._lease_key(stored.task.pool_id, stored.task.worker_key)
+            heartbeat_key = self._lease_heartbeat_key(
+                stored.task.pool_id, stored.task.worker_key
+            )
             lease_value = await self.client.get(lease_key)
             if lease_value is not None:
-                compare.append(
-                    self.client.compare_mod(lease_key, lease_value.mod_revision)
-                )
-                if quarantine_until_ms is None:
-                    success.append(self.client.delete(lease_key))
-                else:
-                    lease = WorkerLease.from_dict(json.loads(lease_value.value))
+                lease = WorkerLease.from_dict(json.loads(lease_value.value))
+                if lease.task_id == task_id:
+                    compare.append(
+                        self.client.compare_mod(lease_key, lease_value.mod_revision)
+                    )
+                if lease.task_id == task_id and quarantine_until_ms is None:
+                    success.extend(
+                        [
+                            self.client.delete(lease_key),
+                            self.client.delete(heartbeat_key),
+                        ]
+                    )
+                elif lease.task_id == task_id:
                     lease.state = "quarantined"
                     lease.reuse_after_ms = quarantine_until_ms
                     lease.heartbeat_at_ms = now_ms()
                     success.append(
                         self.client.put(lease_key, self._encode(lease.to_dict()))
                     )
+                    success.append(self.client.delete(heartbeat_key))
+            elif quarantine_until_ms is not None:
+                if stored.task.worker_instance_id is None:
+                    raise StoreConflict(
+                        "cannot quarantine a task without a Worker instance"
+                    )
+                quarantine = WorkerLease(
+                    pool_id=stored.task.pool_id,
+                    worker_key=stored.task.worker_key,
+                    worker_instance_id=stored.task.worker_instance_id,
+                    backend_target=stored.task.backend_target,
+                    task_id=stored.task.id,
+                    owner_generation=stored.task.owner_generation or "unknown",
+                    execution_token=stored.task.execution_token,
+                    state="quarantined",
+                    heartbeat_at_ms=now_ms(),
+                    reuse_after_ms=quarantine_until_ms,
+                )
+                compare.append(self.client.compare_version(lease_key, 0))
+                success.extend(
+                    [
+                        self.client.put(
+                            lease_key, self._encode(quarantine.to_dict())
+                        ),
+                        self.client.delete(heartbeat_key),
+                    ]
+                )
 
         succeeded, revision = await self.client.txn(compare, success)
         if not succeeded:
@@ -1415,14 +1559,209 @@ class EtcdTaskStore(TaskStore):
                     deleted=event.event_type == "DELETE",
                 )
 
+    async def register_gateway(self, gateway_id: str, *, ttl_s: int) -> int:
+        native_lease = await self.client.lease_grant(ttl_s)
+        key = self._gateway_key(gateway_id)
+        succeeded, _revision = await self.client.txn(
+            [self.client.compare_version(key, 0)],
+            [
+                self.client.put(
+                    key,
+                    self._encode(
+                        {
+                            "gateway_id": gateway_id,
+                            "lease_id": native_lease.lease_id,
+                            "registered_at_ms": now_ms(),
+                        }
+                    ),
+                    lease_id=native_lease.lease_id,
+                )
+            ],
+        )
+        if not succeeded:
+            await self.client.lease_revoke(native_lease.lease_id)
+            raise StoreConflict(f"Gateway owner already exists: {gateway_id}")
+        return native_lease.lease_id
+
+    async def keepalive_gateway(self, lease_id: int) -> None:
+        await self.client.lease_keepalive(lease_id)
+
+    async def unregister_gateway(self, lease_id: int) -> None:
+        await self.client.lease_revoke(lease_id)
+
+    async def iter_orphaned_active_tasks(self) -> AsyncIterator[StoredTask]:
+        prefix = self._owner_task_prefix()
+        cursor = prefix.encode()
+        range_end = self.client.prefix_end(prefix)
+        snapshot_revision = 0
+        while cursor < range_end:
+            page = await self.client.range_page(
+                cursor,
+                range_end=range_end,
+                limit=128,
+                revision=snapshot_revision,
+            )
+            if snapshot_revision == 0:
+                snapshot_revision = page.revision
+            if not page.values:
+                break
+            gateway_ids: list[str] = []
+            task_ids: list[str] = []
+            for value in page.values:
+                relative = value.key.removeprefix(prefix)
+                parts = relative.split("/")
+                if len(parts) != 3 or parts[1] != "tasks":
+                    raise RuntimeError("invalid Gateway owner task index key")
+                gateway_ids.append(parts[0])
+                task_ids.append(parts[2])
+            gateway_values, _revision = await self.client.get_many(
+                [self._gateway_key(gateway_id) for gateway_id in gateway_ids],
+                revision=snapshot_revision,
+            )
+            task_values, _revision = await self.client.get_many(
+                [self._task_key(task_id) for task_id in task_ids],
+                revision=snapshot_revision,
+            )
+            for gateway_id, task_id, gateway_value, task_value in zip(
+                gateway_ids,
+                task_ids,
+                gateway_values,
+                task_values,
+                strict=True,
+            ):
+                if gateway_value is not None:
+                    continue
+                if task_value is None:
+                    continue
+                stored = self._task(task_value)
+                if (
+                    stored.task.status in ACTIVE_STATUSES
+                    and stored.task.owner_generation == gateway_id
+                    and stored.task.id == task_id
+                ):
+                    yield stored
+            last_key = page.values[-1].key.encode()
+            next_cursor = last_key + b"\0"
+            if next_cursor <= cursor:
+                raise RuntimeError("Gateway owner index cursor did not advance")
+            cursor = next_cursor
+            if not page.more:
+                break
+
+    async def claim_orphaned_active(
+        self, stored: StoredTask, *, new_owner_generation: str
+    ) -> StoredTask | None:
+        task = stored.task
+        if (
+            task.status not in ACTIVE_STATUSES
+            or not task.owner_generation
+            or not task.worker_key
+            or task.worker_instance_id is None
+            or not task.execution_token
+        ):
+            return None
+        native_lease = await self.client.lease_grant(self.execution_lease_ttl_s)
+        lease = WorkerLease(
+            pool_id=task.pool_id,
+            worker_key=task.worker_key,
+            worker_instance_id=task.worker_instance_id,
+            backend_target=task.backend_target,
+            task_id=task.id,
+            owner_generation=new_owner_generation,
+            execution_token=task.execution_token,
+            state="running",
+            heartbeat_at_ms=now_ms(),
+            owner_expires_at_ms=now_ms() + self.execution_lease_ttl_s * 1000,
+            etcd_lease_id=native_lease.lease_id,
+        )
+        updated = _apply_patch(
+            task,
+            {
+                "owner_generation": new_owner_generation,
+                "worker_lease_id": native_lease.lease_id,
+            },
+        )
+        task_key = self._task_key(task.id)
+        lease_key = self._lease_key(task.pool_id, task.worker_key)
+        heartbeat_key = self._lease_heartbeat_key(task.pool_id, task.worker_key)
+        existing_lease_value = await self.client.get(lease_key)
+        if existing_lease_value is None:
+            lease_compare = self.client.compare_version(lease_key, 0)
+        else:
+            existing_lease = WorkerLease.from_dict(
+                json.loads(existing_lease_value.value)
+            )
+            if (
+                existing_lease.task_id != task.id
+                or existing_lease.owner_generation != task.owner_generation
+            ):
+                try:
+                    await self.client.lease_revoke(native_lease.lease_id)
+                except Exception:
+                    pass
+                return None
+            lease_compare = self.client.compare_mod(
+                lease_key, existing_lease_value.mod_revision
+            )
+        compare = [
+            self.client.compare_mod(task_key, stored.revision),
+            self.client.compare_version(
+                self._gateway_key(task.owner_generation), 0
+            ),
+            self.client.compare_version(
+                self._gateway_key(new_owner_generation), 0, result="GREATER"
+            ),
+            lease_compare,
+            self.client.compare_version(heartbeat_key, 0),
+        ]
+        success = [
+            self.client.put(task_key, self._encode(updated.to_dict())),
+            self.client.put(
+                lease_key,
+                self._encode(lease.to_dict()),
+            ),
+            self.client.put(
+                heartbeat_key,
+                self._encode(
+                    {
+                        "task_id": task.id,
+                        "lease_id": native_lease.lease_id,
+                    }
+                ),
+                lease_id=native_lease.lease_id,
+            ),
+            self.client.delete(
+                self._owner_task_key(task.owner_generation, task.id)
+            ),
+            self.client.put(
+                self._owner_task_key(new_owner_generation, task.id), task.id
+            ),
+        ]
+        try:
+            succeeded, revision = await self.client.txn(compare, success)
+        except Exception:
+            try:
+                await self.client.lease_revoke(native_lease.lease_id)
+            except Exception:
+                pass
+            raise
+        if not succeeded:
+            try:
+                await self.client.lease_revoke(native_lease.lease_id)
+            except Exception:
+                pass
+            return None
+        return StoredTask(updated, revision)
+
     async def release_lease(self, pool_id: str, worker_key_value: str) -> None:
         key = self._lease_key(pool_id, worker_key_value)
+        heartbeat_key = self._lease_heartbeat_key(pool_id, worker_key_value)
         value = await self.client.get(key)
         if value is None:
             return
         await self.client.txn(
             [self.client.compare_mod(key, value.mod_revision)],
-            [self.client.delete(key)],
+            [self.client.delete(key), self.client.delete(heartbeat_key)],
         )
 
     async def heartbeat_lease(
@@ -1432,22 +1771,48 @@ class EtcdTaskStore(TaskStore):
         task_id: str,
         lease_id: int | None = None,
     ) -> None:
-        if lease_id is not None:
-            await self.client.lease_keepalive(lease_id)
-            return
         key = self._lease_key(pool_id, worker_key_value)
         value = await self.client.get(key)
         if value is None:
-            return
+            raise StoreConflict("Worker execution lease no longer exists")
         lease = WorkerLease.from_dict(json.loads(value.value))
         if lease.task_id != task_id:
+            raise StoreConflict("Worker execution lease belongs to another task")
+        if lease_id is not None:
+            if lease.etcd_lease_id != lease_id:
+                raise StoreConflict("Worker execution lease identity changed")
+            # Rolling upgrades may still encounter the legacy representation,
+            # where the logical Worker guard itself is attached to the native
+            # lease. Keep it alive until that task reaches a terminal state.
+            if value.lease == lease_id:
+                await self.client.lease_keepalive(lease_id)
+                return
+            if value.lease != 0:
+                raise StoreConflict("Worker execution guard has an invalid lease")
+            heartbeat_value = await self.client.get(
+                self._lease_heartbeat_key(pool_id, worker_key_value)
+            )
+            if heartbeat_value is None or heartbeat_value.lease != lease_id:
+                raise StoreConflict("Worker execution heartbeat no longer exists")
+            try:
+                heartbeat = json.loads(heartbeat_value.value)
+            except (TypeError, ValueError) as exc:
+                raise StoreConflict("Worker execution heartbeat is invalid") from exc
+            if (
+                heartbeat.get("task_id") != task_id
+                or heartbeat.get("lease_id") != lease_id
+            ):
+                raise StoreConflict("Worker execution heartbeat identity changed")
+            await self.client.lease_keepalive(lease_id)
             return
         lease.heartbeat_at_ms = now_ms()
         lease.owner_expires_at_ms = now_ms() + 15_000
-        await self.client.txn(
+        succeeded, _revision = await self.client.txn(
             [self.client.compare_mod(key, value.mod_revision)],
             [self.client.put(key, self._encode(lease.to_dict()))],
         )
+        if not succeeded:
+            raise StoreConflict("Worker execution lease changed during heartbeat")
 
     async def delete_expired(self, stored: StoredTask) -> bool:
         if stored.task.status != TaskStatus.EXPIRED:
@@ -1462,6 +1827,14 @@ class EtcdTaskStore(TaskStore):
             ],
             self.client.delete(self._expiry_index_key(stored.task)),
         ]
+        if stored.task.owner_generation:
+            success.append(
+                self.client.delete(
+                    self._owner_task_key(
+                        stored.task.owner_generation, stored.task.id
+                    )
+                )
+            )
         if stored.task.principal_hash and stored.task.idempotency_hash:
             idem_key = self._idempotency_key(
                 stored.task.principal_hash, stored.task.idempotency_hash

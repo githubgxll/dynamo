@@ -47,14 +47,33 @@ async def init_omni(
         get_fs(config.media_output_fs_url) if config.media_output_fs_url else None
     )
 
+    detached_manager = None
     handler = OmniHandler(
         runtime=runtime,
         config=config,
         default_sampling_params={},
-        shutdown_event=shutdown_event,
+        # Detached tasks outlive the submitting endpoint request and must drain
+        # before engine cleanup. The manager owns their cancellation deadline.
+        shutdown_event=(
+            None if config.detached_video_task_root is not None else shutdown_event
+        ),
         media_output_fs=media_fs,
         media_output_http_url=config.media_output_http_url,
     )
+    serve_handler = handler.generate
+    if config.detached_video_task_root is not None:
+        from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
+
+        detached_manager = DetachedOmniTaskManager(
+            handler,
+            config.detached_video_task_root,
+            drain_timeout_s=config.detached_video_drain_timeout,
+        )
+        serve_handler = detached_manager.generate
+        logger.info(
+            "Enabled detached Omni video tasks below %s",
+            config.detached_video_task_root,
+        )
 
     logger.info("Omni worker initialized for model: %s", config.model)
 
@@ -94,7 +113,7 @@ async def init_omni(
         ).to_dict()
 
         await generate_endpoint.serve_endpoint(
-            handler.generate,
+            serve_handler,
             graceful_shutdown=True,
             metrics_labels=[
                 (
@@ -113,6 +132,8 @@ async def init_omni(
         raise
     finally:
         logger.debug("Cleaning up Omni worker")
+        if detached_manager is not None:
+            await detached_manager.shutdown()
         handler.cleanup()
 
 

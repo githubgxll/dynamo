@@ -11,6 +11,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -18,6 +19,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from dingo.common.video_task_protocol import detached_attempt_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +337,142 @@ class FileArtifactStore:
 
         return await asyncio.to_thread(_read)
 
+    def detached_attempt_root(
+        self,
+        deployment_id: str,
+        pool_id: str,
+        task_id: str,
+        attempt: int,
+        execution_token: str,
+    ) -> Path:
+        path = detached_attempt_root(
+            self.root,
+            deployment_id,
+            pool_id,
+            task_id,
+            attempt,
+            execution_token,
+        )
+        return self._symlink_free(path)
+
+    async def read_detached_status(
+        self,
+        deployment_id: str,
+        pool_id: str,
+        task_id: str,
+        attempt: int,
+        execution_token: str,
+    ) -> dict[str, Any] | None:
+        attempt_root = self.detached_attempt_root(
+            deployment_id, pool_id, task_id, attempt, execution_token
+        )
+        path = attempt_root / "worker-status.json"
+
+        def _read() -> dict[str, Any] | None:
+            try:
+                if path.is_symlink():
+                    raise RuntimeError("detached Worker status is a symlink")
+                if path.stat().st_size > 64 * 1024:
+                    raise RuntimeError("detached Worker status exceeds 64 KiB")
+                with path.open("r", encoding="utf-8") as stream:
+                    value = json.load(stream)
+            except FileNotFoundError:
+                return None
+            if not isinstance(value, dict):
+                raise RuntimeError("detached Worker status is not an object")
+            expected = {
+                "deployment_id": deployment_id,
+                "pool_id": pool_id,
+                "task_id": task_id,
+                "attempt": attempt,
+                "execution_token": execution_token,
+            }
+            if any(
+                value.get(key) != expected_value
+                for key, expected_value in expected.items()
+            ):
+                raise RuntimeError("detached Worker status identity mismatch")
+            if value.get("schema_version") != 1:
+                raise RuntimeError("unsupported detached Worker status schema")
+            return value
+
+        return await asyncio.to_thread(_read)
+
+    async def request_detached_cancel(
+        self,
+        deployment_id: str,
+        pool_id: str,
+        task_id: str,
+        attempt: int,
+        execution_token: str,
+    ) -> None:
+        attempt_root = self.detached_attempt_root(
+            deployment_id, pool_id, task_id, attempt, execution_token
+        )
+        path = attempt_root / "cancel.requested"
+
+        def _write() -> None:
+            attempt_root.mkdir(mode=0o750, parents=True, exist_ok=True)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(descriptor)
+
+        await asyncio.to_thread(_write)
+
+    async def consume_detached_response(
+        self,
+        deployment_id: str,
+        pool_id: str,
+        task_id: str,
+        attempt: int,
+        execution_token: str,
+        consumer: Any,
+        *,
+        expected_sha256: str,
+        max_response_bytes: int,
+    ) -> int:
+        attempt_root = self.detached_attempt_root(
+            deployment_id, pool_id, task_id, attempt, execution_token
+        )
+        path = attempt_root / "worker-response.jsonl"
+
+        def _consume() -> int:
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError("detached Worker response is not a regular file")
+            digest = hashlib.sha256()
+            consumed = 0
+            with path.open("rb") as stream:
+                while True:
+                    remaining = max_response_bytes - consumed
+                    if remaining < 0:
+                        raise RuntimeError(
+                            "detached Worker response exceeds configured maximum"
+                        )
+                    encoded = stream.readline(remaining + 1)
+                    if not encoded:
+                        break
+                    consumed += len(encoded)
+                    if consumed > max_response_bytes:
+                        raise RuntimeError(
+                            "detached Worker response exceeds configured maximum"
+                        )
+                    digest.update(encoded)
+                    try:
+                        item = json.loads(encoded)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(
+                            "detached Worker response contains invalid JSON"
+                        ) from exc
+                    if not isinstance(item, dict):
+                        raise RuntimeError(
+                            "detached Worker response chunk is not an object"
+                        )
+                    consumer.consume(item)
+            if digest.hexdigest() != expected_sha256:
+                raise RuntimeError("detached Worker response checksum mismatch")
+            return consumed
+
+        return await asyncio.to_thread(_consume)
+
     async def finalize_b64_mp4(
         self,
         task_root: Path,
@@ -343,6 +482,7 @@ class FileArtifactStore:
         processor: Callable[[Path, Mapping[str, Any]], None] | None = None,
         *,
         max_result_bytes: int = 128 * 1024 * 1024,
+        publication_scope: str | None = None,
     ) -> tuple[Path, int, str, dict[str, Any]]:
         root = self._contained(task_root)
         result_dir = root / "result"
@@ -355,7 +495,12 @@ class FileArtifactStore:
         if len(b64_json) % 4:
             raise RuntimeError("Worker base64 result has invalid padding length")
         temporary = temporary_dir / f"result-{uuid.uuid4().hex}.part"
-        final = result_dir / "video.mp4"
+        scope = publication_scope or "legacy"
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", scope) is None:
+            raise ValueError("result publication scope is invalid")
+        # The task CAS publishes one unique candidate. A stale Gateway can
+        # safely unlink its own losing candidate without touching the winner.
+        final = result_dir / f"video-{scope}-{uuid.uuid4().hex}.mp4"
 
         def _decode() -> tuple[int, str]:
             digest = hashlib.sha256()

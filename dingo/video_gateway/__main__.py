@@ -22,6 +22,7 @@ from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.etcd_http import EtcdHttpClient
 from dingo.video_gateway.service import VideoGatewayService
 from dingo.video_gateway.task_store import EtcdTaskStore, MemoryTaskStore
+from dingo.video_gateway.telemetry import GatewayTelemetry
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ async def run(args: argparse.Namespace) -> None:
     try:
         clients = await create_pool_clients(runtime, config)
         artifacts = FileArtifactStore(config.artifact_store.root)
+        telemetry = GatewayTelemetry()
         if config.task_store.kind == "memory":
             store = MemoryTaskStore()
         else:
@@ -67,11 +69,19 @@ async def run(args: argparse.Namespace) -> None:
                 EtcdHttpClient(
                     config.task_store.url,
                     timeout_s=config.task_store.request_timeout_s,
+                    telemetry=telemetry,
                 ),
                 prefix=config.task_store.prefix,
                 deployment_id=config.deployment_id,
             )
-        dispatcher = VideoDispatcher(config, store, artifacts, clients, adapters)
+        dispatcher = VideoDispatcher(
+            config,
+            store,
+            artifacts,
+            clients,
+            adapters,
+            telemetry=telemetry,
+        )
         service = VideoGatewayService(config, store, artifacts, dispatcher, adapters)
         app = create_app(service)
         runner = web.AppRunner(app, handle_signals=False)

@@ -172,6 +172,27 @@ class OmniArgGroup(ArgGroup):
                 "cache. New unique media is rejected when the cache is full."
             ),
         )
+        add_argument(
+            g,
+            flag_name="--detached-video-task-root",
+            env_var="DYN_OMNI_DETACHED_VIDEO_TASK_ROOT",
+            default=None,
+            help=(
+                "Shared Video Gateway artifact root used by the opt-in detached "
+                "task protocol. Disabled by default."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--detached-video-drain-timeout",
+            env_var="DYN_OMNI_DETACHED_VIDEO_DRAIN_TIMEOUT",
+            default=1800.0,
+            arg_type=float,
+            help=(
+                "Maximum seconds an explicitly detached Omni worker waits for "
+                "accepted video tasks during graceful shutdown."
+            ),
+        )
 
         # OmniDiffusionKwargs fields
         add_negatable_bool_argument(
@@ -492,6 +513,8 @@ class OmniConfig(DynamoRuntimeConfig):
     request_adapter_workflow: Optional[str] = None
     request_adapter_media_dir: str = "/tmp/dynamo_media"
     request_adapter_media_max_bytes: int = 2 * 1024 * 1024 * 1024
+    detached_video_task_root: Optional[str] = None
+    detached_video_drain_timeout: float = 1800.0
 
     # Nested structs — each group of fields has a clear destination
     diffusion: OmniDiffusionKwargs = dataclasses.field(
@@ -552,6 +575,20 @@ class OmniConfig(DynamoRuntimeConfig):
             raise ValueError("--request-adapter-media-dir must not be empty")
         if self.request_adapter_media_max_bytes <= 0:
             raise ValueError("--request-adapter-media-max-bytes must be > 0")
+        if self.detached_video_task_root is not None:
+            if not self.detached_video_task_root.strip():
+                raise ValueError("--detached-video-task-root must not be empty")
+            if self.request_adapter != "minimax_h3":
+                raise ValueError(
+                    "--detached-video-task-root requires "
+                    "--request-adapter minimax_h3"
+                )
+            if self.stage_id is not None or self.omni_router or self.realtime:
+                raise ValueError(
+                    "--detached-video-task-root supports aggregated unary Omni only"
+                )
+        if self.detached_video_drain_timeout <= 0:
+            raise ValueError("--detached-video-drain-timeout must be > 0")
         if self.parallel.ulysses_degree <= 0:
             raise ValueError("--ulysses-degree must be > 0")
         if self.parallel.ring_degree <= 0:

@@ -9,9 +9,22 @@ import uuid
 
 import pytest
 
+from dingo.video_gateway.adapters import create_adapter
+from dingo.video_gateway.artifact_store import FileArtifactStore
+from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.etcd_http import EtcdHttpClient
 from dingo.video_gateway.models import TaskStatus
+from dingo.video_gateway.service import VideoGatewayService
 from dingo.video_gateway.task_store import EtcdTaskStore
+from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
+from tests.video_gateway.test_dispatcher import (
+    FakeClient,
+    FakeContext,
+    _DetachedClient,
+    _DetachedHandler,
+    _pool,
+    _submit,
+)
 from tests.video_gateway.test_task_store import _lease, _task
 
 _ETCD_URL = os.environ.get("DINGO_VIDEO_TEST_ETCD_URL")
@@ -207,9 +220,13 @@ async def test_real_etcd_worker_lease_snapshot_watch_and_keepalive_contract():
             idempotency_hash=None,
             queue_limit=2,
         )
+        worker_lease = _lease(stored.task)
+        gateway_lease_id = await store.register_gateway(
+            worker_lease.owner_generation, ttl_s=15
+        )
         reserved = await store.reserve(
             stored,
-            _lease(stored.task),
+            worker_lease,
             deadline_at_ms=stored.task.created_at_ms + 60_000,
         )
         assert reserved is not None
@@ -233,6 +250,11 @@ async def test_real_etcd_worker_lease_snapshot_watch_and_keepalive_contract():
         assert deleted.worker_key == reserved.task.worker_key
         assert deleted.lease is None
         await watch.aclose()
+
+        assert [item async for item in store.iter_orphaned_active_tasks()] == []
+        await store.unregister_gateway(gateway_lease_id)
+        orphaned = [item async for item in store.iter_orphaned_active_tasks()]
+        assert [item.task.id for item in orphaned] == [stored.task.id]
     finally:
         await _delete_prefix(client, prefix)
         await client.close()
@@ -273,3 +295,168 @@ async def test_real_etcd_task_watch_contract():
             await watch.aclose()
         await _delete_prefix(client, prefix)
         await client.close()
+
+
+@pytest.mark.skipif(
+    not _ETCD_URL,
+    reason="set DINGO_VIDEO_TEST_ETCD_URL to run the real etcd v3 contract",
+)
+async def test_two_gateways_preserve_task_owned_by_healthy_peer(
+    make_gateway_config,
+):
+    prefix = f"/dingo/video-gateway-ha-tests/{uuid.uuid4().hex}"
+    config = make_gateway_config()
+    cleanup_client = EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0)
+    store_a = EtcdTaskStore(
+        EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0),
+        prefix=prefix,
+        deployment_id=config.deployment_id,
+    )
+    store_b = EtcdTaskStore(
+        EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0),
+        prefix=prefix,
+        deployment_id=config.deployment_id,
+    )
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    client_a = FakeClient(block=True)
+    client_b = FakeClient(block=True)
+    dispatcher_a = VideoDispatcher(
+        config,
+        store_a,
+        artifacts,
+        {"fl-pool": client_a},
+        adapters,
+        context_factory=FakeContext,
+        generation="gateway-a",
+    )
+    dispatcher_b = VideoDispatcher(
+        config,
+        store_b,
+        artifacts,
+        {"fl-pool": client_b},
+        adapters,
+        context_factory=FakeContext,
+        generation="gateway-b",
+    )
+    service_a = VideoGatewayService(
+        config, store_a, artifacts, dispatcher_a, adapters
+    )
+    started_a = False
+    started_b = False
+    try:
+        await dispatcher_a.start()
+        started_a = True
+        submission = await _submit(service_a, "public-fl")
+        for _ in range(100):
+            if client_a.calls:
+                break
+            await asyncio.sleep(0.01)
+        assert len(client_a.calls) == 1
+
+        await dispatcher_b.start()
+        started_b = True
+        active = await store_b.get_task(submission.stored.task.id)
+        assert active is not None
+        assert active.task.status == TaskStatus.IN_PROGRESS
+        assert active.task.owner_generation == "gateway-a"
+        assert client_b.calls == []
+
+        client_a.release.set()
+        terminal = await dispatcher_b.wait_terminal(active.task.id, 2)
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert len(client_a.calls) + len(client_b.calls) == 1
+    finally:
+        client_a.release.set()
+        client_b.release.set()
+        if started_b:
+            await dispatcher_b.stop()
+        if started_a:
+            await dispatcher_a.stop()
+        await _delete_prefix(cleanup_client, prefix)
+        await cleanup_client.close()
+
+
+@pytest.mark.skipif(
+    not _ETCD_URL,
+    reason="set DINGO_VIDEO_TEST_ETCD_URL to run the real etcd v3 contract",
+)
+async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
+    make_gateway_config,
+):
+    prefix = f"/dingo/video-gateway-detached-ha-tests/{uuid.uuid4().hex}"
+    pool_raw = _pool(
+        "fl-pool", "public-fl", "dyn://scope-a.backend.generate"
+    )
+    pool_raw["execution_mode"] = "detached"
+    config = make_gateway_config(pools=[pool_raw])
+    cleanup_client = EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0)
+    store_a = EtcdTaskStore(
+        EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0),
+        prefix=prefix,
+        deployment_id=config.deployment_id,
+        execution_lease_ttl_s=5,
+    )
+    store_b = EtcdTaskStore(
+        EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0),
+        prefix=prefix,
+        deployment_id=config.deployment_id,
+        execution_lease_ttl_s=5,
+    )
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    handler = _DetachedHandler(block=True)
+    manager = DetachedOmniTaskManager(
+        handler, config.artifact_store.root, drain_timeout_s=15
+    )
+    dispatcher_a = VideoDispatcher(
+        config,
+        store_a,
+        artifacts,
+        {"fl-pool": _DetachedClient(manager)},
+        adapters,
+        context_factory=FakeContext,
+        generation="detached-gateway-a",
+    )
+    dispatcher_b = VideoDispatcher(
+        config,
+        store_b,
+        artifacts,
+        {"fl-pool": _DetachedClient(manager)},
+        adapters,
+        context_factory=FakeContext,
+        generation="detached-gateway-b",
+    )
+    service_a = VideoGatewayService(
+        config, store_a, artifacts, dispatcher_a, adapters
+    )
+    started_a = False
+    started_b = False
+    try:
+        await dispatcher_a.start()
+        started_a = True
+        await dispatcher_b.start()
+        started_b = True
+        submission = await _submit(service_a, "public-fl")
+        await asyncio.wait_for(handler.started.wait(), timeout=2)
+        active = await store_b.get_task(submission.stored.task.id)
+        assert active is not None
+        assert active.task.status == TaskStatus.IN_PROGRESS
+        assert active.task.owner_generation == "detached-gateway-a"
+
+        await dispatcher_a.stop()
+        started_a = False
+        handler.release.set()
+        terminal = await dispatcher_b.wait_terminal(active.task.id, 12)
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert terminal.task.owner_generation == "detached-gateway-b"
+        assert handler.calls == 1
+    finally:
+        handler.release.set()
+        if started_b:
+            await dispatcher_b.stop()
+        if started_a:
+            await dispatcher_a.stop()
+        await manager.shutdown()
+        await _delete_prefix(cleanup_client, prefix)
+        await cleanup_client.close()

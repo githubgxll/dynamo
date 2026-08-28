@@ -73,6 +73,8 @@ def _make_omni_config(**overrides) -> OmniConfig:
         "request_adapter_workflow": None,
         "request_adapter_media_dir": "/tmp/dynamo_media",
         "request_adapter_media_max_bytes": 2 * 1024 * 1024 * 1024,
+        "detached_video_task_root": None,
+        "detached_video_drain_timeout": 1800.0,
         "tts_max_instructions_length": 500,
         "tts_max_new_tokens_min": 1,
         "tts_max_new_tokens_max": 4096,
@@ -127,6 +129,34 @@ def test_workflow_without_request_adapter_is_rejected():
 def test_request_adapter_media_limit_must_be_positive(limit):
     config = _make_omni_config(request_adapter_media_max_bytes=limit)
     with pytest.raises(ValueError, match="media-max-bytes must be > 0"):
+        config.validate()
+
+
+def test_detached_video_tasks_are_disabled_by_default():
+    config = _make_omni_config()
+    assert config.detached_video_task_root is None
+    config.validate()
+
+
+def test_detached_video_tasks_require_minimax_adapter():
+    config = _make_omni_config(detached_video_task_root="/shared/tasks")
+    with pytest.raises(ValueError, match="requires.*minimax_h3"):
+        config.validate()
+
+
+def test_detached_video_tasks_accept_explicit_minimax_adapter():
+    config = _make_omni_config(
+        request_adapter="minimax_h3",
+        request_adapter_workflow="fl2va",
+        detached_video_task_root="/shared/tasks",
+    )
+    config.validate()
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_detached_video_drain_timeout_must_be_positive(timeout):
+    config = _make_omni_config(detached_video_drain_timeout=timeout)
+    with pytest.raises(ValueError, match="drain-timeout must be > 0"):
         config.validate()
 
 

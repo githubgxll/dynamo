@@ -55,6 +55,7 @@ class VllmOmniEngine(RawEngine):
     def __init__(self, config: Any):
         self._config = config  # OmniConfig (vLLM-Omni args + runtime config)
         self._handler: Any = None
+        self._detached_manager: Any = None
 
     @classmethod
     async def from_args(
@@ -120,6 +121,14 @@ class VllmOmniEngine(RawEngine):
             media_output_fs=media_fs,
             media_output_http_url=self._config.media_output_http_url,
         )
+        if self._config.detached_video_task_root is not None:
+            from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
+
+            self._detached_manager = DetachedOmniTaskManager(
+                self._handler,
+                self._config.detached_video_task_root,
+                drain_timeout_s=self._config.detached_video_drain_timeout,
+            )
         logger.info(
             "VllmOmniEngine ready (model=%s, output_modalities=%s)",
             self._config.model,
@@ -137,7 +146,12 @@ class VllmOmniEngine(RawEngine):
             raise RuntimeError("generate() called before start() completed")
         # OmniHandler.generate already matches the RawEngine contract
         # (raw request dict in, response dict out).
-        async for chunk in self._handler.generate(request, context):
+        generate = (
+            self._detached_manager.generate
+            if self._detached_manager is not None
+            else self._handler.generate
+        )
+        async for chunk in generate(request, context):
             yield chunk
 
     async def health_check_payload(self) -> Optional[dict[str, Any]]:
@@ -148,6 +162,9 @@ class VllmOmniEngine(RawEngine):
 
     async def cleanup(self) -> None:
         # Null-safe against a partial start() (the ABC contract).
+        if self._detached_manager is not None:
+            await self._detached_manager.shutdown()
+            self._detached_manager = None
         if self._handler is not None:
             self._handler.cleanup()
             self._handler = None

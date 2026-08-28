@@ -99,6 +99,7 @@ class VideoTask:
     worker_key: str | None = None
     worker_lease_id: int | None = None
     owner_generation: str | None = None
+    execution_token: str | None = None
     assigned_at_ms: int | None = None
     started_at_ms: int | None = None
     deadline_at_ms: int | None = None
@@ -209,6 +210,7 @@ class WorkerLease:
     owner_generation: str
     state: str
     heartbeat_at_ms: int
+    execution_token: str | None = None
     owner_expires_at_ms: int | None = None
     reuse_after_ms: int | None = None
     etcd_lease_id: int | None = None

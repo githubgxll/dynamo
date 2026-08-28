@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+
+import pytest
 
 from dingo.video_gateway.etcd_http import EtcdHttpClient, EtcdLease, EtcdValue
+from dingo.video_gateway.errors import StoreConflict
 from dingo.video_gateway.models import TaskStatus, now_ms
 from dingo.video_gateway.task_store import EtcdTaskStore
-from tests.video_gateway.test_task_store import _task
+from tests.video_gateway.test_task_store import _lease, _task
 
 
 def _decode(value: str) -> bytes:
@@ -224,8 +229,12 @@ async def test_etcd_store_create_reserve_cancel_and_reconcile_are_transactional(
 
     from tests.video_gateway.test_task_store import _lease
 
+    worker_lease = _lease(task)
+    gateway_lease_id = await store.register_gateway(
+        worker_lease.owner_generation, ttl_s=15
+    )
     reserved = await store.reserve(
-        stored, _lease(task), deadline_at_ms=now_ms() + 10_000
+        stored, worker_lease, deadline_at_ms=now_ms() + 10_000
     )
     assert reserved is not None
     assert reserved.task.status == TaskStatus.DISPATCHING
@@ -233,8 +242,13 @@ async def test_etcd_store_create_reserve_cancel_and_reconcile_are_transactional(
     lease_record = await client.get(
         store._lease_key(task.pool_id, reserved.task.worker_key)
     )
+    heartbeat_record = await client.get(
+        store._lease_heartbeat_key(task.pool_id, reserved.task.worker_key)
+    )
     assert lease_record is not None
-    assert lease_record.lease == reserved.task.worker_lease_id
+    assert lease_record.lease == 0
+    assert heartbeat_record is not None
+    assert heartbeat_record.lease == reserved.task.worker_lease_id
     await store.heartbeat_lease(
         task.pool_id,
         reserved.task.worker_key,
@@ -262,6 +276,105 @@ async def test_etcd_store_create_reserve_cancel_and_reconcile_are_transactional(
     assert await store.delete_expired(expired) is True
     assert await store.get_task(task.id) is None
     assert await client.get(store._idempotency_key("principal", "key")) is None
+    await store.unregister_gateway(gateway_lease_id)
+
+
+async def test_etcd_late_transition_does_not_delete_new_task_lease():
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="fencing")
+    task = _task("video-old")
+    stored, _ = await store.create_task(
+        task, principal_hash="p", idempotency_hash=None, queue_limit=1
+    )
+    await store.register_gateway("generation", ttl_s=15)
+    reserved = await store.reserve(
+        stored, _lease(task), deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None and reserved.task.worker_key is not None
+    lease_key = store._lease_key(task.pool_id, reserved.task.worker_key)
+    existing = await client.get(lease_key)
+    assert existing is not None
+    new_lease = _lease(_task("video-new"))
+    new_lease.worker_key = reserved.task.worker_key
+    await client.txn(
+        [client.compare_mod(lease_key, existing.mod_revision)],
+        [client.put(lease_key, store._encode(new_lease.to_dict()))],
+    )
+
+    await store.transition(
+        task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.FAILED},
+        release_lease=True,
+        quarantine_until_ms=now_ms() + 10_000,
+    )
+
+    current = await client.get(lease_key)
+    assert current is not None
+    assert json.loads(current.value)["task_id"] == "video-new"
+    assert json.loads(current.value)["state"] == "reserved"
+
+
+async def test_etcd_expired_heartbeat_keeps_worker_guard_until_quarantined():
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="quarantine")
+    task = _task("video-lost-lease")
+    stored, _ = await store.create_task(
+        task, principal_hash="p", idempotency_hash=None, queue_limit=1
+    )
+    await store.register_gateway("generation", ttl_s=15)
+    reserved = await store.reserve(
+        stored, _lease(task), deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None
+    assert reserved.task.worker_key is not None
+    assert reserved.task.worker_lease_id is not None
+    await client.lease_revoke(reserved.task.worker_lease_id)
+
+    guard = await client.get(
+        store._lease_key(task.pool_id, reserved.task.worker_key)
+    )
+    heartbeat = await client.get(
+        store._lease_heartbeat_key(task.pool_id, reserved.task.worker_key)
+    )
+    assert guard is not None
+    assert heartbeat is None
+    with pytest.raises(StoreConflict, match="heartbeat no longer exists"):
+        await store.heartbeat_lease(
+            task.pool_id,
+            reserved.task.worker_key,
+            task.id,
+            reserved.task.worker_lease_id,
+        )
+
+    replacement_task = _task("video-after-lost-heartbeat")
+    replacement, _ = await store.create_task(
+        replacement_task,
+        principal_hash="p",
+        idempotency_hash=None,
+        queue_limit=2,
+    )
+    assert await store.reserve(
+        replacement,
+        _lease(replacement_task),
+        deadline_at_ms=now_ms() + 10_000,
+    ) is None
+
+    failed = await store.transition(
+        task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.FAILED},
+        release_lease=True,
+        quarantine_until_ms=now_ms() + 10_000,
+    )
+
+    current = await client.get(store._lease_key(task.pool_id, reserved.task.worker_key))
+    assert failed.task.status == TaskStatus.FAILED
+    assert current is not None
+    assert current.lease == 0
+    assert json.loads(current.value)["state"] == "quarantined"
 
 
 async def test_reconcile_pool_does_not_truncate_after_ten_thousand_tasks():
@@ -469,3 +582,171 @@ async def test_due_task_query_uses_ordered_expiry_index_and_limit():
         tasks[1].task.id,
         tasks[0].task.id,
     ]
+
+
+async def test_gateway_owner_lease_scopes_active_task_recovery():
+    from tests.video_gateway.test_task_store import _lease
+
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="owners")
+    task = _task("video-owned")
+    stored, _created = await store.create_task(
+        task,
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+    worker_lease = _lease(stored.task)
+    gateway_lease_id = await store.register_gateway(
+        worker_lease.owner_generation, ttl_s=15
+    )
+    reserved = await store.reserve(
+        stored, worker_lease, deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None
+    active = await store.transition(
+        task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.IN_PROGRESS},
+    )
+
+    assert [item async for item in store.iter_orphaned_active_tasks()] == []
+
+    await store.unregister_gateway(gateway_lease_id)
+    orphaned = [item async for item in store.iter_orphaned_active_tasks()]
+    assert [item.task.id for item in orphaned] == [task.id]
+
+    failed = await store.transition(
+        task.id,
+        expected={TaskStatus.IN_PROGRESS},
+        expected_revision=active.revision,
+        patch={"status": TaskStatus.FAILED},
+        release_lease=True,
+    )
+    assert failed.task.status == TaskStatus.FAILED
+    assert await client.get(
+        store._owner_task_key(worker_lease.owner_generation, task.id)
+    ) is None
+
+
+async def test_orphaned_detached_task_is_claimed_once_with_same_fencing_token():
+    from tests.video_gateway.test_task_store import _lease
+
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="claim")
+    stored, _created = await store.create_task(
+        _task("video-detached-claim"),
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+    worker_lease = _lease(stored.task)
+    worker_lease.owner_generation = "gateway-old"
+    worker_lease.execution_token = "a" * 32
+    owner_lease_id = await store.register_gateway("gateway-old", ttl_s=15)
+    await store.register_gateway("gateway-new", ttl_s=15)
+    reserved = await store.reserve(
+        stored, worker_lease, deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None
+    active = await store.transition(
+        stored.task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.IN_PROGRESS},
+    )
+
+    await store.unregister_gateway(owner_lease_id)
+    assert active.task.worker_lease_id is not None
+    await client.lease_revoke(active.task.worker_lease_id)
+    orphaned = [item async for item in store.iter_orphaned_active_tasks()]
+    assert [item.task.id for item in orphaned] == [stored.task.id]
+
+    claimed = await store.claim_orphaned_active(
+        orphaned[0], new_owner_generation="gateway-new"
+    )
+    assert claimed is not None
+    assert claimed.task.owner_generation == "gateway-new"
+    assert claimed.task.execution_token == "a" * 32
+    assert claimed.task.worker_lease_id != active.task.worker_lease_id
+    assert await store.claim_orphaned_active(
+        orphaned[0], new_owner_generation="gateway-new"
+    ) is None
+    assert await client.get(
+        store._owner_task_key("gateway-old", stored.task.id)
+    ) is None
+    assert await client.get(
+        store._owner_task_key("gateway-new", stored.task.id)
+    ) is not None
+
+    with pytest.raises(StoreConflict):
+        await store.transition(
+            stored.task.id,
+            expected={TaskStatus.IN_PROGRESS},
+            expected_revision=active.revision,
+            patch={"status": TaskStatus.FAILED},
+        )
+
+
+async def test_prepare_upgrades_v2_marker_and_backfills_owner_index():
+    from tests.video_gateway.test_task_store import _lease
+
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="upgrade")
+    stored, _created = await store.create_task(
+        _task("video-v2-owner"),
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+    worker_lease = _lease(stored.task)
+    await store.register_gateway(worker_lease.owner_generation, ttl_s=15)
+    reserved = await store.reserve(
+        stored, worker_lease, deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None
+    owner_key = store._owner_task_key(worker_lease.owner_generation, stored.task.id)
+    client.values.pop(owner_key)
+    client.revision += 1
+    marker_key = store._index_schema_key()
+    client.values[marker_key] = EtcdValue(
+        marker_key, b"2", client.revision, client.revision, 1
+    )
+
+    await store.prepare()
+
+    assert (await client.get(marker_key)).value == b"3"
+    assert await client.get(owner_key) is not None
+
+
+async def test_two_gateway_owners_cannot_reserve_the_same_task():
+    from tests.video_gateway.test_task_store import _lease
+
+    client = FakeEtcd()
+    store = EtcdTaskStore(client, prefix="/isolated/video", deployment_id="race")
+    task = _task("video-owner-race")
+    stored, _created = await store.create_task(
+        task,
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+    left = _lease(stored.task, instance_id=7)
+    left.owner_generation = "gateway-left"
+    right = _lease(stored.task, instance_id=8)
+    right.owner_generation = "gateway-right"
+    await store.register_gateway(left.owner_generation, ttl_s=15)
+    await store.register_gateway(right.owner_generation, ttl_s=15)
+
+    reservations = await asyncio.gather(
+        store.reserve(stored, left, deadline_at_ms=now_ms() + 10_000),
+        store.reserve(stored, right, deadline_at_ms=now_ms() + 10_000),
+    )
+
+    winners = [reservation for reservation in reservations if reservation is not None]
+    assert len(winners) == 1
+    assert winners[0].task.owner_generation in {
+        left.owner_generation,
+        right.owner_generation,
+    }

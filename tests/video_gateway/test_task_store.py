@@ -143,6 +143,64 @@ async def test_same_numeric_instance_in_different_targets_has_independent_leases
     assert len(await store.list_leases("pool-b")) == 1
 
 
+async def test_late_task_transition_never_releases_new_owner_lease():
+    store = MemoryTaskStore()
+    old_task = _task("video-old")
+    old, _ = await store.create_task(
+        old_task, principal_hash="p", idempotency_hash=None, queue_limit=2
+    )
+    reserved = await store.reserve(
+        old, _lease(old_task), deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None and reserved.task.worker_key is not None
+
+    new_lease = _lease(_task("video-new"))
+    new_lease.worker_key = reserved.task.worker_key
+    store._leases[(old_task.pool_id, reserved.task.worker_key)] = new_lease
+
+    await store.transition(
+        old_task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.FAILED},
+        release_lease=True,
+        quarantine_until_ms=now_ms() + 10_000,
+    )
+
+    leases = await store.list_leases(old_task.pool_id)
+    assert len(leases) == 1
+    assert leases[0].task_id == "video-new"
+    assert leases[0].state == "reserved"
+
+
+async def test_missing_execution_lease_is_replaced_by_quarantine_with_cas_semantics():
+    store = MemoryTaskStore()
+    task = _task("video-lost-lease")
+    stored, _ = await store.create_task(
+        task, principal_hash="p", idempotency_hash=None, queue_limit=1
+    )
+    reserved = await store.reserve(
+        stored, _lease(task), deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None and reserved.task.worker_key is not None
+    await store.release_lease(task.pool_id, reserved.task.worker_key)
+
+    failed = await store.transition(
+        task.id,
+        expected={TaskStatus.DISPATCHING},
+        expected_revision=reserved.revision,
+        patch={"status": TaskStatus.FAILED},
+        release_lease=True,
+        quarantine_until_ms=now_ms() + 10_000,
+    )
+
+    leases = await store.list_leases(task.pool_id)
+    assert failed.task.status == TaskStatus.FAILED
+    assert len(leases) == 1
+    assert leases[0].task_id == task.id
+    assert leases[0].state == "quarantined"
+
+
 async def test_illegal_state_transition_is_rejected():
     store = MemoryTaskStore()
     stored, _ = await store.create_task(

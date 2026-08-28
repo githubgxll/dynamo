@@ -79,7 +79,14 @@ async def error_middleware(request: web.Request, handler):
         return web.json_response(error.as_response(), status=500)
 
 
-async def live(_request: web.Request) -> web.Response:
+async def live(request: web.Request) -> web.Response:
+    if not _service(request).dispatcher.live:
+        raise GatewayError(
+            503,
+            "not_live",
+            "video Gateway lost its owner lease and must restart",
+            error_type="service_unavailable_error",
+        )
     return web.json_response({"status": "live"})
 
 
@@ -480,6 +487,7 @@ async def metrics(request: web.Request) -> web.Response:
             f"{counts[status]}"
             for status in TaskStatus
         )
+    lines.extend(service.telemetry.render_prometheus())
     return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
 
 

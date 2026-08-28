@@ -174,6 +174,7 @@ class PoolConfig:
     served_models: tuple[str, ...]
     backend_model: str
     backend_target: str
+    execution_mode: str
     adapter: AdapterConfig
     scheduling: SchedulingConfig
     configuration_revision: str
@@ -454,6 +455,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
             "served_models",
             "backend_model",
             "backend_target",
+            "execution_mode",
             "adapter",
             "scheduling",
         },
@@ -474,6 +476,9 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
     backend_target = canonical_backend_target(
         _required_string(data, "backend_target", name)
     )
+    execution_mode = str(data.get("execution_mode", "stream"))
+    if execution_mode not in {"stream", "detached"}:
+        raise ValueError(f"{name}.execution_mode must be stream or detached")
 
     adapter_data = _mapping(data.get("adapter"), f"{name}.adapter")
     required_adapter = {"name", "workflow", "compatibility_version"}
@@ -500,6 +505,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         "served_models": served_models,
         "backend_model": backend_model,
         "backend_target": backend_target,
+        "execution_mode": execution_mode,
         "adapter": {
             "name": adapter.name,
             "workflow": adapter.workflow,
@@ -524,6 +530,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         served_models=served_models,
         backend_model=backend_model,
         backend_target=backend_target,
+        execution_mode=execution_mode,
         adapter=adapter,
         scheduling=scheduling,
         configuration_revision=revision,

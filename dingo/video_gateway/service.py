@@ -41,6 +41,7 @@ class VideoGatewayService:
         self.store = store
         self.artifacts = artifacts
         self.dispatcher = dispatcher
+        self.telemetry = dispatcher.telemetry
         self.adapters = adapters
         self.upstream_models: list[dict] = []
 
@@ -222,6 +223,9 @@ class VideoGatewayService:
                 await self.store.queue_depth(pool.pool_id)
                 >= pool.scheduling.queue_limit
             ):
+                self.telemetry.record_submission(
+                    pool.pool_id, "queue_full", delivery_mode
+                )
                 raise GatewayError(429, "queue_full", "video queue is full")
         except Exception:
             if upload_root.exists():
@@ -288,6 +292,17 @@ class VideoGatewayService:
             await self.artifacts.discard(task_root)
         else:
             self.dispatcher.notify(pool.pool_id)
+        self.telemetry.record_submission(
+            pool.pool_id,
+            "created" if created else "idempotent_replay",
+            delivery_mode,
+        )
+        self.telemetry.audit_task(
+            "submitted" if created else "idempotent_replay",
+            stored.task,
+            gateway_generation=self.dispatcher.generation,
+            revision=stored.revision,
+        )
         return Submission(stored=stored, created=created)
 
     async def expire(self, stored: StoredTask) -> StoredTask:

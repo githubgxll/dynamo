@@ -56,6 +56,18 @@ def test_config_maps_arbitrary_full_targets_without_namespace_assumptions(tmp_pa
         "other-scope.component-b.endpoint-b"
     )
     assert config.pools[0].configuration_revision.startswith("sha256:")
+    assert config.pools[0].execution_mode == "stream"
+
+
+def test_detached_execution_requires_explicit_pool_setting(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    config = parse_config(raw)
+    assert config.pools[0].execution_mode == "detached"
+
+    raw["pools"][0]["execution_mode"] = "implicit"
+    with pytest.raises(ValueError, match="execution_mode"):
+        parse_config(raw)
 
 
 @pytest.mark.parametrize(

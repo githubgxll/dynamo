@@ -107,6 +107,9 @@ async def test_async_submit_poll_head_range_and_delete(make_gateway_config):
         assert "dingo_video_media_payload_build_total 1" in metrics_text
         assert "dingo_video_media_finalize_total 1" in metrics_text
         assert "dingo_video_process_rss_bytes " in metrics_text
+        assert "dingo_video_task_submissions_total" in metrics_text
+        assert "dingo_video_task_terminal_total" in metrics_text
+        assert "dingo_video_task_stage_duration_seconds_bucket" in metrics_text
 
         not_modified = await client.get(
             f"/v1/videos/{submitted['id']}/content",
