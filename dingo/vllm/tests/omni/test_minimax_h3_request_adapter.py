@@ -108,31 +108,52 @@ def test_fl2va_t2va_derives_aspect_ratio(tmp_path):
 async def test_ref2va_mp4_is_validated_and_persisted_private(tmp_path):
     adapter = MiniMaxH3RequestAdapter("ref2va", str(tmp_path), 1024 * 1024)
     mp4 = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
-    loaded = await adapter.load_reference(
-        _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
-        _Loader(),
-    )
-    inputs = adapter.build_engine_inputs(_request(), loaded, _builder)
-    path = inputs.prompt["multi_modal_data"]["video"]
+    async with adapter.request_scope("request-private") as scope:
+        loaded = await adapter.load_reference(
+            _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
+            _Loader(),
+            scope,
+        )
+        inputs = adapter.build_engine_inputs(_request(), loaded, _builder)
+        path = inputs.prompt["multi_modal_data"]["video"]
 
-    assert path.endswith(".mp4")
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert path.endswith(".mp4")
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert not os.path.exists(path)
 
 
 @pytest.mark.asyncio
-async def test_ref2va_duplicate_media_persists_safely_under_concurrency(tmp_path):
+async def test_ref2va_duplicate_media_is_isolated_between_request_scopes(tmp_path):
     adapter = MiniMaxH3RequestAdapter("ref2va", str(tmp_path), 1024 * 1024)
     mp4 = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
     request = _request(input_reference=_data_url("data:video/mp4;base64,", mp4))
 
-    first, second = await asyncio.gather(
-        adapter.load_reference(request, _Loader()),
-        adapter.load_reference(request, _Loader()),
-    )
+    first_context = adapter.request_scope("request-first")
+    second_context = adapter.request_scope("request-second")
+    first_scope = await first_context.__aenter__()
+    second_scope = await second_context.__aenter__()
+    try:
+        first, second = await asyncio.gather(
+            adapter.load_reference(request, _Loader(), first_scope),
+            adapter.load_reference(request, _Loader(), second_scope),
+        )
 
-    assert first.path == second.path
-    assert os.path.getsize(first.path) == len(mp4)
-    assert not list((tmp_path / "ref2va-inputs").glob("*.tmp"))
+        assert first.path != second.path
+        assert (
+            os.path.getsize(first.path)
+            == os.path.getsize(second.path)
+            == len(mp4)
+        )
+        await first_context.__aexit__(None, None, None)
+        assert not os.path.exists(first.path)
+        assert os.path.exists(second.path)
+    finally:
+        if first_scope.root is not None:
+            await first_context.__aexit__(None, None, None)
+        await second_context.__aexit__(None, None, None)
+
+    assert not os.path.exists(second.path)
+    assert not list((tmp_path / "ref2va-requests").glob("**/*.tmp"))
 
 
 @pytest.mark.asyncio
@@ -140,11 +161,13 @@ async def test_ref2va_media_cache_rejects_new_file_over_limit(tmp_path):
     mp4 = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
     adapter = MiniMaxH3RequestAdapter("ref2va", str(tmp_path), len(mp4) - 1)
 
-    with pytest.raises(ValueError, match="media cache capacity exceeded"):
-        await adapter.load_reference(
-            _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
-            _Loader(),
-        )
+    async with adapter.request_scope("request-over-limit") as scope:
+        with pytest.raises(ValueError, match="media cache capacity exceeded"):
+            await adapter.load_reference(
+                _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
+                _Loader(),
+                scope,
+            )
 
 
 @pytest.mark.asyncio
@@ -160,13 +183,83 @@ async def test_ref2va_mixed_reference_attaches_all_modalities(tmp_path):
             "audios": [wav],
         }
     )
-    loaded = await adapter.load_reference(_request(input_reference=envelope), _Loader())
-    inputs = adapter.build_engine_inputs(_request(), loaded, _builder)
-    media = inputs.prompt["multi_modal_data"]
+    async with adapter.request_scope("request-mixed") as scope:
+        loaded = await adapter.load_reference(
+            _request(input_reference=envelope), _Loader(), scope
+        )
+        inputs = adapter.build_engine_inputs(_request(), loaded, _builder)
+        media = inputs.prompt["multi_modal_data"]
 
-    assert len(media["image"]) == len(media["video"]) == len(media["audio"]) == 1
-    assert media["video"][0].endswith(".mp4")
-    assert media["audio"][0].endswith(".wav")
+        assert len(media["image"]) == len(media["video"]) == len(media["audio"]) == 1
+        assert media["video"][0].endswith(".mp4")
+        assert media["audio"][0].endswith(".wav")
+        paths = [*media["video"], *media["audio"]]
+    assert all(not os.path.exists(path) for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_ref2va_scope_cleans_media_when_request_fails(tmp_path):
+    adapter = MiniMaxH3RequestAdapter("ref2va", str(tmp_path), 1024 * 1024)
+    mp4 = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
+    path = None
+
+    with pytest.raises(RuntimeError, match="engine failed"):
+        async with adapter.request_scope("request-failure") as scope:
+            loaded = await adapter.load_reference(
+                _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
+                _Loader(),
+                scope,
+            )
+            path = loaded.path
+            raise RuntimeError("engine failed")
+
+    assert path is not None
+    assert not os.path.exists(path)
+
+
+@pytest.mark.asyncio
+async def test_ref2va_cancelled_scope_defers_cleanup_gracefully(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "dingo.vllm.omni.request_adapters.minimax_h3._CANCELLED_CLEANUP_GRACE_S",
+        0.05,
+    )
+    adapter = MiniMaxH3RequestAdapter("ref2va", str(tmp_path), 1024 * 1024)
+    context = SimpleNamespace(is_stopped=lambda: True)
+    mp4 = b"\x00\x00\x00\x18ftypisom" + b"0" * 32
+
+    async with adapter.request_scope("request-cancelled", context=context) as scope:
+        loaded = await adapter.load_reference(
+            _request(input_reference=_data_url("data:video/mp4;base64,", mp4)),
+            _Loader(),
+            scope,
+        )
+        path = loaded.path
+
+    assert os.path.exists(path)
+    await asyncio.sleep(0.1)
+    assert not os.path.exists(path)
+    assert not adapter._deferred_cleanups
+
+
+@pytest.mark.asyncio
+async def test_fl2va_scope_does_not_create_media_directory(tmp_path):
+    adapter = MiniMaxH3RequestAdapter("fl2va", str(tmp_path), 1024 * 1024)
+    async with adapter.request_scope("fl2va-request") as scope:
+        assert scope is None
+        loaded = await adapter.load_reference(
+            _request(
+                input_references=[
+                    "data:image/png;base64,first",
+                    "data:image/png;base64,last",
+                ]
+            ),
+            _Loader(),
+            scope,
+        )
+        assert len(loaded) == 2
+    assert not (tmp_path / "ref2va-requests").exists()
 
 
 @pytest.mark.asyncio

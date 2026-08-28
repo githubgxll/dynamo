@@ -3,7 +3,21 @@
 
 """Opt-in request adapters for model-specific vLLM-Omni contracts."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Optional
+
+
+@asynccontextmanager
+async def request_adapter_scope(
+    adapter: Any | None, request_id: str, context: Any | None = None
+) -> AsyncIterator[Any | None]:
+    """Enter one adapter-owned request lifecycle without affecting generic paths."""
+    if adapter is None:
+        yield None
+        return
+    async with adapter.request_scope(request_id, context=context) as scope:
+        yield scope
 
 
 def create_request_adapter(
@@ -28,4 +42,4 @@ def create_request_adapter(
     raise ValueError(f"Unknown Omni request adapter: {name}")
 
 
-__all__ = ["create_request_adapter"]
+__all__ = ["create_request_adapter", "request_adapter_scope"]

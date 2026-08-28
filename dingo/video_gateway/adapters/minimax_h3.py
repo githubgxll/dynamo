@@ -693,11 +693,14 @@ class MiniMaxH3VideoAdapter:
             )
         steps_value = steps_primary if steps_primary is not None else steps_alias
         steps = _integer(steps_value, "num_inference_steps", 50)
-        if steps is None or not 1 <= steps <= 200:
+        # MiniMax-H3's denoise loop derives adjacent sigma pairs, so a
+        # one-entry schedule cannot execute. Reject it at the public boundary
+        # instead of consuming a Worker lease only to fail inside vLLM-Omni.
+        if steps is None or not 2 <= steps <= 200:
             raise GatewayError(
                 400,
                 "invalid_num_inference_steps",
-                "num_inference_steps must be between 1 and 200",
+                "num_inference_steps must be between 2 and 200",
                 "num_inference_steps",
             )
         guidance_scale = _number(_one(fields, "guidance_scale"), "guidance_scale")

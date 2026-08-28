@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -69,6 +70,85 @@ class TestEngineInputs:
         assert ei.sampling_params_list is None
         assert ei.response_format is None
         assert ei.output_format is None
+
+
+class TestRequestAdapterLifecycle:
+    @pytest.mark.asyncio
+    async def test_generate_wraps_stream_in_adapter_scope(self):
+        handler = _make_handler()
+        events = []
+
+        class _Adapter:
+            @asynccontextmanager
+            async def request_scope(self, request_id, context=None):
+                assert context is not None
+                events.append(("enter", request_id))
+                try:
+                    yield "scope-token"
+                finally:
+                    events.append(("exit", request_id))
+
+        handler.request_adapter = _Adapter()
+
+        async def _generate(request, context, request_id, request_scope=None):
+            assert request_scope == "scope-token"
+            yield {"status": "completed"}
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "request-lifecycle")
+
+        chunks = [chunk async for chunk in handler.generate({}, context)]
+
+        assert chunks == [{"status": "completed"}]
+        assert events == [
+            ("enter", "request-lifecycle"),
+            ("exit", "request-lifecycle"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_adapter_scope_exits_when_consumer_closes_stream(self):
+        handler = _make_handler()
+        closed = asyncio.Event()
+
+        class _Adapter:
+            @asynccontextmanager
+            async def request_scope(self, request_id, context=None):
+                assert context is not None
+                try:
+                    yield object()
+                finally:
+                    closed.set()
+
+        handler.request_adapter = _Adapter()
+
+        async def _generate(request, context, request_id, request_scope=None):
+            yield {"status": "in_progress"}
+            await asyncio.Event().wait()
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "request-cancelled")
+        stream = handler.generate({}, context)
+
+        await anext(stream)
+        await stream.aclose()
+
+        assert closed.is_set()
+
+    @pytest.mark.asyncio
+    async def test_generate_without_adapter_keeps_noop_scope(self):
+        handler = _make_handler()
+        handler.request_adapter = None
+
+        async def _generate(request, context, request_id, request_scope=None):
+            assert request_scope is None
+            yield {"status": "completed"}
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "ordinary-request")
+
+        assert [chunk async for chunk in handler.generate({}, context)] == [
+            {"status": "completed"}
+        ]
 
 
 class TestBuildEngineInputs:

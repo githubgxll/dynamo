@@ -121,6 +121,7 @@ def test_extra_duration_and_task_are_supported(make_gateway_config):
         ("size", "1000x700", "invalid_size"),
         ("aspect_ratio", "1:1", "invalid_aspect_ratio"),
         ("guidance_scale", "21", "invalid_guidance_scale"),
+        ("num_inference_steps", "1", "invalid_num_inference_steps"),
         ("num_inference_steps", "201", "invalid_num_inference_steps"),
     ],
 )

@@ -17,10 +17,12 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 import threading
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,6 +35,10 @@ _VIDEO_PREFIX = "data:video/mp4;base64,"
 _AUDIO_PREFIX = "data:audio/wav;base64,"
 _MAX_VIDEO_BYTES = 50 * 1024 * 1024
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
+# vLLM-Omni abort can return before its diffusion subprocess has finished
+# opening Ref2VA paths. Keep cancelled-request inputs briefly so a detached
+# task cannot unlink them underneath that late preprocessing work.
+_CANCELLED_CLEANUP_GRACE_S = 30.0
 _ASPECT_RATIOS = {
     "21:9": 21.0 / 9.0,
     "16:9": 16.0 / 9.0,
@@ -41,9 +47,6 @@ _ASPECT_RATIOS = {
     "3:4": 3.0 / 4.0,
     "9:16": 9.0 / 16.0,
 }
-_MEDIA_CACHE_LOCK = threading.Lock()
-
-
 @dataclasses.dataclass(frozen=True)
 class _StoredMedia:
     path: str
@@ -62,6 +65,128 @@ class _MixedReference:
 class _KeyframeReference:
     images: tuple[Any, ...]
     frame_indices: tuple[int, ...]
+
+
+class _MediaCapacity:
+    """Bound bytes owned by all live request scopes in one Worker process."""
+
+    def __init__(self, limit: int, initial_bytes: int = 0):
+        self.limit = limit
+        self._used = initial_bytes
+        self._lock = threading.Lock()
+
+    def reserve(self, amount: int) -> None:
+        with self._lock:
+            if self._used > self.limit - amount:
+                raise ValueError(
+                    "Ref2VA media cache capacity exceeded: "
+                    f"current={self._used}, requested={amount}, limit={self.limit}"
+                )
+            self._used += amount
+
+    def release(self, amount: int) -> None:
+        with self._lock:
+            self._used = max(0, self._used - amount)
+
+
+def _managed_media_size(root: Path) -> int:
+    """Count regular files without following links below the managed root."""
+    if not root.is_dir() or root.is_symlink():
+        return 0
+    total = 0
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = [
+            name for name in directories if not (current_path / name).is_symlink()
+        ]
+        for name in files:
+            try:
+                metadata = (current_path / name).lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(metadata.st_mode):
+                total += metadata.st_size
+    return total
+
+
+@dataclasses.dataclass
+class _RequestMediaScope:
+    """Own Ref2VA files for exactly one request."""
+
+    request_id: str
+    requests_root: Path
+    capacity: _MediaCapacity
+    root: Path | None = None
+    owned_bytes: int = 0
+    lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+
+    def _media_dir_locked(self, kind: str) -> Path:
+        if kind not in {"video", "audio"}:
+            raise ValueError(f"unsupported Ref2VA media kind: {kind}")
+        if self.root is None:
+            self.requests_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.requests_root.chmod(0o700)
+            request_hash = hashlib.sha256(self.request_id.encode()).hexdigest()[:16]
+            self.root = Path(
+                tempfile.mkdtemp(prefix=f"{request_hash}-", dir=self.requests_root)
+            )
+            self.root.chmod(0o700)
+        directory = self.root / kind
+        directory.mkdir(mode=0o700, exist_ok=True)
+        directory.chmod(0o700)
+        return directory
+
+    def persist(self, payload: bytes, suffix: str) -> _StoredMedia:
+        kind = "video" if suffix == ".mp4" else "audio"
+        digest = hashlib.sha256(payload).hexdigest()
+        with self.lock:
+            media_dir = self._media_dir_locked(kind)
+            path = media_dir / f"{digest}{suffix}"
+            if path.exists() or path.is_symlink():
+                existing = path.lstat()
+                if not stat.S_ISREG(existing.st_mode) or existing.st_size != len(
+                    payload
+                ):
+                    raise ValueError(f"Ref2VA request media entry is invalid: {path}")
+                path.chmod(0o600)
+                return _StoredMedia(str(path), len(payload), digest)
+
+            self.capacity.reserve(len(payload))
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=media_dir,
+                    prefix=f".{digest}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(payload)
+                temporary.chmod(0o600)
+                os.replace(temporary, path)
+                self.owned_bytes += len(payload)
+            except Exception:
+                self.capacity.release(len(payload))
+                raise
+            finally:
+                if temporary is not None and temporary.exists():
+                    temporary.unlink()
+            return _StoredMedia(str(path), len(payload), digest)
+
+    def cleanup(self) -> None:
+        with self.lock:
+            root = self.root
+            if root is None:
+                return
+            requests_root = self.requests_root.resolve()
+            if root.is_symlink() or root.parent.resolve() != requests_root:
+                raise RuntimeError(f"unsafe Ref2VA request media root: {root}")
+            shutil.rmtree(root)
+            released = self.owned_bytes
+            self.root = None
+            self.owned_bytes = 0
+            self.capacity.release(released)
 
 
 def _nearest_aspect_ratio(width: int, height: int) -> str:
@@ -98,9 +223,7 @@ def _persist_data_url(
     *,
     prefix: str,
     limit: int,
-    cache_root: Path,
-    media_dir: Path,
-    max_cache_bytes: int,
+    scope: _RequestMediaScope,
     suffix: str,
 ) -> _StoredMedia:
     label = "Ref2VA MP4" if suffix == ".mp4" else "Ref2VA WAV"
@@ -112,57 +235,7 @@ def _persist_data_url(
     ):
         raise ValueError("Ref2VA audio reference is not a WAV file")
 
-    digest = hashlib.sha256(payload).hexdigest()
-    with _MEDIA_CACHE_LOCK:
-        media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        media_dir.chmod(0o700)
-        path = media_dir / f"{digest}{suffix}"
-        if path.exists() or path.is_symlink():
-            existing = path.lstat()
-            if not stat.S_ISREG(existing.st_mode) or existing.st_size != len(payload):
-                raise ValueError(f"Ref2VA media cache entry is invalid: {path}")
-            path.chmod(0o600)
-        else:
-            cached_bytes = _media_cache_size(cache_root)
-            if cached_bytes > max_cache_bytes - len(payload):
-                raise ValueError(
-                    "Ref2VA media cache capacity exceeded: "
-                    f"current={cached_bytes}, requested={len(payload)}, "
-                    f"limit={max_cache_bytes}"
-                )
-            temporary: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    dir=media_dir,
-                    prefix=f".{digest}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as stream:
-                    temporary = Path(stream.name)
-                    stream.write(payload)
-                temporary.chmod(0o600)
-                os.replace(temporary, path)
-            finally:
-                if temporary is not None and temporary.exists():
-                    temporary.unlink()
-    return _StoredMedia(str(path), len(payload), digest)
-
-
-def _media_cache_size(cache_root: Path) -> int:
-    total = 0
-    for name in ("ref2va-inputs", "ref2va-audio-inputs"):
-        directory = cache_root / name
-        if not directory.is_dir():
-            continue
-        for entry in directory.iterdir():
-            try:
-                metadata = entry.lstat()
-            except FileNotFoundError:
-                continue
-            if stat.S_ISREG(metadata.st_mode):
-                total += metadata.st_size
-    return total
+    return scope.persist(payload, suffix)
 
 
 class MiniMaxH3RequestAdapter:
@@ -177,10 +250,89 @@ class MiniMaxH3RequestAdapter:
         root = Path(media_dir)
         self.media_root = root
         self.media_max_bytes = media_max_bytes
-        self.video_dir = root / "ref2va-inputs"
-        self.audio_dir = root / "ref2va-audio-inputs"
+        self.requests_root = root / "ref2va-requests"
+        self._media_capacity = _MediaCapacity(
+            media_max_bytes, _managed_media_size(self.requests_root)
+        )
+        self._deferred_cleanups: set[asyncio.Task[None]] = set()
 
-    async def load_reference(self, req: Any, loader: Any) -> Any | None:
+    async def _cleanup_scope(
+        self, scope: _RequestMediaScope, request_id: str
+    ) -> None:
+        try:
+            await asyncio.to_thread(scope.cleanup)
+        except Exception:
+            logger.exception(
+                "Failed to remove Ref2VA request media for request_id=%s root=%s",
+                request_id,
+                scope.root,
+            )
+
+    def _defer_cancelled_cleanup(
+        self, scope: _RequestMediaScope, request_id: str
+    ) -> None:
+        async def _cleanup_after_grace() -> None:
+            try:
+                await asyncio.sleep(_CANCELLED_CLEANUP_GRACE_S)
+            finally:
+                await self._cleanup_scope(scope, request_id)
+
+        cleanup = asyncio.create_task(
+            _cleanup_after_grace(),
+            name=f"ref2va-media-cleanup-{request_id}",
+        )
+        self._deferred_cleanups.add(cleanup)
+        cleanup.add_done_callback(self._deferred_cleanups.discard)
+        logger.info(
+            "Deferred Ref2VA request media cleanup for %.1fs after cancellation: "
+            "request_id=%s root=%s",
+            _CANCELLED_CLEANUP_GRACE_S,
+            request_id,
+            scope.root,
+        )
+
+    @asynccontextmanager
+    async def request_scope(
+        self, request_id: str, context: Any | None = None
+    ) -> AsyncIterator[_RequestMediaScope | None]:
+        """Clean request-owned Ref2VA files on every generator terminal path."""
+        if self.workflow != "ref2va":
+            yield None
+            return
+        scope = _RequestMediaScope(
+            request_id=request_id,
+            requests_root=self.requests_root,
+            capacity=self._media_capacity,
+        )
+        task_cancelled = False
+        try:
+            yield scope
+        except asyncio.CancelledError:
+            task_cancelled = True
+            raise
+        finally:
+            context_stopped = False
+            if context is not None:
+                is_stopped = getattr(context, "is_stopped", None)
+                if callable(is_stopped):
+                    try:
+                        context_stopped = bool(is_stopped())
+                    except Exception:
+                        logger.exception(
+                            "Failed to inspect request cancellation state: %s",
+                            request_id,
+                        )
+            if (task_cancelled or context_stopped) and scope.root is not None:
+                self._defer_cancelled_cleanup(scope, request_id)
+            else:
+                await self._cleanup_scope(scope, request_id)
+
+    async def load_reference(
+        self,
+        req: Any,
+        loader: Any,
+        request_scope: _RequestMediaScope | None = None,
+    ) -> Any | None:
         if req.input_reference is not None and req.input_references is not None:
             raise ValueError(
                 "input_reference and input_references are mutually exclusive"
@@ -204,7 +356,7 @@ class MiniMaxH3RequestAdapter:
         stripped = reference.lstrip()
         if self.workflow == "fl2va":
             return await self._load_fl2va_reference(stripped, loader)
-        return await self._load_ref2va_reference(stripped, loader)
+        return await self._load_ref2va_reference(stripped, loader, request_scope)
 
     async def _load_fl2va_reference(self, reference: str, loader: Any) -> Any:
         if reference.startswith(_VIDEO_PREFIX):
@@ -241,16 +393,16 @@ class MiniMaxH3RequestAdapter:
     async def _decode_keyframe_envelope(
         self, envelope: Mapping[str, Any], loader: Any
     ) -> _KeyframeReference:
+        if envelope.get("type") != _FL2VA_KEYFRAME_ENVELOPE_TYPE:
+            raise ValueError(
+                "FL2VA keyframe envelope type must be "
+                f"{_FL2VA_KEYFRAME_ENVELOPE_TYPE!r}"
+            )
         allowed = {"type", "images", "frame_indices"}
         unknown = set(envelope) - allowed
         if unknown:
             raise ValueError(
                 f"FL2VA keyframe envelope has unknown keys: {sorted(unknown)}"
-            )
-        if envelope.get("type") != _FL2VA_KEYFRAME_ENVELOPE_TYPE:
-            raise ValueError(
-                "FL2VA keyframe envelope type must be "
-                f"{_FL2VA_KEYFRAME_ENVELOPE_TYPE!r}"
             )
         images = envelope.get("images")
         if (
@@ -268,16 +420,23 @@ class MiniMaxH3RequestAdapter:
         decoded = await loader.load_image(images[0])
         return _KeyframeReference((decoded,), (-1,))
 
-    async def _load_ref2va_reference(self, reference: str, loader: Any) -> Any:
+    async def _load_ref2va_reference(
+        self,
+        reference: str,
+        loader: Any,
+        request_scope: _RequestMediaScope | None,
+    ) -> Any:
         if reference.startswith(_VIDEO_PREFIX):
+            if request_scope is None:
+                raise RuntimeError(
+                    "Ref2VA media persistence requires an active request scope"
+                )
             return await asyncio.to_thread(
                 _persist_data_url,
                 reference,
                 prefix=_VIDEO_PREFIX,
                 limit=_MAX_VIDEO_BYTES,
-                cache_root=self.media_root,
-                media_dir=self.video_dir,
-                max_cache_bytes=self.media_max_bytes,
+                scope=request_scope,
                 suffix=".mp4",
             )
         if reference.startswith("["):
@@ -286,10 +445,13 @@ class MiniMaxH3RequestAdapter:
             )
         if not reference.startswith("{"):
             return await loader.load_image(reference)
-        return await self._decode_mixed_envelope(reference, loader)
+        return await self._decode_mixed_envelope(reference, loader, request_scope)
 
     async def _decode_mixed_envelope(
-        self, reference: str, loader: Any
+        self,
+        reference: str,
+        loader: Any,
+        request_scope: _RequestMediaScope | None,
     ) -> _MixedReference:
         try:
             envelope = json.loads(reference)
@@ -339,6 +501,10 @@ class MiniMaxH3RequestAdapter:
             raise ValueError("Ref2VA mixed videos must use MP4 data URLs")
         if not all(item.lstrip().startswith(_AUDIO_PREFIX) for item in audios):
             raise ValueError("Ref2VA mixed audios must use WAV data URLs")
+        if request_scope is None:
+            raise RuntimeError(
+                "Ref2VA media persistence requires an active request scope"
+            )
 
         decoded_images, decoded_videos, decoded_audios = await asyncio.gather(
             asyncio.gather(*(loader.load_image(item) for item in images)),
@@ -349,9 +515,7 @@ class MiniMaxH3RequestAdapter:
                         item.lstrip(),
                         prefix=_VIDEO_PREFIX,
                         limit=_MAX_VIDEO_BYTES,
-                        cache_root=self.media_root,
-                        media_dir=self.video_dir,
-                        max_cache_bytes=self.media_max_bytes,
+                        scope=request_scope,
                         suffix=".mp4",
                     )
                     for item in videos
@@ -364,9 +528,7 @@ class MiniMaxH3RequestAdapter:
                         item.lstrip(),
                         prefix=_AUDIO_PREFIX,
                         limit=_MAX_AUDIO_BYTES,
-                        cache_root=self.media_root,
-                        media_dir=self.audio_dir,
-                        max_cache_bytes=self.media_max_bytes,
+                        scope=request_scope,
                         suffix=".wav",
                     )
                     for item in audios

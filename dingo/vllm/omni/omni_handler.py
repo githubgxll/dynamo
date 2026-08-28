@@ -22,7 +22,10 @@ from dynamo.llm.exceptions import EngineShutdown
 from dingo.vllm.omni.audio_handler import AudioGenerationHandler
 from dingo.vllm.omni.base_handler import BaseOmniHandler
 from dingo.vllm.omni.output_formatter import OutputFormatter
-from dingo.vllm.omni.request_adapters import create_request_adapter
+from dingo.vllm.omni.request_adapters import (
+    create_request_adapter,
+    request_adapter_scope,
+)
 from dingo.vllm.omni.utils import (
     build_image_generation_prompt,
     image_generation_negative_prompt_from_request,
@@ -144,11 +147,20 @@ class OmniHandler(BaseOmniHandler):
         assert request_id is not None, "Request ID is required"
         logger.debug(f"Omni Request ID: {request_id}")
 
-        async for chunk in self._generate_openai_mode(request, context, request_id):
-            yield chunk
+        async with request_adapter_scope(
+            self.request_adapter, request_id, context=context
+        ) as scope:
+            async for chunk in self._generate_openai_mode(
+                request, context, request_id, request_scope=scope
+            ):
+                yield chunk
 
     async def _generate_openai_mode(
-        self, request: Dict[str, Any], context: Context, request_id: str
+        self,
+        request: Dict[str, Any],
+        context: Context,
+        request_id: str,
+        request_scope: Any | None = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Single generation path for all request protocols and output modalities."""
 
@@ -179,7 +191,7 @@ class OmniHandler(BaseOmniHandler):
             if self.request_adapter is not None:
                 try:
                     image = await self.request_adapter.load_reference(
-                        parsed_request, self._image_loader
+                        parsed_request, self._image_loader, request_scope
                     )
                 except Exception as e:
                     logger.warning("Failed to adapt video input reference: %s", e)
