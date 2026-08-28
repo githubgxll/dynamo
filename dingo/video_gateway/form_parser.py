@@ -15,6 +15,7 @@ from aiohttp import web
 
 from dingo.video_gateway.adapters.base import UploadedArtifact
 from dingo.video_gateway.artifact_store import FileArtifactStore
+from dingo.video_gateway.config import MediaConfig
 from dingo.video_gateway.errors import GatewayError
 
 
@@ -26,7 +27,7 @@ class ParsedMultipart:
     total_bytes: int
 
 
-async def _read_text(part, *, limit: int = 64 * 1024) -> str:
+async def _read_text(part, *, limit: int) -> str:
     chunks: list[bytes] = []
     size = 0
     while True:
@@ -56,10 +57,7 @@ async def _read_text(part, *, limit: int = 64 * 1024) -> str:
 async def parse_multipart(
     request: web.Request,
     artifacts: FileArtifactStore,
-    *,
-    max_total_file_bytes: int = 256 * 1024 * 1024,
-    max_single_file_bytes: int = 50 * 1024 * 1024,
-    max_parts: int = 32,
+    limits: MediaConfig,
 ) -> ParsedMultipart:
     if request.content_type != "multipart/form-data":
         raise GatewayError(
@@ -79,7 +77,7 @@ async def parse_multipart(
             if part is None:
                 break
             part_count += 1
-            if part_count > max_parts:
+            if part_count > limits.max_parts:
                 raise GatewayError(413, "too_many_parts", "too many multipart parts")
             name = part.name
             if not name:
@@ -87,7 +85,9 @@ async def parse_multipart(
                     400, "invalid_multipart", "multipart part has no name"
                 )
             if part.filename is None:
-                fields.setdefault(name, []).append(await _read_text(part))
+                fields.setdefault(name, []).append(
+                    await _read_text(part, limit=limits.max_text_field_bytes)
+                )
                 continue
 
             ordinal = len(uploads)
@@ -103,14 +103,15 @@ async def parse_multipart(
                         break
                     size += len(chunk)
                     total_file_bytes += len(chunk)
-                    if size > max_single_file_bytes:
+                    if size > limits.max_single_file_bytes:
                         raise GatewayError(
                             413,
                             "file_too_large",
-                            f"file field {name!r} exceeds {max_single_file_bytes} bytes",
+                            f"file field {name!r} exceeds "
+                            f"{limits.max_single_file_bytes} bytes",
                             name,
                         )
-                    if total_file_bytes > max_total_file_bytes:
+                    if total_file_bytes > limits.max_total_file_bytes:
                         raise GatewayError(
                             413,
                             "payload_too_large",

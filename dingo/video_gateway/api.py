@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import resource
 import stat
 
 import aiohttp
@@ -114,7 +115,7 @@ async def models(request: web.Request) -> web.Response:
 
 async def _submit(request: web.Request, *, delivery_mode: str):
     service = _service(request)
-    parsed = await parse_multipart(request, service.artifacts)
+    parsed = await parse_multipart(request, service.artifacts, service.config.media)
     try:
         return await service.submit(
             fields=parsed.fields,
@@ -397,22 +398,53 @@ async def delete_video(request: web.Request) -> web.Response:
 
 async def metrics(request: web.Request) -> web.Response:
     service = _service(request)
+    budget = await service.dispatcher.memory_budget_snapshot()
+    media = service.dispatcher.media_runtime_snapshot()
+    rss_bytes = _current_rss_bytes()
+    peak_rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     lines = [
         "# TYPE dingo_video_workers gauge",
         "# TYPE dingo_video_worker_busy gauge",
         "# TYPE dingo_video_queue_depth gauge",
         "# TYPE dingo_video_tasks gauge",
+        "# TYPE dingo_video_media_memory_budget_bytes gauge",
+        "# TYPE dingo_video_media_memory_used_bytes gauge",
+        "# TYPE dingo_video_media_memory_peak_bytes gauge",
+        "# TYPE dingo_video_media_memory_waiting_tasks gauge",
+        "# TYPE dingo_video_media_memory_active_tasks gauge",
+        "# TYPE dingo_video_media_legacy_input_encoded_bytes_total counter",
+        "# TYPE dingo_video_media_legacy_output_encoded_bytes_total counter",
+        "# TYPE dingo_video_media_payload_build_seconds_total counter",
+        "# TYPE dingo_video_media_payload_build_total counter",
+        "# TYPE dingo_video_media_finalize_seconds_total counter",
+        "# TYPE dingo_video_media_finalize_total counter",
+        "# TYPE dingo_video_media_result_oversize_total counter",
+        "# TYPE dingo_video_process_rss_bytes gauge",
+        "# TYPE dingo_video_process_peak_rss_bytes gauge",
+        f"dingo_video_media_memory_budget_bytes {budget.capacity_bytes}",
+        f"dingo_video_media_memory_used_bytes {budget.used_bytes}",
+        f"dingo_video_media_memory_peak_bytes {budget.peak_bytes}",
+        f"dingo_video_media_memory_waiting_tasks {budget.waiting_tasks}",
+        f"dingo_video_media_memory_active_tasks {budget.active_tasks}",
+        "dingo_video_media_legacy_input_encoded_bytes_total "
+        f"{media.legacy_input_encoded_bytes}",
+        "dingo_video_media_legacy_output_encoded_bytes_total "
+        f"{media.legacy_output_encoded_bytes}",
+        "dingo_video_media_payload_build_seconds_total "
+        f"{media.payload_build_seconds}",
+        f"dingo_video_media_payload_build_total {media.payload_build_count}",
+        f"dingo_video_media_finalize_seconds_total {media.finalize_seconds}",
+        f"dingo_video_media_finalize_total {media.finalize_count}",
+        f"dingo_video_media_result_oversize_total {media.result_oversize_count}",
+        f"dingo_video_process_rss_bytes {rss_bytes}",
+        f"dingo_video_process_peak_rss_bytes {peak_rss_bytes}",
     ]
     for pool in service.config.pools:
         workers = len(service.dispatcher.pool_instances(pool.pool_id))
         queue = await service.store.queue_depth(pool.pool_id)
-        leases = await service.store.list_leases(pool.pool_id)
+        leases = await service.dispatcher.pool_leases(pool.pool_id)
         busy = sum(lease.state != "quarantined" for lease in leases)
-        tasks = await service.store.list_tasks(pool_id=pool.pool_id, limit=10_000)
-        counts = {
-            status: sum(task.task.status == status for task in tasks)
-            for status in TaskStatus
-        }
+        counts = await service.store.task_counts(pool.pool_id)
         lines.append(f'dingo_video_workers{{pool="{pool.pool_id}"}} {workers}')
         lines.append(f'dingo_video_worker_busy{{pool="{pool.pool_id}"}} {busy}')
         lines.append(f'dingo_video_queue_depth{{pool="{pool.pool_id}"}} {queue}')
@@ -422,6 +454,15 @@ async def metrics(request: web.Request) -> web.Response:
             for status in TaskStatus
         )
     return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
+
+
+def _current_rss_bytes() -> int:
+    try:
+        with open("/proc/self/statm", encoding="ascii") as stream:
+            resident_pages = int(stream.read().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return 0
 
 
 async def unsupported_stream(_request: web.Request) -> web.Response:

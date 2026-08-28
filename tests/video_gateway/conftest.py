@@ -28,6 +28,7 @@ def gateway_config(
     pools: list[dict[str, Any]] | None = None,
     accept_without_workers: bool = False,
     http: dict[str, Any] | None = None,
+    media: dict[str, Any] | None = None,
 ) -> GatewayConfig:
     if pools is None:
         pools = [
@@ -66,6 +67,7 @@ def gateway_config(
             },
             "http": http
             or {"host": "127.0.0.1", "port": 18000, "sync_timeout_s": 2},
+            "media": media or {},
             "task_store": {"kind": "memory"},
             "artifact_store": {"kind": "filesystem", "root": str(root)},
             "pools": pools,

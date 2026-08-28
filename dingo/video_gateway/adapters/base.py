@@ -41,6 +41,14 @@ class WorkerVideoResult:
     stage_durations: Mapping[str, float] | None = None
 
 
+class WorkerStreamConsumer(Protocol):
+    """Incrementally consume one Worker response without retaining progress."""
+
+    def consume(self, chunk: Any) -> None: ...
+
+    def finish(self) -> WorkerVideoResult: ...
+
+
 class VideoBackendAdapter(Protocol):
     """The only model-specific surface consumed by gateway core."""
 
@@ -57,6 +65,15 @@ class VideoBackendAdapter(Protocol):
         manifest: Sequence[Mapping[str, Any]],
         task_root: Path,
     ) -> dict[str, Any]: ...
+
+    def estimate_encoded_reference_bytes(
+        self, manifest: Sequence[Mapping[str, Any]]
+    ) -> int: ...
+
+    @property
+    def max_encoded_reference_bytes(self) -> int: ...
+
+    def create_worker_stream_consumer(self) -> WorkerStreamConsumer: ...
 
     def consume_worker_stream(self, chunks: Sequence[Any]) -> WorkerVideoResult: ...
 

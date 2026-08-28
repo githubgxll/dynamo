@@ -15,6 +15,16 @@ from typing import Any
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _KNOWN_ADAPTERS = {"minimax_h3"}
+_MIB = 1024 * 1024
+_MAX_BODY_HARD_CAP = 512 * _MIB
+_MEDIA_HARD_CAPS = {
+    "max_total_file_bytes": 256 * _MIB,
+    "max_single_file_bytes": 50 * _MIB,
+    "max_text_field_bytes": 1024 * 1024,
+    "max_parts": 32,
+    "max_encoded_reference_bytes": 384 * _MIB,
+    "max_result_bytes": 128 * _MIB,
+}
 
 
 def _mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -82,6 +92,32 @@ class HttpConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MediaConfig:
+    max_total_file_bytes: int = 256 * _MIB
+    max_single_file_bytes: int = 50 * _MIB
+    max_text_field_bytes: int = 64 * 1024
+    max_parts: int = 32
+    max_encoded_reference_bytes: int = 384 * _MIB
+    max_result_bytes: int = 128 * _MIB
+    task_memory_overhead_bytes: int = 64 * _MIB
+    inflight_memory_budget_bytes: int = 2 * 1024 * _MIB
+
+    @property
+    def max_result_encoded_bytes(self) -> int:
+        return ((self.max_result_bytes + 2) // 3) * 4
+
+    @property
+    def max_task_memory_bytes(self) -> int:
+        # Mixed-reference construction briefly holds both the individual data
+        # URLs and their final JSON envelope.
+        return (
+            2 * self.max_encoded_reference_bytes
+            + self.max_result_encoded_bytes
+            + self.task_memory_overhead_bytes
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TaskStoreConfig:
     kind: str = "etcd_http"
     url: str | None = None
@@ -135,6 +171,7 @@ class GatewayConfig:
     deployment_id: str
     runtime: RuntimeConfig
     http: HttpConfig
+    media: MediaConfig
     task_store: TaskStoreConfig
     artifact_store: ArtifactStoreConfig
     pools: tuple[PoolConfig, ...]
@@ -188,6 +225,10 @@ def _http_config(raw: Any) -> HttpConfig:
         raise ValueError("http.port must be between 1 and 65535")
     if max_body_bytes <= 0:
         raise ValueError("http.max_body_bytes must be positive")
+    if max_body_bytes > _MAX_BODY_HARD_CAP:
+        raise ValueError(
+            f"http.max_body_bytes exceeds the hard cap of {_MAX_BODY_HARD_CAP}"
+        )
     if sync_timeout_s <= 0:
         raise ValueError("http.sync_timeout_s must be positive")
     if async_submit_status_code not in {200, 202}:
@@ -216,6 +257,44 @@ def _http_config(raw: Any) -> HttpConfig:
         default_model=default_model,
         async_submit_status_code=async_submit_status_code,
     )
+
+
+def _media_config(raw: Any, http: HttpConfig) -> MediaConfig:
+    data = _mapping(raw or {}, "media")
+    allowed = set(_MEDIA_HARD_CAPS) | {
+        "task_memory_overhead_bytes",
+        "inflight_memory_budget_bytes",
+    }
+    _only(data, allowed, "media")
+    defaults = MediaConfig()
+    values: dict[str, int] = {}
+    for name in allowed:
+        value = data.get(name, getattr(defaults, name))
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"media.{name} must be an integer")
+        values[name] = value
+    for name, value in values.items():
+        if value <= 0:
+            raise ValueError(f"media.{name} must be positive")
+    for name, hard_cap in _MEDIA_HARD_CAPS.items():
+        if values[name] > hard_cap:
+            raise ValueError(
+                f"media.{name} exceeds the protocol hard cap of {hard_cap}"
+            )
+    config = MediaConfig(**values)
+    if config.max_single_file_bytes > config.max_total_file_bytes:
+        raise ValueError(
+            "media.max_single_file_bytes must not exceed max_total_file_bytes"
+        )
+    if config.max_total_file_bytes > http.max_body_bytes:
+        raise ValueError(
+            "media.max_total_file_bytes must not exceed http.max_body_bytes"
+        )
+    if config.inflight_memory_budget_bytes < config.max_task_memory_bytes:
+        raise ValueError(
+            "media.inflight_memory_budget_bytes must fit one maximum-size task"
+        )
+    return config
 
 
 def _task_store_config(raw: Any) -> TaskStoreConfig:
@@ -389,6 +468,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "deployment_id",
             "runtime",
             "http",
+            "media",
             "task_store",
             "artifact_store",
             "pools",
@@ -417,6 +497,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             by_model[model] = pool
 
     http = _http_config(data.get("http"))
+    media = _media_config(data.get("media"), http)
     if http.default_model is not None and http.default_model not in by_model:
         raise ValueError(
             f"http.default_model {http.default_model!r} is not a configured served model"
@@ -427,6 +508,7 @@ def parse_config(raw: Any) -> GatewayConfig:
         deployment_id=deployment_id,
         runtime=_runtime_config(data.get("runtime")),
         http=http,
+        media=media,
         task_store=_task_store_config(data.get("task_store")),
         artifact_store=_artifact_store_config(data.get("artifact_store")),
         pools=pools,

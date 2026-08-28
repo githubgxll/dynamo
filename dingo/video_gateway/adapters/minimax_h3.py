@@ -383,6 +383,82 @@ def _data_url(
     ).decode("ascii")
 
 
+class _MiniMaxH3WorkerStreamConsumer:
+    """Keep only the unique terminal MiniMax-H3 response."""
+
+    def __init__(self) -> None:
+        self._terminal: Mapping[str, Any] | None = None
+
+    def consume(self, chunk: Any) -> None:
+        if isinstance(chunk, str):
+            try:
+                chunk = json.loads(chunk)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(chunk, Mapping):
+            return
+        if chunk.get("status") not in {"completed", "failed", "cancelled"}:
+            return
+        if self._terminal is not None:
+            raise RuntimeError("Worker returned multiple terminal responses")
+        self._terminal = chunk
+
+    def finish(self) -> WorkerVideoResult:
+        terminal = self._terminal
+        if terminal is None:
+            raise RuntimeError("Worker stream ended without a terminal response")
+        if terminal.get("status") == "failed":
+            raise RuntimeError(str(terminal.get("error") or "Worker generation failed"))
+        data = terminal.get("data")
+        if (
+            terminal.get("status") != "completed"
+            or not isinstance(data, list)
+            or len(data) != 1
+        ):
+            raise RuntimeError(
+                "Worker response must contain exactly one completed video"
+            )
+        first = data[0]
+        if not isinstance(first, Mapping):
+            raise TypeError("Worker video data has an invalid shape")
+        output_format = str(first.get("output_format") or "")
+        b64_json = first.get("b64_json")
+        if output_format != "mp4" or not isinstance(b64_json, str) or not b64_json:
+            raise RuntimeError("Worker must return output_format=mp4 with b64_json")
+        inference_time_raw = terminal.get("inference_time_s")
+        inference_time = (
+            float(inference_time_raw) if inference_time_raw is not None else None
+        )
+        if inference_time is not None and (
+            not math.isfinite(inference_time) or inference_time < 0
+        ):
+            raise RuntimeError("Worker returned an invalid inference_time_s")
+        stage_durations_raw = terminal.get("stage_durations")
+        stage_durations: dict[str, float] | None = None
+        if stage_durations_raw is not None:
+            if not isinstance(stage_durations_raw, Mapping):
+                raise RuntimeError("Worker returned invalid stage_durations")
+            stage_durations = {}
+            for name, raw_duration in stage_durations_raw.items():
+                if not isinstance(name, str) or isinstance(raw_duration, bool):
+                    raise RuntimeError("Worker returned invalid stage_durations")
+                try:
+                    duration = float(raw_duration)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "Worker returned invalid stage_durations"
+                    ) from exc
+                if not math.isfinite(duration) or duration < 0:
+                    raise RuntimeError("Worker returned invalid stage_durations")
+                stage_durations[name] = duration
+        return WorkerVideoResult(
+            b64_json=b64_json,
+            output_format=output_format,
+            inference_time_s=inference_time,
+            stage_durations=stage_durations,
+        )
+
+
 class MiniMaxH3VideoAdapter:
     """Translate stable external multipart requests to the current H3 wire shape."""
 
@@ -430,6 +506,17 @@ class MiniMaxH3VideoAdapter:
             raise ValueError(
                 "MiniMax-H3 requires flow_shift=12.0 and audio_flow_shift=3.0"
             )
+
+    @property
+    def max_encoded_reference_bytes(self) -> int:
+        return int(
+            self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024)
+        )
+
+    def estimate_encoded_reference_bytes(
+        self, manifest: Sequence[Mapping[str, Any]]
+    ) -> int:
+        return sum(((int(entry["bytes"]) + 2) // 3) * 4 for entry in manifest)
 
     def normalize_request(
         self,
@@ -897,13 +984,8 @@ class MiniMaxH3VideoAdapter:
         if normalized.get("guidance_scale") is not None:
             payload["nvext"]["guidance_scale"] = normalized["guidance_scale"]
 
-        estimated_encoded_bytes = sum(
-            ((int(entry["bytes"]) + 2) // 3) * 4 for entry in manifest
-        )
-        max_encoded_bytes = int(
-            self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024)
-        )
-        if estimated_encoded_bytes > max_encoded_bytes:
+        estimated_encoded_bytes = self.estimate_encoded_reference_bytes(manifest)
+        if estimated_encoded_bytes > self.max_encoded_reference_bytes:
             raise RuntimeError(
                 "encoded Worker reference payload exceeds configured maximum"
             )
@@ -969,74 +1051,14 @@ class MiniMaxH3VideoAdapter:
             payload["input_reference"] = json.dumps(envelope, separators=(",", ":"))
         return payload
 
+    def create_worker_stream_consumer(self) -> _MiniMaxH3WorkerStreamConsumer:
+        return _MiniMaxH3WorkerStreamConsumer()
+
     def consume_worker_stream(self, chunks: Sequence[Any]) -> WorkerVideoResult:
-        terminal: Mapping[str, Any] | None = None
+        consumer = self.create_worker_stream_consumer()
         for chunk in chunks:
-            if isinstance(chunk, str):
-                try:
-                    chunk = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-            if isinstance(chunk, Mapping):
-                status = chunk.get("status")
-                if status in {"completed", "failed", "cancelled"}:
-                    if terminal is not None:
-                        raise RuntimeError(
-                            "Worker returned multiple terminal responses"
-                        )
-                    terminal = chunk
-        if terminal is None:
-            raise RuntimeError("Worker stream ended without a terminal response")
-        if terminal.get("status") == "failed":
-            raise RuntimeError(str(terminal.get("error") or "Worker generation failed"))
-        data = terminal.get("data")
-        if (
-            terminal.get("status") != "completed"
-            or not isinstance(data, list)
-            or len(data) != 1
-        ):
-            raise RuntimeError(
-                "Worker response must contain exactly one completed video"
-            )
-        first = data[0]
-        if not isinstance(first, Mapping):
-            raise TypeError("Worker video data has an invalid shape")
-        output_format = str(first.get("output_format") or "")
-        b64_json = first.get("b64_json")
-        if output_format != "mp4" or not isinstance(b64_json, str) or not b64_json:
-            raise RuntimeError("Worker must return output_format=mp4 with b64_json")
-        inference_time_raw = terminal.get("inference_time_s")
-        inference_time = (
-            float(inference_time_raw) if inference_time_raw is not None else None
-        )
-        if inference_time is not None and (
-            not math.isfinite(inference_time) or inference_time < 0
-        ):
-            raise RuntimeError("Worker returned an invalid inference_time_s")
-        stage_durations_raw = terminal.get("stage_durations")
-        stage_durations: dict[str, float] | None = None
-        if stage_durations_raw is not None:
-            if not isinstance(stage_durations_raw, Mapping):
-                raise RuntimeError("Worker returned invalid stage_durations")
-            stage_durations = {}
-            for name, raw_duration in stage_durations_raw.items():
-                if not isinstance(name, str) or isinstance(raw_duration, bool):
-                    raise RuntimeError("Worker returned invalid stage_durations")
-                try:
-                    duration = float(raw_duration)
-                except (TypeError, ValueError) as exc:
-                    raise RuntimeError(
-                        "Worker returned invalid stage_durations"
-                    ) from exc
-                if not math.isfinite(duration) or duration < 0:
-                    raise RuntimeError("Worker returned invalid stage_durations")
-                stage_durations[name] = duration
-        return WorkerVideoResult(
-            b64_json=b64_json,
-            output_format=output_format,
-            inference_time_s=inference_time,
-            stage_durations=stage_durations,
-        )
+            consumer.consume(chunk)
+        return consumer.finish()
 
     def prepare_artifact(
         self, path: Path, normalized: Mapping[str, Any]

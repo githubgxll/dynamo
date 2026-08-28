@@ -280,6 +280,31 @@ def test_worker_terminal_requires_one_b64_mp4(make_gateway_config):
     assert result.stage_durations == {"diffuse": 1.1, "decode": 0.15}
 
 
+def test_worker_stream_consumer_discards_progress_and_rejects_two_terminals(
+    make_gateway_config,
+):
+    adapter = _adapter(make_gateway_config)
+    consumer = adapter.create_worker_stream_consumer()
+    for index in range(10_000):
+        consumer.consume({"status": "in_progress", "progress": index})
+    consumer.consume(
+        {
+            "status": "completed",
+            "data": [{"output_format": "mp4", "b64_json": "AAAA"}],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="multiple terminal"):
+        consumer.consume(
+            {
+                "status": "completed",
+                "data": [{"output_format": "mp4", "b64_json": "BBBB"}],
+            }
+        )
+
+    assert consumer.finish().b64_json == "AAAA"
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [("true", True), ("false", False), ("1", True), ("0", False)],

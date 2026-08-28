@@ -29,8 +29,8 @@ def _form(*, fps="24", model="public-fl"):
     return form
 
 
-async def _client(make_gateway_config, endpoint_client=None):
-    config = make_gateway_config()
+async def _client(make_gateway_config, endpoint_client=None, *, media=None):
+    config = make_gateway_config(media=media)
     endpoint_client = endpoint_client or FakeClient()
     _store, _artifacts, _dispatcher, service = _stack(
         config, {"fl-pool": endpoint_client}
@@ -100,6 +100,13 @@ async def test_async_submit_poll_head_range_and_delete(make_gateway_config):
         assert ranged.status == 206
         assert ranged.headers["Content-Range"].startswith("bytes 0-3/")
         assert await ranged.read() == b"\x00\x00\x00\x18"
+
+        metrics = await client.get("/metrics")
+        metrics_text = await metrics.text()
+        assert "dingo_video_media_memory_used_bytes 0" in metrics_text
+        assert "dingo_video_media_payload_build_total 1" in metrics_text
+        assert "dingo_video_media_finalize_total 1" in metrics_text
+        assert "dingo_video_process_rss_bytes " in metrics_text
 
         not_modified = await client.get(
             f"/v1/videos/{submitted['id']}/content",
@@ -192,6 +199,29 @@ async def test_invalid_fps_and_unimplemented_stream_return_stable_errors(
         assert stream_payload["error"]["code"] == "unsupported_endpoint"
     finally:
         await client.close()
+
+
+async def test_multipart_parser_uses_effective_media_config(make_gateway_config):
+    text_limited = await _client(
+        make_gateway_config,
+        media={"max_text_field_bytes": 8},
+    )
+    try:
+        response = await text_limited.post("/v1/videos", data=_form())
+        payload = await response.json()
+        assert response.status == 413
+        assert payload["error"]["code"] == "field_too_large"
+    finally:
+        await text_limited.close()
+
+    part_limited = await _client(make_gateway_config, media={"max_parts": 5})
+    try:
+        response = await part_limited.post("/v1/videos", data=_form())
+        payload = await response.json()
+        assert response.status == 413
+        assert payload["error"]["code"] == "too_many_parts"
+    finally:
+        await part_limited.close()
 
 
 async def test_idempotency_replay_does_not_create_second_task(make_gateway_config):

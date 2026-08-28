@@ -136,3 +136,50 @@ def test_async_submit_status_code_is_restricted(tmp_path, status):
 
     with pytest.raises(ValueError, match="must be 200 or 202"):
         parse_config(raw)
+
+
+def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
+    config = parse_config(_raw(tmp_path))
+
+    assert config.media.max_parts == 32
+    assert config.media.max_single_file_bytes == 50 * 1024 * 1024
+    assert config.media.max_result_encoded_bytes >= config.media.max_result_bytes
+    assert (
+        config.media.inflight_memory_budget_bytes
+        >= config.media.max_task_memory_bytes
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("http", "max_body_bytes", 513 * 1024 * 1024, "hard cap"),
+        ("media", "max_single_file_bytes", 51 * 1024 * 1024, "hard cap"),
+        ("media", "max_parts", 33, "hard cap"),
+        ("media", "max_result_bytes", 129 * 1024 * 1024, "hard cap"),
+    ],
+)
+def test_media_protocol_hard_caps_cannot_be_overridden(
+    tmp_path, section, field, value, message
+):
+    raw = _raw(tmp_path)
+    raw[section] = {field: value}
+
+    with pytest.raises(ValueError, match=message):
+        parse_config(raw)
+
+
+def test_media_budget_must_fit_one_maximum_task(tmp_path):
+    raw = _raw(tmp_path)
+    raw["media"] = {"inflight_memory_budget_bytes": 128 * 1024 * 1024}
+
+    with pytest.raises(ValueError, match="fit one maximum-size task"):
+        parse_config(raw)
+
+
+def test_media_limit_boolean_is_not_accepted_as_an_integer(tmp_path):
+    raw = _raw(tmp_path)
+    raw["media"] = {"max_parts": True}
+
+    with pytest.raises(TypeError, match="must be an integer"):
+        parse_config(raw)

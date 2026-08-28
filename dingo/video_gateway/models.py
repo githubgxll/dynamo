@@ -91,11 +91,13 @@ class VideoTask:
     created_at_ms: int
     queued_at_ms: int
     expires_at_ms: int
+    created_seq: int = 0
     principal_hash: str | None = None
     idempotency_hash: str | None = None
     attempt: int = 0
     worker_instance_id: int | str | None = None
     worker_key: str | None = None
+    worker_lease_id: int | None = None
     owner_generation: str | None = None
     assigned_at_ms: int | None = None
     started_at_ms: int | None = None
@@ -112,6 +114,7 @@ class VideoTask:
     queue_wait_s: float | None = None
     stage_durations: dict[str, float] | None = None
     error: TaskError | None = None
+    estimated_payload_bytes: int = 0
     normalized_request: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -208,6 +211,7 @@ class WorkerLease:
     heartbeat_at_ms: int
     owner_expires_at_ms: int | None = None
     reuse_after_ms: int | None = None
+    etcd_lease_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

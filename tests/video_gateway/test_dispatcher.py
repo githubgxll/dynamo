@@ -12,7 +12,11 @@ from dingo.video_gateway.artifact_store import FileArtifactStore
 from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.models import TaskStatus, WorkerLease, now_ms
 from dingo.video_gateway.service import VideoGatewayService
-from dingo.video_gateway.task_store import MemoryTaskStore, worker_key
+from dingo.video_gateway.task_store import (
+    LeaseWatchEvent,
+    MemoryTaskStore,
+    worker_key,
+)
 from tests.video_gateway.test_task_store import _task
 
 _MINIMAL_MP4 = b"\x00\x00\x00\x18ftypisomminimal-video"
@@ -30,7 +34,13 @@ class FakeContext:
 
 class FakeClient:
     def __init__(
-        self, *, instance_id=7, block=False, available=True, discovery_error=False
+        self,
+        *,
+        instance_id=7,
+        block=False,
+        available=True,
+        discovery_error=False,
+        b64_json=None,
     ) -> None:
         self.instance_id = instance_id
         self.block = block
@@ -40,6 +50,7 @@ class FakeClient:
         self.calls: list[dict[str, Any]] = []
         self.active = 0
         self.max_active = 0
+        self.b64_json = b64_json
 
     def instance_ids(self):
         if self.discovery_error:
@@ -71,7 +82,8 @@ class FakeClient:
                     "data": [
                         {
                             "output_format": "mp4",
-                            "b64_json": base64.b64encode(_MINIMAL_MP4).decode(),
+                            "b64_json": self.b64_json
+                            or base64.b64encode(_MINIMAL_MP4).decode(),
                         }
                     ],
                     "inference_time_s": 0.01,
@@ -80,6 +92,42 @@ class FakeClient:
                 self.active -= 1
 
         return _stream()
+
+
+class WatchMemoryTaskStore(MemoryTaskStore):
+    """Exercise the dispatcher's etcd-style lease cache without a live server."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_lease_calls = 0
+        self.watch_events: asyncio.Queue[LeaseWatchEvent] = asyncio.Queue()
+
+    @property
+    def lease_watch_supported(self) -> bool:
+        return True
+
+    async def lease_snapshot(self, pool_id: str):
+        leases = await MemoryTaskStore.list_leases(self, pool_id)
+        return {lease.worker_key: lease for lease in leases}, max(1, self._revision)
+
+    async def watch_leases(self, pool_id: str, *, start_revision: int):
+        del pool_id, start_revision
+        while True:
+            yield await self.watch_events.get()
+
+    async def list_leases(self, pool_id: str):
+        self.list_lease_calls += 1
+        return await super().list_leases(pool_id)
+
+
+class CountingMemoryTaskStore(MemoryTaskStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.get_task_calls = 0
+
+    async def get_task(self, task_id: str):
+        self.get_task_calls += 1
+        return await super().get_task(task_id)
 
 
 def _pool(pool_id, model, target, workflow="fl2va"):
@@ -204,6 +252,88 @@ async def test_worker_capacity_one_serializes_async_requests(make_gateway_config
         await dispatcher.stop()
 
 
+async def test_dispatch_uses_watched_lease_cache_without_listing_each_tick(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient()
+    store = WatchMemoryTaskStore()
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="watch-cache-test",
+    )
+    service = VideoGatewayService(config, store, artifacts, dispatcher, adapters)
+
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert store.list_lease_calls == 0
+        assert len(client.calls) == 1
+    finally:
+        await dispatcher.stop()
+
+
+async def test_wait_terminal_uses_task_events_instead_of_periodic_reads(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient(available=False)
+    store = CountingMemoryTaskStore()
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="task-watch-test",
+    )
+    pool = config.pools[0]
+    task = _task("video-event-wait", pool_id=pool.pool_id)
+    task.model = pool.served_models[0]
+    task.backend_model = pool.backend_model
+    task.backend_target = pool.backend_target
+    task.configuration_revision = pool.configuration_revision
+    stored, _created = await store.create_task(
+        task,
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+
+    await dispatcher.start()
+    store.get_task_calls = 0
+    waiter = asyncio.create_task(dispatcher.wait_terminal(task.id, 2))
+    try:
+        await asyncio.sleep(0.65)
+        await store.transition(
+            task.id,
+            expected={TaskStatus.QUEUED},
+            expected_revision=stored.revision,
+            patch={"status": TaskStatus.CANCELLED},
+        )
+        terminal = await waiter
+
+        assert terminal.task.status == TaskStatus.CANCELLED
+        assert store.get_task_calls <= 3
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await dispatcher.stop()
+
+
 async def test_running_cancel_stops_context_and_releases_after_stream_ends(
     make_gateway_config,
 ):
@@ -300,6 +430,44 @@ async def test_restart_fails_active_task_and_keeps_old_worker_quarantined(
         await dispatcher.stop()
 
 
+async def test_restart_does_not_scan_or_rehash_completed_artifacts(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient(available=False)
+    store, artifacts, dispatcher, _service = _stack(config, {"fl-pool": client})
+    pool = config.pools[0]
+    payload = b"completed-video"
+    task = _task("video-completed-before-restart", pool_id=pool.pool_id)
+    task.deployment_id = config.deployment_id
+    task.status = TaskStatus.COMPLETED
+    task.result_bytes = len(payload)
+    # Deliberately differs from the file. Recovery only processes nonterminal
+    # tasks; the download path performs the cheap path/type/size validation.
+    task.result_sha256 = "0" * 64
+    path = artifacts.task_root(
+        task.deployment_id, task.pool_id, task.id
+    ) / "result" / "video.mp4"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(payload)
+    task.result_path = str(path)
+    await store.create_task(
+        task,
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+
+    await dispatcher.start()
+    try:
+        recovered = await store.get_task(task.id)
+        assert recovered is not None
+        assert recovered.task.status == TaskStatus.COMPLETED
+        assert recovered.task.error is None
+    finally:
+        await dispatcher.stop()
+
+
 async def test_readiness_recovers_after_discovery_outage(make_gateway_config):
     config = make_gateway_config()
     client = FakeClient(discovery_error=True)
@@ -314,5 +482,108 @@ async def test_readiness_recovers_after_discovery_outage(make_gateway_config):
                 break
             await asyncio.sleep(0.01)
         assert dispatcher.ready is True
+    finally:
+        await dispatcher.stop()
+
+
+async def test_global_media_budget_waits_before_reserving_second_worker(
+    make_gateway_config,
+):
+    pools = [
+        _pool("pool-a", "model-a", "dyn://scope-a.backend.generate"),
+        _pool("pool-b", "model-b", "dyn://scope-b.backend.generate"),
+    ]
+    mebibyte = 1024 * 1024
+    config = make_gateway_config(
+        pools=pools,
+        media={
+            "max_encoded_reference_bytes": mebibyte // 4,
+            "max_result_bytes": mebibyte,
+            "task_memory_overhead_bytes": mebibyte,
+            "inflight_memory_budget_bytes": 4 * mebibyte,
+        },
+    )
+    clients = {"pool-a": FakeClient(block=True), "pool-b": FakeClient(block=True)}
+    store, _artifacts, dispatcher, service = _stack(config, clients)
+    await dispatcher.start()
+    try:
+        submissions = await asyncio.gather(
+            _submit(service, "model-a"),
+            _submit(service, "model-b"),
+        )
+        for _ in range(100):
+            if sum(len(client.calls) for client in clients.values()) == 1:
+                snapshot = await dispatcher.memory_budget_snapshot()
+                if snapshot.waiting_tasks == 1:
+                    break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("second task did not wait for the media budget")
+
+        assert sum(len(client.calls) for client in clients.values()) == 1
+        assert len(await store.list_leases("pool-a")) + len(
+            await store.list_leases("pool-b")
+        ) == 1
+        for client in clients.values():
+            client.release.set()
+        completed = await asyncio.gather(
+            *(
+                dispatcher.wait_terminal(submission.stored.task.id, 2)
+                for submission in submissions
+            )
+        )
+
+        assert all(item.task.status == TaskStatus.COMPLETED for item in completed)
+        assert sum(len(client.calls) for client in clients.values()) == 2
+        snapshot = await dispatcher.memory_budget_snapshot()
+        assert snapshot.used_bytes == 0
+        assert snapshot.waiting_tasks == 0
+    finally:
+        await dispatcher.stop()
+
+
+async def test_invalid_base64_releases_budget_lease_and_partial_file(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient(b64_json="====")
+    store, artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.FAILED
+        assert await store.list_leases("fl-pool") == []
+        assert (await dispatcher.memory_budget_snapshot()).used_bytes == 0
+        task_root = artifacts.task_root(
+            terminal.task.deployment_id,
+            terminal.task.pool_id,
+            terminal.task.id,
+        )
+        assert list((task_root / "tmp").glob("*.part")) == []
+    finally:
+        await dispatcher.stop()
+
+
+async def test_oversize_worker_result_releases_budget_before_decode(
+    make_gateway_config,
+):
+    config = make_gateway_config(media={"max_result_bytes": 1})
+    client = FakeClient()
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.FAILED
+        assert await store.list_leases("fl-pool") == []
+        assert (await dispatcher.memory_budget_snapshot()).used_bytes == 0
+        assert dispatcher.media_runtime_snapshot().result_oversize_count == 1
     finally:
         await dispatcher.stop()

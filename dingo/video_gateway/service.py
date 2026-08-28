@@ -119,6 +119,26 @@ class VideoGatewayService:
             entry = upload.manifest_entry(relative_to=upload_root)
             entry.update(metadata.get(upload.ordinal, {}))
             manifest.append(entry)
+        encoded_reference_bytes = adapter.estimate_encoded_reference_bytes(manifest)
+        encoded_reference_limit = min(
+            self.config.media.max_encoded_reference_bytes,
+            adapter.max_encoded_reference_bytes,
+        )
+        if encoded_reference_bytes > encoded_reference_limit:
+            await self.artifacts.discard(upload_root)
+            raise GatewayError(
+                413,
+                "encoded_references_too_large",
+                "encoded Worker reference payload exceeds the configured limit",
+                "input_references",
+            )
+        self.dispatcher.record_legacy_input(encoded_reference_bytes)
+        # Reserve two encoded-input copies for mixed-reference JSON assembly.
+        estimated_payload_bytes = (
+            2 * encoded_reference_bytes
+            + self.config.media.max_result_encoded_bytes
+            + self.config.media.task_memory_overhead_bytes
+        )
         digest_request = dict(normalized)
         if digest_request.pop("seed_generated", False):
             digest_request.pop("seed", None)
@@ -216,6 +236,7 @@ class VideoGatewayService:
                 expires_at_ms=created_at + 6 * 60 * 60 * 1000,
                 principal_hash=principal_hash,
                 idempotency_hash=idempotency_hash,
+                estimated_payload_bytes=estimated_payload_bytes,
                 normalized_request=normalized,
             )
             stored, created = await self.store.create_task(
