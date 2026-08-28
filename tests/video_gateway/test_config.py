@@ -129,6 +129,36 @@ def test_default_model_must_be_configured(tmp_path):
         parse_config(raw)
 
 
+def test_lifecycle_and_artifact_watermarks_are_configurable(tmp_path):
+    raw = _raw(tmp_path)
+    raw["lifecycle"] = {
+        "completed_ttl_s": 120,
+        "sweeper_batch_size": 64,
+        "orphan_cleanup_dry_run": True,
+    }
+    raw["artifact_store"].update(
+        {"hard_min_free_bytes": 1024, "soft_min_free_bytes": 4096}
+    )
+
+    config = parse_config(raw)
+
+    assert config.lifecycle.completed_ttl_s == 120
+    assert config.lifecycle.sweeper_batch_size == 64
+    assert config.lifecycle.orphan_cleanup_dry_run is True
+    assert config.artifact_store.hard_min_free_bytes == 1024
+    assert config.artifact_store.soft_min_free_bytes == 4096
+
+
+def test_artifact_soft_watermark_cannot_be_below_hard_watermark(tmp_path):
+    raw = _raw(tmp_path)
+    raw["artifact_store"].update(
+        {"hard_min_free_bytes": 4096, "soft_min_free_bytes": 1024}
+    )
+
+    with pytest.raises(ValueError, match="soft_min_free_bytes"):
+        parse_config(raw)
+
+
 @pytest.mark.parametrize("status", [199, 201, 204])
 def test_async_submit_status_code_is_restricted(tmp_path, status):
     raw = _raw(tmp_path)

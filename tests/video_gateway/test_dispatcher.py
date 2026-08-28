@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 from typing import Any
 
+import pytest
+
 from dingo.video_gateway.adapters import create_adapter
-from dingo.video_gateway.artifact_store import FileArtifactStore
+from dingo.video_gateway.artifact_store import ArtifactCapacity, FileArtifactStore
 from dingo.video_gateway.dispatcher import VideoDispatcher
+from dingo.video_gateway.errors import GatewayError
 from dingo.video_gateway.models import TaskStatus, WorkerLease, now_ms
 from dingo.video_gateway.service import VideoGatewayService
 from dingo.video_gateway.task_store import (
@@ -128,6 +132,18 @@ class CountingMemoryTaskStore(MemoryTaskStore):
     async def get_task(self, task_id: str):
         self.get_task_calls += 1
         return await super().get_task(task_id)
+
+
+class IndeterminateLookupMemoryTaskStore(MemoryTaskStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lookup_count = 0
+
+    async def get_task(self, task_id: str):
+        self.lookup_count += 1
+        if self.lookup_count == 2:
+            raise RuntimeError("simulated etcd timeout")
+        return None
 
 
 def _pool(pool_id, model, target, workflow="fl2va"):
@@ -466,6 +482,110 @@ async def test_restart_does_not_scan_or_rehash_completed_artifacts(
         assert recovered.task.error is None
     finally:
         await dispatcher.stop()
+
+
+async def test_orphan_cleanup_moves_nothing_when_any_store_lookup_is_uncertain(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    store = IndeterminateLookupMemoryTaskStore()
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": FakeClient(available=False)},
+        adapters,
+        context_factory=FakeContext,
+    )
+    task_roots = []
+    for task_id in ("video-orphan-a", "video-orphan-b"):
+        upload = await artifacts.create_upload()
+        task_root = await artifacts.commit_upload(
+            upload,
+            config.deployment_id,
+            "fl-pool",
+            task_id,
+            artifact_manifest={
+                "schema_version": 1,
+                "task_id": task_id,
+                "deployment_id": config.deployment_id,
+                "pool_id": "fl-pool",
+            },
+        )
+        os.utime(task_root, (0, 0))
+        task_roots.append(task_root)
+
+    with pytest.raises(RuntimeError, match="etcd timeout"):
+        await dispatcher._cleanup_orphan_tasks()
+
+    assert all(path.exists() for path in task_roots)
+    assert list(artifacts.trash_root.iterdir()) == []
+
+
+async def test_orphan_cleanup_never_moves_directory_with_live_task_record(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    store, artifacts, dispatcher, _service = _stack(
+        config, {"fl-pool": FakeClient(available=False)}
+    )
+    task = _task("video-live-record", pool_id="fl-pool")
+    task.deployment_id = config.deployment_id
+    await store.create_task(
+        task,
+        principal_hash="principal",
+        idempotency_hash=None,
+        queue_limit=8,
+    )
+    upload = await artifacts.create_upload()
+    task_root = await artifacts.commit_upload(
+        upload,
+        config.deployment_id,
+        "fl-pool",
+        task.id,
+        artifact_manifest={
+            "schema_version": 1,
+            "task_id": task.id,
+            "deployment_id": config.deployment_id,
+            "pool_id": "fl-pool",
+        },
+    )
+    os.utime(task_root, (0, 0))
+
+    await dispatcher._cleanup_orphan_tasks()
+
+    assert task_root.exists()
+    assert list(artifacts.trash_root.iterdir()) == []
+
+
+async def test_submission_capacity_rejects_before_parsing_large_upload(
+    make_gateway_config,
+    monkeypatch,
+):
+    config = make_gateway_config()
+    _store, artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": FakeClient(available=False)}
+    )
+    sweep_calls = 0
+
+    async def _capacity():
+        return ArtifactCapacity(total_bytes=1_000, used_bytes=900, free_bytes=100)
+
+    async def _sweep():
+        nonlocal sweep_calls
+        sweep_calls += 1
+
+    monkeypatch.setattr(artifacts, "capacity", _capacity)
+    monkeypatch.setattr(dispatcher, "sweep_now", _sweep)
+
+    with pytest.raises(GatewayError) as raised:
+        await service.ensure_submission_capacity(200)
+
+    assert raised.value.status == 507
+    assert raised.value.code == "insufficient_artifact_storage"
+    assert sweep_calls == 1
 
 
 async def test_readiness_recovers_after_discovery_outage(make_gateway_config):

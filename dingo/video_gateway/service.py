@@ -55,6 +55,28 @@ class VideoGatewayService:
             )
         return pool
 
+    async def ensure_submission_capacity(self, required_bytes: int) -> None:
+        watermarks = self.config.artifact_store
+        capacity = await self.artifacts.capacity()
+        remaining = capacity.free_bytes - required_bytes
+        if (
+            remaining < watermarks.hard_min_free_bytes
+            or (
+                watermarks.soft_min_free_bytes > 0
+                and remaining < watermarks.soft_min_free_bytes
+            )
+        ):
+            await self.dispatcher.sweep_now()
+            capacity = await self.artifacts.capacity()
+            remaining = capacity.free_bytes - required_bytes
+        if remaining < watermarks.hard_min_free_bytes:
+            raise GatewayError(
+                507,
+                "insufficient_artifact_storage",
+                "video artifact storage has insufficient free capacity",
+                error_type="server_error",
+            )
+
     def resolve_request_model(self, fields: Mapping[str, list[str]]) -> str:
         values = fields.get("model", [])
         if len(values) > 1:
@@ -209,14 +231,28 @@ class VideoGatewayService:
         task_root: Path | None = None
         try:
             task_id = new_video_id()
+            created_at = now_ms()
+            expires_at_ms = created_at + int(
+                self.config.lifecycle.queue_ttl_s * 1000
+            )
             task_root = await self.artifacts.commit_upload(
-                upload_root, self.config.deployment_id, pool.pool_id, task_id
+                upload_root,
+                self.config.deployment_id,
+                pool.pool_id,
+                task_id,
+                artifact_manifest={
+                    "schema_version": 1,
+                    "task_id": task_id,
+                    "deployment_id": self.config.deployment_id,
+                    "pool_id": pool.pool_id,
+                    "created_at_ms": created_at,
+                    "expires_at_ms": expires_at_ms,
+                },
             )
             request_path = task_root / "request.json"
             manifest_path = task_root / "input-manifest.json"
             await self.artifacts.write_json(request_path, normalized)
             await self.artifacts.write_json(manifest_path, manifest)
-            created_at = now_ms()
             task = VideoTask(
                 schema_version=1,
                 id=task_id,
@@ -233,7 +269,7 @@ class VideoGatewayService:
                 input_manifest_path=str(manifest_path),
                 created_at_ms=created_at,
                 queued_at_ms=created_at,
-                expires_at_ms=created_at + 6 * 60 * 60 * 1000,
+                expires_at_ms=expires_at_ms,
                 principal_hash=principal_hash,
                 idempotency_hash=idempotency_hash,
                 estimated_payload_bytes=estimated_payload_bytes,
@@ -256,47 +292,18 @@ class VideoGatewayService:
 
     async def expire(self, stored: StoredTask) -> StoredTask:
         for _ in range(8):
-            if stored.task.status == TaskStatus.EXPIRED:
-                return stored
             if stored.task.status not in {
                 TaskStatus.COMPLETED,
                 TaskStatus.FAILED,
                 TaskStatus.CANCELLED,
+                TaskStatus.EXPIRED,
             }:
                 return await self.dispatcher.cancel(stored.task.id)
             try:
-                expired = await self.store.transition(
-                    stored.task.id,
-                    expected={stored.task.status},
-                    expected_revision=stored.revision,
-                    patch={
-                        "status": TaskStatus.EXPIRED,
-                        "expired_at_ms": now_ms(),
-                        "expires_at_ms": now_ms() + 24 * 60 * 60 * 1000,
-                    },
-                )
-                break
+                return await self.dispatcher.expire_terminal(stored)
             except StoreConflict:
                 latest = await self.store.get_task(stored.task.id)
                 if latest is None:
                     raise KeyError(stored.task.id) from None
                 stored = latest
-        else:
-            raise StoreConflict("delete lost repeated task state races")
-
-        task_root = self.artifacts.task_root(
-            stored.task.deployment_id, stored.task.pool_id, stored.task.id
-        )
-        await self.artifacts.discard(task_root)
-        try:
-            return await self.store.transition(
-                expired.task.id,
-                expected={TaskStatus.EXPIRED},
-                expected_revision=expired.revision,
-                patch={"artifact_deleted_at_ms": now_ms()},
-            )
-        except StoreConflict:
-            latest = await self.store.get_task(expired.task.id)
-            if latest is None:
-                raise KeyError(expired.task.id) from None
-            return latest
+        raise StoreConflict("delete lost repeated task state races")

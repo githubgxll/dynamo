@@ -72,3 +72,66 @@ async def test_orphan_cleanup_only_removes_stale_staging_directories(tmp_path):
     assert removed == 1
     assert not stale.exists()
     assert current.is_dir()
+
+
+async def test_task_orphan_is_manifested_trashed_and_deleted_in_two_steps(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    upload = await store.create_upload()
+    task_root = await store.commit_upload(
+        upload,
+        "deployment",
+        "pool",
+        "video-orphan",
+        artifact_manifest={
+            "schema_version": 1,
+            "task_id": "video-orphan",
+            "deployment_id": "deployment",
+            "pool_id": "pool",
+            "created_at_ms": 1,
+            "expires_at_ms": 2,
+        },
+    )
+    (task_root / "payload.bin").write_bytes(b"orphan-payload")
+    os.utime(task_root, (0, 0))
+
+    candidates = await store.orphan_task_candidates(
+        "deployment", ("pool",), minimum_age_s=60
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].task_id == "video-orphan"
+    assert candidates[0].manifest_valid is True
+    assert await store.trash_orphan(candidates[0], dry_run=True) == task_root
+    assert task_root.exists()
+
+    trashed = await store.trash_orphan(candidates[0])
+    assert trashed is not None and trashed.parent == store.trash_root
+    assert not task_root.exists()
+    assert trashed.exists()
+    os.utime(trashed, (0, 0))
+    removed, released = await store.cleanup_trash(minimum_age_s=60)
+    assert removed == 1
+    assert released >= len(b"orphan-payload")
+    assert not trashed.exists()
+
+
+async def test_orphan_scan_skips_symlinks_and_reports_missing_manifest(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    tasks = store.root / "deployment" / "v1" / "pools" / "pool" / "tasks"
+    tasks.mkdir(parents=True)
+    unmanifested = tasks / "video-unmanifested"
+    unmanifested.mkdir()
+    os.utime(unmanifested, (0, 0))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tasks / "video-linked"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    candidates = await store.orphan_task_candidates(
+        "deployment", ("pool",), minimum_age_s=60
+    )
+
+    assert [(item.task_id, item.manifest_valid) for item in candidates] == [
+        ("video-unmanifested", False)
+    ]
+    assert outside.exists()

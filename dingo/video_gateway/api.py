@@ -115,6 +115,10 @@ async def models(request: web.Request) -> web.Response:
 
 async def _submit(request: web.Request, *, delivery_mode: str):
     service = _service(request)
+    anticipated_input = request.content_length or service.config.media.max_total_file_bytes
+    await service.ensure_submission_capacity(
+        anticipated_input + service.config.media.max_result_bytes
+    )
     parsed = await parse_multipart(request, service.artifacts, service.config.media)
     try:
         return await service.submit(
@@ -400,6 +404,8 @@ async def metrics(request: web.Request) -> web.Response:
     service = _service(request)
     budget = await service.dispatcher.memory_budget_snapshot()
     media = service.dispatcher.media_runtime_snapshot()
+    artifact = service.dispatcher.artifact_runtime_snapshot()
+    capacity = await service.artifacts.capacity()
     rss_bytes = _current_rss_bytes()
     peak_rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
     lines = [
@@ -421,6 +427,14 @@ async def metrics(request: web.Request) -> web.Response:
         "# TYPE dingo_video_media_result_oversize_total counter",
         "# TYPE dingo_video_process_rss_bytes gauge",
         "# TYPE dingo_video_process_peak_rss_bytes gauge",
+        "# TYPE dingo_video_artifact_total_bytes gauge",
+        "# TYPE dingo_video_artifact_free_bytes gauge",
+        "# TYPE dingo_video_artifact_sweep_due_tasks gauge",
+        "# TYPE dingo_video_artifact_expired_tasks_total counter",
+        "# TYPE dingo_video_artifact_orphan_candidates_total counter",
+        "# TYPE dingo_video_artifact_orphan_trashed_total counter",
+        "# TYPE dingo_video_artifact_cleanup_failures_total counter",
+        "# TYPE dingo_video_artifact_released_bytes_total counter",
         f"dingo_video_media_memory_budget_bytes {budget.capacity_bytes}",
         f"dingo_video_media_memory_used_bytes {budget.used_bytes}",
         f"dingo_video_media_memory_peak_bytes {budget.peak_bytes}",
@@ -438,6 +452,19 @@ async def metrics(request: web.Request) -> web.Response:
         f"dingo_video_media_result_oversize_total {media.result_oversize_count}",
         f"dingo_video_process_rss_bytes {rss_bytes}",
         f"dingo_video_process_peak_rss_bytes {peak_rss_bytes}",
+        f"dingo_video_artifact_total_bytes {capacity.total_bytes}",
+        f"dingo_video_artifact_free_bytes {capacity.free_bytes}",
+        f"dingo_video_artifact_sweep_due_tasks {artifact.sweep_due_tasks}",
+        "dingo_video_artifact_expired_tasks_total "
+        f"{artifact.expired_tasks_total}",
+        "dingo_video_artifact_orphan_candidates_total "
+        f"{artifact.orphan_candidates_total}",
+        "dingo_video_artifact_orphan_trashed_total "
+        f"{artifact.orphan_trashed_total}",
+        "dingo_video_artifact_cleanup_failures_total "
+        f"{artifact.cleanup_failures_total}",
+        "dingo_video_artifact_released_bytes_total "
+        f"{artifact.released_bytes_total}",
     ]
     for pool in service.config.pools:
         workers = len(service.dispatcher.pool_instances(pool.pool_id))

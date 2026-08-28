@@ -188,7 +188,9 @@ class TaskStore(ABC):
     ) -> StoredTask: ...
 
     @abstractmethod
-    async def request_cancel(self, task_id: str) -> StoredTask: ...
+    async def request_cancel(
+        self, task_id: str, *, terminal_expires_at_ms: int | None = None
+    ) -> StoredTask: ...
 
     @abstractmethod
     async def list_leases(self, pool_id: str) -> list[WorkerLease]: ...
@@ -522,7 +524,9 @@ class MemoryTaskStore(TaskStore):
             self._publish_task_event(task_id, revision)
             return StoredTask(_clone_task(updated), revision)
 
-    async def request_cancel(self, task_id: str) -> StoredTask:
+    async def request_cancel(
+        self, task_id: str, *, terminal_expires_at_ms: int | None = None
+    ) -> StoredTask:
         for _ in range(8):
             stored = await self.get_task(task_id)
             if stored is None:
@@ -532,7 +536,8 @@ class MemoryTaskStore(TaskStore):
                     "status": TaskStatus.CANCELLED,
                     "cancel_requested_at_ms": now_ms(),
                     "completed_at_ms": now_ms(),
-                    "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                    "expires_at_ms": terminal_expires_at_ms
+                    or now_ms() + 60 * 60 * 1000,
                     "error": TaskError(
                         code="cancelled", message="video task was cancelled"
                     ),
@@ -1297,7 +1302,9 @@ class EtcdTaskStore(TaskStore):
             raise StoreConflict("task transition lost an etcd CAS race")
         return StoredTask(updated, revision)
 
-    async def request_cancel(self, task_id: str) -> StoredTask:
+    async def request_cancel(
+        self, task_id: str, *, terminal_expires_at_ms: int | None = None
+    ) -> StoredTask:
         for _ in range(8):
             stored = await self.get_task(task_id)
             if stored is None:
@@ -1307,7 +1314,8 @@ class EtcdTaskStore(TaskStore):
                     "status": TaskStatus.CANCELLED,
                     "cancel_requested_at_ms": now_ms(),
                     "completed_at_ms": now_ms(),
-                    "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                    "expires_at_ms": terminal_expires_at_ms
+                    or now_ms() + 60 * 60 * 1000,
                     "error": TaskError(
                         code="cancelled", message="video task was cancelled"
                     ),

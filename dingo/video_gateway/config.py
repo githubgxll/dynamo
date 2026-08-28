@@ -129,6 +129,24 @@ class TaskStoreConfig:
 class ArtifactStoreConfig:
     kind: str = "filesystem"
     root: Path = Path("/tmp/dingo-video-gateway")
+    hard_min_free_bytes: int = 0
+    soft_min_free_bytes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleConfig:
+    queue_ttl_s: float = 6 * 60 * 60
+    completed_ttl_s: float = 24 * 60 * 60
+    failed_ttl_s: float = 60 * 60
+    cancelled_ttl_s: float = 60 * 60
+    tombstone_ttl_s: float = 24 * 60 * 60
+    sweeper_interval_s: float = 30.0
+    sweeper_batch_size: int = 512
+    upload_grace_s: float = 60 * 60
+    orphan_grace_s: float = 24 * 60 * 60
+    orphan_scan_interval_s: float = 5 * 60
+    trash_grace_s: float = 60 * 60
+    orphan_cleanup_dry_run: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +192,7 @@ class GatewayConfig:
     media: MediaConfig
     task_store: TaskStoreConfig
     artifact_store: ArtifactStoreConfig
+    lifecycle: LifecycleConfig
     pools: tuple[PoolConfig, ...]
     pools_by_model: Mapping[str, PoolConfig] = field(repr=False)
     pools_by_id: Mapping[str, PoolConfig] = field(repr=False)
@@ -322,14 +341,66 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
 
 def _artifact_store_config(raw: Any) -> ArtifactStoreConfig:
     data = _mapping(raw or {}, "artifact_store")
-    _only(data, {"kind", "root"}, "artifact_store")
+    _only(
+        data,
+        {"kind", "root", "hard_min_free_bytes", "soft_min_free_bytes"},
+        "artifact_store",
+    )
     kind = str(data.get("kind", "filesystem"))
     if kind != "filesystem":
         raise ValueError("artifact_store.kind must be 'filesystem' in version 1")
     root = Path(_required_string(data, "root", "artifact_store")).expanduser()
     if not root.is_absolute():
         raise ValueError("artifact_store.root must be an absolute path")
-    return ArtifactStoreConfig(kind=kind, root=root)
+    hard_min_free_bytes = int(data.get("hard_min_free_bytes", 0))
+    soft_min_free_bytes = int(data.get("soft_min_free_bytes", 0))
+    if hard_min_free_bytes < 0 or soft_min_free_bytes < 0:
+        raise ValueError("artifact_store free-space watermarks must not be negative")
+    if soft_min_free_bytes and soft_min_free_bytes < hard_min_free_bytes:
+        raise ValueError(
+            "artifact_store.soft_min_free_bytes must be at least hard_min_free_bytes"
+        )
+    return ArtifactStoreConfig(
+        kind=kind,
+        root=root,
+        hard_min_free_bytes=hard_min_free_bytes,
+        soft_min_free_bytes=soft_min_free_bytes,
+    )
+
+
+def _lifecycle_config(raw: Any) -> LifecycleConfig:
+    data = _mapping(raw or {}, "lifecycle")
+    defaults = LifecycleConfig()
+    duration_fields = {
+        "queue_ttl_s",
+        "completed_ttl_s",
+        "failed_ttl_s",
+        "cancelled_ttl_s",
+        "tombstone_ttl_s",
+        "sweeper_interval_s",
+        "upload_grace_s",
+        "orphan_grace_s",
+        "orphan_scan_interval_s",
+        "trash_grace_s",
+    }
+    allowed = duration_fields | {"sweeper_batch_size", "orphan_cleanup_dry_run"}
+    _only(data, allowed, "lifecycle")
+    durations = {
+        name: float(data.get(name, getattr(defaults, name)))
+        for name in duration_fields
+    }
+    if any(value <= 0 for value in durations.values()):
+        raise ValueError("lifecycle TTL, grace and interval values must be positive")
+    batch_size = int(data.get("sweeper_batch_size", defaults.sweeper_batch_size))
+    if not 1 <= batch_size <= 10_000:
+        raise ValueError("lifecycle.sweeper_batch_size must be between 1 and 10000")
+    return LifecycleConfig(
+        **durations,
+        sweeper_batch_size=batch_size,
+        orphan_cleanup_dry_run=_boolean(
+            data, "orphan_cleanup_dry_run", defaults.orphan_cleanup_dry_run
+        ),
+    )
 
 
 def _scheduling_config(raw: Any, pool_name: str) -> SchedulingConfig:
@@ -471,6 +542,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "media",
             "task_store",
             "artifact_store",
+            "lifecycle",
             "pools",
         },
         "config",
@@ -511,6 +583,7 @@ def parse_config(raw: Any) -> GatewayConfig:
         media=media,
         task_store=_task_store_config(data.get("task_store")),
         artifact_store=_artifact_store_config(data.get("artifact_store")),
+        lifecycle=_lifecycle_config(data.get("lifecycle")),
         pools=pools,
         pools_by_model=by_model,
         pools_by_id=by_id,

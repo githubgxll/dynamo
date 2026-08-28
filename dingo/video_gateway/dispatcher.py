@@ -58,6 +58,16 @@ class MediaRuntimeSnapshot:
     result_oversize_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactRuntimeSnapshot:
+    sweep_due_tasks: int
+    expired_tasks_total: int
+    orphan_candidates_total: int
+    orphan_trashed_total: int
+    cleanup_failures_total: int
+    released_bytes_total: int
+
+
 @dataclass(slots=True)
 class PoolRuntime:
     config: PoolConfig
@@ -120,6 +130,14 @@ class VideoDispatcher:
         self._task_watch_healthy = not store.task_watch_supported
         self._task_watch_ready = asyncio.Event()
         self._task_waiters: dict[str, set[asyncio.Future[None]]] = {}
+        self._sweep_lock = asyncio.Lock()
+        self._next_orphan_scan = 0.0
+        self._sweep_due_tasks = 0
+        self._expired_tasks_total = 0
+        self._orphan_candidates_total = 0
+        self._orphan_trashed_total = 0
+        self._artifact_cleanup_failures = 0
+        self._artifact_released_bytes = 0
 
     @property
     def ready(self) -> bool:
@@ -222,8 +240,22 @@ class VideoDispatcher:
             result_oversize_count=self._result_oversize_count,
         )
 
+    def artifact_runtime_snapshot(self) -> ArtifactRuntimeSnapshot:
+        return ArtifactRuntimeSnapshot(
+            sweep_due_tasks=self._sweep_due_tasks,
+            expired_tasks_total=self._expired_tasks_total,
+            orphan_candidates_total=self._orphan_candidates_total,
+            orphan_trashed_total=self._orphan_trashed_total,
+            cleanup_failures_total=self._artifact_cleanup_failures,
+            released_bytes_total=self._artifact_released_bytes,
+        )
+
     async def cancel(self, task_id: str) -> StoredTask:
-        stored = await self.store.request_cancel(task_id)
+        stored = await self.store.request_cancel(
+            task_id,
+            terminal_expires_at_ms=now_ms()
+            + int(self.config.lifecycle.cancelled_ttl_s * 1000),
+        )
         running = self.running_calls.get(task_id)
         if running is not None:
             running.context.stop_generating()
@@ -247,7 +279,8 @@ class VideoDispatcher:
             patch={
                 "status": TaskStatus.CANCELLED,
                 "completed_at_ms": now_ms(),
-                "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                "expires_at_ms": now_ms()
+                + int(self.config.lifecycle.cancelled_ttl_s * 1000),
                 "error": terminal_error(
                     "cancelled", "video task cancellation was requested"
                 ),
@@ -705,7 +738,8 @@ class VideoDispatcher:
                 patch={
                     "status": TaskStatus.COMPLETED,
                     "completed_at_ms": now_ms(),
-                    "expires_at_ms": now_ms() + 24 * 60 * 60 * 1000,
+                    "expires_at_ms": now_ms()
+                    + int(self.config.lifecycle.completed_ttl_s * 1000),
                     "result_path": str(final_path),
                     "result_bytes": size,
                     "result_sha256": sha256,
@@ -786,7 +820,8 @@ class VideoDispatcher:
             patch={
                 "status": TaskStatus.CANCELLED,
                 "completed_at_ms": now_ms(),
-                "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                "expires_at_ms": now_ms()
+                + int(self.config.lifecycle.cancelled_ttl_s * 1000),
                 "error": terminal_error("cancelled", "video task was cancelled"),
             },
             release_lease=True,
@@ -826,7 +861,8 @@ class VideoDispatcher:
                 patch={
                     "status": TaskStatus.FAILED,
                     "completed_at_ms": now_ms(),
-                    "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                    "expires_at_ms": now_ms()
+                    + int(self.config.lifecycle.failed_ttl_s * 1000),
                     "error": terminal_error(code, safe_message),
                 },
                 release_lease=True,
@@ -873,7 +909,10 @@ class VideoDispatcher:
                                 patch={
                                     "status": TaskStatus.FAILED,
                                     "completed_at_ms": now_ms(),
-                                    "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                                    "expires_at_ms": now_ms()
+                                    + int(
+                                        self.config.lifecycle.failed_ttl_s * 1000
+                                    ),
                                     "error": terminal_error(
                                         "configuration_changed",
                                         "task pool configuration changed before dispatch",
@@ -891,7 +930,8 @@ class VideoDispatcher:
                             patch={
                                 "status": TaskStatus.FAILED,
                                 "completed_at_ms": now_ms(),
-                                "expires_at_ms": now_ms() + 60 * 60 * 1000,
+                                "expires_at_ms": now_ms()
+                                + int(self.config.lifecycle.failed_ttl_s * 1000),
                                 "error": terminal_error(
                                     "gateway_restarted",
                                     "Gateway restarted while the Worker request was active",
@@ -919,18 +959,110 @@ class VideoDispatcher:
     async def _sweeper_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                await self._sweep_once()
+                await self.sweep_now()
             except Exception:
                 logger.exception("video task sweeper iteration failed")
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=30.0)
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=self.config.lifecycle.sweeper_interval_s,
+                )
             except asyncio.TimeoutError:
                 pass
 
+    async def sweep_now(self) -> None:
+        async with self._sweep_lock:
+            await self._sweep_once()
+
+    async def expire_terminal(self, stored: StoredTask) -> StoredTask:
+        current = now_ms()
+        task = stored.task
+        if task.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
+            stored = await self.store.transition(
+                task.id,
+                expected={task.status},
+                expected_revision=stored.revision,
+                patch={
+                    "status": TaskStatus.EXPIRED,
+                    "expired_at_ms": current,
+                    # Keep the task immediately due until its artifacts are
+                    # durably removed and artifact_deleted_at_ms is recorded.
+                    "expires_at_ms": current,
+                },
+            )
+            task = stored.task
+        if task.status != TaskStatus.EXPIRED:
+            return stored
+        if task.artifact_deleted_at_ms is not None:
+            return stored
+        task_root = self.artifacts.task_root(
+            task.deployment_id, task.pool_id, task.id
+        )
+        self._artifact_released_bytes += await self.artifacts.discard(task_root)
+        return await self.store.transition(
+            task.id,
+            expected={TaskStatus.EXPIRED},
+            expected_revision=stored.revision,
+            patch={
+                "artifact_deleted_at_ms": now_ms(),
+                "expires_at_ms": now_ms()
+                + int(self.config.lifecycle.tombstone_ttl_s * 1000),
+            },
+        )
+
+    async def _cleanup_orphan_tasks(self) -> None:
+        candidates = await self.artifacts.orphan_task_candidates(
+            self.config.deployment_id,
+            tuple(self.pools),
+            minimum_age_s=self.config.lifecycle.orphan_grace_s,
+        )
+        self._orphan_candidates_total += len(candidates)
+        missing = []
+        # Resolve the entire candidate set before moving anything. If etcd is
+        # unavailable or any lookup is indeterminate, the exception aborts the
+        # round and no task directory is touched.
+        for candidate in candidates:
+            if await self.store.get_task(candidate.task_id) is None:
+                missing.append(candidate)
+        for candidate in missing:
+            try:
+                moved = await self.artifacts.trash_orphan(
+                    candidate,
+                    dry_run=self.config.lifecycle.orphan_cleanup_dry_run,
+                )
+                if moved is not None and not self.config.lifecycle.orphan_cleanup_dry_run:
+                    self._orphan_trashed_total += 1
+            except Exception:
+                self._artifact_cleanup_failures += 1
+                logger.exception(
+                    "failed to move orphan task artifact to trash: %s",
+                    candidate.task_id,
+                )
+
     async def _sweep_once(self) -> None:
         current = now_ms()
-        await self.artifacts.cleanup_orphan_uploads(minimum_age_s=3600.0)
-        for stored in await self.store.list_due_tasks(current, limit=512):
+        await self.artifacts.cleanup_orphan_uploads(
+            minimum_age_s=self.config.lifecycle.upload_grace_s
+        )
+        _trash_removed, trash_released = await self.artifacts.cleanup_trash(
+            minimum_age_s=self.config.lifecycle.trash_grace_s
+        )
+        self._artifact_released_bytes += trash_released
+        monotonic_now = time.monotonic()
+        if monotonic_now >= self._next_orphan_scan:
+            await self._cleanup_orphan_tasks()
+            self._next_orphan_scan = (
+                monotonic_now + self.config.lifecycle.orphan_scan_interval_s
+            )
+        due_tasks = await self.store.list_due_tasks(
+            current, limit=self.config.lifecycle.sweeper_batch_size
+        )
+        self._sweep_due_tasks = len(due_tasks)
+        for stored in due_tasks:
             task = stored.task
             if task.expires_at_ms > current:
                 continue
@@ -943,7 +1075,8 @@ class VideoDispatcher:
                         patch={
                             "status": TaskStatus.FAILED,
                             "completed_at_ms": current,
-                            "expires_at_ms": current + 60 * 60 * 1000,
+                            "expires_at_ms": current
+                            + int(self.config.lifecycle.failed_ttl_s * 1000),
                             "error": terminal_error(
                                 "queue_timeout", "video task expired while queued"
                             ),
@@ -954,38 +1087,15 @@ class VideoDispatcher:
                     TaskStatus.FAILED,
                     TaskStatus.CANCELLED,
                 }:
-                    expired = await self.store.transition(
-                        task.id,
-                        expected={task.status},
-                        expected_revision=stored.revision,
-                        patch={
-                            "status": TaskStatus.EXPIRED,
-                            "expired_at_ms": current,
-                            "expires_at_ms": current + 24 * 60 * 60 * 1000,
-                        },
-                    )
-                    task_root = self.artifacts.task_root(
-                        task.deployment_id, task.pool_id, task.id
-                    )
-                    await self.artifacts.discard(task_root)
-                    await self.store.transition(
-                        task.id,
-                        expected={TaskStatus.EXPIRED},
-                        expected_revision=expired.revision,
-                        patch={"artifact_deleted_at_ms": now_ms()},
-                    )
+                    await self.expire_terminal(stored)
+                    self._expired_tasks_total += 1
                 elif task.status == TaskStatus.EXPIRED:
-                    if task.artifact_deleted_at_ms is None:
-                        task_root = self.artifacts.task_root(
-                            task.deployment_id, task.pool_id, task.id
-                        )
-                        await self.artifacts.discard(task_root)
-                        stored = await self.store.transition(
-                            task.id,
-                            expected={TaskStatus.EXPIRED},
-                            expected_revision=stored.revision,
-                            patch={"artifact_deleted_at_ms": now_ms()},
-                        )
-                    await self.store.delete_expired(stored)
+                    cleaned = await self.expire_terminal(stored)
+                    if cleaned.task.expires_at_ms <= current:
+                        await self.store.delete_expired(cleaned)
             except StoreConflict:
+                continue
+            except Exception:
+                self._artifact_cleanup_failures += 1
+                logger.exception("failed to sweep video task: %s", task.id)
                 continue
