@@ -57,7 +57,7 @@ video-gateway = [
 
 vllm = [
     "uvloop",
-    "nixl[cu13]==1.3.1",
+    "nixl[cu13]==1.3.2",
     "vllm[flashinfer,runai,otel]==0.27.1",
     # vllm-omni is not part of ai-dingo[vllm]: container builds inherit the
     # framework stack from vllm/vllm-openai, and pip/uv dependency resolution
