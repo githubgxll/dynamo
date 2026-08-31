@@ -21,7 +21,7 @@
     },
     {
       "framework": "vllm",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo-vllm"
     },
     {

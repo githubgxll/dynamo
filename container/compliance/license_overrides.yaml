@@ -442,10 +442,12 @@ overrides:
   - { ecosystem: python, name: torch_c_dlpack_ext,              license: "Apache-2.0",   source: "PyPI torch-c-dlpack-ext — metadata declares Apache-2.0" }
   - { ecosystem: python, name: torchtitan,                      license: "BSD-3-Clause", source: "PyTorch torchtitan — https://github.com/pytorch/torchtitan (BSD-3-Clause)" }
   - { ecosystem: python, name: xdsl,                            license: "Apache-2.0",   source: "xdsl — https://github.com/xdslproject/xdsl (Apache-2.0 WITH LLVM-exception; treated as Apache-2.0 for policy)" }
+  - { ecosystem: python, name: instanttensor,                   license: "Apache-2.0",   source: "InstantTensor — https://github.com/scitix/InstantTensor - metadata declares Apache-2.0" }
 
   # --- Additional NVIDIA dpkg meta-packages ---
   - { ecosystem: dpkg, name: cuda-command-line-tools-12-9,      license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA CUDA Toolkit EULA" }
   - { ecosystem: dpkg, name: cuda-command-line-tools-13-0,      license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA CUDA Toolkit EULA" }
+  - { ecosystem: dpkg, name: cuda-keyring,                      license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA CUDA Toolkit EULA" }
 
   # --- sglang Rust ecosystem additions ---
   # sgl-model-gateway is sglang's Rust serving gateway crate, packaged inside
