@@ -6,7 +6,7 @@ name: Dingo runtime images
 on:
   push:
     branches:
-      - 'DingoRouter-*'
+      - feature/vllm-glm-5-3-flash
   workflow_dispatch:
     inputs:
       frameworks:
