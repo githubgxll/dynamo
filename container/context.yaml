@@ -54,9 +54,9 @@ vllm:
     base_image: nvcr.io/nvidia/cuda-dl-base
     runtime_image: vllm/vllm-openai
     base_image_tag: 25.11-cuda13.0-devel-ubuntu24.04
-    runtime_image_tag: v0.27.1-ubuntu2404
+    runtime_image_tag: v0.28.0-ubuntu2404
     # Keep using the existing CUDA 13.0.2 compliance corpus for this Dingo CI
-    # image update. Refreshing the corpus for vLLM 0.27.1's CUDA 13.0.3 base is
+    # image update. Refreshing the corpus for vLLM 0.28.0's CUDA 13.0.3 base is
     # intentionally deferred because this workflow does not publish SBOM or
     # provenance artifacts. Per-arch stem; the licenses stage appends
     # -${TARGETARCH}.cdx.json.

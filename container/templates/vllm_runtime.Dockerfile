@@ -187,10 +187,10 @@ RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target
     bash /tmp/install_vllm_omni.sh
 
 # Apply Dingo's MiniMax-H3 vLLM-Omni patches (source overlays + runtime overlay
-# modules) to the installed vllm-omni site-packages.  Pinned checksums in the
-# install script enforces the exact validated vLLM + vLLM-Omni version pair and
-# pinned file hashes, failing the build if either package is upgraded without
-# re-validating every overlay. The generated .pth-triggered bootstrap
+# modules) to the installed vllm-omni site-packages. The install script applies
+# them only to the validated vLLM + vLLM-Omni version pair;
+# other version pairs are skipped, while pinned-file mismatches within the
+# supported pair still fail the build. The generated .pth-triggered bootstrap
 # (dingo_vllm_omni_patches.py)
 # loads runtime overlays only when DINGO_ENABLE_MINIMAX_H3_PATCHES=1. Individual
 # hooks are additionally opt-in through H3_* flags, so unrelated GLM/DeepSeek

@@ -15,8 +15,9 @@
 #      dist-packages/sitecustomize.py).  Each overlay is gated by an environment
 #      flag so a deployment can opt in/out without rebuilding the image.
 #
-# The script fails fast on any checksum mismatch so a vllm-omni version bump is
-# caught at image build time instead of producing a broken worker.
+# Unsupported vLLM/vLLM-Omni version pairs are skipped so these overlays do not
+# block unrelated images.  For the explicitly supported pair, the script still
+# fails fast on any checksum mismatch instead of producing a broken worker.
 
 set -euo pipefail
 
@@ -28,27 +29,29 @@ VLLM_OMNI_DIR="${PYTHON_SITE_PACKAGES}/vllm_omni"
 PATCHED_VLLM_VERSION="0.27.1"
 PATCHED_VLLM_OMNI_VERSION="0.27.0rc1"
 
-if [ ! -d "${VLLM_OMNI_DIR}" ]; then
-    echo "ERROR: vllm_omni not found at ${VLLM_OMNI_DIR}" >&2
-    exit 1
-fi
-
 installed_vllm_version="$(
-    python3 -c 'from importlib.metadata import version; print(version("vllm"))'
+    python3 -c 'from importlib.metadata import PackageNotFoundError, version
+try:
+    print(version("vllm"))
+except PackageNotFoundError:
+    print("not-installed")'
 )"
 installed_vllm_omni_version="$(
-    python3 -c 'from importlib.metadata import version; print(version("vllm-omni"))'
+    python3 -c 'from importlib.metadata import PackageNotFoundError, version
+try:
+    print(version("vllm-omni"))
+except PackageNotFoundError:
+    print("not-installed")'
 )"
-if [ "${installed_vllm_version}" != "${PATCHED_VLLM_VERSION}" ]; then
-    echo "ERROR: MiniMax-H3 patches are validated only for vllm ${PATCHED_VLLM_VERSION}." >&2
-    echo "  installed ${installed_vllm_version}" >&2
-    echo "  Re-evaluate every overlay and runtime hook before changing the pinned version." >&2
-    exit 1
+if [ "${installed_vllm_version}" != "${PATCHED_VLLM_VERSION}" ] \
+    || [ "${installed_vllm_omni_version}" != "${PATCHED_VLLM_OMNI_VERSION}" ]; then
+    echo "SKIP: MiniMax-H3 patches apply only to vllm ${PATCHED_VLLM_VERSION} + vllm-omni ${PATCHED_VLLM_OMNI_VERSION}."
+    echo "  installed vllm ${installed_vllm_version} + vllm-omni ${installed_vllm_omni_version}"
+    exit 0
 fi
-if [ "${installed_vllm_omni_version}" != "${PATCHED_VLLM_OMNI_VERSION}" ]; then
-    echo "ERROR: MiniMax-H3 patches are validated only for vllm-omni ${PATCHED_VLLM_OMNI_VERSION}." >&2
-    echo "  installed ${installed_vllm_omni_version}" >&2
-    echo "  Re-evaluate every overlay and runtime hook before changing the pinned version." >&2
+
+if [ ! -d "${VLLM_OMNI_DIR}" ]; then
+    echo "ERROR: vllm_omni not found at ${VLLM_OMNI_DIR}" >&2
     exit 1
 fi
 echo "OK: vllm ${installed_vllm_version} + vllm-omni ${installed_vllm_omni_version} are explicitly supported"
