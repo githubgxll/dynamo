@@ -60,7 +60,7 @@ parser exists for this format.
 | `deepseek_v3_1` | DeepSeek V3.1 | Dynamo-only | JSON separators |
 | `deepseek_v3_2` | DeepSeek V3.2+ | Dynamo-only | DSML tags (`<｜DSML｜function_calls>...`) |
 | `qwen3_coder` | Qwen3.5, Qwen3-Coder | | XML `<tool_call><function=...>` |
-| `glm47` | GLM-4.5, GLM-4.7 | Dynamo-only | XML `<arg_key>/<arg_value>` |
+| `glm47` | GLM-4.5, GLM-4.7, GLM-5/5.1/5.2/5.3 | Dynamo-only | XML `<arg_key>/<arg_value>` |
 | `nemotron_deci` | Nemotron-Super / -Ultra / -Deci, Llama-Nemotron-Ultra / -Super | Dynamo-only | `<TOOLCALL>` JSON |
 | `nemotron_nano` | Nemotron-Nano | Dynamo-only | Alias for `qwen3_coder` |
 | `gemma4` | Google Gemma 4 (thinking models) | vLLM: `gemma4` | Custom non-JSON grammar with `<\|"\|>` string delimiters and `<\|tool_call>...<tool_call\|>` markers. Aliases: `gemma-4`. Pair with `--dyn-reasoning-parser gemma4` and `--custom-jinja-template examples/chat_templates/gemma4_tool.jinja` |

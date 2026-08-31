@@ -179,8 +179,8 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
-    /// Normalize OpenAI-style DS-V4 reasoning controls into the template kwargs
-    /// consumed by the SGLang/DeepSeek-V4 prompt formatter.
+    /// Normalize OpenAI-style reasoning controls into the template kwargs
+    /// consumed by backend prompt formatters.
     pub fn normalize_reasoning_template_args(&mut self) -> anyhow::Result<()> {
         let thinking_mode = self
             .thinking
@@ -194,6 +194,8 @@ impl NvCreateChatCompletionRequest {
             .as_ref()
             .and_then(|effort| serde_json::to_value(effort).ok());
 
+        self.validate_glm53_reasoning_controls(thinking_mode.as_ref(), reasoning_effort.as_ref())?;
+
         if thinking_mode.is_none() && reasoning_effort.is_none() {
             return Ok(());
         }
@@ -203,6 +205,7 @@ impl NvCreateChatCompletionRequest {
             match mode {
                 OpenAiThinkingMode::Enabled => {
                     args.insert("thinking".to_string(), serde_json::Value::Bool(true));
+                    args.insert("enable_thinking".to_string(), serde_json::Value::Bool(true));
                     args.insert(
                         "thinking_mode".to_string(),
                         serde_json::Value::String("enabled".to_string()),
@@ -210,6 +213,10 @@ impl NvCreateChatCompletionRequest {
                 }
                 OpenAiThinkingMode::Disabled => {
                     args.insert("thinking".to_string(), serde_json::Value::Bool(false));
+                    args.insert(
+                        "enable_thinking".to_string(),
+                        serde_json::Value::Bool(false),
+                    );
                     args.insert(
                         "thinking_mode".to_string(),
                         serde_json::Value::String("disabled".to_string()),
@@ -231,6 +238,60 @@ impl NvCreateChatCompletionRequest {
         // drop it so it isn't double-shipped downstream (and so it can't be
         // re-interpreted with different precedence by the worker preprocessor).
         self.thinking = None;
+        Ok(())
+    }
+
+    /// Enforce the public GLM-5.3 reasoning contract before prompt rendering.
+    ///
+    /// GLM-5.3 reuses the GLM-5.2 model and wire formats, so it does not need a
+    /// new reasoning or tool-call parser. Its request policy is different,
+    /// however: reasoning is always enabled and the only accepted effort
+    /// levels are `low`, `high`, and `max`. The checkpoint template silently
+    /// falls back to `max` for unsupported values and ignores disable flags;
+    /// rejecting those inputs here prevents Dynamo from accepting a request
+    /// whose requested semantics the model cannot honor.
+    fn validate_glm53_reasoning_controls(
+        &self,
+        top_level_thinking: Option<&OpenAiThinkingMode>,
+        top_level_effort: Option<&serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        if !is_glm53_model_id(&self.inner.model) {
+            return Ok(());
+        }
+
+        if let Some(mode) = top_level_thinking {
+            if !matches!(mode, OpenAiThinkingMode::Enabled) {
+                anyhow::bail!("GLM-5.3 requires `thinking.type` to be `enabled`");
+            }
+        } else if let Some(args) = self.chat_template_args.as_ref() {
+            for key in ["thinking", "enable_thinking"] {
+                if args.get(key).and_then(serde_json::Value::as_bool) == Some(false) {
+                    anyhow::bail!("GLM-5.3 does not support disabling reasoning via `{key}`");
+                }
+            }
+            if let Some(mode) = args
+                .get("thinking_mode")
+                .and_then(serde_json::Value::as_str)
+                && !matches!(mode, "enabled" | "thinking")
+            {
+                anyhow::bail!("GLM-5.3 does not support `thinking_mode={mode}`");
+            }
+        }
+
+        let effective_effort = top_level_effort.or_else(|| {
+            self.chat_template_args
+                .as_ref()
+                .and_then(|args| args.get("reasoning_effort"))
+        });
+        if let Some(effort) = effective_effort
+            && !effort.is_null()
+            && !effort
+                .as_str()
+                .is_some_and(|effort| matches!(effort, "low" | "high" | "max"))
+        {
+            anyhow::bail!("GLM-5.3 `reasoning_effort` must be `low`, `high`, or `max`");
+        }
+
         Ok(())
     }
 
@@ -277,6 +338,13 @@ enum OpenAiThinkingMode {
     Enabled,
     Disabled,
     Adaptive,
+}
+
+fn is_glm53_model_id(model: &str) -> bool {
+    model
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("glm-5.3"))
 }
 
 fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<OpenAiThinkingMode>> {
@@ -1568,6 +1636,7 @@ mod tests {
             .as_ref()
             .expect("chat_template_args should be populated");
         assert_eq!(args.get("thinking"), Some(&json!(true)));
+        assert_eq!(args.get("enable_thinking"), Some(&json!(true)));
         assert_eq!(args.get("thinking_mode"), Some(&json!("enabled")));
         assert_eq!(args.get("reasoning_effort"), Some(&json!("max")));
     }
@@ -1618,6 +1687,7 @@ mod tests {
             .as_ref()
             .expect("chat_template_args should be populated");
         assert_eq!(args.get("thinking"), Some(&json!(false)));
+        assert_eq!(args.get("enable_thinking"), Some(&json!(false)));
         assert_eq!(args.get("thinking_mode"), Some(&json!("disabled")));
     }
 
@@ -1673,5 +1743,104 @@ mod tests {
                 serde_json::from_value(json_str).expect("Failed to deserialize request");
             assert!(request.normalize_reasoning_template_args().is_err());
         }
+    }
+
+    #[test]
+    fn test_glm53_accepts_required_reasoning_modes() {
+        assert!(is_glm53_model_id("zai-org/GLM-5.3"));
+        assert!(is_glm53_model_id("glm-5.3"));
+        assert!(!is_glm53_model_id("zai-org/GLM-5.3-Flash"));
+
+        for effort in ["low", "high", "max"] {
+            let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                "model": "zai-org/GLM-5.3",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": effort
+            }))
+            .expect("GLM-5.3 request should deserialize");
+
+            request
+                .normalize_reasoning_template_args()
+                .expect("GLM-5.3 supported reasoning controls should normalize");
+            let args = request
+                .chat_template_args
+                .as_ref()
+                .expect("template args should be populated");
+            assert_eq!(args.get("thinking"), Some(&json!(true)));
+            assert_eq!(args.get("enable_thinking"), Some(&json!(true)));
+            assert_eq!(args.get("reasoning_effort"), Some(&json!(effort)));
+        }
+
+        let mut default_request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "GLM-5.3",
+            "messages": [{"role": "user", "content": "Hello"}]
+        }))
+        .expect("default GLM-5.3 request should deserialize");
+        default_request
+            .normalize_reasoning_template_args()
+            .expect("omitted controls should use checkpoint defaults");
+    }
+
+    #[test]
+    fn test_glm53_rejects_disabled_or_adaptive_reasoning() {
+        for thinking in [
+            json!(false),
+            json!({"type": "disabled"}),
+            json!({"type": "adaptive"}),
+        ] {
+            let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                "model": "zai-org/GLM-5.3",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "thinking": thinking
+            }))
+            .expect("GLM-5.3 request should deserialize");
+
+            let error = request
+                .normalize_reasoning_template_args()
+                .expect_err("GLM-5.3 must reject reasoning modes other than enabled");
+            assert!(error.to_string().contains("GLM-5.3"));
+        }
+
+        let mut template_request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "zai-org/GLM-5.3",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "chat_template_kwargs": {"enable_thinking": false}
+        }))
+        .expect("GLM-5.3 template request should deserialize");
+        assert!(
+            template_request
+                .normalize_reasoning_template_args()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_glm53_rejects_unsupported_reasoning_effort() {
+        for effort in ["none", "minimal", "medium", "xhigh"] {
+            let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                "model": "zai-org/GLM-5.3",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "reasoning_effort": effort
+            }))
+            .expect("known OpenAI reasoning effort should deserialize");
+
+            let error = request
+                .normalize_reasoning_template_args()
+                .expect_err("unsupported GLM-5.3 effort must be rejected");
+            assert!(error.to_string().contains("low`, `high`, or `max"));
+        }
+
+        let mut template_request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "zai-org/GLM-5.3",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "chat_template_args": {"reasoning_effort": "medium"}
+        }))
+        .expect("GLM-5.3 template request should deserialize");
+        assert!(
+            template_request
+                .normalize_reasoning_template_args()
+                .is_err()
+        );
     }
 }

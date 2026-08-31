@@ -49,7 +49,7 @@ python -m dynamo.<backend> --help
 | `deepseek_v3_1` | DeepSeek V3.1 | Dynamo-only | JSON 分隔符 |
 | `deepseek_v3_2` | DeepSeek V3.2+ | Dynamo-only | DSML 标签（`<｜DSML｜function_calls>...`） |
 | `qwen3_coder` | Qwen3.5, Qwen3-Coder | | XML `<tool_call><function=...>` |
-| `glm47` | GLM-4.5, GLM-4.7 | Dynamo-only | XML `<arg_key>/<arg_value>` |
+| `glm47` | GLM-4.5、GLM-4.7、GLM-5/5.1/5.2/5.3 | Dynamo-only | XML `<arg_key>/<arg_value>` |
 | `nemotron_deci` | Nemotron-Super / -Ultra / -Deci, Llama-Nemotron-Ultra / -Super | Dynamo-only | `<TOOLCALL>` JSON |
 | `nemotron_nano` | Nemotron-Nano | Dynamo-only | `qwen3_coder` 的别名 |
 | `gemma4` | Google Gemma 4（thinking 模型） | vLLM: `gemma4` | 自定义非 JSON 文法，使用 `<\|"\|>` 字符串分隔符和 `<\|tool_call>...<tool_call\|>` 标记。别名：`gemma-4`。与 `--dyn-reasoning-parser gemma4` 和 `--custom-jinja-template examples/chat_templates/gemma4_tool.jinja` 配对 |

@@ -49,7 +49,7 @@ require the opening tag to be present in the model output.
 | `deepseek_v4` | DeepSeek V4 Pro / Flash | vLLM: `deepseek_v4`; SGLang: `deepseek-v4` | No | `<think>...</think>`. Aliases: `deepseek-v4`, `deepseekv4` |
 | `deepseek_r1` | DeepSeek R1, DeepSeek V3.1, DeepSeek V3.2 | | Yes | Pass explicitly for V3.1/V3.2 (no alias) |
 | `qwen3` | Qwen3.5, QwQ-32B, Qwen3-Think, Qwen3-Coder | | No | `<think>...</think>` |
-| `glm45` | GLM-4.5, GLM-4.7 | Dynamo-only | No | Alias for `nemotron_deci`. `<think>...</think>` |
+| `glm45` | GLM-4.5, GLM-4.7, GLM-5/5.1/5.2/5.3 | Dynamo-only | No | Alias for `nemotron_deci`. `<think>...</think>`. GLM-5.3 always reasons and accepts `reasoning_effort=low\|high\|max`. |
 | `nemotron3` | Nemotron-3 / Mini | vLLM: `nemotron_v3` | Yes | Alias for `deepseek_r1`. Also accepts `nemotron_v3` |
 | `nemotron_deci` | Nemotron-Super / -Ultra / -Deci, Llama-Nemotron | Dynamo-only | No | `<think>...</think>` |
 | `nemotron_nano` | Nemotron-Nano | Dynamo-only | Yes | Alias for `deepseek_r1` |
@@ -66,7 +66,7 @@ Some models need both parsers configured together. Common pairings include:
 
 - `openai/gpt-oss-*`: `--dyn-tool-call-parser harmony --dyn-reasoning-parser gpt_oss`
 - `deepseek-ai/DeepSeek-V4-*`: `--dyn-tool-call-parser deepseek_v4 --dyn-reasoning-parser deepseek_v4`
-- `zai-org/GLM-4.7`: `--dyn-tool-call-parser glm47 --dyn-reasoning-parser glm45`
+- `zai-org/GLM-4.7` and GLM-5 series (including `zai-org/GLM-5.3`): `--dyn-tool-call-parser glm47 --dyn-reasoning-parser glm45`
 - `moonshotai/Kimi-K2.5*` / Kimi K2.6 format-compatible outputs: `--dyn-tool-call-parser kimi_k2 --dyn-reasoning-parser kimi_k25`
 - `google/gemma-4-*` thinking models: `--dyn-tool-call-parser gemma4 --dyn-reasoning-parser gemma4 --custom-jinja-template examples/chat_templates/gemma4_tool.jinja`
 - `Qwen/Qwen3.5*`: `--dyn-tool-call-parser qwen3_coder --dyn-reasoning-parser qwen3`
