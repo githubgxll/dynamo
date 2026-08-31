@@ -178,13 +178,13 @@ RUN set -eux; \
 
 # Layer the released vLLM-Omni package matching the pinned upstream ref while
 # constraining packages already solved in the upstream vLLM image.
-RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target=/tmp/vllm_omni_protected_packages.txt \
-    --mount=type=bind,source=./container/deps/vllm/install_vllm_omni.sh,target=/tmp/install_vllm_omni.sh \
-    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    set -eux; \
-    export UV_CACHE_DIR=/root/.cache/uv; \
-    export VLLM_OMNI_TARGET_DEVICE={{ device }}; \
-    bash /tmp/install_vllm_omni.sh
+# RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target=/tmp/vllm_omni_protected_packages.txt \
+#     --mount=type=bind,source=./container/deps/vllm/install_vllm_omni.sh,target=/tmp/install_vllm_omni.sh \
+#     --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+#     set -eux; \
+#     export UV_CACHE_DIR=/root/.cache/uv; \
+#     export VLLM_OMNI_TARGET_DEVICE={{ device }}; \
+#     bash /tmp/install_vllm_omni.sh
 
 # Apply Dingo's MiniMax-H3 vLLM-Omni patches (source overlays + runtime overlay
 # modules) to the installed vllm-omni site-packages. The install script applies
@@ -202,13 +202,13 @@ RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target
 # decode) depend on CUDA-only code paths.  CPU/XPU workers that later need H3
 # support must re-evaluate these overlays against their device backend before
 # enabling them.
-{% if device == "cuda" %}
-RUN --mount=type=bind,source=./container/deps/vllm/install_vllm_omni_patches.sh,target=/tmp/install_vllm_omni_patches.sh \
-    --mount=type=bind,source=./container/deps/vllm/patches,target=/tmp/vllm_omni_patches,readonly \
-    set -eux; \
-    export PYTHON_SITE_PACKAGES="${SITE_PACKAGES}"; \
-    bash /tmp/install_vllm_omni_patches.sh
-{% endif %}
+# {% if device == "cuda" %}
+# RUN --mount=type=bind,source=./container/deps/vllm/install_vllm_omni_patches.sh,target=/tmp/install_vllm_omni_patches.sh \
+#     --mount=type=bind,source=./container/deps/vllm/patches,target=/tmp/vllm_omni_patches,readonly \
+#     set -eux; \
+#     export PYTHON_SITE_PACKAGES="${SITE_PACKAGES}"; \
+#     bash /tmp/install_vllm_omni_patches.sh
+# {% endif %}
 
 {% if device == "xpu" %}
 # Remove conflicting standard triton package for XPU and reinstall triton-xpu
