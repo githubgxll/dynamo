@@ -255,12 +255,30 @@ impl LowerTierIndexer {
     ) -> Result<(), KvCacheEventError> {
         let remove_worker_entry = {
             let Some(worker_map) = worker_blocks.get_mut(&worker) else {
+                tracing::debug!(
+                    worker_id = worker.worker_id,
+                    dp_rank = worker.dp_rank,
+                    block_hashes_count = block_hashes.len(),
+                    "lower_tier remove: worker not found in worker_blocks"
+                );
                 return Err(KvCacheEventError::BlockNotFound);
             };
 
             for block_hash in block_hashes {
+                // Align with primary index (concurrent_radix_tree.rs apply_removed):
+                // a missing block is skipped (idempotent remove) instead of aborting
+                // the whole batch. Aborting here would leave subsequent blocks (which
+                // ARE still present in the index) un-removed, leaving phantom edges
+                // that make the router route to already-evicted prefixes.
                 let Some(key) = worker_map.remove(block_hash) else {
-                    return Err(KvCacheEventError::BlockNotFound);
+                    tracing::debug!(
+                        worker_id = worker.worker_id,
+                        dp_rank = worker.dp_rank,
+                        block_hash = ?block_hash,
+                        worker_map_size = worker_map.len(),
+                        "Block not found during remove; skipping"
+                    );
+                    continue;
                 };
 
                 self.remove_worker_from_edge(key, worker);
