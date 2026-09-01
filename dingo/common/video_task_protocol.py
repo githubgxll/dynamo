@@ -13,6 +13,7 @@ from typing import Any
 
 ENVELOPE_KEY = "_dingo_video_task"
 SCHEMA_VERSION = 1
+WAIT_TERMINAL_CAPABILITY = "wait_terminal_v1"
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 TOKEN = re.compile(r"^[0-9a-f]{32,64}$")

@@ -49,6 +49,43 @@ def _lease(task: VideoTask, instance_id=7) -> WorkerLease:
     )
 
 
+def test_public_task_reports_final_seed_and_validated_media_metadata():
+    task = _task("video-metadata")
+    task.status = TaskStatus.COMPLETED
+    task.completed_at_ms = task.created_at_ms + 1_000
+    task.result_bytes = 1234
+    task.result_sha256 = "a" * 64
+    task.normalized_request = {
+        "width": 1344,
+        "height": 768,
+        "fps": 24,
+        "seconds": 5.0,
+        "num_frames": 120,
+        "seed": 1101,
+        "seed_generated": True,
+    }
+    task.normalized_request["_result_media"] = {
+        "container": "mp4",
+        "fps": 24.0,
+        "frames": 124,
+        "duration_s": 5.175,
+        "video_duration_s": 124 / 24,
+        "audio_duration_s": 5.175,
+    }
+
+    public = task.public_dict()
+
+    assert public["seed"] == 1101
+    assert public["seed_generated"] is True
+    assert public["requested_num_frames"] == 120
+    assert public["num_frames"] == 124
+    assert public["requested_seconds"] == 5.0
+    assert public["seconds"] == 5.175
+    assert public["duration_s"] == 5.175
+    assert public["video_duration_s"] == 124 / 24
+    assert public["audio_duration_s"] == 5.175
+
+
 async def test_idempotency_returns_original_task_and_detects_conflict():
     store = MemoryTaskStore()
     first, created = await store.create_task(
@@ -217,6 +254,28 @@ async def test_illegal_state_transition_is_rejected():
             expected_revision=stored.revision,
             patch={"status": TaskStatus.COMPLETED},
         )
+
+
+async def test_running_cancel_request_is_idempotent():
+    store = MemoryTaskStore()
+    task = _task("video-cancel-idempotent")
+    stored, _ = await store.create_task(
+        task,
+        principal_hash="p",
+        idempotency_hash=None,
+        queue_limit=1,
+    )
+    reserved = await store.reserve(
+        stored, _lease(task), deadline_at_ms=now_ms() + 10_000
+    )
+    assert reserved is not None
+
+    first = await store.request_cancel(task.id)
+    second = await store.request_cancel(task.id)
+
+    assert first.task.cancel_requested_at_ms is not None
+    assert second.task.cancel_requested_at_ms == first.task.cancel_requested_at_ms
+    assert second.revision == first.revision
 
 
 async def test_expired_task_and_idempotency_index_are_deleted_together():

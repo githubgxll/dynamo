@@ -56,6 +56,23 @@ class WeightedMemoryBudget:
         async with self._lock:
             self._waiters.pop(task_id, None)
 
+    async def shrink(self, task_id: str, weight_bytes: int) -> int:
+        """Reduce an active allocation and return the released byte count."""
+        if weight_bytes <= 0:
+            raise ValueError("memory budget weight must be positive")
+        async with self._lock:
+            current = self._allocations.get(task_id)
+            if current is None or current == weight_bytes:
+                return 0
+            if weight_bytes > current:
+                raise ValueError("memory budget allocation cannot grow while active")
+            released = current - weight_bytes
+            self._allocations[task_id] = weight_bytes
+            self._used_bytes -= released
+            if self._used_bytes < 0:  # pragma: no cover - invariant guard
+                raise RuntimeError("memory budget usage became negative")
+            return released
+
     async def release(self, task_id: str) -> bool:
         async with self._lock:
             weight = self._allocations.pop(task_id, None)

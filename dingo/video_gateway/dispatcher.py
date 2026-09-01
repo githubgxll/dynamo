@@ -23,7 +23,7 @@ from dingo.video_gateway.dingo_adapter import (
     EndpointClient,
     create_context,
 )
-from dingo.video_gateway.errors import StoreConflict
+from dingo.video_gateway.errors import ResultTooLarge, StoreConflict
 from dingo.video_gateway.memory_budget import (
     MemoryBudgetSnapshot,
     WeightedMemoryBudget,
@@ -38,16 +38,26 @@ from dingo.video_gateway.models import (
 )
 from dingo.video_gateway.task_store import TaskStore, terminal_error, worker_key
 from dingo.video_gateway.telemetry import GatewayTelemetry
-from dingo.common.video_task_protocol import detached_envelope
+from dingo.common.video_task_protocol import (
+    WAIT_TERMINAL_CAPABILITY,
+    detached_envelope,
+)
 
 logger = logging.getLogger(__name__)
 _GATEWAY_OWNER_TTL_S = 15
 _WORKER_LEASE_HEARTBEAT_INTERVAL_S = 5.0
-_DETACHED_STATUS_POLL_S = 0.5
+_DETACHED_STATUS_FALLBACK_S = 1.0
+_DETACHED_WAIT_ATTACH_TIMEOUT_S = 1.0
+_DETACHED_WAIT_RETRY_INITIAL_S = 0.2
+_DETACHED_WAIT_RETRY_MAX_S = 5.0
 _DETACHED_WORKER_STALE_S = 20.0
 
 
 class _DetachedWorkerCancelled(RuntimeError):
+    pass
+
+
+class _CancellationConfirmationTimedOut(RuntimeError):
     pass
 
 
@@ -59,6 +69,14 @@ class _TaskOwnershipLost(RuntimeError):
     pass
 
 
+class _DetachedWaitUnavailable(RuntimeError):
+    pass
+
+
+class _DetachedWaitProtocolError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class RunningCall:
     context: Any
@@ -66,6 +84,8 @@ class RunningCall:
     pool_id: str
     worker_key: str
     detached: bool = False
+    worker_accepted: bool = False
+    task_changed: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +168,7 @@ class VideoDispatcher:
         self._loops: list[asyncio.Task] = []
         self._executions: set[asyncio.Task] = set()
         self._stop = asyncio.Event()
+        self._draining = False
         self._ready = False
         self._task_watch_revision = 0
         self._task_watch_healthy = not store.task_watch_supported
@@ -170,6 +191,7 @@ class VideoDispatcher:
     def ready(self) -> bool:
         return (
             self._ready
+            and not self._draining
             and not self._stop.is_set()
             and self._gateway_owner_healthy
             and self._task_watch_healthy
@@ -180,8 +202,27 @@ class VideoDispatcher:
         )
 
     @property
+    def draining(self) -> bool:
+        return self._draining
+
+    @property
     def live(self) -> bool:
         return self._fatal_error is None
+
+    def begin_drain(self) -> bool:
+        """Stop accepting new work while keeping reads and the listener alive.
+
+        Return True only for the transition into draining. The operation is
+        deliberately idempotent because both the Kubernetes preStop hook and
+        the SIGTERM fallback may request it.
+        """
+
+        if self._draining:
+            return False
+        self._draining = True
+        for pool in self.pools.values():
+            pool.wakeup.set()
+        return True
 
     async def start(self) -> None:
         await self.store.health()
@@ -232,6 +273,7 @@ class VideoDispatcher:
         self._ready = True
 
     async def stop(self) -> None:
+        self.begin_drain()
         self._ready = False
         self._stop.set()
         self._wake_task_waiters()
@@ -326,6 +368,16 @@ class VideoDispatcher:
     async def memory_budget_snapshot(self) -> MemoryBudgetSnapshot:
         return await self.memory_budget.snapshot()
 
+    async def _shrink_to_result_memory_budget(self, task_id: str) -> None:
+        released = await self.memory_budget.shrink(
+            task_id, self.config.media.result_task_memory_bytes
+        )
+        if released:
+            # The budget is process-global, so an input-heavy task completing
+            # submission can unblock a queued task from any configured pool.
+            for runtime in self.pools.values():
+                runtime.wakeup.set()
+
     def record_legacy_input(self, encoded_bytes: int) -> None:
         self._legacy_input_encoded_bytes += encoded_bytes
 
@@ -358,22 +410,17 @@ class VideoDispatcher:
             + int(self.config.lifecycle.cancelled_ttl_s * 1000),
         )
         running = self.running_calls.get(task_id)
-        pool = self.pools.get(stored.task.pool_id)
-        if (
-            pool is not None
-            and pool.config.execution_mode == "detached"
-            and stored.task.execution_token is not None
-            and stored.task.attempt > 0
-        ):
-            await self.artifacts.request_detached_cancel(
-                stored.task.deployment_id,
-                stored.task.pool_id,
-                stored.task.id,
-                stored.task.attempt,
-                stored.task.execution_token,
-            )
-        elif running is not None:
-            running.context.stop_generating()
+        if running is not None and not running.detached:
+            try:
+                running.context.stop_generating()
+            except Exception:
+                # The durable task record is the source of truth. The owner
+                # monitor retries notification outside the HTTP request path.
+                logger.exception(
+                    "failed to notify local Worker of cancellation: %s", task_id
+                )
+        if running is not None:
+            running.task_changed.set()
         if before is not None and before.revision != stored.revision:
             if before.task.status != stored.task.status:
                 self.telemetry.record_transition(
@@ -393,43 +440,6 @@ class VideoDispatcher:
                 )
         self.notify(stored.task.pool_id)
         return stored
-
-    async def force_cancel(self, task_id: str) -> StoredTask:
-        """Finish an unconfirmed cancellation while retaining a quarantined lease."""
-
-        stored = await self.store.get_task(task_id)
-        if stored is None:
-            raise KeyError(task_id)
-        if stored.task.status in TERMINAL_STATUSES:
-            return stored
-        pool = self.pools.get(stored.task.pool_id)
-        grace_s = pool.config.scheduling.abort_grace_s if pool is not None else 30.0
-        cancelled = await self.store.transition(
-            task_id,
-            expected=ACTIVE_STATUSES,
-            expected_revision=stored.revision,
-            patch={
-                "status": TaskStatus.CANCELLED,
-                "completed_at_ms": now_ms(),
-                "expires_at_ms": now_ms()
-                + int(self.config.lifecycle.cancelled_ttl_s * 1000),
-                "error": terminal_error(
-                    "cancelled", "video task cancellation was requested"
-                ),
-            },
-            release_lease=True,
-            quarantine_until_ms=max(stored.task.deadline_at_ms or now_ms(), now_ms())
-            + int(grace_s * 1000),
-        )
-        self.telemetry.record_transition(
-            "cancelled",
-            stored.task,
-            cancelled.task,
-            gateway_generation=self.generation,
-            revision=cancelled.revision,
-            reason="forced_after_abort_grace",
-        )
-        return cancelled
 
     async def wait_terminal(self, task_id: str, timeout_s: float) -> StoredTask:
         if not self.store.task_watch_supported:
@@ -504,6 +514,8 @@ class VideoDispatcher:
         if self._task_watch_revision < 0:
             raise RuntimeError("task watch snapshot omitted its store revision")
         self._wake_task_waiters()
+        for running in self.running_calls.values():
+            running.task_changed.set()
 
     async def _task_watch_loop(self) -> None:
         backoff_s = 0.1
@@ -521,6 +533,9 @@ class VideoDispatcher:
                         self._wake_task_waiters()
                     elif event.task_id is not None:
                         self._wake_task_waiters(event.task_id)
+                        running = self.running_calls.get(event.task_id)
+                        if running is not None:
+                            running.task_changed.set()
                     backoff_s = 0.1
                 raise RuntimeError("task watch ended unexpectedly")
             except asyncio.CancelledError:
@@ -615,6 +630,10 @@ class VideoDispatcher:
         next_discovery = 0.0
         while not self._stop.is_set():
             try:
+                if self._draining:
+                    await self._clear_budget_waiter(pool)
+                    await self._stop.wait()
+                    continue
                 now = time.monotonic()
                 if now >= next_discovery:
                     await self._refresh_instances(pool)
@@ -697,6 +716,9 @@ class VideoDispatcher:
             pool.budget_waiter_id = task_id
             return False
         pool.budget_waiter_id = None
+        if self._draining:
+            await self.memory_budget.release(task_id)
+            return False
         index = pool.cursor % len(available)
         instance_id = available[index]
         pool.cursor = (index + 1) % len(available)
@@ -763,19 +785,42 @@ class VideoDispatcher:
                 exc_info=(type(error), error, error.__traceback__),
             )
 
+    @staticmethod
+    def _raise_if_heartbeat_stopped(heartbeat: asyncio.Task) -> None:
+        if not heartbeat.done():
+            return
+        if heartbeat.cancelled():
+            raise _WorkerLeaseLost("Worker execution lease monitor stopped")
+        error = heartbeat.exception()
+        if isinstance(error, _WorkerLeaseLost):
+            raise error
+        raise _WorkerLeaseLost("Worker execution lease monitor failed") from error
+
     async def _run_with_lease_monitor(
-        self, operation: Any, heartbeat: asyncio.Task
+        self,
+        operation: Any,
+        heartbeat: asyncio.Task,
+        cancellation: Any | None = None,
     ) -> Any:
         operation_task = asyncio.create_task(operation)
+        cancellation_task = (
+            asyncio.create_task(cancellation) if cancellation is not None else None
+        )
         try:
+            monitored = {operation_task, heartbeat}
+            if cancellation_task is not None:
+                monitored.add(cancellation_task)
             done, _pending = await asyncio.wait(
-                {operation_task, heartbeat},
+                monitored,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # A completed Worker stream proves the instance is reusable even
             # when the lease heartbeat failed at the same instant.
             if operation_task in done:
                 return await operation_task
+            if cancellation_task is not None and cancellation_task in done:
+                await cancellation_task
+                raise RuntimeError("cancellation monitor ended unexpectedly")
             if heartbeat.cancelled():
                 raise _WorkerLeaseLost("Worker execution lease monitor stopped")
             error = heartbeat.exception()
@@ -786,6 +831,53 @@ class VideoDispatcher:
             if not operation_task.done():
                 operation_task.cancel()
                 await asyncio.gather(operation_task, return_exceptions=True)
+            if cancellation_task is not None:
+                if not cancellation_task.done():
+                    cancellation_task.cancel()
+                await asyncio.gather(cancellation_task, return_exceptions=True)
+
+    async def _monitor_cancellation(
+        self,
+        pool: PoolRuntime,
+        expected: Any,
+        context: Any,
+        running: RunningCall,
+    ) -> None:
+        """Notify the Worker and bound unconfirmed cancellation in the owner.
+
+        The task watch wakes this monitor when any Gateway persists a cancel
+        request. Memory-store tests are woken directly by ``cancel()``. Until
+        then this coroutine performs no polling and adds no etcd read load.
+        """
+
+        while True:
+            await running.task_changed.wait()
+            running.task_changed.clear()
+            latest = await self.store.get_task(expected.id)
+            if latest is None or latest.task.status in TERMINAL_STATUSES:
+                raise _TaskOwnershipLost(
+                    "video task became terminal while Worker was running"
+                )
+            self._require_execution_owner(latest.task, expected)
+            requested_at_ms = latest.task.cancel_requested_at_ms
+            if requested_at_ms is None:
+                continue
+            if running.detached:
+                await self._request_detached_cancel(latest.task)
+            else:
+                context.stop_generating()
+            deadline_ms = requested_at_ms + int(
+                pool.config.scheduling.abort_grace_s * 1000
+            )
+            remaining_s = (deadline_ms - now_ms()) / 1000.0
+            if remaining_s <= 0:
+                raise _CancellationConfirmationTimedOut(expected.id)
+            try:
+                await asyncio.wait_for(
+                    running.task_changed.wait(), timeout=remaining_s
+                )
+            except asyncio.TimeoutError as exc:
+                raise _CancellationConfirmationTimedOut(expected.id) from exc
 
     @staticmethod
     def _same_execution_owner(current: Any, expected: Any) -> bool:
@@ -814,20 +906,52 @@ class VideoDispatcher:
         heartbeat: asyncio.Task | None = None
         worker_stream_finished = False
         final_path = None
+        payload: dict[str, Any] | None = None
+        response_consumer: Any | None = None
+        result: Any | None = None
+        encoded_result: str | None = None
+        initial_worker_status: dict[str, Any] | None = None
+        running_call: RunningCall | None = None
         task = stored.task
         detached = pool.config.execution_mode == "detached"
         try:
-            normalized = await self.artifacts.read_json(task.request_path)
-            manifest = await self.artifacts.read_json(task.input_manifest_path)
-            payload_build_started = time.monotonic()
-            payload: dict[str, Any] | None = await asyncio.to_thread(
-                pool.adapter.build_worker_payload,
-                normalized,
-                manifest,
-                self.artifacts.task_root(task.deployment_id, task.pool_id, task.id),
+            # Reservation creates a short native etcd lease. Renew it before
+            # any request-file reads or Base64 payload construction so a
+            # large reference cannot expire the Worker guard before dispatch.
+            heartbeat = asyncio.create_task(
+                self._heartbeat(stored.task), name=f"video-heartbeat-{task.id}"
             )
-            self._payload_build_count += 1
-            self._payload_build_seconds += time.monotonic() - payload_build_started
+            await asyncio.sleep(0)
+            self._raise_if_heartbeat_stopped(heartbeat)
+            normalized = await self.artifacts.read_json(task.request_path)
+            if detached:
+                if task.execution_token is None or task.attempt < 1:
+                    raise RuntimeError(
+                        "detached task reservation metadata is incomplete"
+                    )
+                initial_worker_status = await self.artifacts.read_detached_status(
+                    task.deployment_id,
+                    task.pool_id,
+                    task.id,
+                    task.attempt,
+                    task.execution_token,
+                )
+            if initial_worker_status is None:
+                manifest = await self.artifacts.read_json(task.input_manifest_path)
+                payload_build_started = time.monotonic()
+                payload = await asyncio.to_thread(
+                    pool.adapter.build_worker_payload,
+                    normalized,
+                    manifest,
+                    self.artifacts.task_root(
+                        task.deployment_id, task.pool_id, task.id
+                    ),
+                )
+                self._payload_build_count += 1
+                self._payload_build_seconds += (
+                    time.monotonic() - payload_build_started
+                )
+            self._raise_if_heartbeat_stopped(heartbeat)
             if stored.task.status == TaskStatus.DISPATCHING:
                 before = stored
                 stored = await self.store.transition(
@@ -872,13 +996,14 @@ class VideoDispatcher:
             )
             current_execution = asyncio.current_task()
             assert current_execution is not None and stored.task.worker_key is not None
-            self.running_calls[task.id] = RunningCall(
+            running_call = RunningCall(
                 context=context,
                 execution=current_execution,
                 pool_id=task.pool_id,
                 worker_key=stored.task.worker_key,
                 detached=detached,
             )
+            self.running_calls[task.id] = running_call
             latest = await self.store.get_task(task.id)
             if latest is None:
                 raise RuntimeError("task disappeared before Worker dispatch")
@@ -892,14 +1017,13 @@ class VideoDispatcher:
                     context.stop_generating()
                 await self._finish_cancelled(pool, latest, quarantine=False)
                 return
-            heartbeat = asyncio.create_task(
-                self._heartbeat(stored.task), name=f"video-heartbeat-{task.id}"
-            )
             response_consumer = pool.adapter.create_worker_stream_consumer()
 
             async def _consume_worker_stream() -> None:
                 nonlocal payload, worker_stream_finished
                 assert payload is not None
+                assert running_call is not None
+                running_call.worker_accepted = True
                 stream = await pool.client.direct(
                     payload, int(stored.task.worker_instance_id), context
                 )
@@ -916,22 +1040,34 @@ class VideoDispatcher:
                 worker_stream_finished = True
 
             if detached:
-                await self._run_with_lease_monitor(
-                    self._consume_detached_worker(
-                        pool,
-                        stored,
-                        payload,
-                        context,
-                        response_consumer,
-                    ),
-                    heartbeat,
+                detached_consumer = self._consume_detached_worker(
+                    pool,
+                    stored,
+                    payload,
+                    context,
+                    response_consumer,
+                    running_call,
+                    initial_worker_status=initial_worker_status,
                 )
+                # Ownership has moved into the detached consumer coroutine.
+                # Do not keep a second reference in this long-lived frame.
                 payload = None
+                await self._run_with_lease_monitor(
+                    detached_consumer,
+                    heartbeat,
+                    self._monitor_cancellation(
+                        pool, stored.task, context, running_call
+                    ),
+                )
                 worker_stream_finished = True
             else:
                 await asyncio.wait_for(
                     self._run_with_lease_monitor(
-                        _consume_worker_stream(), heartbeat
+                        _consume_worker_stream(),
+                        heartbeat,
+                        self._monitor_cancellation(
+                            pool, stored.task, context, running_call
+                        ),
                     ),
                     timeout=pool.config.scheduling.execution_timeout_s,
                 )
@@ -953,13 +1089,20 @@ class VideoDispatcher:
                 await self._finish_cancelled(pool, latest, quarantine=False)
                 return
             result = response_consumer.finish()
-            self._legacy_output_encoded_bytes += len(result.b64_json)
-            if len(result.b64_json) > self.config.media.max_result_encoded_bytes:
+            response_consumer = None
+            encoded_result = result.b64_json
+            inference_time_s = result.inference_time_s
+            stage_durations = dict(result.stage_durations or {})
+            result = None
+            self._legacy_output_encoded_bytes += len(encoded_result)
+            if len(encoded_result) > self.config.media.max_result_encoded_bytes:
                 self._result_oversize_count += 1
-                raise RuntimeError("Worker base64 result exceeds configured maximum")
-            if result.inference_time_s is not None:
+                raise ResultTooLarge(
+                    "Worker base64 result exceeds configured maximum"
+                )
+            if inference_time_s is not None:
                 self.telemetry.record_stage_duration(
-                    task.pool_id, "execution", result.inference_time_s
+                    task.pool_id, "execution", inference_time_s
                 )
             if latest.task.status == TaskStatus.IN_PROGRESS:
                 finalizing = await self.store.transition(
@@ -968,8 +1111,8 @@ class VideoDispatcher:
                     expected_revision=latest.revision,
                     patch={
                         "status": TaskStatus.FINALIZING,
-                        "inference_time_s": result.inference_time_s,
-                        "stage_durations": dict(result.stage_durations or {}),
+                        "inference_time_s": inference_time_s,
+                        "stage_durations": stage_durations,
                     },
                 )
                 self.telemetry.record_transition(
@@ -988,15 +1131,24 @@ class VideoDispatcher:
             token_digest = hashlib.sha256(
                 (stored.task.execution_token or "legacy").encode()
             ).hexdigest()[:16]
-            final_path, size, sha256, _media = await self.artifacts.finalize_b64_mp4(
-                self.artifacts.task_root(task.deployment_id, task.pool_id, task.id),
-                result.b64_json,
-                normalized,
-                pool.adapter.validate_artifact,
-                pool.adapter.prepare_artifact,
-                max_result_bytes=self.config.media.max_result_bytes,
-                publication_scope=f"a{stored.task.attempt}-{token_digest}",
-            )
+            try:
+                final_path, size, sha256, media = (
+                    await self.artifacts.finalize_b64_mp4(
+                        self.artifacts.task_root(
+                            task.deployment_id, task.pool_id, task.id
+                        ),
+                        encoded_result,
+                        normalized,
+                        pool.adapter.validate_artifact,
+                        pool.adapter.prepare_artifact,
+                        max_result_bytes=self.config.media.max_result_bytes,
+                        publication_scope=f"a{stored.task.attempt}-{token_digest}",
+                    )
+                )
+            finally:
+                # Decoding/validation has either published a file candidate or
+                # failed.  No later state transition needs the Base64 string.
+                encoded_result = None
             finalize_seconds = time.monotonic() - finalize_started
             self._finalize_count += 1
             self._finalize_seconds += finalize_seconds
@@ -1029,6 +1181,10 @@ class VideoDispatcher:
                         "result_path": str(final_path),
                         "result_bytes": size,
                         "result_sha256": sha256,
+                        "normalized_request": {
+                            **latest.task.normalized_request,
+                            "_result_media": media,
+                        },
                         "finalize_time_s": finalize_seconds,
                     },
                     release_lease=True,
@@ -1099,7 +1255,10 @@ class VideoDispatcher:
         except _WorkerLeaseLost as exc:
             if await self._current_owned_execution(task) is None:
                 return
-            if detached and task.execution_token is not None:
+            worker_accepted = (
+                running_call is not None and running_call.worker_accepted
+            )
+            if detached and task.execution_token is not None and worker_accepted:
                 try:
                     await self._request_detached_cancel(task)
                 except Exception:
@@ -1114,7 +1273,7 @@ class VideoDispatcher:
                 task.id,
                 "worker_lease_lost",
                 str(exc),
-                quarantine=True,
+                quarantine=worker_accepted,
             )
         except _DetachedWorkerCancelled:
             latest = await self.store.get_task(task.id)
@@ -1123,7 +1282,30 @@ class VideoDispatcher:
                 and latest.task.status not in TERMINAL_STATUSES
                 and self._same_execution_owner(latest.task, task)
             ):
+                # The Dingo detached wrapper only reports ``cancelled`` after
+                # its public Omni generation coroutine has unwound and its
+                # partial response has been removed.  That normal terminal
+                # state makes the instance reusable; confirmation timeout,
+                # lease-loss and transport-error paths remain quarantined.
+                await self._finish_cancelled(pool, latest, quarantine=False)
+        except _CancellationConfirmationTimedOut:
+            latest = await self._current_owned_execution(task)
+            if latest is not None and latest.task.cancel_requested_at_ms is not None:
                 await self._finish_cancelled(pool, latest, quarantine=True)
+        except ResultTooLarge as exc:
+            if final_path is not None:
+                await asyncio.to_thread(final_path.unlink, True)
+                final_path = None
+            if await self._current_owned_execution(task) is None:
+                return
+            logger.warning("video task result exceeded policy: %s", task.id)
+            await self._finish_failed(
+                pool,
+                task.id,
+                "result_too_large",
+                str(exc),
+                quarantine=False,
+            )
         except Exception as exc:
             if final_path is not None:
                 await asyncio.to_thread(final_path.unlink, True)
@@ -1134,7 +1316,12 @@ class VideoDispatcher:
                     task.id,
                 )
                 return
-            if detached and task.execution_token is not None:
+            if (
+                detached
+                and task.execution_token is not None
+                and running_call is not None
+                and running_call.worker_accepted
+            ):
                 try:
                     await self._request_detached_cancel(task)
                 except Exception:
@@ -1152,9 +1339,17 @@ class VideoDispatcher:
                 task.id,
                 "worker_failed",
                 str(exc),
-                quarantine=context is not None and not worker_stream_finished,
+                quarantine=(
+                    running_call is not None
+                    and running_call.worker_accepted
+                    and not worker_stream_finished
+                ),
             )
         finally:
+            payload = None
+            response_consumer = None
+            result = None
+            encoded_result = None
             released_budget = await self.memory_budget.release(task.id)
             self.running_calls.pop(task.id, None)
             if heartbeat is not None:
@@ -1181,9 +1376,12 @@ class VideoDispatcher:
         self,
         pool: PoolRuntime,
         stored: StoredTask,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | None,
         context: Any,
         response_consumer: Any,
+        running_call: RunningCall,
+        *,
+        initial_worker_status: dict[str, Any] | None = None,
     ) -> None:
         task = stored.task
         if (
@@ -1202,8 +1400,201 @@ class VideoDispatcher:
                 task.execution_token,
             )
 
-        worker_status = await _status()
+        def _validate_identity(value: Any) -> dict[str, Any]:
+            if not isinstance(value, dict):
+                raise _DetachedWaitProtocolError(
+                    "detached Worker control response is not an object"
+                )
+            expected = {
+                "schema_version": 1,
+                "deployment_id": task.deployment_id,
+                "pool_id": task.pool_id,
+                "task_id": task.id,
+                "attempt": task.attempt,
+                "execution_token": task.execution_token,
+            }
+            if any(
+                value.get(key) != expected_value
+                for key, expected_value in expected.items()
+            ):
+                raise _DetachedWaitProtocolError(
+                    "detached Worker control response identity mismatch"
+                )
+            return value
+
+        def _supports_wait(value: dict[str, Any] | None) -> bool:
+            if value is None:
+                return False
+            capabilities = value.get("capabilities")
+            return (
+                isinstance(capabilities, list)
+                and WAIT_TERMINAL_CAPABILITY in capabilities
+            )
+
+        async def _consume_status(value: dict[str, Any]) -> bool:
+            worker_status = _validate_identity(value)
+            state = worker_status.get("state")
+            if state == "completed":
+                response_sha256 = worker_status.get("response_sha256")
+                response_bytes = worker_status.get("response_bytes")
+                if (
+                    not isinstance(response_sha256, str)
+                    or len(response_sha256) != 64
+                    or not isinstance(response_bytes, int)
+                    or isinstance(response_bytes, bool)
+                    or response_bytes < 1
+                    or response_bytes
+                    > self.config.media.max_result_encoded_bytes + 1024 * 1024
+                ):
+                    raise RuntimeError(
+                        "detached Worker completed metadata is invalid"
+                    )
+                consumed = await self.artifacts.consume_detached_response(
+                    task.deployment_id,
+                    task.pool_id,
+                    task.id,
+                    task.attempt,
+                    task.execution_token,
+                    response_consumer,
+                    expected_sha256=response_sha256,
+                    max_response_bytes=self.config.media.max_result_encoded_bytes
+                    + 1024 * 1024,
+                )
+                if consumed != response_bytes:
+                    raise RuntimeError("detached Worker response size mismatch")
+                running_call.worker_accepted = False
+                return True
+            if state == "failed":
+                running_call.worker_accepted = False
+                raise RuntimeError("detached Worker reported execution failure")
+            if state == "cancelled":
+                running_call.worker_accepted = False
+                raise _DetachedWorkerCancelled("detached Worker cancelled task")
+            if state not in {"accepted", "running", "not_found"}:
+                raise _DetachedWaitProtocolError(
+                    f"detached Worker returned invalid state {state!r}"
+                )
+            updated_at_ms = worker_status.get("updated_at_ms")
+            if (
+                state in {"accepted", "running"}
+                and isinstance(updated_at_ms, int)
+                and task.worker_instance_id not in pool.instance_ids
+                and now_ms() - updated_at_ms
+                > int(_DETACHED_WORKER_STALE_S * 1000)
+            ):
+                raise RuntimeError(
+                    "detached Worker disappeared and its heartbeat is stale"
+                )
+            return False
+
+        async def _wait_event(attached: asyncio.Event) -> dict[str, Any]:
+            wait_request = detached_envelope(
+                op="wait",
+                deployment_id=task.deployment_id,
+                pool_id=task.pool_id,
+                task_id=task.id,
+                attempt=task.attempt,
+                execution_token=task.execution_token,
+            )
+            try:
+                stream = await pool.client.direct(
+                    wait_request, int(task.worker_instance_id), context
+                )
+                response: dict[str, Any] | None = None
+                watching = False
+                count = 0
+                async for item in stream:
+                    if hasattr(item, "is_error") and item.is_error():
+                        comments = (
+                            item.comments() if hasattr(item, "comments") else []
+                        )
+                        raise _DetachedWaitUnavailable(
+                            "; ".join(comments)
+                            or "detached Worker wait request failed"
+                        )
+                    value = _validate_identity(
+                        item.data() if hasattr(item, "data") else item
+                    )
+                    count += 1
+                    if count > 2:
+                        raise _DetachedWaitProtocolError(
+                            "detached Worker wait returned too many responses"
+                        )
+                    state = value.get("state")
+                    if state == "watching":
+                        if watching or response is not None:
+                            raise _DetachedWaitProtocolError(
+                                "detached Worker wait acknowledgement is duplicated"
+                            )
+                        watching = True
+                        attached.set()
+                        continue
+                    if response is not None:
+                        raise _DetachedWaitProtocolError(
+                            "detached Worker wait returned multiple terminal responses"
+                        )
+                    response = value
+                if response is None:
+                    if watching:
+                        raise _DetachedWaitUnavailable(
+                            "detached Worker wait ended before terminal status"
+                        )
+                    raise _DetachedWaitUnavailable(
+                        "detached Worker wait returned no response"
+                    )
+                return response
+            except asyncio.CancelledError:
+                raise
+            except (_DetachedWaitUnavailable, _DetachedWaitProtocolError):
+                raise
+            except Exception as exc:
+                raise _DetachedWaitUnavailable(
+                    "detached Worker wait transport failed"
+                ) from exc
+
+        async def _wait_once() -> dict[str, Any]:
+            remaining_s = ((task.deadline_at_ms or 0) - now_ms()) / 1000.0
+            if remaining_s <= 0:
+                raise asyncio.TimeoutError
+            attached = asyncio.Event()
+            wait_task = asyncio.create_task(
+                _wait_event(attached), name=f"video-detached-wait-{task.id}"
+            )
+            attached_task = asyncio.create_task(attached.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {wait_task, attached_task},
+                    timeout=min(_DETACHED_WAIT_ATTACH_TIMEOUT_S, remaining_s),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if wait_task in done:
+                    return await wait_task
+                if attached_task in done:
+                    self.telemetry.increment(
+                        "dingo_video_detached_wait_connections_total",
+                        labels={"pool": task.pool_id, "outcome": "attached"},
+                    )
+                    remaining_s = (
+                        (task.deadline_at_ms or 0) - now_ms()
+                    ) / 1000.0
+                    if remaining_s <= 0:
+                        raise asyncio.TimeoutError
+                    return await asyncio.wait_for(wait_task, timeout=remaining_s)
+                raise _DetachedWaitUnavailable(
+                    "detached Worker wait attachment timed out"
+                )
+            finally:
+                if not attached_task.done():
+                    attached_task.cancel()
+                await asyncio.gather(attached_task, return_exceptions=True)
+                if not wait_task.done():
+                    wait_task.cancel()
+                    await asyncio.gather(wait_task, return_exceptions=True)
+
+        worker_status = initial_worker_status
         if worker_status is None:
+            if payload is None:
+                raise RuntimeError("detached Worker submission payload is unavailable")
             submit = detached_envelope(
                 op="submit",
                 deployment_id=task.deployment_id,
@@ -1234,85 +1625,91 @@ class VideoDispatcher:
             if len(acknowledgements) != 1:
                 raise RuntimeError("detached Worker returned no acknowledgement")
             acknowledgement = acknowledgements[0]
-            if (
-                acknowledgement.get("task_id") != task.id
-                or acknowledgement.get("attempt") != task.attempt
-                or acknowledgement.get("execution_token") != task.execution_token
-                or acknowledgement.get("state")
-                not in {"accepted", "running", "completed"}
-            ):
+            acknowledgement = _validate_identity(acknowledgement)
+            if acknowledgement.get("state") not in {
+                "accepted",
+                "running",
+                "completed",
+            }:
                 raise RuntimeError("detached Worker acknowledgement identity mismatch")
+            worker_status = acknowledgement
+            running_call.worker_accepted = True
+
+            # The direct response stream is exhausted and the Worker has
+            # durably accepted this detached execution.  Drop the envelope and
+            # its Base64 references before entering the long status-poll loop.
+            acknowledgements.clear()
+            del acknowledgement
+            del stream
+            del submit
+        else:
+            running_call.worker_accepted = worker_status.get("state") in {
+                "accepted",
+                "running",
+            }
+
+        del payload
+        await self._shrink_to_result_memory_budget(task.id)
+
+        assert worker_status is not None
+        supports_wait = _supports_wait(worker_status)
+        if await _consume_status(worker_status):
+            return
+
+        retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
+        next_wait_retry = time.monotonic()
+        if not supports_wait:
+            self.telemetry.increment(
+                "dingo_video_detached_wait_connections_total",
+                labels={"pool": task.pool_id, "outcome": "unsupported"},
+            )
 
         while True:
-            latest = await self.store.get_task(task.id)
-            if latest is None:
-                raise RuntimeError("task disappeared while detached Worker was running")
-            if latest.task.status in TERMINAL_STATUSES:
-                raise _DetachedWorkerCancelled("task became terminal")
-            self._require_execution_owner(latest.task, task)
-            if latest.task.cancel_requested_at_ms is not None:
-                await self._request_detached_cancel(latest.task)
+            if supports_wait and time.monotonic() >= next_wait_retry:
+                try:
+                    worker_status = await _wait_once()
+                    retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
+                    if await _consume_status(worker_status):
+                        return
+                    raise _DetachedWaitUnavailable(
+                        "detached Worker could not attach a local terminal waiter"
+                    )
+                except _DetachedWaitProtocolError:
+                    raise
+                except _DetachedWaitUnavailable:
+                    self.telemetry.increment(
+                        "dingo_video_detached_wait_connections_total",
+                        labels={"pool": task.pool_id, "outcome": "unavailable"},
+                    )
+                    next_wait_retry = time.monotonic() + retry_delay_s
+                    retry_delay_s = min(
+                        retry_delay_s * 2.0, _DETACHED_WAIT_RETRY_MAX_S
+                    )
+
             worker_status = await _status()
+            self.telemetry.increment(
+                "dingo_video_detached_status_fallback_reads_total",
+                labels={"pool": task.pool_id},
+            )
             if worker_status is not None:
-                state = worker_status.get("state")
-                if state == "completed":
-                    response_sha256 = worker_status.get("response_sha256")
-                    response_bytes = worker_status.get("response_bytes")
-                    if (
-                        not isinstance(response_sha256, str)
-                        or len(response_sha256) != 64
-                        or not isinstance(response_bytes, int)
-                        or isinstance(response_bytes, bool)
-                        or response_bytes < 1
-                        or response_bytes
-                        > self.config.media.max_result_encoded_bytes + 1024 * 1024
-                    ):
-                        raise RuntimeError(
-                            "detached Worker completed metadata is invalid"
-                        )
-                    consumed = await self.artifacts.consume_detached_response(
-                        task.deployment_id,
-                        task.pool_id,
-                        task.id,
-                        task.attempt,
-                        task.execution_token,
-                        response_consumer,
-                        expected_sha256=response_sha256,
-                        max_response_bytes=self.config.media.max_result_encoded_bytes
-                        + 1024 * 1024,
-                    )
-                    if consumed != response_bytes:
-                        raise RuntimeError(
-                            "detached Worker response size mismatch"
-                        )
+                supports_wait = supports_wait or _supports_wait(worker_status)
+                if await _consume_status(worker_status):
                     return
-                if state == "failed":
-                    raise RuntimeError("detached Worker reported execution failure")
-                if state == "cancelled":
-                    raise _DetachedWorkerCancelled("detached Worker cancelled task")
-                updated_at_ms = worker_status.get("updated_at_ms")
-                if (
-                    state in {"accepted", "running"}
-                    and isinstance(updated_at_ms, int)
-                    and task.worker_instance_id not in pool.instance_ids
-                    and now_ms() - updated_at_ms
-                    > int(_DETACHED_WORKER_STALE_S * 1000)
-                ):
-                    raise RuntimeError(
-                        "detached Worker disappeared and its heartbeat is stale"
-                    )
             remaining_ms = (task.deadline_at_ms or 0) - now_ms()
             if remaining_ms <= 0:
                 raise asyncio.TimeoutError
-            await asyncio.sleep(
-                min(_DETACHED_STATUS_POLL_S, remaining_ms / 1000.0)
-            )
+            sleep_s = min(_DETACHED_STATUS_FALLBACK_S, remaining_ms / 1000.0)
+            if supports_wait:
+                sleep_s = min(
+                    sleep_s, max(0.0, next_wait_retry - time.monotonic())
+                )
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
 
     async def _heartbeat(self, task) -> None:
         assert task.worker_key is not None
         consecutive_failures = 0
         while True:
-            await asyncio.sleep(_WORKER_LEASE_HEARTBEAT_INTERVAL_S)
             try:
                 await self.store.heartbeat_lease(
                     task.pool_id,
@@ -1352,6 +1749,7 @@ class VideoDispatcher:
                     raise _WorkerLeaseLost(
                         "Worker execution lease could not be renewed safely"
                     ) from exc
+            await asyncio.sleep(_WORKER_LEASE_HEARTBEAT_INTERVAL_S)
 
     async def _finish_cancelled(
         self, pool: PoolRuntime, stored: StoredTask, *, quarantine: bool

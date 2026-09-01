@@ -259,7 +259,12 @@ async def test_etcd_store_create_reserve_cancel_and_reconcile_are_transactional(
     assert await store.queue_depth(task.pool_id) == 0
 
     cancelled_request = await store.request_cancel(task.id)
+    repeated_cancel = await store.request_cancel(task.id)
     assert cancelled_request.task.cancel_requested_at_ms is not None
+    assert repeated_cancel.task.cancel_requested_at_ms == (
+        cancelled_request.task.cancel_requested_at_ms
+    )
+    assert repeated_cancel.revision == cancelled_request.revision
     cancelled = await store.transition(
         task.id,
         expected={TaskStatus.DISPATCHING},

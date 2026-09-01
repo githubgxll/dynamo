@@ -11,6 +11,7 @@ import json
 import pytest
 
 from dingo.video_gateway.artifact_store import FileArtifactStore
+from dingo.video_gateway.errors import ResultTooLarge
 
 
 class _Consumer:
@@ -139,6 +140,25 @@ async def test_invalid_base64_leaves_no_partial_result(tmp_path):
 
     assert list((task_root / "tmp").glob("*.part")) == []
     assert not (task_root / "result" / "video.mp4").exists()
+
+
+async def test_oversize_result_has_stable_error_and_leaves_no_partial_file(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    upload = await store.create_upload()
+    task_root = await store.commit_upload(upload, "deployment", "pool", "video-id")
+    payload = b"\x00\x00\x00\x18ftypisomtoo-large"
+
+    with pytest.raises(ResultTooLarge, match="configured maximum"):
+        await store.finalize_b64_mp4(
+            task_root,
+            base64.b64encode(payload).decode(),
+            {},
+            lambda _path, _normalized: {},
+            max_result_bytes=len(payload) - 1,
+        )
+
+    assert list((task_root / "tmp").glob("*.part")) == []
+    assert list((task_root / "result").glob("*.mp4")) == []
 
 
 async def test_result_path_rejects_symlinks_even_when_target_is_under_root(tmp_path):

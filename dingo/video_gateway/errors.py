@@ -40,3 +40,7 @@ class StoreConflict(RuntimeError):
 
 class StoreUnavailable(RuntimeError):
     """Raised when the configured Task Store cannot be reached safely."""
+
+
+class ResultTooLarge(RuntimeError):
+    """Raised when a Worker result exceeds the configured artifact policy."""

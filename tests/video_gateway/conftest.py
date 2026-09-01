@@ -40,7 +40,6 @@ def gateway_config(
                 "adapter": {
                     "name": "minimax_h3",
                     "workflow": "fl2va",
-                    "compatibility_version": "test-wire-v1",
                     "flow_shift": 12.0,
                     "audio_flow_shift": 3.0,
                     "validate_media": False,

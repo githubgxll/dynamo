@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dingo.common.video_task_protocol import detached_attempt_root
+from dingo.video_gateway.errors import ResultTooLarge
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,13 +116,27 @@ class FileArtifactStore:
     async def discard(self, path: Path) -> int:
         target = self._lexically_contained(path)
         if target.is_symlink():
-            await asyncio.to_thread(target.unlink)
+            try:
+                await asyncio.to_thread(target.unlink)
+            except FileNotFoundError:
+                # Concurrent idempotent DELETE/sweeper cleanup won the race.
+                pass
             return 0
         elif target.exists():
             resolved = self._contained(target)
             size = await asyncio.to_thread(self._tree_size, resolved)
-            await asyncio.to_thread(shutil.rmtree, resolved)
-            return size
+
+            def _remove_tree() -> bool:
+                try:
+                    shutil.rmtree(resolved)
+                except FileNotFoundError:
+                    # rmtree may observe a concurrently removed child even
+                    # when the root existed at the containment check above.
+                    return False
+                return True
+
+            removed = await asyncio.to_thread(_remove_tree)
+            return size if removed else 0
         return 0
 
     async def capacity(self) -> ArtifactCapacity:
@@ -491,7 +506,9 @@ class FileArtifactStore:
         await asyncio.to_thread(temporary_dir.mkdir, 0o750, True, True)
         estimated = (len(b64_json) // 4) * 3
         if estimated > max_result_bytes:
-            raise RuntimeError("Worker base64 result exceeds configured maximum")
+            raise ResultTooLarge(
+                "Worker base64 result exceeds configured maximum"
+            )
         if len(b64_json) % 4:
             raise RuntimeError("Worker base64 result has invalid padding length")
         temporary = temporary_dir / f"result-{uuid.uuid4().hex}.part"
@@ -517,7 +534,9 @@ class FileArtifactStore:
                         ) from exc
                     written += len(decoded)
                     if written > max_result_bytes:
-                        raise RuntimeError("Worker result exceeds configured maximum")
+                        raise ResultTooLarge(
+                            "Worker result exceeds configured maximum"
+                        )
                     digest.update(decoded)
                     output.write(decoded)
                 output.flush()

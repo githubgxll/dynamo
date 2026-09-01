@@ -40,6 +40,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def _wait_for_shutdown(runtime, stopped: asyncio.Event) -> bool:
+    """Wait for an OS signal or permanent Dynamo Runtime termination.
+
+    Return True only when the Runtime terminated before a normal process
+    signal. A cancelled Runtime cannot rebuild its discovery clients, so the
+    Video Gateway must let Kubernetes create a fresh process.
+    """
+    signal_wait = asyncio.create_task(stopped.wait(), name="video-gateway-signal")
+    runtime_wait = asyncio.create_task(
+        runtime.wait_shutdown(), name="video-gateway-runtime-shutdown"
+    )
+    waits = {signal_wait, runtime_wait}
+    try:
+        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        # Prefer a normal OS signal if both events arrive together. This avoids
+        # reporting an expected Kubernetes shutdown as a Runtime failure.
+        return runtime_wait.done() and not stopped.is_set()
+    finally:
+        for task in waits:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*waits, return_exceptions=True)
+
+
 async def run(args: argparse.Namespace) -> None:
     from dynamo.runtime import DistributedRuntime
     from dynamo.runtime.logging import configure_dynamo_logging
@@ -64,10 +88,10 @@ async def run(args: argparse.Namespace) -> None:
         if config.task_store.kind == "memory":
             store = MemoryTaskStore()
         else:
-            assert config.task_store.url is not None
+            assert config.task_store.endpoints
             store = EtcdTaskStore(
                 EtcdHttpClient(
-                    config.task_store.url,
+                    config.task_store.endpoints,
                     timeout_s=config.task_store.request_timeout_s,
                     telemetry=telemetry,
                 ),
@@ -96,9 +120,18 @@ async def run(args: argparse.Namespace) -> None:
         )
         stopped = asyncio.Event()
         loop = asyncio.get_running_loop()
+
+        def request_stop() -> None:
+            if dispatcher.begin_drain():
+                logger.info("video Gateway entered draining state after process signal")
+            stopped.set()
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stopped.set)
-        await stopped.wait()
+            loop.add_signal_handler(sig, request_stop)
+        if await _wait_for_shutdown(runtime, stopped):
+            reason = "Dynamo discovery Runtime terminated"
+            logger.critical("%s; restarting Video Gateway", reason)
+            raise RuntimeError(reason)
     finally:
         try:
             if runner is not None:

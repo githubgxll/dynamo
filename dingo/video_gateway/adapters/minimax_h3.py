@@ -26,9 +26,24 @@ from dingo.video_gateway.adapters.h3_shape import (
 from dingo.video_gateway.config import PoolConfig
 from dingo.video_gateway.errors import GatewayError
 
-_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
-_VIDEO_TYPES = {"video/mp4"}
-_AUDIO_TYPES = {"audio/wav", "audio/x-wav"}
+_IMAGE_TYPE_ALIASES = {
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",
+    "image/png": "image/png",
+    "image/webp": "image/webp",
+}
+_VIDEO_TYPE_ALIASES = {
+    "video/mp4": "video/mp4",
+    "video/quicktime": "video/quicktime",
+}
+_AUDIO_TYPE_ALIASES = {
+    "audio/wav": "audio/wav",
+    "audio/x-wav": "audio/wav",
+    "audio/wave": "audio/wav",
+    "audio/vnd.wave": "audio/wav",
+}
+_GENERIC_BINARY_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
 _ALLOWED_FIELDS = {
     "model",
     "prompt",
@@ -82,6 +97,23 @@ class _MediaProbe:
     height: int | None = None
     fps: float | None = None
     duration_s: float | None = None
+    content_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _MiniMaxH3Limits:
+    max_prompt_bytes: int = _MAX_PROMPT_BYTES
+    max_image_bytes: int = _MAX_IMAGE_BYTES
+    max_video_bytes: int = _MAX_VIDEO_BYTES
+    max_audio_bytes: int = _MAX_AUDIO_BYTES
+
+
+_LIMIT_HARD_CAPS = {
+    "max_prompt_bytes": _MAX_PROMPT_BYTES,
+    "max_image_bytes": _MAX_IMAGE_BYTES,
+    "max_video_bytes": _MAX_VIDEO_BYTES,
+    "max_audio_bytes": _MAX_AUDIO_BYTES,
+}
 
 
 def _one(
@@ -221,26 +253,137 @@ def _stream_duration(container: Any, stream: Any) -> float:
     return 0.0
 
 
-def _probe_image(
-    upload: UploadedArtifact, content_type: str, header: bytes
-) -> _MediaProbe:
-    magic_type = None
+def _iso_bmff_brands(header: bytes) -> set[bytes]:
+    if len(header) < 16 or header[4:8] != b"ftyp":
+        return set()
+    brands = {header[8:12]}
+    brands.update(
+        header[offset : offset + 4]
+        for offset in range(16, len(header) - 3, 4)
+    )
+    return brands
+
+
+def _sniff_content_type(header: bytes) -> str | None:
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        magic_type = "image/png"
-    elif header.startswith(b"\xff\xd8\xff"):
-        magic_type = "image/jpeg"
-    elif header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        magic_type = "image/webp"
-    if magic_type is None or magic_type != content_type:
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+        return "audio/wav"
+    brands = _iso_bmff_brands(header)
+    if not brands:
+        return None
+    if brands & {b"avif", b"avis"}:
+        return None
+    if brands & _HEIF_BRANDS:
+        if brands & {b"heic", b"heix", b"hevc", b"hevx"}:
+            return "image/heic"
+        return "image/heif"
+    if b"qt  " in brands:
+        return "video/quicktime"
+    return "video/mp4"
+
+
+def _canonical_content_type(upload: UploadedArtifact, header: bytes) -> str:
+    declared = upload.content_type.lower().split(";", 1)[0].strip()
+    aliases = {
+        **_IMAGE_TYPE_ALIASES,
+        **_VIDEO_TYPE_ALIASES,
+        **_AUDIO_TYPE_ALIASES,
+    }
+    canonical_declared = aliases.get(declared)
+    detected = _sniff_content_type(header)
+    if declared in _GENERIC_BINARY_TYPES:
+        if detected is None:
+            raise GatewayError(
+                415,
+                "unsupported_media_format",
+                "reference media format could not be identified",
+                upload.field_name,
+            )
+        return detected
+    if canonical_declared is None:
         raise GatewayError(
-            400,
-            "media_type_mismatch",
-            "image MIME and file signature do not match",
+            415,
+            "unsupported_media_format",
+            f"unsupported reference content type: {upload.content_type}",
             upload.field_name,
         )
-    if upload.size > _MAX_IMAGE_BYTES:
+    if detected is None:
         raise GatewayError(
-            413, "file_too_large", "image exceeds 30 MiB", upload.field_name
+            415,
+            "media_type_mismatch",
+            "reference MIME and file signature do not match",
+            upload.field_name,
+        )
+    if canonical_declared != detected:
+        raise GatewayError(
+            415,
+            "media_type_mismatch",
+            "reference MIME and file signature do not match",
+            upload.field_name,
+        )
+    return canonical_declared
+
+
+def _validate_image_dimensions(
+    width: int, height: int, upload: UploadedArtifact
+) -> None:
+    try:
+        from PIL import Image
+
+        max_pixels = int(Image.MAX_IMAGE_PIXELS or 89_478_485)
+    except ImportError:
+        max_pixels = 89_478_485
+    if width <= 0 or height <= 0 or width * height > max_pixels:
+        raise GatewayError(
+            400,
+            "invalid_reference_image",
+            "reference image dimensions exceed the safe decode limit",
+            upload.field_name,
+        )
+    if min(width, height) < 256 or max(width, height) > 5760:
+        raise GatewayError(
+            400,
+            "invalid_reference_image",
+            "reference image dimensions must each be between 256 and 5760",
+            upload.field_name,
+        )
+    if not 0.4 <= width / height <= 2.5:
+        raise GatewayError(
+            400,
+            "invalid_reference_image",
+            "reference image aspect ratio must be between 0.4 and 2.5",
+            upload.field_name,
+        )
+
+
+def _validate_reference_audio_codec(
+    codec_name: str | None, upload: UploadedArtifact
+) -> None:
+    if codec_name is None or not codec_name.startswith("pcm_"):
+        raise GatewayError(
+            415,
+            "unsupported_media_format",
+            "reference WAV audio codec must be PCM",
+            upload.field_name,
+        )
+
+
+def _probe_image(
+    upload: UploadedArtifact,
+    content_type: str,
+    max_image_bytes: int,
+) -> _MediaProbe:
+    if upload.size > max_image_bytes:
+        raise GatewayError(
+            413,
+            "file_too_large",
+            f"image exceeds {max_image_bytes} bytes",
+            upload.field_name,
         )
     try:
         from PIL import Image
@@ -253,10 +396,15 @@ def _probe_image(
         raise GatewayError(
             400, "invalid_media", "image could not be decoded", upload.field_name
         ) from exc
-    return _MediaProbe("image", width=width, height=height)
+    _validate_image_dimensions(width, height, upload)
+    return _MediaProbe(
+        "image", width=width, height=height, content_type=content_type
+    )
 
 
-def _probe_av(upload: UploadedArtifact, kind: str) -> _MediaProbe:
+def _probe_av(
+    upload: UploadedArtifact, kind: str, content_type: str
+) -> _MediaProbe:
     try:
         import av
     except ImportError as exc:
@@ -272,6 +420,21 @@ def _probe_av(upload: UploadedArtifact, kind: str) -> _MediaProbe:
                 stream = streams[0]
                 if next(container.decode(stream), None) is None:
                     raise ValueError("video stream has no decodable frames")
+                if stream.codec_context.name not in {"h264", "hevc"}:
+                    raise GatewayError(
+                        415,
+                        "unsupported_media_format",
+                        "reference video codec must be H.264 or H.265",
+                        upload.field_name,
+                    )
+                for audio_stream in container.streams.audio:
+                    if audio_stream.codec_context.name != "aac":
+                        raise GatewayError(
+                            415,
+                            "unsupported_media_format",
+                            "reference video audio codec must be AAC",
+                            upload.field_name,
+                        )
                 fps = float(stream.average_rate) if stream.average_rate else 0.0
                 return _MediaProbe(
                     kind,
@@ -279,13 +442,21 @@ def _probe_av(upload: UploadedArtifact, kind: str) -> _MediaProbe:
                     height=int(stream.height),
                     fps=fps,
                     duration_s=_stream_duration(container, stream),
+                    content_type=content_type,
                 )
             streams = list(container.streams.audio)
             if not streams:
                 raise ValueError("missing audio stream")
+            _validate_reference_audio_codec(
+                streams[0].codec_context.name, upload
+            )
             if next(container.decode(streams[0]), None) is None:
                 raise ValueError("audio stream has no decodable frames")
-            return _MediaProbe(kind, duration_s=_stream_duration(container, streams[0]))
+            return _MediaProbe(
+                kind,
+                duration_s=_stream_duration(container, streams[0]),
+                content_type=content_type,
+            )
     except GatewayError:
         raise
     except Exception as exc:
@@ -294,25 +465,23 @@ def _probe_av(upload: UploadedArtifact, kind: str) -> _MediaProbe:
         ) from exc
 
 
-def _probe_upload(upload: UploadedArtifact) -> _MediaProbe:
-    content_type = upload.content_type.lower().split(";", 1)[0].strip()
+def _probe_upload(
+    upload: UploadedArtifact, limits: _MiniMaxH3Limits
+) -> _MediaProbe:
     with upload.path.open("rb") as stream:
         header = stream.read(64)
-    if content_type in _IMAGE_TYPES:
-        return _probe_image(upload, content_type, header)
-    if content_type in _VIDEO_TYPES:
-        if len(header) < 12 or header[4:8] != b"ftyp":
+    content_type = _canonical_content_type(upload, header)
+    if content_type in set(_IMAGE_TYPE_ALIASES.values()):
+        return _probe_image(upload, content_type, limits.max_image_bytes)
+    if content_type in set(_VIDEO_TYPE_ALIASES.values()):
+        if upload.size > limits.max_video_bytes:
             raise GatewayError(
-                400,
-                "media_type_mismatch",
-                "video MIME does not match an MP4 file",
+                413,
+                "file_too_large",
+                f"video exceeds {limits.max_video_bytes} bytes",
                 upload.field_name,
             )
-        if upload.size > _MAX_VIDEO_BYTES:
-            raise GatewayError(
-                413, "file_too_large", "video exceeds 50 MiB", upload.field_name
-            )
-        probe = _probe_av(upload, "video")
+        probe = _probe_av(upload, "video", content_type)
         if (
             probe.width is None
             or probe.height is None
@@ -322,6 +491,13 @@ def _probe_upload(upload: UploadedArtifact) -> _MediaProbe:
                 400,
                 "invalid_reference_video",
                 "reference video dimensions must each be between 256 and 5760",
+                upload.field_name,
+            )
+        if not 0.4 <= probe.width / probe.height <= 2.5:
+            raise GatewayError(
+                400,
+                "invalid_reference_video",
+                "reference video aspect ratio must be between 0.4 and 2.5",
                 upload.field_name,
             )
         if probe.fps is None or not (23.976 - 0.01 <= probe.fps <= 60.0 + 0.01):
@@ -339,19 +515,15 @@ def _probe_upload(upload: UploadedArtifact) -> _MediaProbe:
                 upload.field_name,
             )
         return probe
-    if content_type in _AUDIO_TYPES:
-        if not (header.startswith(b"RIFF") and header[8:12] == b"WAVE"):
+    if content_type in set(_AUDIO_TYPE_ALIASES.values()):
+        if upload.size > limits.max_audio_bytes:
             raise GatewayError(
-                400,
-                "media_type_mismatch",
-                "audio MIME does not match a WAV file",
+                413,
+                "file_too_large",
+                f"audio exceeds {limits.max_audio_bytes} bytes",
                 upload.field_name,
             )
-        if upload.size > _MAX_AUDIO_BYTES:
-            raise GatewayError(
-                413, "file_too_large", "audio exceeds 15 MiB", upload.field_name
-            )
-        probe = _probe_av(upload, "audio")
+        probe = _probe_av(upload, "audio", content_type)
         if probe.duration_s is None or not 2.0 <= probe.duration_s <= 15.0:
             raise GatewayError(
                 400,
@@ -361,8 +533,8 @@ def _probe_upload(upload: UploadedArtifact) -> _MediaProbe:
             )
         return probe
     raise GatewayError(
-        400,
-        "unsupported_reference_type",
+        415,
+        "unsupported_media_format",
         f"unsupported reference content type: {upload.content_type}",
         upload.field_name,
     )
@@ -407,6 +579,10 @@ class _MiniMaxH3WorkerStreamConsumer:
         terminal = self._terminal
         if terminal is None:
             raise RuntimeError("Worker stream ended without a terminal response")
+        # Transfer ownership out of the consumer.  In particular, do not keep
+        # the terminal mapping (and its potentially large Base64 MP4) alive
+        # while the Gateway validates and publishes the decoded artifact.
+        self._terminal = None
         if terminal.get("status") == "failed":
             raise RuntimeError(str(terminal.get("error") or "Worker generation failed"))
         data = terminal.get("data")
@@ -483,6 +659,7 @@ class MiniMaxH3VideoAdapter:
             "audio_flow_shift",
             "validate_media",
             "max_encoded_reference_bytes",
+            "limits",
         }
         unknown_options = sorted(set(self.options) - supported_options)
         if unknown_options:
@@ -491,6 +668,25 @@ class MiniMaxH3VideoAdapter:
             )
         if not isinstance(self.options.get("validate_media", True), bool):
             raise TypeError("MiniMax-H3 validate_media must be a boolean")
+        raw_limits = self.options.get("limits", {})
+        if not isinstance(raw_limits, Mapping):
+            raise TypeError("MiniMax-H3 adapter limits must be a mapping")
+        unknown_limits = sorted(set(raw_limits) - set(_LIMIT_HARD_CAPS))
+        if unknown_limits:
+            raise ValueError(
+                "unknown MiniMax-H3 adapter limits: " + ", ".join(unknown_limits)
+            )
+        configured_limits: dict[str, int] = {}
+        for name, hard_cap in _LIMIT_HARD_CAPS.items():
+            value = raw_limits.get(name, hard_cap)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"MiniMax-H3 {name} must be a positive integer")
+            if value > hard_cap:
+                raise ValueError(
+                    f"MiniMax-H3 {name} may not exceed adapter capability {hard_cap}"
+                )
+            configured_limits[name] = value
+        self.limits = _MiniMaxH3Limits(**configured_limits)
         max_encoded = self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024)
         if (
             not isinstance(max_encoded, int)
@@ -512,6 +708,26 @@ class MiniMaxH3VideoAdapter:
         return int(
             self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024)
         )
+
+    def capabilities(self, *, max_result_bytes: int) -> dict[str, Any]:
+        supports_reference_media = self.workflow == "ref2va"
+        return {
+            "workflow": self.workflow,
+            "image_formats": ["jpeg", "png", "webp"],
+            "video_formats": ["mp4", "mov"] if supports_reference_media else [],
+            "audio_formats": ["wav"] if supports_reference_media else [],
+            "max_prompt_bytes": self.limits.max_prompt_bytes,
+            "max_image_bytes": self.limits.max_image_bytes,
+            "max_video_bytes": (
+                self.limits.max_video_bytes if supports_reference_media else 0
+            ),
+            "max_audio_bytes": (
+                self.limits.max_audio_bytes if supports_reference_media else 0
+            ),
+            "max_result_bytes": max_result_bytes,
+            "max_outputs_per_prompt": 1,
+            "max_references": 2 if self.workflow == "fl2va" else 12,
+        }
 
     def estimate_encoded_reference_bytes(
         self, manifest: Sequence[Mapping[str, Any]]
@@ -567,11 +783,11 @@ class MiniMaxH3VideoAdapter:
         prompt = _one(fields, "prompt", required=True)
         model = _one(fields, "model")
         assert prompt is not None
-        if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
+        if len(prompt.encode("utf-8")) > self.limits.max_prompt_bytes:
             raise GatewayError(
                 400,
                 "prompt_too_long",
-                "prompt must not exceed 32768 UTF-8 bytes",
+                f"prompt must not exceed {self.limits.max_prompt_bytes} UTF-8 bytes",
                 "prompt",
             )
         if model is not None and model != public_model:
@@ -737,7 +953,7 @@ class MiniMaxH3VideoAdapter:
                 "output_format",
             )
 
-        probes = [_probe_upload(upload) for upload in uploads]
+        probes = [_probe_upload(upload, self.limits) for upload in uploads]
         kinds = [probe.kind for probe in probes]
         frame_indices_raw: Any = _coalesce(
             _one(fields, "frame_indices"), extra, "frame_indices"
@@ -807,12 +1023,13 @@ class MiniMaxH3VideoAdapter:
         )
         if (
             negative_prompt is not None
-            and len(negative_prompt.encode("utf-8")) > _MAX_PROMPT_BYTES
+            and len(negative_prompt.encode("utf-8")) > self.limits.max_prompt_bytes
         ):
             raise GatewayError(
                 400,
                 "negative_prompt_too_long",
-                "negative_prompt must not exceed 32768 UTF-8 bytes",
+                "negative_prompt must not exceed "
+                f"{self.limits.max_prompt_bytes} UTF-8 bytes",
                 "negative_prompt",
             )
         return {
@@ -840,6 +1057,7 @@ class MiniMaxH3VideoAdapter:
                     "height": probe.height,
                     "fps": probe.fps,
                     "duration_s": probe.duration_s,
+                    "content_type": probe.content_type or upload.content_type,
                 }
                 for upload, probe in zip(uploads, probes)
             ],
@@ -934,19 +1152,9 @@ class MiniMaxH3VideoAdapter:
         if image_count + video_count == 0:
             raise GatewayError(
                 400,
-                "missing_visual_reference",
-                "Ref2VA requires at least one image or video",
-                "input_references",
-            )
-        supported = len(kinds) == 1 and kinds[0] in {"image", "video"}
-        supported = supported or (
-            image_count >= 1 and video_count >= 1 and audio_count >= 1
-        )
-        if not supported:
-            raise GatewayError(
-                400,
                 "unsupported_reference_combination",
-                "current Ref2VA bridge supports one image, one video, or mixed image+video+audio",
+                "Ref2VA requires at least one image or video reference; "
+                "audio cannot be used alone",
                 "input_references",
             )
         total_video_duration = sum(
@@ -1151,6 +1359,11 @@ class MiniMaxH3VideoAdapter:
                     f"MiniMax-H3 aligned count {expected_frames}"
                 )
             video_duration = frame_count / average_rate
+            container_duration = (
+                float(container.duration / av.time_base)
+                if container.duration is not None
+                else 0.0
+            )
             audio_duration: float | None = None
             if generate_sound:
                 audio = audio_streams[0]
@@ -1169,6 +1382,9 @@ class MiniMaxH3VideoAdapter:
                 "height": video.height,
                 "fps": average_rate,
                 "frames": frame_count,
+                "duration_s": max(
+                    video_duration, audio_duration or 0.0, container_duration
+                ),
                 "video_duration_s": video_duration,
                 "audio_duration_s": audio_duration,
             }

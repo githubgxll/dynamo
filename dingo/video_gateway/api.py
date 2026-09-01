@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import resource
@@ -16,7 +17,7 @@ from aiohttp import web
 
 from dingo.video_gateway.errors import GatewayError, StoreUnavailable
 from dingo.video_gateway.form_parser import parse_multipart
-from dingo.video_gateway.models import TaskStatus
+from dingo.video_gateway.models import TERMINAL_STATUSES, TaskStatus
 from dingo.video_gateway.service import VideoGatewayService
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,25 @@ _HOP_BY_HOP = {
 
 def _service(request: web.Request) -> VideoGatewayService:
     return request.app[_SERVICE_KEY]
+
+
+def _gateway_draining_error() -> GatewayError:
+    return GatewayError(
+        503,
+        "gateway_draining",
+        "video Gateway is draining and is not accepting new submissions",
+        error_type="service_unavailable_error",
+        headers={"Retry-After": "1"},
+    )
+
+
+def _is_loopback(remote: str | None) -> bool:
+    if remote is None:
+        return False
+    try:
+        return ipaddress.ip_address(remote).is_loopback
+    except ValueError:
+        return False
 
 
 @web.middleware
@@ -92,6 +112,8 @@ async def live(request: web.Request) -> web.Response:
 
 async def ready(request: web.Request) -> web.Response:
     service = _service(request)
+    if service.dispatcher.draining:
+        raise _gateway_draining_error()
     if not service.dispatcher.ready:
         raise GatewayError(
             503,
@@ -104,10 +126,27 @@ async def ready(request: web.Request) -> web.Response:
     return web.json_response({"status": "ready"})
 
 
+async def drain(request: web.Request) -> web.Response:
+    if not _is_loopback(request.remote):
+        raise GatewayError(
+            403,
+            "drain_forbidden",
+            "Gateway drain may only be requested through the local loopback interface",
+        )
+    dispatcher = _service(request).dispatcher
+    if dispatcher.begin_drain():
+        logger.info("video Gateway entered draining state")
+    return web.json_response(
+        {"status": "draining"},
+        headers={"Connection": "close"},
+    )
+
+
 async def models(request: web.Request) -> web.Response:
     service = _service(request)
     data = list(service.upstream_models)
     for model, pool in sorted(service.config.pools_by_model.items()):
+        adapter = service.adapters[pool.pool_id]
         data.append(
             {
                 "id": model,
@@ -115,6 +154,9 @@ async def models(request: web.Request) -> web.Response:
                 "created": 0,
                 "owned_by": "dingo-video-gateway",
                 "available": service.dispatcher.has_workers(pool.pool_id),
+                "video_capabilities": adapter.capabilities(
+                    max_result_bytes=service.config.media.max_result_bytes
+                ),
             }
         )
     return web.json_response({"object": "list", "data": data})
@@ -122,6 +164,8 @@ async def models(request: web.Request) -> web.Response:
 
 async def _submit(request: web.Request, *, delivery_mode: str):
     service = _service(request)
+    if service.dispatcher.draining:
+        raise _gateway_draining_error()
     anticipated_input = request.content_length or service.config.media.max_total_file_bytes
     await service.ensure_submission_capacity(
         anticipated_input + service.config.media.max_result_bytes
@@ -322,6 +366,19 @@ async def _content_response(
             "ETag": etag,
             "X-Video-Id": task.id,
         }
+        seed = task.normalized_request.get("seed")
+        if seed is not None:
+            common_headers["X-Video-Seed"] = str(seed)
+        media = task.normalized_request.get("_result_media") or {}
+        if media.get("frames") is not None:
+            common_headers["X-Video-Frames"] = str(media["frames"])
+        if media.get("fps") is not None:
+            common_headers["X-Video-FPS"] = f'{float(media["fps"]):.9g}'
+        duration = media.get("duration_s", media.get("video_duration_s"))
+        if duration is not None:
+            common_headers["X-Video-Duration-Seconds"] = (
+                f"{float(duration):.9g}"
+            )
         if _etag_matches(request.headers.get("If-None-Match"), etag):
             return web.Response(status=304, headers=common_headers)
 
@@ -391,19 +448,36 @@ async def delete_video(request: web.Request) -> web.Response:
         stored = await service.dispatcher.cancel(task_id)
     except KeyError as exc:
         raise GatewayError(404, "video_not_found", "video task was not found") from exc
-    pool = service.config.pools_by_id[stored.task.pool_id]
-    try:
-        stored = await service.dispatcher.wait_terminal(
-            task_id, pool.scheduling.abort_grace_s
+    # A queued task is cancelled atomically and remains queryable as cancelled
+    # after its first DELETE.  This is also the native vLLM-Omni response shape.
+    if stored.task.status == TaskStatus.CANCELLED:
+        return web.json_response(
+            {"id": task_id, "object": "video.deleted", "deleted": True}
         )
-    except TimeoutError:
-        stored = await service.dispatcher.force_cancel(task_id)
+    # Close the race between the initial read and request_cancel(): generation
+    # may have completed or failed in that interval. Preserve the existing
+    # result-expiry semantics; only an active cancellation request returns 202.
+    if stored.task.status in TERMINAL_STATUSES:
+        try:
+            await service.expire(stored)
+        except KeyError as exc:
+            raise GatewayError(
+                404, "video_not_found", "video task was not found"
+            ) from exc
+        return web.json_response(
+            {"id": task_id, "object": "video.deleted", "deleted": True}
+        )
     return web.json_response(
         {
             "id": task_id,
-            "object": "video.deleted",
-            "deleted": stored.task.status == TaskStatus.CANCELLED,
-        }
+            "object": "video.cancel",
+            "accepted": True,
+            "deleted": False,
+            "status": stored.task.public_dict()["status"],
+            "cancel_requested": stored.task.cancel_requested_at_ms is not None,
+        },
+        status=202,
+        headers={"Location": f"/v1/videos/{task_id}"},
     )
 
 
@@ -550,6 +624,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
 def register_routes(app: web.Application) -> None:
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
+    app.router.add_post("/internal/drain", drain)
     # vLLM-Omni exposes /health; use readiness semantics so clients are not
     # sent to a Gateway before its stores and discovery loops are usable.
     app.router.add_get("/health", ready)

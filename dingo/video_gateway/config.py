@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -14,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_KNOWN_ADAPTERS = {"minimax_h3"}
+_LOGGER = logging.getLogger(__name__)
+MINIMAX_H3_PROTOCOL_REVISION = "dingo-vllm-omni-h3-detached-v1"
+_ADAPTER_PROTOCOL_REVISIONS = {
+    "minimax_h3": MINIMAX_H3_PROTOCOL_REVISION,
+}
+_KNOWN_ADAPTERS = set(_ADAPTER_PROTOCOL_REVISIONS)
 _MIB = 1024 * 1024
 _MAX_BODY_HARD_CAP = 512 * _MIB
 _MEDIA_HARD_CAPS = {
@@ -107,13 +113,16 @@ class MediaConfig:
         return ((self.max_result_bytes + 2) // 3) * 4
 
     @property
+    def result_task_memory_bytes(self) -> int:
+        return self.max_result_encoded_bytes + self.task_memory_overhead_bytes
+
+    @property
     def max_task_memory_bytes(self) -> int:
         # Mixed-reference construction briefly holds both the individual data
         # URLs and their final JSON envelope.
         return (
             2 * self.max_encoded_reference_bytes
-            + self.max_result_encoded_bytes
-            + self.task_memory_overhead_bytes
+            + self.result_task_memory_bytes
         )
 
 
@@ -121,6 +130,7 @@ class MediaConfig:
 class TaskStoreConfig:
     kind: str = "etcd_http"
     url: str | None = None
+    endpoints: tuple[str, ...] = ()
     prefix: str = "/dingo/video-gateway/v1"
     request_timeout_s: float = 5.0
 
@@ -319,13 +329,45 @@ def _media_config(raw: Any, http: HttpConfig) -> MediaConfig:
 
 def _task_store_config(raw: Any) -> TaskStoreConfig:
     data = _mapping(raw or {}, "task_store")
-    _only(data, {"kind", "url", "prefix", "request_timeout_s"}, "task_store")
+    _only(
+        data,
+        {"kind", "url", "endpoints", "prefix", "request_timeout_s"},
+        "task_store",
+    )
     kind = str(data.get("kind", "etcd_http"))
     if kind not in {"etcd_http", "memory"}:
         raise ValueError("task_store.kind must be 'etcd_http' or 'memory'")
     url = data.get("url")
-    if kind == "etcd_http" and (not isinstance(url, str) or not url):
-        raise ValueError("task_store.url is required for etcd_http")
+    endpoints_raw = data.get("endpoints")
+    if url is not None and endpoints_raw is not None:
+        raise ValueError(
+            "task_store.url and task_store.endpoints are mutually exclusive"
+        )
+    if url is not None and (not isinstance(url, str) or not url.strip()):
+        raise ValueError("task_store.url must be a non-empty string")
+    if endpoints_raw is not None:
+        if (
+            not isinstance(endpoints_raw, list)
+            or not endpoints_raw
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in endpoints_raw
+            )
+        ):
+            raise ValueError(
+                "task_store.endpoints must be a non-empty list of URL strings"
+            )
+        endpoints = tuple(item.strip().rstrip("/") for item in endpoints_raw)
+        if len(set(endpoints)) != len(endpoints):
+            raise ValueError("task_store.endpoints must not contain duplicates")
+    else:
+        endpoints = (url.strip().rstrip("/"),) if isinstance(url, str) else ()
+    if kind == "etcd_http" and not endpoints:
+        raise ValueError(
+            "task_store.url or task_store.endpoints is required for etcd_http"
+        )
+    if any(not endpoint.startswith(("http://", "https://")) for endpoint in endpoints):
+        raise ValueError("task_store endpoints must use HTTP or HTTPS URLs")
     prefix = str(data.get("prefix", "/dingo/video-gateway/v1"))
     if prefix == "/" or not prefix.startswith("/") or ".." in prefix:
         raise ValueError("task_store.prefix must be an absolute safe key prefix")
@@ -334,7 +376,8 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
         raise ValueError("task_store.request_timeout_s must be positive")
     return TaskStoreConfig(
         kind=kind,
-        url=url.rstrip("/") if isinstance(url, str) else None,
+        url=url.strip().rstrip("/") if isinstance(url, str) else None,
+        endpoints=endpoints,
         prefix=prefix.rstrip("/"),
         request_timeout_s=timeout,
     )
@@ -481,24 +524,43 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         raise ValueError(f"{name}.execution_mode must be stream or detached")
 
     adapter_data = _mapping(data.get("adapter"), f"{name}.adapter")
-    required_adapter = {"name", "workflow", "compatibility_version"}
+    required_adapter = {"name", "workflow"}
     missing = sorted(required_adapter - set(adapter_data))
     if missing:
         raise ValueError(f"{name}.adapter missing keys: {', '.join(missing)}")
+    adapter_name = _required_string(adapter_data, "name", f"{name}.adapter")
+    if adapter_name not in _KNOWN_ADAPTERS:
+        raise ValueError(f"unknown video adapter: {adapter_name}")
+    protocol_revision = _ADAPTER_PROTOCOL_REVISIONS[adapter_name]
+    legacy_compatibility = adapter_data.get("compatibility_version")
+    if legacy_compatibility is not None:
+        if (
+            not isinstance(legacy_compatibility, str)
+            or not legacy_compatibility.strip()
+        ):
+            raise ValueError(
+                f"{name}.adapter.compatibility_version must be a non-empty string"
+            )
+        if legacy_compatibility.strip() != protocol_revision:
+            raise ValueError(
+                f"{name}.adapter.compatibility_version is obsolete and must equal "
+                f"the built-in protocol revision {protocol_revision!r}"
+            )
+        _LOGGER.warning(
+            "%s.adapter.compatibility_version is deprecated and may be removed; "
+            "the MiniMax-H3 protocol revision is supplied by the adapter code",
+            name,
+        )
     adapter = AdapterConfig(
-        name=_required_string(adapter_data, "name", f"{name}.adapter"),
+        name=adapter_name,
         workflow=_required_string(adapter_data, "workflow", f"{name}.adapter"),
-        compatibility_version=_required_string(
-            adapter_data, "compatibility_version", f"{name}.adapter"
-        ),
+        compatibility_version=protocol_revision,
         options={
             key: value
             for key, value in adapter_data.items()
-            if key not in required_adapter
+            if key not in required_adapter | {"compatibility_version"}
         },
     )
-    if adapter.name not in _KNOWN_ADAPTERS:
-        raise ValueError(f"unknown video adapter: {adapter.name}")
     scheduling = _scheduling_config(data.get("scheduling"), pool_id)
     revision_payload = {
         "pool_id": pool_id,

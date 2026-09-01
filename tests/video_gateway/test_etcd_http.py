@@ -23,7 +23,8 @@ class PagedEtcd(EtcdHttpClient):
             for index in range(5)
         }
 
-    async def _post(self, path, payload):
+    async def _post(self, path, payload, *, retry_safe=False):
+        del retry_safe
         assert path == "/v3/kv/range"
         self.requests.append(payload)
         start = base64.b64decode(payload["key"]).decode()
@@ -74,7 +75,8 @@ class BatchEtcd(EtcdHttpClient):
         super().__init__("http://unused")
         self.payload: dict | None = None
 
-    async def _post(self, path, payload):
+    async def _post(self, path, payload, *, retry_safe=False):
+        del retry_safe
         assert path == "/v3/kv/txn"
         self.payload = payload
         responses = []
@@ -131,15 +133,63 @@ async def test_count_prefix_and_descending_are_sent_to_etcd():
     assert client.requests[-1]["sort_order"] == "DESCEND"
 
 
+class FailoverEtcd(EtcdHttpClient):
+    def __init__(self) -> None:
+        super().__init__(["http://etcd-0", "http://etcd-1"])
+        self.requests: list[tuple[str, str]] = []
+
+    async def _post_once(self, endpoint, path, payload):
+        del payload
+        self.requests.append((endpoint, path))
+        if endpoint == "http://etcd-0":
+            raise StoreUnavailable("simulated unreachable member")
+        if path == "/v3/kv/range":
+            return {"header": {"revision": "7"}, "kvs": []}
+        if path == "/v3/kv/txn":
+            return {"header": {"revision": "8"}, "succeeded": True}
+        raise AssertionError(path)
+
+
+async def test_safe_read_fails_over_and_keeps_the_healthy_endpoint():
+    client = FailoverEtcd()
+
+    assert await client.range("/health", limit=1) == []
+    assert await client.range("/health", limit=1) == []
+
+    assert client.requests == [
+        ("http://etcd-0", "/v3/kv/range"),
+        ("http://etcd-1", "/v3/kv/range"),
+        ("http://etcd-1", "/v3/kv/range"),
+    ]
+
+
+async def test_write_transaction_is_not_replayed_but_next_call_rotates():
+    client = FailoverEtcd()
+
+    with pytest.raises(StoreUnavailable, match="unreachable member"):
+        await client.txn([], [])
+    assert await client.txn([], []) == (True, 8)
+
+    assert client.requests == [
+        ("http://etcd-0", "/v3/kv/txn"),
+        ("http://etcd-1", "/v3/kv/txn"),
+    ]
+
+
 class LeaseEtcd(EtcdHttpClient):
     def __init__(self) -> None:
         super().__init__("http://unused")
         self.requests: list[tuple[str, dict]] = []
 
-    async def _post(self, path, payload):
+    async def _post(self, path, payload, *, retry_safe=False):
+        del retry_safe
         self.requests.append((path, payload))
         if path == "/v3/lease/grant":
-            return {"header": {"revision": "7"}, "ID": "42", "TTL": "9"}
+            return {
+                "header": {"revision": "7"},
+                "ID": payload["ID"],
+                "TTL": "9",
+            }
         if path == "/v3/lease/timetolive":
             return {
                 "header": {"revision": "8"},
@@ -166,7 +216,7 @@ class LeaseEtcd(EtcdHttpClient):
 async def test_lease_contract_and_attached_put():
     client = LeaseEtcd()
 
-    granted = await client.lease_grant(9)
+    granted = await client.lease_grant(9, lease_id=42)
     alive = await client.lease_keepalive(granted.lease_id)
     remaining = await client.lease_time_to_live(granted.lease_id, keys=True)
     revoked_revision = await client.lease_revoke(granted.lease_id)

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dingo.video_gateway.memory_budget import WeightedMemoryBudget
 
 
@@ -38,3 +40,27 @@ async def test_weighted_budget_cancelled_waiter_does_not_block_followers():
     await budget.release("active")
 
     assert await budget.try_acquire("next", 5) is True
+
+
+async def test_weighted_budget_shrinks_active_allocation_and_releases_capacity():
+    budget = WeightedMemoryBudget(100)
+
+    assert await budget.try_acquire("video", 80) is True
+    assert await budget.try_acquire("waiting", 30) is False
+    assert await budget.shrink("video", 60) == 20
+    snapshot = await budget.snapshot()
+    assert snapshot.used_bytes == 60
+    assert snapshot.active_tasks == 1
+    assert snapshot.waiting_tasks == 1
+
+    assert await budget.try_acquire("waiting", 30) is True
+    assert (await budget.snapshot()).used_bytes == 90
+    assert await budget.release("video") is True
+
+
+async def test_weighted_budget_rejects_growth_through_shrink():
+    budget = WeightedMemoryBudget(100)
+    assert await budget.try_acquire("video", 60) is True
+
+    with pytest.raises(ValueError, match="cannot grow"):
+        await budget.shrink("video", 61)

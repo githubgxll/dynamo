@@ -590,6 +590,8 @@ class MemoryTaskStore(TaskStore):
                 }
                 expected = {TaskStatus.QUEUED}
             elif stored.task.status in ACTIVE_STATUSES:
+                if stored.task.cancel_requested_at_ms is not None:
+                    return stored
                 patch = {"cancel_requested_at_ms": now_ms()}
                 expected = ACTIVE_STATUSES
             else:
@@ -1466,6 +1468,8 @@ class EtcdTaskStore(TaskStore):
                 }
                 expected: Iterable[TaskStatus] = {TaskStatus.QUEUED}
             elif stored.task.status in ACTIVE_STATUSES:
+                if stored.task.cancel_requested_at_ms is not None:
+                    return stored
                 patch = {"cancel_requested_at_ms": now_ms()}
                 expected = ACTIVE_STATUSES
             else:

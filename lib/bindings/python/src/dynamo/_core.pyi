@@ -104,6 +104,10 @@ class DistributedRuntime:
         """
         ...
 
+    async def wait_shutdown(self) -> None:
+        """Wait until the Runtime primary cancellation token is cancelled."""
+        ...
+
     def set_health_status(self, ready: bool) -> None:
         """
         Explicitly set the system-level health status (Ready / NotReady).

@@ -997,6 +997,19 @@ impl DistributedRuntime {
         self.inner.shutdown();
     }
 
+    /// Wait until the Runtime primary cancellation token is cancelled.
+    ///
+    /// This is an observation-only API. It does not change Runtime lease or
+    /// shutdown behavior; callers can use it to align their process lifecycle
+    /// with a Runtime that has already terminated.
+    fn wait_shutdown<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyAny>> {
+        let token = self.inner.primary_token();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            token.cancelled().await;
+            Ok(())
+        })
+    }
+
     fn event_loop(&self) -> PyObject {
         self.event_loop.clone()
     }

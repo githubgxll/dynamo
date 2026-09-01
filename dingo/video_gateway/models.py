@@ -145,12 +145,26 @@ class VideoTask:
             "created_at": self.created_at_ms // 1000,
             "expires_at": self.expires_at_ms // 1000,
         }
+        if self.cancel_requested_at_ms is not None:
+            result["cancel_requested"] = True
+            result["cancel_requested_at"] = self.cancel_requested_at_ms // 1000
         width = self.normalized_request.get("width")
         height = self.normalized_request.get("height")
         if width is not None and height is not None:
             result["size"] = f"{width}x{height}"
         if self.normalized_request.get("seconds") is not None:
             result["seconds"] = self.normalized_request["seconds"]
+        if self.normalized_request.get("num_frames") is not None:
+            result["num_frames"] = self.normalized_request["num_frames"]
+        if self.normalized_request.get("fps") is not None:
+            result["fps"] = self.normalized_request["fps"]
+        if self.normalized_request.get("seed") is not None:
+            # The adapter resolves a random seed before persistence. Returning
+            # that final value makes generated requests reproducible too.
+            result["seed"] = self.normalized_request["seed"]
+            result["seed_generated"] = bool(
+                self.normalized_request.get("seed_generated", False)
+            )
         if self.completed_at_ms is not None:
             result["completed_at"] = self.completed_at_ms // 1000
         if self.status == TaskStatus.COMPLETED:
@@ -162,6 +176,28 @@ class VideoTask:
                     "sha256": self.result_sha256,
                 }
             )
+            # Keep additive result metadata inside the existing request map so
+            # an older Gateway in a rolling deployment can still deserialize
+            # the task and simply ignore fields it does not understand.
+            media = dict(self.normalized_request.get("_result_media") or {})
+            actual_frames = media.get("frames")
+            actual_fps = media.get("fps")
+            actual_seconds = media.get("duration_s", media.get("video_duration_s"))
+            if actual_frames is not None:
+                result["requested_num_frames"] = self.normalized_request.get(
+                    "num_frames"
+                )
+                result["num_frames"] = actual_frames
+            if actual_fps is not None:
+                result["fps"] = actual_fps
+            if actual_seconds is not None:
+                result["requested_seconds"] = self.normalized_request.get("seconds")
+                result["seconds"] = actual_seconds
+                result["duration_s"] = actual_seconds
+            if media.get("video_duration_s") is not None:
+                result["video_duration_s"] = media["video_duration_s"]
+            if media.get("audio_duration_s") is not None:
+                result["audio_duration_s"] = media["audio_duration_s"]
         if any(
             value is not None
             for value in (

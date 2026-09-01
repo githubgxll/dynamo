@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import secrets
 import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -88,15 +90,30 @@ class EtcdWatchCompacted(StoreUnavailable):
 class EtcdHttpClient:
     def __init__(
         self,
-        url: str,
+        url: str | Sequence[str],
         *,
         timeout_s: float = 5.0,
         telemetry: GatewayTelemetry | None = None,
     ) -> None:
-        self.url = url.rstrip("/")
+        raw_urls = (url,) if isinstance(url, str) else tuple(url)
+        if not raw_urls:
+            raise ValueError("at least one etcd endpoint is required")
+        self.urls = tuple(item.rstrip("/") for item in raw_urls)
+        if any(
+            not item or not item.startswith(("http://", "https://"))
+            for item in self.urls
+        ):
+            raise ValueError("etcd endpoints must be HTTP or HTTPS URLs")
+        if len(set(self.urls)) != len(self.urls):
+            raise ValueError("etcd endpoints must not contain duplicates")
+        # Keep the original attribute for diagnostics and compatibility. New
+        # request code uses the endpoint set below.
+        self.url = self.urls[0]
         self.timeout = aiohttp.ClientTimeout(total=timeout_s)
         self.telemetry = telemetry
         self._session: aiohttp.ClientSession | None = None
+        self._endpoint_index = 0
+        self._endpoint_lock = asyncio.Lock()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -116,19 +133,36 @@ class EtcdHttpClient:
             await self._session.close()
         self._session = None
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _endpoint_order(self) -> tuple[tuple[int, str], ...]:
+        async with self._endpoint_lock:
+            start = self._endpoint_index
+        return tuple(
+            (
+                (start + offset) % len(self.urls),
+                self.urls[(start + offset) % len(self.urls)],
+            )
+            for offset in range(len(self.urls))
+        )
+
+    async def _mark_endpoint(self, index: int, *, succeeded: bool) -> None:
+        async with self._endpoint_lock:
+            if succeeded:
+                self._endpoint_index = index
+            elif self._endpoint_index == index:
+                self._endpoint_index = (index + 1) % len(self.urls)
+
+    async def _post_once(
+        self, endpoint: str, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         session = await self._get_session()
-        started = time.monotonic()
-        succeeded = False
         try:
-            async with session.post(self.url + path, json=payload) as response:
+            async with session.post(endpoint + path, json=payload) as response:
                 body = await response.text()
                 if response.status < 200 or response.status >= 300:
                     raise StoreUnavailable(
                         f"etcd {path} returned HTTP {response.status}: {body[:512]}"
                     )
                 if not body:
-                    succeeded = True
                     return {}
                 try:
                     value = await response.json()
@@ -138,61 +172,107 @@ class EtcdHttpClient:
                     ) from exc
                 if "error" in value:
                     raise StoreUnavailable(f"etcd {path} failed: {value['error']}")
-                succeeded = True
                 return value
         except StoreUnavailable:
             raise
         except (aiohttp.ClientError, TimeoutError) as exc:
-            raise StoreUnavailable(f"etcd {path} request failed: {exc}") from exc
-        finally:
-            if self.telemetry is not None:
-                self.telemetry.record_etcd_request(
-                    path.removeprefix("/v3/"),
-                    time.monotonic() - started,
-                    succeeded=succeeded,
-                )
+            raise StoreUnavailable(
+                f"etcd endpoint {endpoint} {path} request failed: {exc}"
+            ) from exc
+
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        retry_safe: bool = False,
+    ) -> dict[str, Any]:
+        endpoints = await self._endpoint_order()
+        last_error: StoreUnavailable | None = None
+        for position, (index, endpoint) in enumerate(endpoints):
+            started = time.monotonic()
+            succeeded = False
+            try:
+                value = await self._post_once(endpoint, path, payload)
+                succeeded = True
+                await self._mark_endpoint(index, succeeded=True)
+                return value
+            except StoreUnavailable as exc:
+                last_error = exc
+                await self._mark_endpoint(index, succeeded=False)
+                if not retry_safe or position + 1 == len(endpoints):
+                    raise
+            finally:
+                if self.telemetry is not None:
+                    self.telemetry.record_etcd_request(
+                        path.removeprefix("/v3/"),
+                        time.monotonic() - started,
+                        succeeded=succeeded,
+                    )
+        assert last_error is not None
+        raise last_error
 
     async def _stream_post(
         self, path: str, payload: dict[str, Any]
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield newline-delimited responses from an etcd streaming RPC."""
 
-        session = await self._get_session()
         timeout = aiohttp.ClientTimeout(
             total=None,
             sock_connect=self.timeout.total,
             sock_read=None,
         )
-        try:
-            async with session.post(
-                self.url + path,
-                json=payload,
-                timeout=timeout,
-            ) as response:
-                if response.status < 200 or response.status >= 300:
-                    body = await response.text()
-                    raise StoreUnavailable(
-                        f"etcd {path} returned HTTP {response.status}: {body[:512]}"
-                    )
-                while True:
-                    line = await response.content.readline()
-                    if not line:
-                        if response.content.at_eof():
-                            return
-                        continue
-                    try:
-                        value = json.loads(line)
-                    except (UnicodeDecodeError, ValueError) as exc:
+        endpoints = await self._endpoint_order()
+        for position, (index, endpoint) in enumerate(endpoints):
+            session = await self._get_session()
+            yielded = False
+            try:
+                async with session.post(
+                    endpoint + path,
+                    json=payload,
+                    timeout=timeout,
+                ) as response:
+                    if response.status < 200 or response.status >= 300:
+                        body = await response.text()
                         raise StoreUnavailable(
-                            f"etcd {path} returned invalid streaming JSON"
-                        ) from exc
-                    if "error" in value:
-                        raise StoreUnavailable(f"etcd {path} failed: {value['error']}")
-                    yield value
-        except StoreUnavailable:
-            raise
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            raise StoreUnavailable(f"etcd {path} stream failed: {exc}") from exc
+                            f"etcd {path} returned HTTP {response.status}: {body[:512]}"
+                        )
+                    while True:
+                        line = await response.content.readline()
+                        if not line:
+                            if response.content.at_eof():
+                                if yielded:
+                                    return
+                                raise StoreUnavailable(
+                                    f"etcd {path} stream ended before a response"
+                                )
+                            continue
+                        try:
+                            value = json.loads(line)
+                        except (UnicodeDecodeError, ValueError) as exc:
+                            raise StoreUnavailable(
+                                f"etcd {path} returned invalid streaming JSON"
+                            ) from exc
+                        if "error" in value:
+                            raise StoreUnavailable(
+                                f"etcd {path} failed: {value['error']}"
+                            )
+                        await self._mark_endpoint(index, succeeded=True)
+                        yielded = True
+                        yield value
+                return
+            except asyncio.CancelledError:
+                raise
+            except StoreUnavailable:
+                await self._mark_endpoint(index, succeeded=False)
+                if yielded or position + 1 == len(endpoints):
+                    raise
+            except (aiohttp.ClientError, TimeoutError) as exc:
+                await self._mark_endpoint(index, succeeded=False)
+                if yielded or position + 1 == len(endpoints):
+                    raise StoreUnavailable(
+                        f"etcd endpoint {endpoint} {path} stream failed: {exc}"
+                    ) from exc
 
     @staticmethod
     def _decode_value(item: dict[str, Any]) -> EtcdValue:
@@ -239,7 +319,7 @@ class EtcdHttpClient:
             payload["count_only"] = True
         if revision:
             payload["revision"] = str(revision)
-        response = await self._post("/v3/kv/range", payload)
+        response = await self._post("/v3/kv/range", payload, retry_safe=True)
         result = [self._decode_value(item) for item in response.get("kvs", [])]
         raw_more = response.get("more", False)
         more = raw_more is True or str(raw_more).lower() == "true"
@@ -353,6 +433,7 @@ class EtcdHttpClient:
         response = await self._post(
             "/v3/kv/txn",
             {"compare": [], "success": success, "failure": []},
+            retry_safe=True,
         )
         responses = response.get("responses", [])
         if len(responses) != len(keys):
@@ -368,13 +449,32 @@ class EtcdHttpClient:
             raise ValueError("lease ttl must be positive")
         if lease_id < 0:
             raise ValueError("lease id must not be negative")
-        response = await self._post(
-            "/v3/lease/grant",
-            {"TTL": str(ttl), "ID": str(lease_id)},
-        )
+        requested_id = lease_id or max(1, secrets.randbits(63))
+        try:
+            response = await self._post(
+                "/v3/lease/grant",
+                {"TTL": str(ttl), "ID": str(requested_id)},
+                retry_safe=True,
+            )
+        except StoreUnavailable as exc:
+            # A response can be lost after etcd committed the grant. Because
+            # the client chooses one stable random ID, confirm that lease
+            # instead of allocating a second one during endpoint failover.
+            try:
+                existing = await self.lease_time_to_live(requested_id)
+            except StoreUnavailable:
+                raise exc
+            if existing.ttl > 0:
+                return EtcdLease(
+                    lease_id=requested_id,
+                    ttl=existing.ttl,
+                    granted_ttl=existing.granted_ttl or ttl,
+                    revision=existing.revision,
+                )
+            raise exc
         granted_id = int(response.get("ID", 0))
         granted_ttl = int(response.get("TTL", 0))
-        if granted_id == 0 or granted_ttl <= 0:
+        if granted_id != requested_id or granted_ttl <= 0:
             raise StoreUnavailable("etcd returned an invalid lease grant response")
         return EtcdLease(
             lease_id=granted_id,
@@ -389,6 +489,7 @@ class EtcdHttpClient:
         response = await self._post(
             "/v3/lease/revoke",
             {"ID": str(lease_id)},
+            retry_safe=True,
         )
         return int(response.get("header", {}).get("revision", 0))
 
@@ -428,6 +529,7 @@ class EtcdHttpClient:
         response = await self._post(
             "/v3/lease/timetolive",
             {"ID": str(lease_id), "keys": keys},
+            retry_safe=True,
         )
         return EtcdLease(
             lease_id=int(response.get("ID", 0)),

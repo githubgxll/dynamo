@@ -8,7 +8,11 @@ from copy import deepcopy
 import pytest
 
 from dingo.video_gateway.adapters import create_adapter
-from dingo.video_gateway.config import canonical_backend_target, parse_config
+from dingo.video_gateway.config import (
+    MINIMAX_H3_PROTOCOL_REVISION,
+    canonical_backend_target,
+    parse_config,
+)
 
 
 def _raw(tmp_path):
@@ -28,7 +32,6 @@ def _raw(tmp_path):
                 "adapter": {
                     "name": "minimax_h3",
                     "workflow": "fl2va",
-                    "compatibility_version": "wire-v1",
                 },
             },
             {
@@ -39,7 +42,6 @@ def _raw(tmp_path):
                 "adapter": {
                     "name": "minimax_h3",
                     "workflow": "ref2va",
-                    "compatibility_version": "wire-v1",
                 },
             },
         ],
@@ -57,6 +59,32 @@ def test_config_maps_arbitrary_full_targets_without_namespace_assumptions(tmp_pa
     )
     assert config.pools[0].configuration_revision.startswith("sha256:")
     assert config.pools[0].execution_mode == "stream"
+
+
+def test_legacy_compatibility_version_is_derived_without_revision_drift(tmp_path):
+    raw = _raw(tmp_path)
+    without_legacy = parse_config(deepcopy(raw))
+    for pool in raw["pools"]:
+        pool["adapter"]["compatibility_version"] = MINIMAX_H3_PROTOCOL_REVISION
+
+    with_legacy = parse_config(raw)
+
+    assert with_legacy.pools[0].adapter.compatibility_version == (
+        MINIMAX_H3_PROTOCOL_REVISION
+    )
+    assert with_legacy.pools[0].configuration_revision == (
+        without_legacy.pools[0].configuration_revision
+    )
+
+
+def test_obsolete_manual_compatibility_version_cannot_claim_another_protocol(
+    tmp_path,
+):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["adapter"]["compatibility_version"] = "vllm-omni-0.28"
+
+    with pytest.raises(ValueError, match="built-in protocol revision"):
+        parse_config(raw)
 
 
 def test_detached_execution_requires_explicit_pool_setting(tmp_path):
@@ -131,6 +159,39 @@ def test_vllm_omni_http_compatibility_options(tmp_path):
 
     assert config.http.default_model == "alias-a"
     assert config.http.async_submit_status_code == 200
+
+
+def test_etcd_task_store_accepts_explicit_member_endpoints(tmp_path):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "endpoints": [
+            "http://etcd-0.etcd-peer:2379",
+            "http://etcd-1.etcd-peer:2379/",
+            "http://etcd-2.etcd-peer:2379",
+        ],
+    }
+
+    config = parse_config(raw)
+
+    assert config.task_store.url is None
+    assert config.task_store.endpoints == (
+        "http://etcd-0.etcd-peer:2379",
+        "http://etcd-1.etcd-peer:2379",
+        "http://etcd-2.etcd-peer:2379",
+    )
+
+
+def test_etcd_task_store_rejects_url_and_endpoints_together(tmp_path):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "endpoints": ["http://etcd-0:2379"],
+    }
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        parse_config(raw)
 
 
 def test_default_model_must_be_configured(tmp_path):
