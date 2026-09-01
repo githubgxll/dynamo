@@ -8,6 +8,8 @@ import asyncio
 import aiohttp
 from aiohttp.test_utils import TestClient, TestServer
 
+from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter
+from dingo.video_gateway.api import _is_loopback
 from dingo.video_gateway.app import create_app
 from tests.video_gateway.test_dispatcher import FakeClient, _stack
 
@@ -67,6 +69,54 @@ async def _wait_completed(client: TestClient, task_id: str):
             return response, payload
         await asyncio.sleep(0.01)
     raise AssertionError(f"task {task_id} did not reach a terminal state")
+
+
+async def test_local_drain_keeps_reads_live_and_rejects_new_submissions(
+    make_gateway_config,
+):
+    client = await _client(make_gateway_config)
+    try:
+        assert _is_loopback("127.0.0.1")
+        assert _is_loopback("::1")
+        assert not _is_loopback("192.0.2.1")
+        assert not _is_loopback("not-an-address")
+
+        drained = await client.post("/internal/drain")
+        drained_again = await client.post("/internal/drain")
+        live_response = await client.get("/live")
+        ready_response = await client.get("/ready")
+        models_response = await client.get("/v1/models")
+        submit_response = await client.post("/v1/videos", data=_form())
+
+        assert drained.status == 200
+        assert await drained.json() == {"status": "draining"}
+        assert drained_again.status == 200
+        assert live_response.status == 200
+        assert ready_response.status == 503
+        assert ready_response.headers["Retry-After"] == "1"
+        assert (await ready_response.json())["error"]["code"] == "gateway_draining"
+        assert models_response.status == 200
+        video_model = (await models_response.json())["data"][0]
+        assert video_model["video_capabilities"]["workflow"] == "fl2va"
+        assert video_model["video_capabilities"]["image_formats"] == [
+            "jpeg",
+            "png",
+            "webp",
+        ]
+        assert video_model["video_capabilities"]["video_formats"] == []
+        assert video_model["video_capabilities"]["audio_formats"] == []
+        assert video_model["video_capabilities"]["max_video_bytes"] == 0
+        assert video_model["video_capabilities"]["max_audio_bytes"] == 0
+        assert video_model["video_capabilities"]["max_result_bytes"] == (
+            128 * 1024 * 1024
+        )
+        assert submit_response.status == 503
+        assert submit_response.headers["Retry-After"] == "1"
+        assert (await submit_response.json())["error"]["code"] == (
+            "gateway_draining"
+        )
+    finally:
+        await client.close()
 
 
 async def test_async_submit_poll_head_range_and_delete(make_gateway_config):
@@ -149,6 +199,106 @@ async def test_async_submit_poll_head_range_and_delete(make_gateway_config):
         await client.close()
 
 
+async def test_running_delete_returns_accepted_without_waiting_for_worker(
+    make_gateway_config,
+):
+    pool = {
+        "pool_id": "fl-pool",
+        "served_models": ["public-fl"],
+        "backend_model": "worker-fl",
+        "backend_target": "dyn://scope-a.backend.generate",
+        "adapter": {
+            "name": "minimax_h3",
+            "workflow": "fl2va",
+            "validate_media": False,
+        },
+        "scheduling": {
+            "worker_capacity": 1,
+            "queue_limit": 8,
+            "execution_timeout_s": 30,
+            "abort_grace_s": 10,
+            "discovery_interval_s": 0.01,
+            "dispatch_interval_s": 0.01,
+        },
+    }
+    config = make_gateway_config(pools=[pool])
+    endpoint_client = FakeClient(block=True, honor_stop=False)
+    store, _artifacts, _dispatcher, service = _stack(
+        config, {"fl-pool": endpoint_client}
+    )
+    client = TestClient(TestServer(create_app(service)))
+    await client.start_server()
+    try:
+        submitted_response = await client.post("/v1/videos", data=_form())
+        submitted = await submitted_response.json()
+        while not endpoint_client.calls:
+            await asyncio.sleep(0.01)
+
+        cancelled = await asyncio.wait_for(
+            client.delete(f"/v1/videos/{submitted['id']}"), timeout=0.2
+        )
+        payload = await cancelled.json()
+        first = await store.get_task(submitted["id"])
+        repeated = await client.delete(f"/v1/videos/{submitted['id']}")
+        repeated_payload = await repeated.json()
+        second = await store.get_task(submitted["id"])
+        status_response = await client.get(f"/v1/videos/{submitted['id']}")
+        status = await status_response.json()
+
+        assert cancelled.status == 202
+        assert cancelled.headers["Location"] == f"/v1/videos/{submitted['id']}"
+        assert payload == {
+            "id": submitted["id"],
+            "object": "video.cancel",
+            "accepted": True,
+            "deleted": False,
+            "status": "in_progress",
+            "cancel_requested": True,
+        }
+        assert repeated.status == 202
+        assert repeated_payload == payload
+        assert first is not None and second is not None
+        assert second.revision == first.revision
+        assert second.task.cancel_requested_at_ms == first.task.cancel_requested_at_ms
+        assert status["status"] == "in_progress"
+        assert status["cancel_requested"] is True
+        assert status["cancel_requested_at"] == (
+            first.task.cancel_requested_at_ms // 1000
+        )
+    finally:
+        endpoint_client.release.set()
+        await client.close()
+
+
+async def test_queued_delete_finishes_synchronously(make_gateway_config):
+    config = make_gateway_config(accept_without_workers=True)
+    endpoint_client = FakeClient(available=False)
+    store, _artifacts, _dispatcher, service = _stack(
+        config, {"fl-pool": endpoint_client}
+    )
+    client = TestClient(TestServer(create_app(service)))
+    await client.start_server()
+    try:
+        submitted_response = await client.post("/v1/videos", data=_form())
+        submitted = await submitted_response.json()
+        deleted = await client.delete(f"/v1/videos/{submitted['id']}")
+        payload = await deleted.json()
+        status_response = await client.get(f"/v1/videos/{submitted['id']}")
+        status = await status_response.json()
+
+        assert deleted.status == 200
+        assert payload == {
+            "id": submitted["id"],
+            "object": "video.deleted",
+            "deleted": True,
+        }
+        assert status["status"] == "cancelled"
+        assert status["cancel_requested"] is True
+        assert endpoint_client.calls == []
+    finally:
+        await client.close()
+
+
 async def test_vllm_omni_health_default_model_and_submit_status(make_gateway_config):
     client = await _compat_client(make_gateway_config)
     try:
@@ -172,7 +322,21 @@ async def test_vllm_omni_health_default_model_and_submit_status(make_gateway_con
         await client.close()
 
 
-async def test_sync_uses_same_task_pipeline_and_returns_mp4(make_gateway_config):
+async def test_sync_uses_same_task_pipeline_and_returns_mp4(
+    make_gateway_config, monkeypatch
+):
+    monkeypatch.setattr(
+        MiniMaxH3VideoAdapter,
+        "validate_artifact",
+        lambda _self, _path, _normalized: {
+            "container": "mp4",
+            "fps": 24.0,
+            "frames": 124,
+            "duration_s": 5.175,
+            "video_duration_s": 124 / 24,
+            "audio_duration_s": 5.175,
+        },
+    )
     client = await _client(make_gateway_config)
     try:
         response = await client.post("/v1/videos/sync", data=_form())
@@ -181,7 +345,21 @@ async def test_sync_uses_same_task_pipeline_and_returns_mp4(make_gateway_config)
         assert response.status == 200
         assert response.headers["Content-Type"] == "video/mp4"
         assert response.headers["X-Video-Id"].startswith("video-")
+        assert response.headers["X-Video-Seed"] == "55"
+        assert response.headers["X-Video-Frames"] == "124"
+        assert response.headers["X-Video-FPS"] == "24"
+        assert response.headers["X-Video-Duration-Seconds"] == "5.175"
         assert payload.startswith(b"\x00\x00\x00\x18ftyp")
+        status = await client.get(
+            f'/v1/videos/{response.headers["X-Video-Id"]}'
+        )
+        metadata = await status.json()
+        assert metadata["seed"] == 55
+        assert metadata["requested_num_frames"] == 120
+        assert metadata["num_frames"] == 124
+        assert metadata["requested_seconds"] == 5.0
+        assert metadata["seconds"] == 5.175
+        assert metadata["duration_s"] == 5.175
     finally:
         await client.close()
 

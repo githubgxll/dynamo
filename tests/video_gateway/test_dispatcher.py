@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import threading
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
 from tests.video_gateway.test_task_store import _task
 
 _MINIMAL_MP4 = b"\x00\x00\x00\x18ftypisomminimal-video"
+_REAL_TO_THREAD = asyncio.to_thread
 
 
 class FakeContext:
@@ -43,12 +45,14 @@ class FakeClient:
         *,
         instance_id=7,
         block=False,
+        honor_stop=True,
         available=True,
         discovery_error=False,
         b64_json=None,
     ) -> None:
         self.instance_id = instance_id
         self.block = block
+        self.honor_stop = honor_stop
         self.available = available
         self.discovery_error = discovery_error
         self.release = asyncio.Event()
@@ -73,9 +77,11 @@ class FakeClient:
             try:
                 if self.block:
                     release_task = asyncio.create_task(self.release.wait())
-                    stopped_task = asyncio.create_task(context.stopped.wait())
+                    waiters = {release_task}
+                    if self.honor_stop:
+                        waiters.add(asyncio.create_task(context.stopped.wait()))
                     done, pending = await asyncio.wait(
-                        {release_task, stopped_task},
+                        waiters,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     for task in pending:
@@ -163,6 +169,11 @@ class IndeterminateLookupMemoryTaskStore(MemoryTaskStore):
 
 
 class LeaseLosingMemoryTaskStore(MemoryTaskStore):
+    def __init__(self, *, fail_after: int = 1) -> None:
+        super().__init__()
+        self.fail_after = fail_after
+        self.heartbeat_calls = 0
+
     async def heartbeat_lease(
         self,
         pool_id,
@@ -170,8 +181,12 @@ class LeaseLosingMemoryTaskStore(MemoryTaskStore):
         task_id,
         lease_id=None,
     ):
-        del pool_id, worker_key_value, task_id, lease_id
-        raise StoreConflict("simulated execution lease loss")
+        self.heartbeat_calls += 1
+        if self.heartbeat_calls > self.fail_after:
+            raise StoreConflict("simulated execution lease loss")
+        await super().heartbeat_lease(
+            pool_id, worker_key_value, task_id, lease_id
+        )
 
 
 def _pool(pool_id, model, target, workflow="fl2va"):
@@ -183,7 +198,6 @@ def _pool(pool_id, model, target, workflow="fl2va"):
         "adapter": {
             "name": "minimax_h3",
             "workflow": workflow,
-            "compatibility_version": "test-wire-v1",
             "validate_media": False,
         },
         "scheduling": {
@@ -242,6 +256,15 @@ class _DetachedClient:
     async def direct(self, payload, instance_id, context):
         self.calls.append(payload)
         return self.manager.generate(payload, context)
+
+
+class _LegacyDetachedManager(DetachedOmniTaskManager):
+    """Detached Worker shape from before terminal wait capability support."""
+
+    def _base_status(self, identity, state):
+        status = super()._base_status(identity, state)
+        status.pop("capabilities", None)
+        return status
 
 
 def _stack(config, clients):
@@ -343,11 +366,42 @@ async def test_worker_capacity_one_serializes_async_requests(make_gateway_config
         await dispatcher.stop()
 
 
+async def test_drain_stops_claiming_queued_tasks_but_keeps_gateway_live(
+    make_gateway_config,
+):
+    config = make_gateway_config(accept_without_workers=True)
+    client = FakeClient(available=False)
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        assert (await store.get_task(submission.stored.task.id)).task.status == (
+            TaskStatus.QUEUED
+        )
+
+        assert dispatcher.begin_drain() is True
+        assert dispatcher.begin_drain() is False
+        client.available = True
+        await asyncio.sleep(0.1)
+
+        stored = await store.get_task(submission.stored.task.id)
+        assert stored is not None
+        assert stored.task.status == TaskStatus.QUEUED
+        assert client.calls == []
+        assert dispatcher.ready is False
+        assert dispatcher.live is True
+    finally:
+        await dispatcher.stop()
+
+
 async def test_detached_pool_acknowledges_then_finishes_from_shared_response(
     make_gateway_config,
 ):
     pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
     pool["execution_mode"] = "detached"
+    pool["scheduling"]["abort_grace_s"] = 1
     config = make_gateway_config(pools=[pool])
     handler = _DetachedHandler(block=True)
     manager = DetachedOmniTaskManager(
@@ -372,6 +426,141 @@ async def test_detached_pool_acknowledges_then_finishes_from_shared_response(
         assert terminal.task.status == TaskStatus.COMPLETED
         assert terminal.task.result_bytes == len(_MINIMAL_MP4)
         assert handler.calls == 1
+        operations = [call["_dingo_video_task"]["op"] for call in client.calls]
+        assert operations == ["submit", "wait"]
+        metrics = "\n".join(dispatcher.telemetry.render_prometheus())
+        assert "dingo_video_detached_wait_connections_total" in metrics
+        assert 'outcome="attached"' in metrics
+        assert "dingo_video_detached_status_fallback_reads_total" not in metrics
+    finally:
+        handler.release.set()
+        await dispatcher.stop()
+        await manager.shutdown()
+
+
+async def test_detached_terminal_wait_respects_execution_deadline(
+    make_gateway_config,
+):
+    pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
+    pool["execution_mode"] = "detached"
+    pool["scheduling"]["execution_timeout_s"] = 0.2
+    config = make_gateway_config(pools=[pool])
+    handler = _DetachedHandler(block=True)
+    manager = DetachedOmniTaskManager(
+        handler,
+        config.artifact_store.root,
+        drain_timeout_s=1,
+        cancel_poll_interval_s=0.01,
+        cancel_grace_s=0.01,
+    )
+    client = _DetachedClient(manager)
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submitted = await _submit(service, "public-fl")
+        await asyncio.wait_for(handler.started.wait(), timeout=1)
+        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.FAILED
+        assert terminal.task.error is not None
+        assert terminal.task.error.code == "execution_timeout"
+        operations = [call["_dingo_video_task"]["op"] for call in client.calls]
+        assert operations == ["submit", "wait"]
+        metrics = "\n".join(dispatcher.telemetry.render_prometheus())
+        assert 'outcome="attached"' in metrics
+    finally:
+        handler.release.set()
+        await dispatcher.stop()
+        await manager.shutdown()
+
+
+async def test_detached_old_worker_uses_low_frequency_status_fallback(
+    make_gateway_config,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "dingo.video_gateway.dispatcher._DETACHED_STATUS_FALLBACK_S", 0.01
+    )
+    pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
+    pool["execution_mode"] = "detached"
+    config = make_gateway_config(pools=[pool])
+    handler = _DetachedHandler(block=True)
+    manager = _LegacyDetachedManager(
+        handler, config.artifact_store.root, drain_timeout_s=1
+    )
+    client = _DetachedClient(manager)
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submitted = await _submit(service, "public-fl")
+        await asyncio.wait_for(handler.started.wait(), timeout=1)
+        handler.release.set()
+        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.COMPLETED
+        operations = [call["_dingo_video_task"]["op"] for call in client.calls]
+        assert operations == ["submit"]
+        metrics = "\n".join(dispatcher.telemetry.render_prometheus())
+        assert "dingo_video_detached_status_fallback_reads_total" in metrics
+        assert 'outcome="unsupported"' in metrics
+    finally:
+        handler.release.set()
+        await dispatcher.stop()
+        await manager.shutdown()
+
+
+async def test_detached_ack_releases_input_portion_of_memory_budget(
+    make_gateway_config,
+):
+    pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
+    pool["execution_mode"] = "detached"
+    pool["scheduling"]["accept_without_workers"] = True
+    config = make_gateway_config(pools=[pool])
+    handler = _DetachedHandler(block=True)
+    manager = DetachedOmniTaskManager(
+        handler, config.artifact_store.root, drain_timeout_s=1
+    )
+    client = _DetachedClient(manager)
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    submitted = await _submit(service, "public-fl")
+    input_reservation = 1024 * 1024
+    await store.transition(
+        submitted.stored.task.id,
+        expected={TaskStatus.QUEUED},
+        expected_revision=submitted.stored.revision,
+        patch={
+            "estimated_payload_bytes": (
+                config.media.result_task_memory_bytes + input_reservation
+            )
+        },
+    )
+
+    await dispatcher.start()
+    try:
+        await asyncio.wait_for(handler.started.wait(), timeout=1)
+        for _ in range(100):
+            snapshot = await dispatcher.memory_budget_snapshot()
+            if snapshot.used_bytes == config.media.result_task_memory_bytes:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("input memory budget was not released after ACK")
+
+        assert snapshot.active_tasks == 1
+        assert snapshot.peak_bytes == (
+            config.media.result_task_memory_bytes + input_reservation
+        )
+
+        handler.release.set()
+        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 2)
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert (await dispatcher.memory_budget_snapshot()).used_bytes == 0
     finally:
         handler.release.set()
         await dispatcher.stop()
@@ -483,6 +672,35 @@ async def test_running_cancel_stops_context_and_releases_after_stream_ends(
         await dispatcher.stop()
 
 
+async def test_unconfirmed_running_cancel_is_finished_in_background_and_quarantined(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient(block=True, honor_stop=False)
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": client}
+    )
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        while not client.calls:
+            await asyncio.sleep(0.01)
+
+        requested = await dispatcher.cancel(submission.stored.task.id)
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+        leases = await store.list_leases("fl-pool")
+
+        assert requested.task.cancel_requested_at_ms is not None
+        assert terminal.task.status == TaskStatus.CANCELLED
+        assert len(leases) == 1
+        assert leases[0].state == "quarantined"
+        assert leases[0].reuse_after_ms is not None
+        assert leases[0].reuse_after_ms >= requested.task.deadline_at_ms
+    finally:
+        client.release.set()
+        await dispatcher.stop()
+
+
 async def test_execution_lease_loss_stops_and_quarantines_worker(
     make_gateway_config,
     monkeypatch,
@@ -493,7 +711,7 @@ async def test_execution_lease_loss_stops_and_quarantines_worker(
     )
     config = make_gateway_config()
     client = FakeClient(block=True)
-    store = LeaseLosingMemoryTaskStore()
+    store = LeaseLosingMemoryTaskStore(fail_after=5)
     artifacts = FileArtifactStore(config.artifact_store.root)
     adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
     dispatcher = VideoDispatcher(
@@ -525,6 +743,97 @@ async def test_execution_lease_loss_stops_and_quarantines_worker(
         assert "dingo_video_worker_lease_lost_total" in metrics
     finally:
         client.release.set()
+        await dispatcher.stop()
+
+
+async def test_payload_build_is_covered_by_execution_lease_heartbeats(
+    make_gateway_config,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "dingo.video_gateway.dispatcher._WORKER_LEASE_HEARTBEAT_INTERVAL_S",
+        0.01,
+    )
+    # The suite normally inlines to_thread for deterministic media tests. This
+    # case specifically verifies that the production thread offload leaves the
+    # event loop free to renew the execution lease during payload construction.
+    monkeypatch.setattr(asyncio, "to_thread", _REAL_TO_THREAD)
+    config = make_gateway_config()
+    client = FakeClient()
+    store = LeaseLosingMemoryTaskStore(fail_after=1000)
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    adapter = adapters["fl-pool"]
+    original_build = adapter.build_worker_payload
+    build_started = threading.Event()
+    release_build = threading.Event()
+
+    def slow_build(*args, **kwargs):
+        build_started.set()
+        if not release_build.wait(timeout=2):
+            raise TimeoutError("test did not release payload construction")
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "build_worker_payload", slow_build)
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="payload-heartbeat-test",
+    )
+    service = VideoGatewayService(config, store, artifacts, dispatcher, adapters)
+
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        assert await _REAL_TO_THREAD(build_started.wait, 1)
+        await asyncio.sleep(0.05)
+
+        assert store.heartbeat_calls >= 3
+        assert client.calls == []
+
+        release_build.set()
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert client.calls
+    finally:
+        release_build.set()
+        await dispatcher.stop()
+
+
+async def test_lease_loss_before_payload_build_never_contacts_or_quarantines_worker(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient()
+    store = LeaseLosingMemoryTaskStore(fail_after=0)
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="payload-lease-loss-test",
+    )
+    service = VideoGatewayService(config, store, artifacts, dispatcher, adapters)
+
+    await dispatcher.start()
+    try:
+        submission = await _submit(service, "public-fl")
+        terminal = await dispatcher.wait_terminal(submission.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.FAILED
+        assert terminal.task.error is not None
+        assert terminal.task.error.code == "worker_lease_lost"
+        assert client.calls == []
+        assert await store.list_leases("fl-pool") == []
+    finally:
         await dispatcher.stop()
 
 
@@ -609,11 +918,14 @@ async def test_stale_gateway_cannot_publish_after_finalizing_owner_takeover(
         await dispatcher.stop()
 
 
-async def test_detached_cancel_quarantines_worker_until_execution_deadline(
+async def test_detached_cancel_acknowledgement_releases_worker_immediately(
     make_gateway_config,
 ):
     pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
     pool["execution_mode"] = "detached"
+    # Gateway observes detached terminal state at 0.5 s intervals. Keep the
+    # confirmation window above that interval; production uses 15 seconds.
+    pool["scheduling"]["abort_grace_s"] = 1
     config = make_gateway_config(pools=[pool])
     handler = _DetachedHandler(block=True)
     manager = DetachedOmniTaskManager(
@@ -636,10 +948,8 @@ async def test_detached_cancel_quarantines_worker_until_execution_deadline(
         leases = await store.list_leases("fl-pool")
 
         assert terminal.task.status == TaskStatus.CANCELLED
-        assert len(leases) == 1
-        assert leases[0].state == "quarantined"
-        assert leases[0].reuse_after_ms is not None
-        assert leases[0].reuse_after_ms >= requested.task.deadline_at_ms
+        assert requested.task.cancel_requested_at_ms is not None
+        assert leases == []
     finally:
         handler.release.set()
         await dispatcher.stop()

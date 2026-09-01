@@ -31,10 +31,13 @@ logger = logging.getLogger(__name__)
 _FL2VA_KEYFRAME_COUNT = 2
 _FL2VA_KEYFRAME_ENVELOPE_TYPE = "fl2va_keyframes_v1"
 _REF2VA_MIXED_ENVELOPE_TYPE = "ref2va_mixed_v1"
-_VIDEO_PREFIX = "data:video/mp4;base64,"
-_AUDIO_PREFIX = "data:audio/wav;base64,"
 _MAX_VIDEO_BYTES = 50 * 1024 * 1024
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
+_MEDIA_DATA_URLS = {
+    "data:video/mp4;base64,": ("video", ".mp4", _MAX_VIDEO_BYTES),
+    "data:video/quicktime;base64,": ("video", ".mov", _MAX_VIDEO_BYTES),
+    "data:audio/wav;base64,": ("audio", ".wav", _MAX_AUDIO_BYTES),
+}
 # vLLM-Omni abort can return before its diffusion subprocess has finished
 # opening Ref2VA paths. Keep cancelled-request inputs briefly so a detached
 # task cannot unlink them underneath that late preprocessing work.
@@ -49,6 +52,7 @@ _ASPECT_RATIOS = {
 }
 @dataclasses.dataclass(frozen=True)
 class _StoredMedia:
+    kind: str
     path: str
     bytes: int
     sha256: str
@@ -136,8 +140,7 @@ class _RequestMediaScope:
         directory.chmod(0o700)
         return directory
 
-    def persist(self, payload: bytes, suffix: str) -> _StoredMedia:
-        kind = "video" if suffix == ".mp4" else "audio"
+    def persist(self, payload: bytes, kind: str, suffix: str) -> _StoredMedia:
         digest = hashlib.sha256(payload).hexdigest()
         with self.lock:
             media_dir = self._media_dir_locked(kind)
@@ -149,7 +152,7 @@ class _RequestMediaScope:
                 ):
                     raise ValueError(f"Ref2VA request media entry is invalid: {path}")
                 path.chmod(0o600)
-                return _StoredMedia(str(path), len(payload), digest)
+                return _StoredMedia(kind, str(path), len(payload), digest)
 
             self.capacity.reserve(len(payload))
             temporary: Path | None = None
@@ -172,7 +175,7 @@ class _RequestMediaScope:
             finally:
                 if temporary is not None and temporary.exists():
                     temporary.unlink()
-            return _StoredMedia(str(path), len(payload), digest)
+            return _StoredMedia(kind, str(path), len(payload), digest)
 
     def cleanup(self) -> None:
         with self.lock:
@@ -224,18 +227,25 @@ def _persist_data_url(
     prefix: str,
     limit: int,
     scope: _RequestMediaScope,
+    kind: str,
     suffix: str,
 ) -> _StoredMedia:
-    label = "Ref2VA MP4" if suffix == ".mp4" else "Ref2VA WAV"
+    label = f"Ref2VA {suffix.removeprefix('.').upper()}"
     payload = _decode_data_url(reference, prefix, limit, label)
-    if suffix == ".mp4" and b"ftyp" not in payload[:64]:
-        raise ValueError("Ref2VA video reference is not an MP4 file")
+    if kind == "video" and b"ftyp" not in payload[:64]:
+        raise ValueError("Ref2VA video reference is not an ISO BMFF file")
     if suffix == ".wav" and (
         len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE"
     ):
         raise ValueError("Ref2VA audio reference is not a WAV file")
+    return scope.persist(payload, kind, suffix)
 
-    return scope.persist(payload, suffix)
+
+def _media_data_url_spec(reference: str) -> tuple[str, str, int, str] | None:
+    for prefix, (kind, suffix, limit) in _MEDIA_DATA_URLS.items():
+        if reference.startswith(prefix):
+            return kind, suffix, limit, prefix
+    return None
 
 
 class MiniMaxH3RequestAdapter:
@@ -255,6 +265,12 @@ class MiniMaxH3RequestAdapter:
             media_max_bytes, _managed_media_size(self.requests_root)
         )
         self._deferred_cleanups: set[asyncio.Task[None]] = set()
+
+    @staticmethod
+    def release_input_payload(request: dict[str, Any]) -> None:
+        """Drop encoded references after engine inputs own decoded media."""
+        request.pop("input_reference", None)
+        request.pop("input_references", None)
 
     async def _cleanup_scope(
         self, scope: _RequestMediaScope, request_id: str
@@ -359,9 +375,9 @@ class MiniMaxH3RequestAdapter:
         return await self._load_ref2va_reference(stripped, loader, request_scope)
 
     async def _load_fl2va_reference(self, reference: str, loader: Any) -> Any:
-        if reference.startswith(_VIDEO_PREFIX):
+        if reference.startswith(("data:video/", "data:audio/")):
             raise ValueError(
-                "MiniMax-H3 FL2VA worker does not accept Ref2VA video references"
+                "MiniMax-H3 FL2VA worker accepts only image references"
             )
         if reference.startswith("{"):
             try:
@@ -426,19 +442,29 @@ class MiniMaxH3RequestAdapter:
         loader: Any,
         request_scope: _RequestMediaScope | None,
     ) -> Any:
-        if reference.startswith(_VIDEO_PREFIX):
+        media_spec = _media_data_url_spec(reference)
+        if media_spec is not None:
             if request_scope is None:
                 raise RuntimeError(
                     "Ref2VA media persistence requires an active request scope"
                 )
+            kind, suffix, limit, prefix = media_spec
+            if kind == "audio":
+                raise ValueError(
+                    "MiniMax-H3 Ref2VA standalone audio requires an image or "
+                    "video reference"
+                )
             return await asyncio.to_thread(
                 _persist_data_url,
                 reference,
-                prefix=_VIDEO_PREFIX,
-                limit=_MAX_VIDEO_BYTES,
+                prefix=prefix,
+                limit=limit,
                 scope=request_scope,
-                suffix=".mp4",
+                kind=kind,
+                suffix=suffix,
             )
+        if reference.startswith(("data:video/", "data:audio/")):
+            raise ValueError("MiniMax-H3 Ref2VA media data URL type is unsupported")
         if reference.startswith("["):
             raise ValueError(
                 "MiniMax-H3 Ref2VA worker does not accept FL2VA keyframe arrays"
@@ -484,9 +510,9 @@ class MiniMaxH3RequestAdapter:
                 raise ValueError(
                     f"Ref2VA mixed {name} must be a list of non-empty strings"
                 )
-        if not images or not videos or not audios:
+        if not images and not videos:
             raise ValueError(
-                "Ref2VA mixed validation requires at least one image, video, and audio"
+                "Ref2VA mixed references require at least one image or video"
             )
         if len(images) > 9 or len(videos) > 3 or len(audios) > 3:
             raise ValueError(
@@ -497,10 +523,14 @@ class MiniMaxH3RequestAdapter:
             raise ValueError("Ref2VA mixed references exceed the 12 item total limit")
         if not all(item.lstrip().startswith("data:image/") for item in images):
             raise ValueError("Ref2VA mixed images must use image data URLs")
-        if not all(item.lstrip().startswith(_VIDEO_PREFIX) for item in videos):
-            raise ValueError("Ref2VA mixed videos must use MP4 data URLs")
-        if not all(item.lstrip().startswith(_AUDIO_PREFIX) for item in audios):
+        video_specs = [_media_data_url_spec(item.lstrip()) for item in videos]
+        if not all(spec is not None and spec[0] == "video" for spec in video_specs):
+            raise ValueError("Ref2VA mixed videos must use MP4 or MOV data URLs")
+        validated_video_specs = [spec for spec in video_specs if spec is not None]
+        audio_specs = [_media_data_url_spec(item.lstrip()) for item in audios]
+        if not all(spec is not None and spec[0] == "audio" for spec in audio_specs):
             raise ValueError("Ref2VA mixed audios must use WAV data URLs")
+        validated_audio_specs = [spec for spec in audio_specs if spec is not None]
         if request_scope is None:
             raise RuntimeError(
                 "Ref2VA media persistence requires an active request scope"
@@ -513,12 +543,13 @@ class MiniMaxH3RequestAdapter:
                     asyncio.to_thread(
                         _persist_data_url,
                         item.lstrip(),
-                        prefix=_VIDEO_PREFIX,
-                        limit=_MAX_VIDEO_BYTES,
+                        prefix=validated_video_specs[index][3],
+                        limit=validated_video_specs[index][2],
                         scope=request_scope,
-                        suffix=".mp4",
+                        kind="video",
+                        suffix=validated_video_specs[index][1],
                     )
-                    for item in videos
+                    for index, item in enumerate(videos)
                 )
             ),
             asyncio.gather(
@@ -526,12 +557,13 @@ class MiniMaxH3RequestAdapter:
                     asyncio.to_thread(
                         _persist_data_url,
                         item.lstrip(),
-                        prefix=_AUDIO_PREFIX,
-                        limit=_MAX_AUDIO_BYTES,
+                        prefix=validated_audio_specs[index][3],
+                        limit=validated_audio_specs[index][2],
                         scope=request_scope,
-                        suffix=".wav",
+                        kind="audio",
+                        suffix=validated_audio_specs[index][1],
                     )
-                    for item in audios
+                    for index, item in enumerate(audios)
                 )
             ),
         )
@@ -550,14 +582,21 @@ class MiniMaxH3RequestAdapter:
             )
         elif isinstance(reference, _MixedReference):
             inputs = generic_builder(req, image=None)
-            inputs.prompt["multi_modal_data"] = {
-                "image": list(reference.images),
-                "video": [item.path for item in reference.videos],
-                "audio": [item.path for item in reference.audios],
-            }
+            multi_modal_data: dict[str, Any] = {}
+            if reference.images:
+                multi_modal_data["image"] = list(reference.images)
+            if reference.videos:
+                multi_modal_data["video"] = [
+                    item.path for item in reference.videos
+                ]
+            if reference.audios:
+                multi_modal_data["audio"] = [
+                    item.path for item in reference.audios
+                ]
+            inputs.prompt["multi_modal_data"] = multi_modal_data
         elif isinstance(reference, _StoredMedia):
             inputs = generic_builder(req, image=None)
-            inputs.prompt["multi_modal_data"] = {"video": reference.path}
+            inputs.prompt["multi_modal_data"] = {reference.kind: reference.path}
         else:
             inputs = generic_builder(req, image=reference)
 

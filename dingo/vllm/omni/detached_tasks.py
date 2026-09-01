@@ -25,6 +25,7 @@ from typing import Any
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
     SCHEMA_VERSION,
+    WAIT_TERMINAL_CAPABILITY,
     DetachedTaskIdentity,
     detached_attempt_root,
     detached_envelope,
@@ -119,6 +120,9 @@ class DetachedOmniTaskManager:
         op = envelope.get("op")
         if op == "submit":
             yield await self._submit(identity, envelope.get("payload"))
+        elif op == "wait":
+            async for status in self._wait_terminal(identity):
+                yield status
         elif op == "status" or op == "result":
             yield await self._status(identity)
         elif op == "cancel":
@@ -207,6 +211,7 @@ class DetachedOmniTaskManager:
             "execution_token": identity.execution_token,
             "state": state,
             "updated_at_ms": int(time.time() * 1000),
+            "capabilities": [WAIT_TERMINAL_CAPABILITY],
         }
 
     async def _submit(
@@ -442,6 +447,52 @@ class DetachedOmniTaskManager:
         if value is None:
             return {**self._base_status(identity, "not_found")}
         return value
+
+    async def _wait_terminal(
+        self, identity: DetachedTaskIdentity
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Attach to one local execution without owning its lifetime.
+
+        The initial ``watching`` response lets the Gateway distinguish a
+        healthy event channel from a connection attempt that is still
+        pending. Cancelling this response stream must never cancel the
+        detached inference task, so the execution is always shielded.
+        """
+
+        status_path = self._status_path(identity)
+        status = await asyncio.to_thread(self._read_status, status_path)
+        if status is None:
+            yield self._base_status(identity, "not_found")
+            return
+        if status.get("state") in _TERMINAL:
+            yield status
+            return
+
+        running = self._running.get(identity.key)
+        if running is None:
+            # A different or restarted process may own the durable status.
+            # The Gateway will use its shared-filesystem fallback rather than
+            # treating the missing local waiter as an inference failure.
+            yield status
+            return
+
+        yield self._base_status(identity, "watching")
+        try:
+            await asyncio.shield(running.execution)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # _execute records its terminal failure before it returns. Read
+            # that durable status below instead of leaking an internal task
+            # exception across the private protocol.
+            pass
+
+        terminal = await asyncio.to_thread(self._read_status, status_path)
+        if terminal is None or terminal.get("state") not in _TERMINAL:
+            raise RuntimeError(
+                "detached execution ended without a durable terminal status"
+            )
+        yield terminal
 
     async def _cancel(self, identity: DetachedTaskIdentity) -> dict[str, Any]:
         path = self._cancel_path(identity)

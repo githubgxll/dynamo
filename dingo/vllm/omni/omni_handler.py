@@ -245,6 +245,20 @@ class OmniHandler(BaseOmniHandler):
             yield self._error_chunk(request_id, str(e), request_type)
             return
 
+        if (
+            self.request_adapter is not None
+            and request_type == RequestType.VIDEO_GENERATION
+            and isinstance(parsed_request, NvCreateVideoRequest)
+        ):
+            # EngineInputs now owns the decoded images or request-scoped media
+            # paths needed by MiniMax-H3.  Remove the original Data URLs from
+            # both the detached manager's shared payload dict and this frame,
+            # so they do not remain resident for the full diffusion run.
+            self.request_adapter.release_input_payload(request)
+            del parsed_request_raw
+            del parsed_request
+            image = None
+
         generate_kwargs: Dict[str, Any] = {
             "prompt": inputs.prompt,
             "request_id": request_id,
