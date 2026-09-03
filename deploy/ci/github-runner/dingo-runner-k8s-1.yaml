@@ -1,0 +1,371 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dingo-runner-k8s-1
+  namespace: dingo-runner
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dingo-runner-k8s-1
+  namespace: dingo-runner
+data:
+  daemon.json: |
+    {
+      "proxies": {
+        "http-proxy": "http://10.201.136.68:1080",
+        "https-proxy": "http://10.201.136.68:1080",
+        "no-proxy": "127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      }
+    }
+  entrypoint.sh: |
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+
+    runner_pid=""
+    dockerd_pid=""
+
+    cleanup() {
+      if [[ -n "${runner_pid}" ]]; then
+        kill -TERM "${runner_pid}" 2>/dev/null || true
+        wait "${runner_pid}" 2>/dev/null || true
+      fi
+      if [[ -n "${dockerd_pid}" ]]; then
+        kill -TERM "${dockerd_pid}" 2>/dev/null || true
+        wait "${dockerd_pid}" 2>/dev/null || true
+      fi
+    }
+    trap cleanup EXIT TERM INT
+
+    export DEBIAN_FRONTEND=noninteractive
+    sed -i \
+      's#http://mirrors.tuna.tsinghua.edu.cn/ubuntu#https://repo.huaweicloud.com/ubuntu#g' \
+      /etc/apt/sources.list
+    apt-get -o Acquire::Retries=5 update
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      bash \
+      build-essential \
+      ca-certificates \
+      curl \
+      dialog \
+      docker.io \
+      g++-12 \
+      gcc-12 \
+      git \
+      jq \
+      libclang-dev \
+      libicu70 \
+      libssl-dev \
+      libssl3 \
+      pkg-config \
+      procps \
+      python3 \
+      python3.11 \
+      python3.11-venv \
+      python3-jinja2 \
+      python3-pip \
+      python3-yaml \
+      sudo \
+      tar \
+      unzip \
+      zip \
+      zlib1g \
+      zlib1g-dev
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+    install_dir="/runner-data/actions-runner"
+    archive="/runner-data/actions-runner-${RUNNER_VERSION}.tar.gz"
+    buildx_binary="/runner-data/tools/docker-buildx-${BUILDX_VERSION}"
+    swagger_ui_archive="/runner-data/tools/swagger-ui-v${SWAGGER_UI_VERSION}.zip"
+    mkdir -p \
+      "${install_dir}" \
+      "${RUNNER_WORKDIR}" \
+      "${HOME}" \
+      "${HOME}/.docker" \
+      /runner-data/docker \
+      /runner-data/tools \
+      /usr/local/lib/docker/cli-plugins
+
+    docker_config="${HOME}/.docker/config.json"
+    docker_config_tmp="$(mktemp "${HOME}/.docker/config.json.XXXXXX")"
+    if [[ -s "${docker_config}" ]] && jq empty "${docker_config}" 2>/dev/null; then
+      jq \
+        --arg http_proxy "${HTTP_PROXY}" \
+        --arg https_proxy "${HTTPS_PROXY}" \
+        --arg no_proxy "${NO_PROXY}" \
+        '.proxies.default = {
+          httpProxy: $http_proxy,
+          httpsProxy: $https_proxy,
+          noProxy: $no_proxy
+        }' \
+        "${docker_config}" > "${docker_config_tmp}"
+    else
+      jq -n \
+        --arg http_proxy "${HTTP_PROXY}" \
+        --arg https_proxy "${HTTPS_PROXY}" \
+        --arg no_proxy "${NO_PROXY}" \
+        '{proxies: {default: {
+          httpProxy: $http_proxy,
+          httpsProxy: $https_proxy,
+          noProxy: $no_proxy
+        }}}' > "${docker_config_tmp}"
+    fi
+    chmod 0600 "${docker_config_tmp}"
+    mv "${docker_config_tmp}" "${docker_config}"
+
+    if [[ ! -x "${install_dir}/bin/Runner.Listener" ]]; then
+      if ! echo "${RUNNER_SHA256}  ${archive}" | \
+           sha256sum --check --status 2>/dev/null; then
+        curl -fsSL --retry 5 --retry-delay 2 \
+          --connect-timeout 30 --max-time 3600 \
+          -o "${archive}.tmp" \
+          "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+        echo "${RUNNER_SHA256}  ${archive}.tmp" | sha256sum --check -
+        mv "${archive}.tmp" "${archive}"
+      fi
+      rm -rf "${install_dir:?}"/*
+      tar -xzf "${archive}" -C "${install_dir}"
+    fi
+
+    if ! echo "${BUILDX_SHA256}  ${buildx_binary}" | \
+         sha256sum --check --status 2>/dev/null; then
+      curl -fsSL --retry 5 --retry-delay 2 \
+        --connect-timeout 30 --max-time 3600 \
+        -o "${buildx_binary}.tmp" \
+        "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-amd64"
+      echo "${BUILDX_SHA256}  ${buildx_binary}.tmp" | sha256sum --check -
+      mv "${buildx_binary}.tmp" "${buildx_binary}"
+    fi
+    chmod 0755 "${buildx_binary}"
+    ln -sf "${buildx_binary}" /usr/local/lib/docker/cli-plugins/docker-buildx
+
+    if ! echo "${SWAGGER_UI_SHA256}  ${swagger_ui_archive}" | \
+         sha256sum --check --status 2>/dev/null; then
+      curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+        --connect-timeout 30 --max-time 600 \
+        -o "${swagger_ui_archive}.tmp" \
+        "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v${SWAGGER_UI_VERSION}.zip"
+      echo "${SWAGGER_UI_SHA256}  ${swagger_ui_archive}.tmp" | sha256sum --check -
+      mv "${swagger_ui_archive}.tmp" "${swagger_ui_archive}"
+    fi
+
+    dockerd \
+      --config-file=/etc/dingo-runner/daemon.json \
+      --host=unix:///var/run/docker.sock \
+      --data-root=/runner-data/docker \
+      --storage-driver=overlay2 \
+      --log-level=warn \
+      >/runner-data/dockerd.log 2>&1 &
+    dockerd_pid=$!
+
+    docker_ready=false
+    for _ in {1..120}; do
+      if docker info >/dev/null 2>&1; then
+        docker_ready=true
+        break
+      fi
+      if ! kill -0 "${dockerd_pid}" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if [[ "${docker_ready}" != true ]]; then
+      tail -n 200 /runner-data/dockerd.log || true
+      exit 1
+    fi
+
+    cd "${install_dir}"
+    export RUNNER_ALLOW_RUNASROOT=1
+
+    if [[ ! -f .runner ]]; then
+      if [[ ! -s "${RUNNER_TOKEN_FILE}" ]]; then
+        echo "GitHub Runner registration token is missing" >&2
+        exit 1
+      fi
+      ./config.sh \
+        --unattended \
+        --replace \
+        --url "${RUNNER_URL}" \
+        --token "$(tr -d '\r\n' < "${RUNNER_TOKEN_FILE}")" \
+        --name "${RUNNER_NAME}" \
+        --labels "${RUNNER_LABELS}" \
+        --work "${RUNNER_WORKDIR}"
+    fi
+
+    ./run.sh &
+    runner_pid=$!
+    wait "${runner_pid}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dingo-runner-k8s-1-data
+  namespace: dingo-runner
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: base-hd04-cephrbd-hdd
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dingo-runner-k8s-1
+  namespace: dingo-runner
+  labels:
+    app.kubernetes.io/name: dingo-runner-k8s-1
+    app.kubernetes.io/part-of: dingo-ci
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dingo-runner-k8s-1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dingo-runner-k8s-1
+        app.kubernetes.io/part-of: dingo-ci
+    spec:
+      serviceAccountName: dingo-runner-k8s-1
+      automountServiceAccountToken: false
+      priorityClassName: elm-test-custom-priorityclass-value-190
+      preemptionPolicy: Never
+      terminationGracePeriodSeconds: 120
+      tolerations:
+        - operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - hd04-cci-k8s-worker-1
+                      - hd04-cci-k8s-worker-2
+                      - hd04-cci-k8s-worker-3
+      containers:
+        - name: runner
+          image: registry.hd-04.alayanew.com:8443/aladdin/ubuntu:22.04
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /etc/dingo-runner/entrypoint.sh
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: HOME
+              value: /runner-data/home
+            - name: RUSTUP_HOME
+              value: /runner-data/home/.rustup
+            - name: CARGO_HOME
+              value: /runner-data/home/.cargo
+            - name: RUSTUP_DIST_SERVER
+              value: https://rsproxy.cn
+            - name: RUSTUP_UPDATE_ROOT
+              value: https://rsproxy.cn/rustup
+            - name: CARGO_NET_GIT_FETCH_WITH_CLI
+              value: "true"
+            - name: CARGO_REGISTRIES_CRATES_IO_PROTOCOL
+              value: sparse
+            - name: HTTP_PROXY
+              value: http://10.201.136.68:1080
+            - name: HTTPS_PROXY
+              value: http://10.201.136.68:1080
+            - name: NO_PROXY
+              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+            - name: http_proxy
+              value: http://10.201.136.68:1080
+            - name: https_proxy
+              value: http://10.201.136.68:1080
+            - name: no_proxy
+              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+            - name: RUNNER_NAME
+              value: dingo-runner-k8s-1
+            - name: RUNNER_URL
+              value: https://github.com/zhaoxianhua/dynamo
+            - name: RUNNER_LABELS
+              value: hd-04,dingo,kubernetes
+            - name: RUNNER_VERSION
+              value: 2.337.0
+            - name: RUNNER_SHA256
+              value: 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+            - name: BUILDX_VERSION
+              value: 0.37.0
+            - name: BUILDX_SHA256
+              value: ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba
+            - name: SWAGGER_UI_VERSION
+              value: 5.17.14
+            - name: SWAGGER_UI_SHA256
+              value: 481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc
+            - name: SWAGGER_UI_DOWNLOAD_URL
+              value: file:///runner-data/tools/swagger-ui-v5.17.14.zip
+            - name: RUNNER_WORKDIR
+              value: /runner-data/_work
+            - name: RUNNER_TOKEN_FILE
+              value: /var/run/dingo-runner-token/token
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - pgrep -f 'Runner.Listener.*run' >/dev/null && docker info >/dev/null 2>&1
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - pgrep -f 'Runner.Listener.*run' >/dev/null && docker info >/dev/null 2>&1
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - pgrep -f 'Runner.Listener.*run' >/dev/null && docker info >/dev/null 2>&1
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              ephemeral-storage: 10Gi
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              ephemeral-storage: 20Gi
+          volumeMounts:
+            - name: runner-data
+              mountPath: /runner-data
+            - name: runner-config
+              mountPath: /etc/dingo-runner
+              readOnly: true
+            - name: registration-token
+              mountPath: /var/run/dingo-runner-token
+              readOnly: true
+      volumes:
+        - name: runner-data
+          persistentVolumeClaim:
+            claimName: dingo-runner-k8s-1-data
+        - name: runner-config
+          configMap:
+            name: dingo-runner-k8s-1
+            defaultMode: 0555
+        - name: registration-token
+          secret:
+            secretName: dingo-runner-k8s-1-registration
+            defaultMode: 0400

@@ -31,7 +31,7 @@ concurrency:
 jobs:
   test:
     name: Run tests (QUICK_MODE=${{ inputs.quick_mode || 'smoke' }})
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 25
 
     steps:
