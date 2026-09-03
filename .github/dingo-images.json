@@ -22,8 +22,7 @@
     {
       "framework": "vllm",
       "enabled": true,
-      "repository": "ai-dingo-vllm",
-      "tag_prefix": "glm53-flash-cu130-runtime"
+      "repository": "ai-dingo-vllm"
     },
     {
       "framework": "sglang",
