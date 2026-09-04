@@ -755,3 +755,58 @@ async def test_two_gateway_owners_cannot_reserve_the_same_task():
         left.owner_generation,
         right.owner_generation,
     }
+
+
+async def test_discovery_snapshot_uses_full_backend_target_not_k8s_namespace():
+    client = FakeEtcd()
+    store = EtcdTaskStore(
+        client, prefix="/isolated/video", deployment_id="discovery"
+    )
+    client.revision = 11
+    key = "v1/instances/arbitrary-scope/backend/generate/000000000000002a"
+    client.values[key] = EtcdValue(
+        key,
+        json.dumps(
+            {
+                "type": "Endpoint",
+                "namespace": "arbitrary-scope",
+                "component": "backend",
+                "endpoint": "generate",
+                "instance_id": 42,
+            }
+        ).encode(),
+        11,
+        11,
+        1,
+    )
+
+    snapshot = await store.discovery_instance_snapshot(
+        ["dyn://arbitrary-scope.backend.generate", "other.backend.generate"]
+    )
+
+    assert snapshot == {
+        "dyn://arbitrary-scope.backend.generate": {42},
+        "other.backend.generate": set(),
+    }
+
+
+async def test_discovery_recovery_lock_requires_ha_and_has_single_winner():
+    client = FakeEtcd()
+    store = EtcdTaskStore(
+        client, prefix="/isolated/video", deployment_id="discovery-lock"
+    )
+    await store.register_gateway("gateway-a", ttl_s=15)
+    assert not await store.try_acquire_discovery_recovery(
+        "gateway-a", ttl_s=15
+    )
+
+    await store.register_gateway("gateway-b", ttl_s=15)
+    results = await asyncio.gather(
+        store.try_acquire_discovery_recovery("gateway-a", ttl_s=15),
+        store.try_acquire_discovery_recovery("gateway-b", ttl_s=15),
+    )
+
+    assert sorted(results) == [False, True]
+    lock = await client.get(store._discovery_recovery_lock_key())
+    assert lock is not None
+    assert json.loads(lock.value)["gateway_id"] in {"gateway-a", "gateway-b"}

@@ -148,6 +148,51 @@ def test_unknown_discovery_backend_fails_config_validation(tmp_path):
         parse_config(raw)
 
 
+def test_video_discovery_watchdog_is_opt_in_and_configurable(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).runtime.discovery_watchdog.enabled is False
+
+    raw["runtime"] = {
+        "discovery_backend": "etcd",
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 1.5,
+            "mismatch_grace_s": 4.5,
+        },
+    }
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "endpoints": ["http://etcd-0:2379", "http://etcd-1:2379"],
+    }
+
+    watchdog = parse_config(raw).runtime.discovery_watchdog
+    assert watchdog.enabled is True
+    assert watchdog.interval_s == 1.5
+    assert watchdog.mismatch_grace_s == 4.5
+
+
+def test_video_discovery_watchdog_rejects_non_etcd_state(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {"discovery_watchdog": {"enabled": True}}
+
+    with pytest.raises(ValueError, match="requires etcd"):
+        parse_config(raw)
+
+
+def test_video_discovery_watchdog_rejects_too_short_grace(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 2,
+            "mismatch_grace_s": 1,
+        }
+    }
+
+    with pytest.raises(ValueError, match="at least interval_s"):
+        parse_config(raw)
+
+
 def test_vllm_omni_http_compatibility_options(tmp_path):
     raw = _raw(tmp_path)
     raw["http"] = {
@@ -220,6 +265,33 @@ def test_lifecycle_and_artifact_watermarks_are_configurable(tmp_path):
     assert config.lifecycle.orphan_cleanup_dry_run is True
     assert config.artifact_store.hard_min_free_bytes == 1024
     assert config.artifact_store.soft_min_free_bytes == 4096
+
+
+def test_task_store_watch_response_timeout_is_opt_in(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).task_store.watch_response_timeout_s is None
+
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": 6,
+    }
+    config = parse_config(raw)
+
+    assert config.task_store.watch_response_timeout_s == 6
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_task_store_watch_response_timeout_must_be_positive(tmp_path, value):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": value,
+    }
+
+    with pytest.raises(ValueError, match="watch_response_timeout_s"):
+        parse_config(raw)
 
 
 def test_artifact_soft_watermark_cannot_be_below_hard_watermark(tmp_path):

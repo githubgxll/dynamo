@@ -102,6 +102,26 @@ class TaskStore(ABC):
     def gateway_owner_supported(self) -> bool:
         return False
 
+    @property
+    def discovery_truth_supported(self) -> bool:
+        return False
+
+    async def discovery_instance_snapshot(
+        self, backend_targets: Iterable[str]
+    ) -> dict[str, set[int]]:
+        del backend_targets
+        raise NotImplementedError(
+            "this TaskStore cannot read Dynamo discovery instance truth"
+        )
+
+    async def try_acquire_discovery_recovery(
+        self, gateway_id: str, *, ttl_s: int
+    ) -> bool:
+        del gateway_id, ttl_s
+        raise NotImplementedError(
+            "this TaskStore does not support discovery recovery fencing"
+        )
+
     async def lease_snapshot(
         self, pool_id: str
     ) -> tuple[dict[str, WorkerLease], int]:
@@ -693,6 +713,10 @@ class EtcdTaskStore(TaskStore):
     def gateway_owner_supported(self) -> bool:
         return True
 
+    @property
+    def discovery_truth_supported(self) -> bool:
+        return True
+
     def _task_key(self, task_id: str) -> str:
         return f"{self.root}/tasks/{task_id}"
 
@@ -725,6 +749,12 @@ class EtcdTaskStore(TaskStore):
 
     def _gateway_key(self, gateway_id: str) -> str:
         return f"{self.root}/gateways/{gateway_id}"
+
+    def _gateway_prefix(self) -> str:
+        return f"{self.root}/gateways/"
+
+    def _discovery_recovery_lock_key(self) -> str:
+        return self._meta_key("discovery-recovery-lock")
 
     def _owner_task_key(self, gateway_id: str, task_id: str) -> str:
         return f"{self.root}/gateway-owners/{gateway_id}/tasks/{task_id}"
@@ -1592,6 +1622,75 @@ class EtcdTaskStore(TaskStore):
 
     async def unregister_gateway(self, lease_id: int) -> None:
         await self.client.lease_revoke(lease_id)
+
+    async def discovery_instance_snapshot(
+        self, backend_targets: Iterable[str]
+    ) -> dict[str, set[int]]:
+        snapshots: dict[str, set[int]] = {}
+        for target in dict.fromkeys(backend_targets):
+            endpoint_path = target.removeprefix("dyn://")
+            parts = endpoint_path.split(".")
+            if len(parts) != 3 or any(not part for part in parts):
+                raise ValueError(f"invalid Dynamo backend target: {target!r}")
+            namespace, component, endpoint = parts
+            prefix = f"v1/instances/{namespace}/{component}/{endpoint}/"
+            values, _revision = await self.client.range_all(prefix, prefix=True)
+            instances: set[int] = set()
+            for value in values:
+                try:
+                    payload = json.loads(value.value)
+                    if not isinstance(payload, Mapping):
+                        raise TypeError("discovery value must be an object")
+                    instance_id = int(payload["instance_id"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"invalid Dynamo discovery value at {value.key!r}"
+                    ) from exc
+                if (
+                    payload.get("namespace") != namespace
+                    or payload.get("component") != component
+                    or payload.get("endpoint") != endpoint
+                ):
+                    raise RuntimeError(
+                        f"Dynamo discovery value does not match key {value.key!r}"
+                    )
+                instances.add(instance_id)
+            snapshots[target] = instances
+        return snapshots
+
+    async def try_acquire_discovery_recovery(
+        self, gateway_id: str, *, ttl_s: int
+    ) -> bool:
+        if ttl_s <= 0:
+            raise ValueError("discovery recovery lock ttl must be positive")
+        gateways, _revision = await self.client.range_all(
+            self._gateway_prefix(), prefix=True, keys_only=True
+        )
+        # A single live Gateway must stay available and surface the mismatch;
+        # only an HA deployment can repair replicas one at a time.
+        if len(gateways) < 2:
+            return False
+        native_lease = await self.client.lease_grant(ttl_s)
+        lock_key = self._discovery_recovery_lock_key()
+        succeeded, _revision = await self.client.txn(
+            [self.client.compare_version(lock_key, 0)],
+            [
+                self.client.put(
+                    lock_key,
+                    self._encode(
+                        {
+                            "gateway_id": gateway_id,
+                            "acquired_at_ms": now_ms(),
+                            "lease_id": native_lease.lease_id,
+                        }
+                    ),
+                    lease_id=native_lease.lease_id,
+                )
+            ],
+        )
+        if not succeeded:
+            await self.client.lease_revoke(native_lease.lease_id)
+        return succeeded
 
     async def iter_orphaned_active_tasks(self) -> AsyncIterator[StoredTask]:
         prefix = self._owner_task_prefix()

@@ -103,6 +103,9 @@ class GatewayTelemetry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._counters: Counter[tuple[str, tuple[tuple[str, str], ...]]] = Counter()
+        self._gauges: dict[
+            tuple[str, tuple[tuple[str, str], ...]], float
+        ] = {}
         self._histograms: dict[
             tuple[str, tuple[tuple[str, str], ...]], _Histogram
         ] = {}
@@ -118,6 +121,19 @@ class GatewayTelemetry:
             raise ValueError("counter increments must not be negative")
         with self._lock:
             self._counters[(name, _labels(labels))] += amount
+
+    def set_gauge(
+        self,
+        name: str,
+        value: float | int,
+        *,
+        labels: Mapping[str, str] | None = None,
+    ) -> None:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError("gauge values must be finite")
+        with self._lock:
+            self._gauges[(name, _labels(labels))] = numeric
 
     def observe(
         self,
@@ -244,6 +260,7 @@ class GatewayTelemetry:
     def render_prometheus(self) -> list[str]:
         with self._lock:
             counters = list(self._counters.items())
+            gauges = list(self._gauges.items())
             histograms = [
                 (key, _Histogram(
                     value.buckets,
@@ -259,6 +276,15 @@ class GatewayTelemetry:
         for name in counter_names:
             lines.append(f"# TYPE {name} counter")
             for (metric_name, labels), value in sorted(counters):
+                if metric_name == name:
+                    lines.append(
+                        f"{name}{_format_labels(labels)} {_format_number(value)}"
+                    )
+
+        gauge_names = sorted({name for (name, _), _value in gauges})
+        for name in gauge_names:
+            lines.append(f"# TYPE {name} gauge")
+            for (metric_name, labels), value in sorted(gauges):
                 if metric_name == name:
                     lines.append(
                         f"{name}{_format_labels(labels)} {_format_number(value)}"

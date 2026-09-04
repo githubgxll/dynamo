@@ -80,10 +80,20 @@ def canonical_backend_target(value: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoveryWatchdogConfig:
+    enabled: bool = False
+    interval_s: float = 2.0
+    mismatch_grace_s: float = 6.0
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     discovery_backend: str = "etcd"
     request_plane: str = "tcp"
     event_plane: str | None = "zmq"
+    discovery_watchdog: DiscoveryWatchdogConfig = field(
+        default_factory=DiscoveryWatchdogConfig
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +143,7 @@ class TaskStoreConfig:
     endpoints: tuple[str, ...] = ()
     prefix: str = "/dingo/video-gateway/v1"
     request_timeout_s: float = 5.0
+    watch_response_timeout_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +225,35 @@ class GatewayConfig:
 
 def _runtime_config(raw: Any) -> RuntimeConfig:
     data = _mapping(raw or {}, "runtime")
-    _only(data, {"discovery_backend", "request_plane", "event_plane"}, "runtime")
+    _only(
+        data,
+        {
+            "discovery_backend",
+            "request_plane",
+            "event_plane",
+            "discovery_watchdog",
+        },
+        "runtime",
+    )
+    watchdog_data = _mapping(
+        data.get("discovery_watchdog") or {}, "runtime.discovery_watchdog"
+    )
+    _only(
+        watchdog_data,
+        {"enabled", "interval_s", "mismatch_grace_s"},
+        "runtime.discovery_watchdog",
+    )
+    watchdog_enabled = _boolean(watchdog_data, "enabled", False)
+    watchdog_interval_s = float(watchdog_data.get("interval_s", 2.0))
+    watchdog_mismatch_grace_s = float(
+        watchdog_data.get("mismatch_grace_s", 6.0)
+    )
+    if watchdog_interval_s <= 0:
+        raise ValueError("runtime.discovery_watchdog.interval_s must be positive")
+    if watchdog_mismatch_grace_s < watchdog_interval_s:
+        raise ValueError(
+            "runtime.discovery_watchdog.mismatch_grace_s must be at least interval_s"
+        )
     event_plane = data.get("event_plane", "zmq")
     if event_plane is not None and not isinstance(event_plane, str):
         raise ValueError("runtime.event_plane must be a string or null")
@@ -222,6 +261,11 @@ def _runtime_config(raw: Any) -> RuntimeConfig:
         discovery_backend=str(data.get("discovery_backend", "etcd")),
         request_plane=str(data.get("request_plane", "tcp")),
         event_plane=event_plane,
+        discovery_watchdog=DiscoveryWatchdogConfig(
+            enabled=watchdog_enabled,
+            interval_s=watchdog_interval_s,
+            mismatch_grace_s=watchdog_mismatch_grace_s,
+        ),
     )
     if config.discovery_backend not in {"etcd", "kubernetes", "file", "mem"}:
         raise ValueError("runtime.discovery_backend is not supported")
@@ -331,7 +375,14 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
     data = _mapping(raw or {}, "task_store")
     _only(
         data,
-        {"kind", "url", "endpoints", "prefix", "request_timeout_s"},
+        {
+            "kind",
+            "url",
+            "endpoints",
+            "prefix",
+            "request_timeout_s",
+            "watch_response_timeout_s",
+        },
         "task_store",
     )
     kind = str(data.get("kind", "etcd_http"))
@@ -374,12 +425,19 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
     timeout = float(data.get("request_timeout_s", 5.0))
     if timeout <= 0:
         raise ValueError("task_store.request_timeout_s must be positive")
+    watch_timeout_raw = data.get("watch_response_timeout_s")
+    watch_timeout = (
+        None if watch_timeout_raw is None else float(watch_timeout_raw)
+    )
+    if watch_timeout is not None and watch_timeout <= 0:
+        raise ValueError("task_store.watch_response_timeout_s must be positive")
     return TaskStoreConfig(
         kind=kind,
         url=url.strip().rstrip("/") if isinstance(url, str) else None,
         endpoints=endpoints,
         prefix=prefix.rstrip("/"),
         request_timeout_s=timeout,
+        watch_response_timeout_s=watch_timeout,
     )
 
 
@@ -644,13 +702,23 @@ def parse_config(raw: Any) -> GatewayConfig:
             f"http.default_model {http.default_model!r} is not a configured served model"
         )
 
+    runtime = _runtime_config(data.get("runtime"))
+    task_store = _task_store_config(data.get("task_store"))
+    if runtime.discovery_watchdog.enabled and (
+        runtime.discovery_backend != "etcd" or task_store.kind != "etcd_http"
+    ):
+        raise ValueError(
+            "runtime.discovery_watchdog requires etcd Runtime discovery and "
+            "an etcd_http task_store"
+        )
+
     return GatewayConfig(
         schema_version=schema_version,
         deployment_id=deployment_id,
-        runtime=_runtime_config(data.get("runtime")),
+        runtime=runtime,
         http=http,
         media=media,
-        task_store=_task_store_config(data.get("task_store")),
+        task_store=task_store,
         artifact_store=_artifact_store_config(data.get("artifact_store")),
         lifecycle=_lifecycle_config(data.get("lifecycle")),
         pools=pools,

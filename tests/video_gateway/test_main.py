@@ -21,6 +21,16 @@ class FakeRuntime:
             raise
 
 
+class FutureRuntime:
+    """Match the asyncio Future returned by PyO3 future_into_py."""
+
+    def __init__(self) -> None:
+        self.stopped = asyncio.get_running_loop().create_future()
+
+    def wait_shutdown(self) -> asyncio.Future[None]:
+        return self.stopped
+
+
 async def test_wait_for_shutdown_detects_runtime_termination():
     runtime = FakeRuntime()
     stopped = asyncio.Event()
@@ -51,3 +61,26 @@ async def test_wait_for_shutdown_prefers_normal_signal_when_both_are_set():
     stopped.set()
 
     assert await _wait_for_shutdown(runtime, stopped) is False
+
+
+async def test_wait_for_shutdown_accepts_pyo3_future():
+    runtime = FutureRuntime()
+    stopped = asyncio.Event()
+    waiting = asyncio.create_task(_wait_for_shutdown(runtime, stopped))
+    await asyncio.sleep(0)
+
+    runtime.stopped.set_result(None)
+
+    assert await asyncio.wait_for(waiting, timeout=1) is True
+
+
+async def test_wait_for_shutdown_cancels_pyo3_future_after_signal():
+    runtime = FutureRuntime()
+    stopped = asyncio.Event()
+    waiting = asyncio.create_task(_wait_for_shutdown(runtime, stopped))
+    await asyncio.sleep(0)
+
+    stopped.set()
+
+    assert await asyncio.wait_for(waiting, timeout=1) is False
+    assert runtime.stopped.cancelled()
