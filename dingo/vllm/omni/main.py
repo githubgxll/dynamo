@@ -15,6 +15,9 @@ from dingo.common.storage import get_fs
 from dingo.common.utils.graceful_shutdown import install_signal_handlers
 from dingo.common.utils.output_modalities import get_output_modalities
 from dingo.common.utils.runtime import create_runtime
+from dingo.common.utils.runtime_termination import (
+    run_with_runtime_termination_guard,
+)
 from dynamo.llm import ModelInput, ModelType, WorkerType, fetch_model, register_model
 from dynamo.runtime import DistributedRuntime
 from dynamo.runtime.logging import configure_dynamo_logging
@@ -167,7 +170,16 @@ async def worker():
         await init_omni_realtime(runtime, config, shutdown_endpoints, shutdown_event)
         logger.debug("init_omni_realtime completed, exiting...")
     else:
-        await init_omni(runtime, config, shutdown_event)
+        omni = init_omni(runtime, config, shutdown_event)
+        if config.detached_video_task_root is not None:
+            await run_with_runtime_termination_guard(
+                omni,
+                runtime,
+                shutdown_event,
+                component="detached vLLM-Omni Video Worker",
+            )
+        else:
+            await omni
         logger.debug("Omni worker completed, exiting...")
 
 
