@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 from dingo.video_gateway.errors import StoreUnavailable
 from dingo.video_gateway.etcd_http import (
@@ -349,3 +353,52 @@ async def test_watch_prefix_reports_server_cancel():
     with pytest.raises(StoreUnavailable, match="permission denied"):
         async for _response in client.watch_prefix("/workers/"):
             pass
+
+
+async def test_watch_response_timeout_marks_silent_endpoint_failed():
+    hold_open = asyncio.Event()
+
+    async def stalled_watch(request):
+        await request.json()
+        response = web.StreamResponse(
+            status=200, headers={"Content-Type": "application/json"}
+        )
+        await response.prepare(request)
+        await response.write(
+            json.dumps(
+                {
+                    "result": {
+                        "header": {"revision": "20"},
+                        "watch_id": "7",
+                        "created": True,
+                    }
+                }
+            ).encode()
+            + b"\n"
+        )
+        await hold_open.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v3/watch", stalled_watch)
+    server = TestServer(app)
+    await server.start_server()
+    client = EtcdHttpClient(
+        [str(server.make_url("")).rstrip("/"), "http://next-etcd"],
+        timeout_s=1,
+        watch_response_timeout_s=0.05,
+    )
+    watch = client.watch_prefix("/workers/")
+    try:
+        created = await asyncio.wait_for(anext(watch), timeout=1)
+        assert created.created is True
+
+        with pytest.raises(StoreUnavailable, match="stream failed"):
+            await asyncio.wait_for(anext(watch), timeout=1)
+
+        assert (await client._endpoint_order())[0][1] == "http://next-etcd"
+    finally:
+        await watch.aclose()
+        await client.close()
+        hold_open.set()
+        await server.close()
