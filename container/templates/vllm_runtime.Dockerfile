@@ -171,9 +171,23 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # inherently GPL (no LGPL replacement), so the compliant fix is to not ship it.
 # (sglang_runtime.Dockerfile is the reference codec-compliance pattern.)
 RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    printf '%s\n' \
+        'deb http://mirrors.aliyun.com/ubuntu noble main' \
+        'deb http://mirrors.aliyun.com/ubuntu noble-updates main' \
+        'deb http://mirrors.aliyun.com/ubuntu noble-security main' \
+        > /tmp/dingo-ubuntu.list; \
+    apt-get \
+        -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        update; \
+    DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        install -y --no-install-recommends \
         jq; \
+    rm -f /tmp/dingo-ubuntu.list; \
     rm -rf /var/lib/apt/lists/*
 
 # Layer the released vLLM-Omni package matching the pinned upstream ref while

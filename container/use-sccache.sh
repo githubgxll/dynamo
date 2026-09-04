@@ -163,6 +163,13 @@ setup_env() {
     echo "export PATH=\"${bin_dir}:\${PATH}\";"
     echo "export SCCACHE_EXECUTABLE=\"${sccache_exe}\";"
 
+    # sccache selects the S3 backend whenever SCCACHE_BUCKET is present, even
+    # when an inherited builder-image ENV leaves it as an empty string. Prefer
+    # the explicitly enabled GitHub Actions backend and remove stale S3 config.
+    if [ "${SCCACHE_GHA_ENABLED:-}" = "on" ]; then
+        echo 'unset SCCACHE_BUCKET SCCACHE_REGION SCCACHE_ENDPOINT SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL SCCACHE_S3_NO_CREDENTIALS SCCACHE_S3_SERVER_SIDE_ENCRYPTION;'
+    fi
+
     # Output a conditional block: only configure sccache if the server starts
     # successfully. The server needs working remote-cache credentials (for
     # example S3/IRSA credentials or a GitHub Actions runtime token, mounted
