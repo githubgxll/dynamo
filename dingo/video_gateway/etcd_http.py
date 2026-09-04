@@ -93,6 +93,7 @@ class EtcdHttpClient:
         url: str | Sequence[str],
         *,
         timeout_s: float = 5.0,
+        watch_response_timeout_s: float | None = None,
         telemetry: GatewayTelemetry | None = None,
     ) -> None:
         raw_urls = (url,) if isinstance(url, str) else tuple(url)
@@ -110,6 +111,9 @@ class EtcdHttpClient:
         # request code uses the endpoint set below.
         self.url = self.urls[0]
         self.timeout = aiohttp.ClientTimeout(total=timeout_s)
+        if watch_response_timeout_s is not None and watch_response_timeout_s <= 0:
+            raise ValueError("watch response timeout must be positive")
+        self.watch_response_timeout_s = watch_response_timeout_s
         self.telemetry = telemetry
         self._session: aiohttp.ClientSession | None = None
         self._endpoint_index = 0
@@ -220,7 +224,7 @@ class EtcdHttpClient:
         timeout = aiohttp.ClientTimeout(
             total=None,
             sock_connect=self.timeout.total,
-            sock_read=None,
+            sock_read=self.watch_response_timeout_s,
         )
         endpoints = await self._endpoint_order()
         for position, (index, endpoint) in enumerate(endpoints):

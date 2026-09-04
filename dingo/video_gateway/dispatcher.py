@@ -51,6 +51,9 @@ _DETACHED_WAIT_ATTACH_TIMEOUT_S = 1.0
 _DETACHED_WAIT_RETRY_INITIAL_S = 0.2
 _DETACHED_WAIT_RETRY_MAX_S = 5.0
 _DETACHED_WORKER_STALE_S = 20.0
+_DISCOVERY_MISMATCH_MIN_CHECKS = 3
+_DISCOVERY_RECOVERY_LOCK_TTL_S = 15
+_DISCOVERY_RESTART_DRAIN_S = 5.0
 
 
 class _DetachedWorkerCancelled(RuntimeError):
@@ -184,8 +187,12 @@ class VideoDispatcher:
         self._artifact_released_bytes = 0
         self._gateway_lease_id: int | None = None
         self._gateway_owner_healthy = not store.gateway_owner_supported
+        self._fatal_restart_pending = False
         self._fatal_error: str | None = None
+        self._fatal_event = asyncio.Event()
         self._orphan_recovery_lock = asyncio.Lock()
+        self._discovery_mismatch_started: dict[str, float] = {}
+        self._discovery_mismatch_checks: dict[str, int] = {}
 
     @property
     def ready(self) -> bool:
@@ -224,6 +231,28 @@ class VideoDispatcher:
             pool.wakeup.set()
         return True
 
+    async def wait_fatal(self) -> str:
+        await self._fatal_event.wait()
+        return self._fatal_error or "video Gateway requested restart"
+
+    async def _request_fatal_restart(
+        self, reason: str, *, drain_s: float = 0.0
+    ) -> None:
+        if self._fatal_restart_pending or self._fatal_error is not None:
+            return
+        self._fatal_restart_pending = True
+        self.begin_drain()
+        self._ready = False
+        if drain_s > 0:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=drain_s)
+            except asyncio.TimeoutError:
+                pass
+        if self._stop.is_set():
+            return
+        self._fatal_error = reason
+        self._fatal_event.set()
+
     async def start(self) -> None:
         await self.store.health()
         await self.artifacts.health()
@@ -259,6 +288,17 @@ class VideoDispatcher:
             self._loops.append(
                 asyncio.create_task(
                     self._pool_loop(pool), name=f"video-dispatch-{pool.config.pool_id}"
+                )
+            )
+        if self.config.runtime.discovery_watchdog.enabled:
+            if not self.store.discovery_truth_supported:
+                raise RuntimeError(
+                    "Dynamo discovery watchdog requires an etcd discovery truth source"
+                )
+            self._loops.append(
+                asyncio.create_task(
+                    self._discovery_watchdog_loop(),
+                    name="video-discovery-watchdog",
                 )
             )
         self._loops.append(
@@ -331,22 +371,7 @@ class VideoDispatcher:
                     self.telemetry.increment(
                         "dingo_video_gateway_owner_lease_lost_total"
                     )
-                    self._fatal_error = "Gateway owner lease was lost"
-                    self._ready = False
-                    self._stop.set()
-                    self._wake_task_waiters()
-                    for pool in self.pools.values():
-                        pool.wakeup.set()
-                    for running in list(self.running_calls.values()):
-                        if running.detached:
-                            running.execution.cancel()
-                            continue
-                        try:
-                            running.context.stop_generating()
-                        except Exception:
-                            logger.exception(
-                                "failed to stop task after Gateway owner lease loss"
-                            )
+                    await self._request_fatal_restart("Gateway owner lease was lost")
                     return
 
     def has_workers(self, pool_id: str) -> bool:
@@ -570,6 +595,112 @@ class VideoDispatcher:
             )
             pool.instance_ids = []
             pool.discovery_healthy = False
+
+    def _record_discovery_match(
+        self,
+        pool: PoolRuntime,
+        runtime_ids: set[int],
+        truth_ids: set[int],
+    ) -> bool:
+        missing = truth_ids - runtime_ids
+        stale = runtime_ids - truth_ids
+        labels = {"pool": pool.config.pool_id}
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_consistent", 0 if missing or stale else 1,
+            labels=labels,
+        )
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_missing_instances", len(missing), labels=labels
+        )
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_stale_instances", len(stale), labels=labels
+        )
+        if not missing and not stale:
+            self._discovery_mismatch_started.pop(pool.config.pool_id, None)
+            self._discovery_mismatch_checks.pop(pool.config.pool_id, None)
+            self.telemetry.set_gauge(
+                "dingo_video_discovery_last_consistent_timestamp_seconds",
+                time.time(),
+                labels=labels,
+            )
+            return True
+        if missing:
+            self.telemetry.increment(
+                "dingo_video_discovery_mismatch_checks_total",
+                labels={**labels, "direction": "missing_in_runtime"},
+            )
+        if stale:
+            self.telemetry.increment(
+                "dingo_video_discovery_mismatch_checks_total",
+                labels={**labels, "direction": "stale_in_runtime"},
+            )
+        self._discovery_mismatch_started.setdefault(
+            pool.config.pool_id, time.monotonic()
+        )
+        self._discovery_mismatch_checks[pool.config.pool_id] = (
+            self._discovery_mismatch_checks.get(pool.config.pool_id, 0) + 1
+        )
+        return False
+
+    async def _discovery_watchdog_loop(self) -> None:
+        watchdog = self.config.runtime.discovery_watchdog
+        targets = [pool.config.backend_target for pool in self.pools.values()]
+        while not self._stop.is_set():
+            started = time.monotonic()
+            try:
+                truth = await self.store.discovery_instance_snapshot(targets)
+                mature_mismatches: list[str] = []
+                for pool in self.pools.values():
+                    runtime_ids = set(pool.client.instance_ids())
+                    truth_ids = truth[pool.config.backend_target]
+                    if self._record_discovery_match(pool, runtime_ids, truth_ids):
+                        continue
+                    mismatch_started = self._discovery_mismatch_started[
+                        pool.config.pool_id
+                    ]
+                    mismatch_checks = self._discovery_mismatch_checks[
+                        pool.config.pool_id
+                    ]
+                    if (
+                        mismatch_checks >= _DISCOVERY_MISMATCH_MIN_CHECKS
+                        and time.monotonic() - mismatch_started
+                        >= watchdog.mismatch_grace_s
+                    ):
+                        mature_mismatches.append(pool.config.pool_id)
+                if mature_mismatches:
+                    acquired = await self.store.try_acquire_discovery_recovery(
+                        self.generation,
+                        ttl_s=_DISCOVERY_RECOVERY_LOCK_TTL_S,
+                    )
+                    if acquired:
+                        pools = ",".join(sorted(mature_mismatches))
+                        self.telemetry.increment(
+                            "dingo_video_discovery_watchdog_restarts_total"
+                        )
+                        reason = (
+                            "Dynamo discovery view remained inconsistent for pools="
+                            f"{pools}; restarting this Video Gateway replica"
+                        )
+                        logger.error(reason)
+                        await self._request_fatal_restart(
+                            reason, drain_s=_DISCOVERY_RESTART_DRAIN_S
+                        )
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.telemetry.increment(
+                    "dingo_video_discovery_watchdog_errors_total"
+                )
+                logger.exception("Dynamo discovery watchdog check failed")
+            remaining = watchdog.interval_s - (time.monotonic() - started)
+            if remaining <= 0:
+                await asyncio.sleep(0)
+                continue
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass
 
     async def _resync_lease_cache(self, pool: PoolRuntime) -> None:
         pool.lease_watch_healthy = False
