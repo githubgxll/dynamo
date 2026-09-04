@@ -328,18 +328,49 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     apt-get update -y && apt-get install -y build-essential pkg-config xz-utils git yasm; \
     apt-get clean && rm -rf /var/lib/apt/lists/*; \
     elif [ "$DEVICE" = "cuda" ]; then \
-    dnf install -y --setopt=tsflags=nocontexts pkg-config xz git yasm; \
+    sed -i \
+        -e 's|^mirrorlist=|# mirrorlist=|' \
+        -e 's|^# baseurl=https://repo.almalinux.org/|baseurl=http://repo.almalinux.org/|' \
+        /etc/yum.repos.d/almalinux*.repo; \
+    for attempt in 1 2 3 4 5; do \
+        if dnf install -y --disablerepo='epel*' --setopt=tsflags=nocontexts \
+            pkg-config xz git yasm; then \
+            break; \
+        fi; \
+        dnf clean all; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "DNF install attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done; \
     fi && \
     # nv-codec-headers: provides the NVENC/NVDEC API headers ffmpeg compiles against.
     # Header-only, no runtime dep here; libcuda/libnvidia-encode are loaded at runtime
     # in the consuming container.
     cd /tmp && \
-    git clone --depth 1 --branch ${NV_CODEC_HEADERS_REF} https://github.com/FFmpeg/nv-codec-headers.git && \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf nv-codec-headers; \
+        if git -c http.version=HTTP/1.1 clone --depth 1 --branch ${NV_CODEC_HEADERS_REF} \
+            https://github.com/FFmpeg/nv-codec-headers.git; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "nv-codec-headers clone attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done && \
     make -C nv-codec-headers PREFIX=/usr/local install && \
     # libvpx: BSD-licensed VP9 encoder needed for the WebM output path. Built from
     # source so we don't need to track distro package names (libvpx-dev on Debian
     # vs libvpx-devel via EPEL on RHEL/manylinux).
-    git clone --depth 1 --branch ${LIBVPX_REF} https://chromium.googlesource.com/webm/libvpx.git && \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf libvpx; \
+        if git -c http.version=HTTP/1.1 clone --depth 1 --branch ${LIBVPX_REF} \
+            https://chromium.googlesource.com/webm/libvpx.git; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "libvpx clone attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done && \
     cd libvpx && \
     ./configure --prefix=/usr/local --enable-shared --disable-static --disable-examples --disable-unit-tests --disable-tools --disable-docs && \
     make -j$(nproc) && \
@@ -553,7 +584,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     --mount=type=cache,target=/root/.cargo/git,sharing=shared \
     --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
-    export UV_CACHE_DIR=/root/.cache/uv && \
+    export UV_CACHE_DIR=/root/.cache/uv UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=10 && \
     export SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}} && \
     if [ "$USE_SCCACHE" = "true" ]; then \
         eval $(/tmp/use-sccache.sh setup-env cmake); \
