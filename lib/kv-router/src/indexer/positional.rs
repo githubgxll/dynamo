@@ -419,15 +419,19 @@ impl PositionalIndexer {
 
         for seq_hash in seq_hashes {
             let Some((position, local_hash)) = worker_map.remove(seq_hash) else {
-                tracing::warn!(
+                // Align with primary index: a missing block is skipped (idempotent
+                // remove) instead of aborting the whole batch. Aborting here would
+                // leave subsequent blocks (which ARE still present in the index)
+                // un-removed, leaving stale entries that make the router score
+                // already-evicted prefixes.
+                tracing::debug!(
                     worker_id = worker.worker_id.to_string(),
                     dp_rank = worker.dp_rank,
                     event_id,
                     block_hash = ?seq_hash,
-                    "Failed to find block to remove; skipping remove operation"
+                    "Block not found during remove; skipping"
                 );
-
-                return Err(KvCacheEventError::BlockNotFound);
+                continue;
             };
 
             if let Some(mut entry) = self.index.get_mut(&(position, local_hash)) {

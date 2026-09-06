@@ -255,12 +255,30 @@ impl LowerTierIndexer {
     ) -> Result<(), KvCacheEventError> {
         let remove_worker_entry = {
             let Some(worker_map) = worker_blocks.get_mut(&worker) else {
-                return Err(KvCacheEventError::BlockNotFound);
+                tracing::debug!(
+                    worker_id = worker.worker_id,
+                    dp_rank = worker.dp_rank,
+                    block_hashes_count = block_hashes.len(),
+                    "lower_tier remove: worker not found in worker_blocks"
+                );
+                return Ok(());
             };
 
             for block_hash in block_hashes {
+                // Align with primary index (concurrent_radix_tree.rs apply_removed):
+                // a missing block is skipped (idempotent remove) instead of aborting
+                // the whole batch. Aborting here would leave subsequent blocks (which
+                // ARE still present in the index) un-removed, leaving phantom edges
+                // that make the router route to already-evicted prefixes.
                 let Some(key) = worker_map.remove(block_hash) else {
-                    return Err(KvCacheEventError::BlockNotFound);
+                    tracing::debug!(
+                        worker_id = worker.worker_id,
+                        dp_rank = worker.dp_rank,
+                        block_hash = ?block_hash,
+                        worker_map_size = worker_map.len(),
+                        "Block not found during remove; skipping"
+                    );
+                    continue;
                 };
 
                 self.remove_worker_from_edge(key, worker);
@@ -504,11 +522,25 @@ impl SyncIndexer for LowerTierIndexer {
         let mut worker_blocks = WorkerBlockIndex::default();
         let counters = metrics.as_ref().map(|m| m.prebind());
 
+        let mut stored_count: u64 = 0;
+        let mut removed_count: u64 = 0;
+        let mut cleared_count: u64 = 0;
+        let mut failed_count: u64 = 0;
+        let mut last_stats_time = std::time::Instant::now();
+
         while let Ok(task) = event_receiver.recv() {
             match task {
                 WorkerTask::Event(event) => {
                     let kind = EventKind::of(&event.event.data);
                     let result = self.apply_event(&mut worker_blocks, event);
+                    match &kind {
+                        EventKind::Stored => stored_count += 1,
+                        EventKind::Removed => removed_count += 1,
+                        EventKind::Cleared => cleared_count += 1,
+                    }
+                    if result.is_err() {
+                        failed_count += 1;
+                    }
                     if let Err(ref error) = result {
                         tracing::warn!(%error, "Failed to apply lower-tier event");
                     }
@@ -520,6 +552,14 @@ impl SyncIndexer for LowerTierIndexer {
                     let kind = EventKind::of(&event.event.data);
                     let result = self.apply_event(&mut worker_blocks, event);
                     let applied = result.is_ok();
+                    match &kind {
+                        EventKind::Stored => stored_count += 1,
+                        EventKind::Removed => removed_count += 1,
+                        EventKind::Cleared => cleared_count += 1,
+                    }
+                    if result.is_err() {
+                        failed_count += 1;
+                    }
                     if let Err(ref error) = result {
                         tracing::warn!(%error, "Failed to apply lower-tier event");
                     }
@@ -557,6 +597,25 @@ impl SyncIndexer for LowerTierIndexer {
                 WorkerTask::Terminate => {
                     break;
                 }
+            }
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_stats_time) >= std::time::Duration::from_secs(10) {
+                let total = stored_count + removed_count + cleared_count;
+                tracing::info!(
+                    stored = stored_count,
+                    removed = removed_count,
+                    cleared = cleared_count,
+                    failed = failed_count,
+                    total = total,
+                    workers_in_index = worker_blocks.len(),
+                    "lower_tier: event stats (last 10s window)"
+                );
+                stored_count = 0;
+                removed_count = 0;
+                cleared_count = 0;
+                failed_count = 0;
+                last_stats_time = now;
             }
         }
 
