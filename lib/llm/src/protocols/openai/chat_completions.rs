@@ -287,9 +287,9 @@ impl NvCreateChatCompletionRequest {
             && !effort.is_null()
             && !effort
                 .as_str()
-                .is_some_and(|effort| matches!(effort, "low" | "high" | "max"))
+                .is_some_and(|effort| matches!(effort, "low" | "medium" | "high" | "max"))
         {
-            anyhow::bail!("GLM-5.3 `reasoning_effort` must be `low`, `high`, or `max`");
+            anyhow::bail!("GLM-5.3 `reasoning_effort` must be `low`, `medium`, `high`, or `max`");
         }
 
         Ok(())
@@ -341,10 +341,28 @@ enum OpenAiThinkingMode {
 }
 
 fn is_glm53_model_id(model: &str) -> bool {
-    model
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("glm-5.3"))
+    model.rsplit('/').next().is_some_and(|name| {
+        // Compare on a normalized form so the alias-family deployed model ids
+        // (`glm-5.3`, `glm5.3`, `GLM_5.3`) match; version suffix must stay
+        // exact — `glm53` without the dot must NOT match.
+        let normalized = name
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "");
+        normalized == "glm5.3"
+    })
+}
+
+#[cfg(test)]
+mod glm53_model_id_tests {
+    #[test]
+    fn recognize_glm53_aliases() {
+        for id in ["glm-5.3", "glm5.3", "GLM-5.3", "GLM_5.3", "org/glm5.3"] {
+            assert!(super::is_glm53_model_id(id), "{id} should match");
+        }
+        for id in ["glm-5.2", "glm53", "glm-51", ""] {
+            assert!(!super::is_glm53_model_id(id), "{id} must not match");
+        }
+    }
 }
 
 fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<OpenAiThinkingMode>> {
@@ -1817,7 +1835,7 @@ mod tests {
 
     #[test]
     fn test_glm53_rejects_unsupported_reasoning_effort() {
-        for effort in ["none", "minimal", "medium", "xhigh"] {
+        for effort in ["none", "minimal", "xhigh"] {
             let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
                 "model": "zai-org/GLM-5.3",
                 "messages": [{"role": "user", "content": "Hello"}],
@@ -1828,13 +1846,24 @@ mod tests {
             let error = request
                 .normalize_reasoning_template_args()
                 .expect_err("unsupported GLM-5.3 effort must be rejected");
-            assert!(error.to_string().contains("low`, `high`, or `max"));
+            assert!(error.to_string().contains("low`, `medium`, `high`, or `max"));
         }
+
+        // `medium` is now accepted
+        let mut medium_request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "zai-org/GLM-5.3",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "medium"
+        }))
+        .expect("medium effort should deserialize");
+        medium_request
+            .normalize_reasoning_template_args()
+            .expect("medium effort should be accepted for GLM-5.3");
 
         let mut template_request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
             "model": "zai-org/GLM-5.3",
             "messages": [{"role": "user", "content": "Hello"}],
-            "chat_template_args": {"reasoning_effort": "medium"}
+            "chat_template_args": {"reasoning_effort": "none"}
         }))
         .expect("GLM-5.3 template request should deserialize");
         assert!(

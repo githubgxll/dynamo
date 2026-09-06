@@ -50,6 +50,8 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SGLANG_STREAM_INTERVAL: int = 1
+
 # Internal carrier key mirroring the Rust constant in
 # lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
 # The Python processor stashes SGLang's cached_tokens_details under this key
@@ -739,6 +741,21 @@ class SglangProcessor:
                             "model": request["model"],
                             "object": "chat.completion.chunk",
                         }
+                        # On the terminal chunk, surface the thinking-token
+                        # count the post-processor accumulated, so clients
+                        # can verify billing the same way as on the official
+                        # GLM API. Only fill in when the engine did not
+                        # already report its own completion details.
+                        if (
+                            finish_reason
+                            and pending_usage
+                            and "completion_tokens_details" not in pending_usage
+                        ):
+                            reasoning_tokens = post.pop_reasoning_token_count()
+                            if reasoning_tokens is not None:
+                                pending_usage["completion_tokens_details"] = {
+                                    "reasoning_tokens": reasoning_tokens
+                                }
                         if pending_usage:
                             dynamo_out["usage"] = pending_usage
                             pending_usage = None
@@ -822,7 +839,10 @@ class SglangEngineFactory:
         self.reasoning_parser_name = reasoning_parser_name
 
         self.trust_remote_code = config.trust_remote_code
-        self.stream_interval = 20
+        # Streaming is latency-sensitive by default. Buffering 20 decode tokens here
+        # turns a ~15 ms backend decode cadence into ~300 ms client-visible SSE ITL.
+        # Operators can still trade latency for fewer frontend writes via the env var.
+        self.stream_interval = DEFAULT_SGLANG_STREAM_INTERVAL
         raw_stream_interval = os.getenv("DYN_SGLANG_STREAM_INTERVAL")
         if raw_stream_interval:
             try:

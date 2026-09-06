@@ -37,6 +37,7 @@ from dingo.frontend.sglang_prepost import (
     resolve_request_force_reasoning,
 )
 from dingo.frontend.sglang_processor import (
+    SglangEngineFactory,
     SglangPreprocessWorkerResult,
     SglangProcessor,
     _build_dynamo_preproc,
@@ -64,6 +65,40 @@ pytestmark = [
 ]
 
 MODEL = "Qwen/Qwen3-0.6B"
+
+
+class TestSglangEngineFactoryStreamInterval:
+    @staticmethod
+    def _config() -> types.SimpleNamespace:
+        return types.SimpleNamespace(trust_remote_code=False)
+
+    def test_stream_interval_defaults_to_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DYN_SGLANG_STREAM_INTERVAL", raising=False)
+
+        factory = SglangEngineFactory(self._config())
+
+        assert factory.stream_interval == 1
+
+    def test_stream_interval_env_override_is_preserved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DYN_SGLANG_STREAM_INTERVAL", "20")
+
+        factory = SglangEngineFactory(self._config())
+
+        assert factory.stream_interval == 20
+
+    def test_invalid_stream_interval_uses_low_latency_default(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("DYN_SGLANG_STREAM_INTERVAL", "invalid")
+
+        factory = SglangEngineFactory(self._config())
+
+        assert factory.stream_interval == 1
+        assert "using default=1" in caplog.text
 
 
 @pytest.fixture(scope="module")
@@ -2496,6 +2531,61 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         delta = choice["delta"]
         assert delta["content"] == "最终答复。"
         assert "<|" not in delta["reasoning_content"]
+
+
+class TestReasoningTokenAccounting:  # FRONTEND.9 — thinking-token count for usage
+    """`pop_reasoning_token_count` aggregates tokens attributed to reasoning."""
+
+    class _Tokenizer:
+        def decode(self, token_ids: list[int], *, skip_special_tokens: bool) -> str:
+            # Token 4 decodes with the reasoning-end marker; the sliding
+            # window makes it appear in that batch's delta text.
+            return "".join(")" if tid == 4 else chr(64 + tid) for tid in token_ids)
+
+    class _SplitParser:
+        """Yields reasoning until the marker, then everything is content."""
+
+        MARKER = ")"
+
+        def __init__(self) -> None:
+            self._done = False
+
+        def parse_stream_chunk(self, text: str) -> tuple[str, str]:
+            if self._done:
+                return "", text
+            if self.MARKER in text:
+                before, after = text.split(self.MARKER, 1)
+                self._done = True
+                return before, after
+            return text, ""
+
+    def test_reasoning_then_content_tokens_counted_separately(self):
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._Tokenizer(),
+            tool_call_parser=None,
+            reasoning_parser=self._SplitParser(),
+        )
+        # tokens 1-3 → reasoning, token 4 carries the boundary marker,
+        # token 5 → content.
+        post.process_output({"token_ids": [1, 2, 3], "finish_reason": None})
+        post.process_output({"token_ids": [4], "finish_reason": None})
+        post.process_output({"token_ids": [5], "finish_reason": "stop"})
+
+        assert post.pop_reasoning_token_count() == 4
+        assert post.pop_reasoning_token_count() is None
+
+    def test_plain_content_yields_no_reasoning_count(self):
+        from sglang.srt.parser.reasoning_parser import ReasoningParser
+
+        rp = ReasoningParser(model_type="qwen3", stream_reasoning=True)
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._Tokenizer(),
+            tool_call_parser=None,
+            reasoning_parser=rp,
+        )
+        post.process_output({"token_ids": [1, 2], "finish_reason": "stop"})
+
+        assert post.pop_reasoning_token_count() is None
 
 
 # ---------------------------------------------------------------------------
