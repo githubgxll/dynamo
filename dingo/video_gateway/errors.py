@@ -44,3 +44,32 @@ class StoreUnavailable(RuntimeError):
 
 class ResultTooLarge(RuntimeError):
     """Raised when a Worker result exceeds the configured artifact policy."""
+
+
+class WorkerExecutionFailed(RuntimeError):
+    """A Worker reported failure; not automatically retryable."""
+
+
+class WorkerUnavailable(WorkerExecutionFailed):
+    """Positive evidence of a lost Worker or unavailable execution engine."""
+
+
+def worker_execution_error(error: object) -> WorkerExecutionFailed:
+    """Conservative compatibility classifier for this deployed Worker protocol.
+
+    Worker errors currently have no infrastructure-specific structured code.
+    Match only complete, known engine-unavailable messages, never substrings,
+    arbitrary RuntimeError, or the generic worker_failed code by itself.
+    Unknown, parameter, media and model errors are deliberately not retried.
+    """
+    message = error
+    if isinstance(error, dict):
+        if error.get("code") != "worker_failed":
+            return WorkerExecutionFailed(str(error.get("message") or "Worker generation failed"))
+        message = error.get("message")
+    if isinstance(message, str) and message in {
+        "Executor shut down",
+        "Stage-0 has no live replica",
+    }:
+        return WorkerUnavailable(message)
+    return WorkerExecutionFailed(str(message or "Worker generation failed"))
