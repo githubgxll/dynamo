@@ -24,7 +24,7 @@ from dingo.video_gateway.adapters.h3_shape import (
     resolve_output_shape,
 )
 from dingo.video_gateway.config import PoolConfig
-from dingo.video_gateway.errors import GatewayError
+from dingo.video_gateway.errors import GatewayError, worker_execution_error
 
 _IMAGE_TYPE_ALIASES = {
     "image/jpeg": "image/jpeg",
@@ -584,7 +584,7 @@ class _MiniMaxH3WorkerStreamConsumer:
         # while the Gateway validates and publishes the decoded artifact.
         self._terminal = None
         if terminal.get("status") == "failed":
-            raise RuntimeError(str(terminal.get("error") or "Worker generation failed"))
+            raise worker_execution_error(terminal.get("error"))
         data = terminal.get("data")
         if (
             terminal.get("status") != "completed"
