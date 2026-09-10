@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import secrets
 import time
 import uuid
@@ -23,7 +24,7 @@ from dingo.video_gateway.dingo_adapter import (
     EndpointClient,
     create_context,
 )
-from dingo.video_gateway.errors import ResultTooLarge, StoreConflict
+from dingo.video_gateway.errors import ResultTooLarge, StoreConflict, WorkerUnavailable, worker_execution_error
 from dingo.video_gateway.memory_budget import (
     MemoryBudgetSnapshot,
     WeightedMemoryBudget,
@@ -51,10 +52,18 @@ _DETACHED_WAIT_ATTACH_TIMEOUT_S = 1.0
 _DETACHED_WAIT_RETRY_INITIAL_S = 0.2
 _DETACHED_WAIT_RETRY_MAX_S = 5.0
 _DETACHED_WORKER_STALE_S = 20.0
+_WORKER_LIVENESS_CHECK_INTERVAL_S = 5.0
+_WORKER_LIVENESS_CHECK_CONCURRENCY = 4
+_DISCOVERY_MISMATCH_MIN_CHECKS = 3
+_DISCOVERY_RECOVERY_LOCK_TTL_S = 15
+_DISCOVERY_RESTART_DRAIN_S = 5.0
 
 
 class _DetachedWorkerCancelled(RuntimeError):
     pass
+
+
+_RetryableWorkerFailure = WorkerUnavailable
 
 
 class _CancellationConfirmationTimedOut(RuntimeError):
@@ -142,6 +151,14 @@ class VideoDispatcher:
         self.artifacts = artifacts
         self.context_factory = context_factory
         self.generation = generation or uuid.uuid4().hex
+        self._worker_retry_once = os.getenv("DINGO_VIDEO_WORKER_RETRY_ONCE", "0") == "1"
+        self._retry_budget_limit = int(os.getenv("DINGO_VIDEO_RETRY_BUDGET", "32"))
+        self._retry_wait_timeout_s = float(os.getenv("DINGO_VIDEO_RETRY_WAIT_TIMEOUT_S", "600"))
+        self._failed_instance_backoff_s = float(os.getenv("DINGO_VIDEO_RETRY_FAILED_INSTANCE_BACKOFF_S", "30"))
+        if not 1 <= self._retry_budget_limit <= 1024 or not 0 < self._retry_wait_timeout_s <= 86400:
+            raise ValueError("invalid retry budget or wait timeout")
+        if not 0 <= self._failed_instance_backoff_s <= 86400:
+            raise ValueError("invalid failed instance backoff")
         self.telemetry = telemetry or GatewayTelemetry()
         self.pools: dict[str, PoolRuntime] = {
             pool.pool_id: PoolRuntime(
@@ -184,8 +201,15 @@ class VideoDispatcher:
         self._artifact_released_bytes = 0
         self._gateway_lease_id: int | None = None
         self._gateway_owner_healthy = not store.gateway_owner_supported
+        self._fatal_restart_pending = False
         self._fatal_error: str | None = None
+        self._fatal_event = asyncio.Event()
         self._orphan_recovery_lock = asyncio.Lock()
+        self._worker_liveness_checks = asyncio.Semaphore(
+            _WORKER_LIVENESS_CHECK_CONCURRENCY
+        )
+        self._discovery_mismatch_started: dict[str, float] = {}
+        self._discovery_mismatch_checks: dict[str, int] = {}
 
     @property
     def ready(self) -> bool:
@@ -224,6 +248,28 @@ class VideoDispatcher:
             pool.wakeup.set()
         return True
 
+    async def wait_fatal(self) -> str:
+        await self._fatal_event.wait()
+        return self._fatal_error or "video Gateway requested restart"
+
+    async def _request_fatal_restart(
+        self, reason: str, *, drain_s: float = 0.0
+    ) -> None:
+        if self._fatal_restart_pending or self._fatal_error is not None:
+            return
+        self._fatal_restart_pending = True
+        self.begin_drain()
+        self._ready = False
+        if drain_s > 0:
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=drain_s)
+            except asyncio.TimeoutError:
+                pass
+        if self._stop.is_set():
+            return
+        self._fatal_error = reason
+        self._fatal_event.set()
+
     async def start(self) -> None:
         await self.store.health()
         await self.artifacts.health()
@@ -259,6 +305,17 @@ class VideoDispatcher:
             self._loops.append(
                 asyncio.create_task(
                     self._pool_loop(pool), name=f"video-dispatch-{pool.config.pool_id}"
+                )
+            )
+        if self.config.runtime.discovery_watchdog.enabled:
+            if not self.store.discovery_truth_supported:
+                raise RuntimeError(
+                    "Dynamo discovery watchdog requires an etcd discovery truth source"
+                )
+            self._loops.append(
+                asyncio.create_task(
+                    self._discovery_watchdog_loop(),
+                    name="video-discovery-watchdog",
                 )
             )
         self._loops.append(
@@ -331,22 +388,7 @@ class VideoDispatcher:
                     self.telemetry.increment(
                         "dingo_video_gateway_owner_lease_lost_total"
                     )
-                    self._fatal_error = "Gateway owner lease was lost"
-                    self._ready = False
-                    self._stop.set()
-                    self._wake_task_waiters()
-                    for pool in self.pools.values():
-                        pool.wakeup.set()
-                    for running in list(self.running_calls.values()):
-                        if running.detached:
-                            running.execution.cancel()
-                            continue
-                        try:
-                            running.context.stop_generating()
-                        except Exception:
-                            logger.exception(
-                                "failed to stop task after Gateway owner lease loss"
-                            )
+                    await self._request_fatal_restart("Gateway owner lease was lost")
                     return
 
     def has_workers(self, pool_id: str) -> bool:
@@ -571,6 +613,112 @@ class VideoDispatcher:
             pool.instance_ids = []
             pool.discovery_healthy = False
 
+    def _record_discovery_match(
+        self,
+        pool: PoolRuntime,
+        runtime_ids: set[int],
+        truth_ids: set[int],
+    ) -> bool:
+        missing = truth_ids - runtime_ids
+        stale = runtime_ids - truth_ids
+        labels = {"pool": pool.config.pool_id}
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_consistent", 0 if missing or stale else 1,
+            labels=labels,
+        )
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_missing_instances", len(missing), labels=labels
+        )
+        self.telemetry.set_gauge(
+            "dingo_video_discovery_stale_instances", len(stale), labels=labels
+        )
+        if not missing and not stale:
+            self._discovery_mismatch_started.pop(pool.config.pool_id, None)
+            self._discovery_mismatch_checks.pop(pool.config.pool_id, None)
+            self.telemetry.set_gauge(
+                "dingo_video_discovery_last_consistent_timestamp_seconds",
+                time.time(),
+                labels=labels,
+            )
+            return True
+        if missing:
+            self.telemetry.increment(
+                "dingo_video_discovery_mismatch_checks_total",
+                labels={**labels, "direction": "missing_in_runtime"},
+            )
+        if stale:
+            self.telemetry.increment(
+                "dingo_video_discovery_mismatch_checks_total",
+                labels={**labels, "direction": "stale_in_runtime"},
+            )
+        self._discovery_mismatch_started.setdefault(
+            pool.config.pool_id, time.monotonic()
+        )
+        self._discovery_mismatch_checks[pool.config.pool_id] = (
+            self._discovery_mismatch_checks.get(pool.config.pool_id, 0) + 1
+        )
+        return False
+
+    async def _discovery_watchdog_loop(self) -> None:
+        watchdog = self.config.runtime.discovery_watchdog
+        targets = [pool.config.backend_target for pool in self.pools.values()]
+        while not self._stop.is_set():
+            started = time.monotonic()
+            try:
+                truth = await self.store.discovery_instance_snapshot(targets)
+                mature_mismatches: list[str] = []
+                for pool in self.pools.values():
+                    runtime_ids = set(pool.client.instance_ids())
+                    truth_ids = truth[pool.config.backend_target]
+                    if self._record_discovery_match(pool, runtime_ids, truth_ids):
+                        continue
+                    mismatch_started = self._discovery_mismatch_started[
+                        pool.config.pool_id
+                    ]
+                    mismatch_checks = self._discovery_mismatch_checks[
+                        pool.config.pool_id
+                    ]
+                    if (
+                        mismatch_checks >= _DISCOVERY_MISMATCH_MIN_CHECKS
+                        and time.monotonic() - mismatch_started
+                        >= watchdog.mismatch_grace_s
+                    ):
+                        mature_mismatches.append(pool.config.pool_id)
+                if mature_mismatches:
+                    acquired = await self.store.try_acquire_discovery_recovery(
+                        self.generation,
+                        ttl_s=_DISCOVERY_RECOVERY_LOCK_TTL_S,
+                    )
+                    if acquired:
+                        pools = ",".join(sorted(mature_mismatches))
+                        self.telemetry.increment(
+                            "dingo_video_discovery_watchdog_restarts_total"
+                        )
+                        reason = (
+                            "Dynamo discovery view remained inconsistent for pools="
+                            f"{pools}; restarting this Video Gateway replica"
+                        )
+                        logger.error(reason)
+                        await self._request_fatal_restart(
+                            reason, drain_s=_DISCOVERY_RESTART_DRAIN_S
+                        )
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.telemetry.increment(
+                    "dingo_video_discovery_watchdog_errors_total"
+                )
+                logger.exception("Dynamo discovery watchdog check failed")
+            remaining = watchdog.interval_s - (time.monotonic() - started)
+            if remaining <= 0:
+                await asyncio.sleep(0)
+                continue
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass
+
     async def _resync_lease_cache(self, pool: PoolRuntime) -> None:
         pool.lease_watch_healthy = False
         leases, revision = await self.store.lease_snapshot(pool.config.pool_id)
@@ -686,28 +834,50 @@ class VideoDispatcher:
                 await self.store.release_lease(pool.config.pool_id, lease.worker_key)
 
     async def _dispatch_once(self, pool: PoolRuntime) -> bool:
-        queued = await self.store.list_queued(pool.config.pool_id, limit=1)
+        ledger = hasattr(self.store, "retry_budget_used")
+        budget_limit = getattr(self, "_retry_budget_limit", 32)
+        queued = await self.store.list_queued(pool.config.pool_id, limit=min(10000, pool.config.scheduling.queue_limit + budget_limit))
+        used = 0
+        if ledger:
+            waiting = await self.store.retry_queue_depth(pool.config.pool_id)
+            used = await self.store.retry_budget_used(pool.config.pool_id)
+            self.telemetry.set_gauge("dingo_video_retry_waiting_tasks", waiting, labels={"pool": pool.config.pool_id})
+            self.telemetry.set_gauge("dingo_video_retry_credits_used", used, labels={"pool": pool.config.pool_id})
+            self.telemetry.set_gauge("dingo_video_normal_queue_depth", max(0, await self.store.queue_depth(pool.config.pool_id) - waiting), labels={"pool": pool.config.pool_id})
         if not queued or not pool.instance_ids:
             await self._clear_budget_waiter(pool)
             return False
-        task_id = queued[0].task.id
-        if pool.budget_waiter_id not in {None, task_id}:
-            await self.memory_budget.cancel_waiter(pool.budget_waiter_id)
-            pool.budget_waiter_id = None
         if self.store.lease_watch_supported and not pool.lease_watch_healthy:
             await self._clear_budget_waiter(pool)
             return False
         leased = {
             lease.worker_key for lease in await self.pool_leases(pool.config.pool_id)
         }
-        available = [
-            instance_id
-            for instance_id in pool.instance_ids
-            if worker_key(pool.config.backend_target, instance_id) not in leased
-        ]
-        if not available:
+        selected = None
+        available = []
+        # Retry first, but do not let a retry that excludes the only available
+        # instance block unrelated runnable work behind it.
+        for candidate in sorted(queued, key=lambda item: item.task.attempt == 0):
+            if candidate.task.id in self.running_calls or candidate.task.expires_at_ms <= now_ms():
+                continue
+            if (ledger and getattr(self, "_worker_retry_once", False)
+                    and candidate.task.attempt == 0 and used >= budget_limit):
+                continue
+            available = [instance for instance in pool.instance_ids
+                         if worker_key(pool.config.backend_target, instance) not in leased
+                         and not (candidate.task.attempt > 0
+                                  and worker_key(pool.config.backend_target, instance) == candidate.task.worker_key)]
+            if available:
+                selected = candidate
+                break
+        if selected is None:
             await self._clear_budget_waiter(pool)
             return False
+        queued = [selected]
+        task_id = selected.task.id
+        if pool.budget_waiter_id not in {None, task_id}:
+            await self.memory_budget.cancel_waiter(pool.budget_waiter_id)
+            pool.budget_waiter_id = None
         weight_bytes = (
             queued[0].task.estimated_payload_bytes
             or self.config.media.max_task_memory_bytes
@@ -737,8 +907,11 @@ class VideoDispatcher:
         )
         deadline = now_ms() + int(pool.config.scheduling.execution_timeout_s * 1000)
         try:
+            retry_options = ({"reserve_retry": getattr(self, "_worker_retry_once", False)
+                              and pool.config.execution_mode == "detached", "retry_limit": budget_limit}
+                             if ledger else {})
             reserved = await self.store.reserve(
-                queued[0], lease, deadline_at_ms=deadline
+                queued[0], lease, deadline_at_ms=deadline, **retry_options
             )
         except Exception:
             await self.memory_budget.release(task_id)
@@ -801,15 +974,21 @@ class VideoDispatcher:
         operation: Any,
         heartbeat: asyncio.Task,
         cancellation: Any | None = None,
+        liveness: Any | None = None,
     ) -> Any:
         operation_task = asyncio.create_task(operation)
         cancellation_task = (
             asyncio.create_task(cancellation) if cancellation is not None else None
         )
+        liveness_task = (
+            asyncio.create_task(liveness) if liveness is not None else None
+        )
         try:
             monitored = {operation_task, heartbeat}
             if cancellation_task is not None:
                 monitored.add(cancellation_task)
+            if liveness_task is not None:
+                monitored.add(liveness_task)
             done, _pending = await asyncio.wait(
                 monitored,
                 return_when=asyncio.FIRST_COMPLETED,
@@ -821,20 +1000,99 @@ class VideoDispatcher:
             if cancellation_task is not None and cancellation_task in done:
                 await cancellation_task
                 raise RuntimeError("cancellation monitor ended unexpectedly")
-            if heartbeat.cancelled():
-                raise _WorkerLeaseLost("Worker execution lease monitor stopped")
-            error = heartbeat.exception()
-            if isinstance(error, _WorkerLeaseLost):
-                raise error
-            raise _WorkerLeaseLost("Worker execution lease monitor failed") from error
+            # Losing execution ownership takes precedence over a simultaneous
+            # suspicion of Worker loss. An etcd outage is not a Worker crash.
+            if heartbeat in done:
+                self._raise_if_heartbeat_stopped(heartbeat)
+            if liveness_task is not None and liveness_task in done:
+                await liveness_task
+                raise RuntimeError("Worker liveness monitor ended unexpectedly")
+            raise RuntimeError("execution monitor ended unexpectedly")
         finally:
-            if not operation_task.done():
-                operation_task.cancel()
-                await asyncio.gather(operation_task, return_exceptions=True)
-            if cancellation_task is not None:
-                if not cancellation_task.done():
-                    cancellation_task.cancel()
-                await asyncio.gather(cancellation_task, return_exceptions=True)
+            children = [operation_task]
+            children.extend(
+                monitor for monitor in (cancellation_task, liveness_task)
+                if monitor is not None
+            )
+            for child in children:
+                if not child.done():
+                    child.cancel()
+            await asyncio.gather(*children, return_exceptions=True)
+
+    def _can_check_missing_worker(self, pool: PoolRuntime, task: Any) -> bool:
+        return (
+            self.store.discovery_truth_supported
+            and self._gateway_owner_healthy
+            and self._task_watch_healthy
+            and pool.discovery_healthy
+            and pool.lease_watch_healthy
+            and task.worker_instance_id not in pool.instance_ids
+            and (task.deadline_at_ms or 0) > now_ms()
+        )
+
+    async def _confirm_worker_loss(self, pool: PoolRuntime, task: Any) -> bool:
+        """Read remote evidence only for a locally missing execution instance.
+
+        Unknown/corrupt/unavailable evidence is not positive proof of failure.
+        The normal registered-Worker path never reads etcd or artifact files.
+        """
+        if not self._can_check_missing_worker(pool, task):
+            return False
+        async with self._worker_liveness_checks:
+            # Waiting for the shared concurrency limit may have made the
+            # suspicion obsolete, or the control plane may have become sick.
+            if not self._can_check_missing_worker(pool, task):
+                return False
+            try:
+                truth = await self.store.discovery_instance_snapshot(
+                    [pool.config.backend_target]
+                )
+                if task.worker_instance_id in truth[pool.config.backend_target]:
+                    return False
+                current = await self._current_owned_execution(task)
+                if current is None:
+                    raise _TaskOwnershipLost("task ownership moved during Worker liveness check")
+                if (current.task.status != TaskStatus.IN_PROGRESS
+                        or current.task.cancel_requested_at_ms is not None):
+                    return False
+                status = await self.artifacts.read_detached_status(
+                    task.deployment_id, task.pool_id, task.id, task.attempt,
+                    task.execution_token,
+                )
+                if status is None or status.get("state") not in {"accepted", "running"}:
+                    return False
+                updated_at_ms = status.get("updated_at_ms")
+                if (not isinstance(updated_at_ms, int)
+                        or isinstance(updated_at_ms, bool)
+                        or now_ms() - updated_at_ms <= int(_DETACHED_WORKER_STALE_S * 1000)):
+                    return False
+                return self._can_check_missing_worker(pool, task)
+            except _TaskOwnershipLost:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.telemetry.increment(
+                    "dingo_video_worker_liveness_checks_total",
+                    labels={"pool": pool.config.pool_id, "outcome": "inconclusive"},
+                )
+                logger.debug("Worker liveness evidence unavailable for %s", task.id, exc_info=True)
+                return False
+
+    async def _monitor_worker_liveness(
+        self, pool: PoolRuntime, task: Any, running: RunningCall
+    ) -> None:
+        """Independent of the possibly stuck result/terminal-wait stream."""
+        while True:
+            await asyncio.sleep(_WORKER_LIVENESS_CHECK_INTERVAL_S)
+            if running.worker_accepted and await self._confirm_worker_loss(pool, task):
+                self.telemetry.increment(
+                    "dingo_video_worker_liveness_checks_total",
+                    labels={"pool": pool.config.pool_id, "outcome": "confirmed_lost"},
+                )
+                raise _RetryableWorkerFailure(
+                    "detached Worker disappeared and its heartbeat is stale"
+                )
 
     async def _monitor_cancellation(
         self,
@@ -1058,6 +1316,7 @@ class VideoDispatcher:
                     self._monitor_cancellation(
                         pool, stored.task, context, running_call
                     ),
+                    self._monitor_worker_liveness(pool, stored.task, running_call),
                 )
                 worker_stream_finished = True
             else:
@@ -1236,6 +1495,7 @@ class VideoDispatcher:
                 "gateway_shutdown",
                 "Gateway stopped during generation",
                 quarantine=True,
+                expected_execution=task,
             )
             raise
         except asyncio.TimeoutError:
@@ -1251,6 +1511,7 @@ class VideoDispatcher:
                 "execution_timeout",
                 "video generation timed out",
                 quarantine=True,
+                expected_execution=task,
             )
         except _WorkerLeaseLost as exc:
             if await self._current_owned_execution(task) is None:
@@ -1274,6 +1535,7 @@ class VideoDispatcher:
                 "worker_lease_lost",
                 str(exc),
                 quarantine=worker_accepted,
+                expected_execution=task,
             )
         except _DetachedWorkerCancelled:
             latest = await self.store.get_task(task.id)
@@ -1305,12 +1567,14 @@ class VideoDispatcher:
                 "result_too_large",
                 str(exc),
                 quarantine=False,
+                expected_execution=task,
             )
         except Exception as exc:
             if final_path is not None:
                 await asyncio.to_thread(final_path.unlink, True)
                 final_path = None
-            if await self._current_owned_execution(task) is None:
+            current = await self._current_owned_execution(task)
+            if current is None:
                 logger.info(
                     "ignored stale task failure after execution ownership moved: %s",
                     task.id,
@@ -1333,7 +1597,25 @@ class VideoDispatcher:
                     context.stop_generating()
                 except Exception:
                     logger.exception("failed to stop Worker after task error")
-            logger.exception("video task failed: %s", task.id)
+            if (
+                isinstance(exc, StoreConflict)
+                and running_call is None
+                and task.status == TaskStatus.DISPATCHING
+                and current.task.status == TaskStatus.DISPATCHING
+                and current.task.cancel_requested_at_ms is not None
+            ):
+                # A cancellation can advance the reserved task revision before
+                # dispatch. Keep the existing cancellation/lease cleanup below;
+                # this confirmed pre-dispatch race is not a Worker failure.
+                logger.info(
+                    "task %s cancelled during dispatch preparation; "
+                    "handling expected task revision conflict",
+                    task.id,
+                )
+            elif isinstance(exc, _RetryableWorkerFailure):
+                logger.exception("video Worker attempt failed: %s", task.id)
+            else:
+                logger.exception("video task failed: %s", task.id)
             await self._finish_failed(
                 pool,
                 task.id,
@@ -1344,6 +1626,8 @@ class VideoDispatcher:
                     and running_call.worker_accepted
                     and not worker_stream_finished
                 ),
+                retryable=isinstance(exc, _RetryableWorkerFailure),
+                expected_execution=task,
             )
         finally:
             payload = None
@@ -1466,7 +1750,7 @@ class VideoDispatcher:
                 return True
             if state == "failed":
                 running_call.worker_accepted = False
-                raise RuntimeError("detached Worker reported execution failure")
+                raise worker_execution_error(worker_status.get("error"))
             if state == "cancelled":
                 running_call.worker_accepted = False
                 raise _DetachedWorkerCancelled("detached Worker cancelled task")
@@ -1478,11 +1762,11 @@ class VideoDispatcher:
             if (
                 state in {"accepted", "running"}
                 and isinstance(updated_at_ms, int)
-                and task.worker_instance_id not in pool.instance_ids
                 and now_ms() - updated_at_ms
                 > int(_DETACHED_WORKER_STALE_S * 1000)
+                and await self._confirm_worker_loss(pool, task)
             ):
-                raise RuntimeError(
+                raise _RetryableWorkerFailure(
                     "detached Worker disappeared and its heartbeat is stale"
                 )
             return False
@@ -1781,6 +2065,45 @@ class VideoDispatcher:
             revision=cancelled.revision,
         )
 
+    async def _try_worker_retry(self, pool: PoolRuntime, stored: StoredTask, *, quarantine: bool) -> bool:
+        task = stored.task
+        if (not getattr(self, "_worker_retry_once", False)
+                or pool.config.execution_mode != "detached"
+                or task.attempt != 1
+                or task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
+                or task.cancel_requested_at_ms is not None
+                or task.owner_generation != self.generation
+                or not hasattr(self.store, "retry_budget_used")):
+            return False
+        retry = None
+        for _ in range(16):
+            try:
+                retry = await self.store.requeue_failed_attempt(
+                    stored, queue_limit=pool.config.scheduling.queue_limit,
+                    retry_wait_timeout_s=getattr(self, "_retry_wait_timeout_s", 600),
+                    quarantine_until_ms=(max(task.deadline_at_ms or now_ms(), now_ms())
+                                         + int(pool.config.scheduling.abort_grace_s * 1000)) if quarantine
+                    else now_ms() + int(getattr(self, "_failed_instance_backoff_s", 30) * 1000),
+                )
+                break
+            except StoreConflict:
+                current = await self.store.get_task(task.id)
+                if (current is None or current.task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
+                        or not self._same_execution_owner(current.task, task)
+                        or current.task.cancel_requested_at_ms is not None):
+                    return False
+                stored = current
+                await asyncio.sleep(0.01)
+        if retry is None:
+            return False
+        self.telemetry.increment("dingo_video_worker_retries_total", labels={"pool": task.pool_id})
+        self.telemetry.record_transition("worker_retry_queued", task, retry.task,
+                                         gateway_generation=self.generation, revision=retry.revision)
+        logger.warning("queued one Worker retry for task %s after attempt %s; excluding instance %s",
+                       task.id, task.attempt, task.worker_instance_id)
+        pool.wakeup.set()
+        return True
+
     async def _finish_failed(
         self,
         pool: PoolRuntime,
@@ -1789,10 +2112,27 @@ class VideoDispatcher:
         message: str,
         *,
         quarantine: bool,
+        retryable: bool = False,
+        expected_execution: Any | None = None,
     ) -> None:
         latest = await self.store.get_task(task_id)
         if latest is None or latest.task.status in TERMINAL_STATUSES:
             return
+        if expected_execution is not None and not self._same_execution_owner(latest.task, expected_execution):
+            return
+        if retryable and latest.task.cancel_requested_at_ms is None:
+            previous = latest
+            try:
+                if await self._try_worker_retry(pool, latest, quarantine=quarantine):
+                    return
+            except Exception:
+                # A transaction reply may be ambiguous. Re-read ownership
+                # before falling back; never fail an already requeued attempt.
+                logger.exception("Worker retry decision failed for task %s", task_id)
+            latest = await self.store.get_task(task_id)
+            if (latest is None or latest.task.status in TERMINAL_STATUSES
+                    or not self._same_execution_owner(latest.task, previous.task)):
+                return
         if latest.task.cancel_requested_at_ms is not None:
             try:
                 await self._finish_cancelled(pool, latest, quarantine=quarantine)
@@ -2179,7 +2519,8 @@ class VideoDispatcher:
                             "expires_at_ms": current
                             + int(self.config.lifecycle.failed_ttl_s * 1000),
                             "error": terminal_error(
-                                "queue_timeout", "video task expired while queued"
+                                "retry_wait_timeout" if task.attempt > 0 else "queue_timeout",
+                                "video retry wait expired" if task.attempt > 0 else "video task expired while queued"
                             ),
                         },
                     )
@@ -2189,7 +2530,7 @@ class VideoDispatcher:
                         failed.task,
                         gateway_generation=self.generation,
                         revision=failed.revision,
-                        reason="queue_timeout",
+                        reason="retry_wait_timeout" if task.attempt > 0 else "queue_timeout",
                     )
                 elif task.status in {
                     TaskStatus.COMPLETED,
