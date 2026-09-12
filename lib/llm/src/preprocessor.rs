@@ -444,7 +444,7 @@ impl OpenAIPreprocessor {
             Some("qwen3" | "glm45" | "nemotron_nano" | "nemotron3" | "nemotron_v3") => {
                 bool_arg("enable_thinking") != Some(false)
             }
-            Some("kimi_k25") => bool_arg("thinking") != Some(false),
+            Some("kimi_k25" | "kimi_k3" | "kimi-k3") => bool_arg("thinking") != Some(false),
 
             // DeepSeek V3/V3.1 templates are opt-in. The native V3.2/V4
             // renderers default to thinking; all honor the same aliases.
@@ -454,6 +454,7 @@ impl OpenAIPreprocessor {
             Some("deepseek_v3_2" | "deepseek_v4" | "deepseek-v4" | "deepseekv4") => {
                 Self::deepseek_renderer_reasoning_enabled(chat_template_args, true)
             }
+            Some("minimax_m2") => Self::deepseek_renderer_reasoning_enabled(chat_template_args, true),
             Some("gemma4" | "gemma-4") => bool_arg("enable_thinking") == Some(true),
 
             // SGLang's Mistral reasoner is active only for a concrete effort.
