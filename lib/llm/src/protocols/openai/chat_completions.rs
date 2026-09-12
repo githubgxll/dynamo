@@ -1571,6 +1571,9 @@ mod tests {
             make_tool("func-name_v2"),
             make_tool("FuncName"),
             make_tool("Func_Name-123"),
+            make_tool("chess.rating"),
+            make_tool("music_composer.create_mix"),
+            make_tool("ns:action"),
         ];
         assert!(validate::validate_tools(&Some(&tools)).is_ok());
     }
