@@ -1072,6 +1072,31 @@ def _try_parse_json_array(text: str) -> list | None:
     return None
 
 
+def _try_parse_json_object(text: str) -> dict | None:
+    """Try to parse a JSON object from *text*, tolerating surrounding noise.
+
+    Mirrors _try_parse_json_array but for {} objects so that
+    response_format=json_object output landing in the reasoning phase
+    (via require_reasoning=True) is correctly reclassified as content.
+    """
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
 class SglangStreamingPostProcessor:
     """Streaming post-processor using SGLang parsers and HF tokenizer detokenization.
 
@@ -1293,7 +1318,7 @@ class SglangStreamingPostProcessor:
             return None, ""
 
         self._pending_guided_reasoning_parts = None
-        if finish_reason and _try_parse_json_array(buffered) is not None:
+        if finish_reason and (_try_parse_json_array(buffered) is not None or _try_parse_json_object(buffered) is not None):
             return None, buffered
 
         if finish_reason and stripped and stripped[0] in "[{" and not starts_reasoning:
