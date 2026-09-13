@@ -24,6 +24,7 @@ import inspect
 import logging
 from functools import lru_cache
 from typing import Any
+from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,25 @@ def filter_supported_async_generate_kwargs(
     return {key: value for key, value in kwargs.items() if key in supported_kwarg_names}
 
 
+
+
+def require_reasoning_kwargs(engine: Any, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the optional SGLang per-request reasoning-gate argument."""
+    require_reasoning = bool(request.get("require_reasoning", False))
+    kwargs = filter_supported_async_generate_kwargs(
+        engine,
+        {"require_reasoning": require_reasoning},
+    )
+    if require_reasoning and "require_reasoning" not in kwargs:
+        logger.warning(
+            "Dropping require_reasoning=true because SGLang Engine.async_generate "
+            "does not support it; reasoning-aware guided decoding may fail. "
+            "Upgrade SGLang to enable this request mode."
+        )
+    return kwargs
+
 __all__ = [
     "ensure_sglang_top_level_exports",
     "filter_supported_async_generate_kwargs",
+    "require_reasoning_kwargs",
 ]
