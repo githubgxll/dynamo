@@ -29,7 +29,7 @@ from sglang.srt.parser.jinja_template_utils import (
 )
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 
-from .utils import extract_mm_urls, random_call_id
+from .utils import PreprocessError, extract_mm_urls, random_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +726,42 @@ def build_tool_call_guided_decoding(
     return None
 
 
+def build_response_format_guided_decoding(
+    request: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build Dynamo guided decoding from OpenAI chat response_format."""
+    response_format = request.get("response_format")
+    if not isinstance(response_format, dict):
+        return None
+
+    response_format_type = response_format.get("type")
+    if response_format_type == "json_object":
+        return {"json": {"type": "object"}}
+    if response_format_type == "structural_tag":
+        return {"structural_tag": response_format}
+    if response_format_type != "json_schema":
+        return None
+
+    json_schema = response_format.get("json_schema")
+    if isinstance(json_schema, dict):
+        schema = json_schema.get("schema")
+    else:
+        schema = response_format.get("schema")
+    if schema is None:
+        raise PreprocessError(
+            "schema is required for json_schema response format request."
+        )
+    if not isinstance(schema, dict):
+        raise PreprocessError(
+            "schema must be a JSON object for json_schema response format request."
+        )
+    if not isinstance(json_schema, dict):
+        schema = copy.deepcopy(schema)
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("strict", None)
+    return {"json": schema}
+
 def _normalize_prompt_token_ids(prompt_token_ids: Any) -> list[int]:
     """Flatten ``apply_chat_template`` output to ``list[int]``.
 
@@ -885,11 +921,18 @@ def preprocess_chat_request(
         sglang_tools=sglang_tools,
         force_reasoning=force_reasoning,
     )
-    guided_decoding = build_tool_call_guided_decoding(
+    response_format_guided = build_response_format_guided_decoding(request)
+    tool_call_guided = build_tool_call_guided_decoding(
         request,
         tool_call_parser_name=tool_call_parser_name,
         sglang_tools=sglang_tools,
     )
+    if response_format_guided is not None and tool_call_guided is not None:
+        logger.warning(
+            "Both response_format and tool_choice guided decoding are active; "
+            "response_format takes precedence."
+        )
+    guided_decoding = response_format_guided or tool_call_guided
 
     return SglangPreprocessResult(
         prompt_token_ids=prompt_token_ids,
@@ -994,6 +1037,32 @@ def _try_parse_json_array(text: str) -> list | None:
     return None
 
 
+def _try_parse_json_object(text: str) -> dict | None:
+    """Try to parse a JSON object from *text*, tolerating surrounding noise.
+
+    Uses ``raw_decode`` from each ``{`` position so that prose containing
+    a *discussion example* followed by the *real* JSON object is handled
+    correctly (greedy ``find/rfind`` would span the example's ``{`` to the
+    real object's ``}`` and fail on the intervening prose).
+    """
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, consumed = decoder.raw_decode(text[i:])
+            if isinstance(obj, dict) and i + consumed >= len(text) - 5:
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
 class SglangStreamingPostProcessor:
     """Streaming post-processor using SGLang parsers and HF tokenizer detokenization.
 
@@ -1021,6 +1090,7 @@ class SglangStreamingPostProcessor:
         reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
         stop_strings: set[str] | None = None,
+        guided_decoding_active: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1044,6 +1114,8 @@ class SglangStreamingPostProcessor:
         self._is_json_array_parser = isinstance(tool_call_parser, JsonArrayParser)
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
+        self._guided_decoding_active = guided_decoding_active
+        self._guided_reasoning_parts: list[str] = []
         self._pending_stop_text = ""
 
         self._all_token_ids: list[int] = []
@@ -1233,6 +1305,22 @@ class SglangStreamingPostProcessor:
                 self._reasoning_token_count += len(token_ids)
         if self._is_kimi_k3:
             reasoning_text = _strip_kimi_k3_control_markers(reasoning_text) or None
+
+        # -- Guided decoding: accumulate reasoning, reclassify JSON to content at finish --
+        if self._guided_decoding_active and reasoning_text:
+            self._guided_reasoning_parts.append(reasoning_text)
+        if (
+            self._guided_decoding_active
+            and finish_reason
+            and self._guided_reasoning_parts
+            and not normal_text
+            and not self._saw_normal_output
+        ):
+            full_reasoning = "".join(self._guided_reasoning_parts)
+            obj = _try_parse_json_object(full_reasoning)
+            if obj is not None:
+                normal_text = json.dumps(obj, ensure_ascii=False)
+            self._guided_reasoning_parts = []
 
         # -- Tool call parsing (accumulate deltas) --
         content_text = normal_text

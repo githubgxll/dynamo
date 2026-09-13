@@ -289,6 +289,7 @@ class SglangPreprocessWorkerResult:
     # a reasoning parser in that case so the pool path matches the inline
     # path byte-for-byte.
     effective_reasoning_parser_name: str | None = None
+    guided_decoding_present: bool = False
 
 
 def _init_worker(
@@ -334,7 +335,8 @@ def _preprocess_worker(
         model_name,
         eos_token_ids,
         pre.guided_decoding,
-        pre.tool_call_parser,
+        require_reasoning=pre.force_reasoning and pre.guided_decoding is not None,
+        tool_call_parser=pre.tool_call_parser,
     )
 
     effective_reasoning_parser_name = (
@@ -347,6 +349,7 @@ def _preprocess_worker(
         request=request,
         force_reasoning=pre.force_reasoning,
         effective_reasoning_parser_name=effective_reasoning_parser_name,
+        guided_decoding_present=pre.guided_decoding is not None,
     )
 
 
@@ -356,6 +359,7 @@ def _build_dynamo_preproc(
     model_name: str,
     eos_token_ids: int | list[int] | None,
     guided_decoding: dict[str, Any] | None = None,
+    require_reasoning: bool = False,
     tool_call_parser: ToolCallParserType | None = None,
 ) -> dict[str, Any]:
     """Build the Dynamo preprocessed request dict from request fields."""
@@ -387,6 +391,7 @@ def _build_dynamo_preproc(
     preproc = {
         "model": model_name,
         "token_ids": prompt_token_ids,
+        "require_reasoning": require_reasoning,
         "stop_conditions": {
             "max_tokens": max_tokens,
             "stop": stop,
@@ -554,8 +559,11 @@ class SglangProcessor:
                 request["model"],
                 self.eos_token_ids,
                 pre.guided_decoding,
-                pre.tool_call_parser,
+                require_reasoning=pre.force_reasoning and pre.guided_decoding is not None,
+                tool_call_parser=pre.tool_call_parser,
             )
+        except PreprocessError as exc:
+            raise InvalidArgument(str(exc)) from exc
         except InvalidArgument:
             raise
         except Exception as exc:
@@ -574,6 +582,7 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            guided_decoding_active=pre.guided_decoding is not None,
         )
 
         async for item in self._generate_and_stream(
@@ -633,6 +642,7 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            guided_decoding_active=preproc_result.guided_decoding_present,
         )
 
         async for item in self._generate_and_stream(

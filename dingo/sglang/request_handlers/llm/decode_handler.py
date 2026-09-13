@@ -15,7 +15,7 @@ from dingo.common.constants import DisaggregationMode
 from dingo.common.metadata_upload import MetadataUploader
 from dingo.common.multimodal.image_loader import ImageLoader
 from dingo.common.utils.engine_response import normalize_finish_reason
-from dingo.sglang._compat import filter_supported_async_generate_kwargs
+from dingo.sglang._compat import filter_supported_async_generate_kwargs, require_reasoning_kwargs
 from dingo.sglang.args import Config
 from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
@@ -522,6 +522,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 **decode_mm_kwargs,
                 sampling_params=sampling_params,
                 stream=True,
+                **require_reasoning_kwargs(self.engine, request),
                 **self._routed_experts_kwargs,
                 bootstrap_host=bootstrap_info["bootstrap_host"],
                 bootstrap_port=bootstrap_info["bootstrap_port"],
@@ -593,6 +594,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 video_data=video_data,
                 sampling_params=sampling_params,
                 stream=True,
+                **require_reasoning_kwargs(self.engine, request),
                 **self._routed_experts_kwargs,
                 **mm_hashes_kwargs,
                 external_trace_header=trace_header,
