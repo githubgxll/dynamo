@@ -1124,6 +1124,7 @@ class SglangStreamingPostProcessor:
         reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
         stop_strings: set[str] | None = None,
+        guided_decoding_active: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1149,7 +1150,9 @@ class SglangStreamingPostProcessor:
         # reasoning followed by JSON. Delay only the ambiguous bracket-leading
         # prefix so bare JSON does not get trapped as reasoning.
         self._pending_guided_reasoning_parts: list[str] | None = (
-            [] if self._is_json_array_parser and reasoning_parser is not None else None
+            [] if (self._is_json_array_parser or guided_decoding_active)
+            and reasoning_parser is not None
+            else None
         )
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
