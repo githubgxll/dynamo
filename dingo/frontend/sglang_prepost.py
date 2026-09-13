@@ -1021,6 +1021,7 @@ class SglangStreamingPostProcessor:
         reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
         stop_strings: set[str] | None = None,
+        json_object_mode: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1044,6 +1045,8 @@ class SglangStreamingPostProcessor:
         self._is_json_array_parser = isinstance(tool_call_parser, JsonArrayParser)
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
+        self._json_object_mode = json_object_mode
+        self._json_content_buffer: list[str] = []
         self._pending_stop_text = ""
 
         self._all_token_ids: list[int] = []
@@ -1265,6 +1268,21 @@ class SglangStreamingPostProcessor:
             content_text = _strip_kimi_k3_control_markers(content_text)
         if content_text:
             self._saw_normal_output = True
+
+        # --- json_object_mode: buffer content, strip fence at finish ---
+        if self._json_object_mode and content_text:
+            self._json_content_buffer.append(content_text)
+            content_text = ""
+        if finish_reason and self._json_object_mode and self._json_content_buffer:
+            full = "".join(self._json_content_buffer)
+            if full.startswith("```"):
+                idx = full.find("\n")
+                if idx != -1:
+                    full = full[idx + 1 :]
+            if full.endswith("```"):
+                full = full[:-3].rstrip("\n")
+            content_text = full
+            self._json_content_buffer = []
 
         # -- Assemble delta --
         delta: dict[str, Any] = {"role": "assistant"}

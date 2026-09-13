@@ -574,6 +574,7 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            json_object_mode=bool(pre.request.get("response_format")),
         )
 
         async for item in self._generate_and_stream(
@@ -633,6 +634,7 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            json_object_mode=bool(request.get("response_format")),
         )
 
         async for item in self._generate_and_stream(
