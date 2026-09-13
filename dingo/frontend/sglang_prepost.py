@@ -406,13 +406,26 @@ def _is_named_tool_choice(tool_choice: Any) -> bool:
 
 
 def _guided_tool_choice_requires_reasoning(
-    request: dict[str, Any], force_reasoning: bool
+    request: dict[str, Any],
+    force_reasoning: bool,
+    guided_decoding: dict[str, Any] | None = None,
 ) -> bool:
-    """Return whether SGLang should reason before guided tool-call JSON."""
+    """Return whether SGLang should reason before guided JSON output.
+
+    Covers both tool_choice-guided and response_format-guided requests so
+    that force-reasoning parsers (e.g. glm45) get require_reasoning=True
+    whenever any guided decoding constraint is active.
+    """
+    if not force_reasoning:
+        return False
     tool_choice = request.get("tool_choice", "auto")
-    return force_reasoning and (
-        tool_choice == "required" or _is_named_tool_choice(tool_choice)
-    )
+    if tool_choice == "required" or _is_named_tool_choice(tool_choice):
+        return True
+    # response_format (json_object / json_schema) also produces guided_decoding;
+    # force-reasoning models must reason before the JSON constraint is applied.
+    if guided_decoding is not None:
+        return True
+    return False
 
 
 def _normalize_deepseek_v4_hint(value: Any) -> str:

@@ -339,7 +339,7 @@ def _preprocess_worker(
         pre.tool_call_parser,
         pre.reasoning_parser,
         require_reasoning=_guided_tool_choice_requires_reasoning(
-            request, pre.force_reasoning
+            request, pre.force_reasoning, pre.guided_decoding
         ),
     )
 
@@ -566,7 +566,7 @@ class SglangProcessor:
                 pre.tool_call_parser,
                 pre.reasoning_parser,
                 require_reasoning=_guided_tool_choice_requires_reasoning(
-                    request, pre.force_reasoning
+                    request, pre.force_reasoning, pre.guided_decoding
                 ),
             )
         except PreprocessError as exc:
