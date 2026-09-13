@@ -29,7 +29,7 @@ from sglang.srt.parser.jinja_template_utils import (
 )
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 
-from .utils import extract_mm_urls, random_call_id
+from .utils import PreprocessError, extract_mm_urls, random_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,7 @@ class SglangPreprocessResult:
 #
 # A static, per-server boolean is plenty: per-request decoding of prompt
 # tails adds latency on the hot path with nothing to show for it. The
-# per-request knobs live downstream (``separate_reasoning``,
-# ``chat_template_kwargs.enable_thinking``), matching sglang's API.
+# per-request reasoning knobs live downstream, matching sglang's API.
 _FORCE_REASONING_PATTERNS = (
     # qwen3-family: <|im_start|>assistant\n<think>\n
     re.compile(r"<\|im_start\|>assistant\\n<think>\\n"),
@@ -200,6 +199,8 @@ def resolve_request_force_reasoning(
       * MiniMax-M3 defaults to adaptive, but SGLang still enables the
         reasoning parser unless ``chat_template_kwargs.thinking_mode`` is
         explicitly ``"disabled"``.
+      * Mistral is enabled only when ``reasoning_effort`` is present and not
+        ``"none"``.
       * opt-in families (``deepseek-v3``/``gemma4``): off by default,
         enabled by ``chat_template_kwargs.{thinking,enable_thinking}=True``.
       * anything else: follow the statically-detected template default.
@@ -214,6 +215,12 @@ def resolve_request_force_reasoning(
 
     if reasoning_parser_name == "minimax-m3":
         return kwargs.get("thinking_mode") != "disabled"
+
+    if reasoning_parser_name == "mistral":
+        reasoning_effort = request.get("reasoning_effort")
+        if reasoning_effort is None:
+            reasoning_effort = kwargs.get("reasoning_effort")
+        return reasoning_effort is not None and reasoning_effort != "none"
 
     if reasoning_parser_name in _THINKING_BY_DEFAULT:
         flag_key = (
@@ -378,7 +385,7 @@ def create_parsers(
     guided_decoding_active = tool_choice == "required" or _is_named_tool_choice(
         tool_choice
     )
-    if reasoning_parser_name and not guided_decoding_active:
+    if reasoning_parser_name and (not guided_decoding_active or force_reasoning):
         reasoning_parser_name = _normalize_sglang_parser_name(reasoning_parser_name)
         reasoning_parser = ReasoningParser(
             model_type=reasoning_parser_name,
@@ -396,6 +403,29 @@ def _is_named_tool_choice(tool_choice: Any) -> bool:
         and isinstance(tool_choice.get("function"), dict)
         and bool(tool_choice["function"].get("name"))
     )
+
+
+def _guided_tool_choice_requires_reasoning(
+    request: dict[str, Any],
+    force_reasoning: bool,
+    guided_decoding: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether SGLang should reason before guided JSON output.
+
+    Covers both tool_choice-guided and response_format-guided requests so
+    that force-reasoning parsers (e.g. glm45) get require_reasoning=True
+    whenever any guided decoding constraint is active.
+    """
+    if not force_reasoning:
+        return False
+    tool_choice = request.get("tool_choice", "auto")
+    if tool_choice == "required" or _is_named_tool_choice(tool_choice):
+        return True
+    # response_format (json_object / json_schema) also produces guided_decoding;
+    # force-reasoning models must reason before the JSON constraint is applied.
+    if guided_decoding is not None:
+        return True
+    return False
 
 
 def _normalize_deepseek_v4_hint(value: Any) -> str:
@@ -726,6 +756,46 @@ def build_tool_call_guided_decoding(
     return None
 
 
+def build_response_format_guided_decoding(
+    request: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build Dynamo guided decoding from OpenAI chat response_format."""
+    response_format = request.get("response_format")
+    if not isinstance(response_format, dict):
+        return None
+
+    response_format_type = response_format.get("type")
+    if response_format_type == "json_object":
+        return {"json": {"type": "object"}}
+    if response_format_type == "structural_tag":
+        return {"structural_tag": response_format}
+    if response_format_type != "json_schema":
+        return None
+
+    json_schema = response_format.get("json_schema")
+    if isinstance(json_schema, dict):
+        schema = json_schema.get("schema")
+    else:
+        schema = response_format.get("schema")
+    if schema is None:
+        raise PreprocessError(
+            "schema is required for json_schema response format request."
+        )
+    if not isinstance(schema, dict):
+        raise PreprocessError(
+            "schema must be a JSON object for json_schema response format request."
+        )
+    if not isinstance(json_schema, dict):
+        # This only the effective schema mutation from SGLang's
+        # ChatCompletionRequest.set_json_schema(), not the full response_format
+        # normalization into {"json_schema": {"name", "schema", "strict"}}.
+        schema = copy.deepcopy(schema)
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("strict", None)
+    return {"json": schema}
+
+
 def _normalize_prompt_token_ids(prompt_token_ids: Any) -> list[int]:
     """Flatten ``apply_chat_template`` output to ``list[int]``.
 
@@ -784,24 +854,23 @@ def preprocess_chat_request(
 
     ``template_force_reasoning`` is the static per-server flag derived from
     the chat template (see :func:`detect_force_reasoning_from_template`);
-    the effective per-request value combines it with client knobs
-    (``separate_reasoning``, ``chat_template_kwargs.{thinking,enable_thinking}``).
+    the effective per-request value combines it with the configured parser and
+    request-level thinking controls.
 
     Synchronous -- suitable for both main-process and worker-process execution.
     """
     request = _normalize_openai_thinking_template_kwargs(request)
     messages = _materialize_messages(request.get("messages", []))
 
-    # Per-request client escape hatch: skip reasoning parsing entirely when
-    # the client sends ``separate_reasoning=False`` -- thinking text then
-    # lands in ``delta.content`` instead of ``delta.reasoning_content``.
-    effective_reasoning_parser_name = (
-        reasoning_parser_name if _client_wants_separate_reasoning(request) else None
-    )
+    # Generation mode is independent of whether the client wants reasoning
+    # separated into reasoning_content or retained in content.
     force_reasoning = resolve_request_force_reasoning(
         request,
-        effective_reasoning_parser_name,
+        reasoning_parser_name,
         template_force_reasoning,
+    )
+    effective_reasoning_parser_name = (
+        reasoning_parser_name if _client_wants_separate_reasoning(request) else None
     )
 
     # Convert tools to SGLang format (done once, shared with parser creation)
@@ -885,11 +954,20 @@ def preprocess_chat_request(
         sglang_tools=sglang_tools,
         force_reasoning=force_reasoning,
     )
-    guided_decoding = build_tool_call_guided_decoding(
+    response_format_guided_decoding = build_response_format_guided_decoding(request)
+    tool_call_guided_decoding = build_tool_call_guided_decoding(
         request,
         tool_call_parser_name=tool_call_parser_name,
         sglang_tools=sglang_tools,
     )
+    if (
+        response_format_guided_decoding is not None
+        and tool_call_guided_decoding is not None
+    ):
+        logger.warning(
+            "Tool-call guided decoding will be ignored because of response_format already exists."
+        )
+    guided_decoding = response_format_guided_decoding or tool_call_guided_decoding
 
     return SglangPreprocessResult(
         prompt_token_ids=prompt_token_ids,
@@ -994,6 +1072,31 @@ def _try_parse_json_array(text: str) -> list | None:
     return None
 
 
+def _try_parse_json_object(text: str) -> dict | None:
+    """Try to parse a JSON object from *text*, tolerating surrounding noise.
+
+    Mirrors _try_parse_json_array but for {} objects so that
+    response_format=json_object output landing in the reasoning phase
+    (via require_reasoning=True) is correctly reclassified as content.
+    """
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
 class SglangStreamingPostProcessor:
     """Streaming post-processor using SGLang parsers and HF tokenizer detokenization.
 
@@ -1021,6 +1124,7 @@ class SglangStreamingPostProcessor:
         reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
         stop_strings: set[str] | None = None,
+        guided_decoding_active: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1038,10 +1142,18 @@ class SglangStreamingPostProcessor:
             self._reasoning_parser_name,
         }
         self._fast_plain_text = tool_call_parser is None and reasoning_parser is None
-        # Preserve special tokens when a tool call parser is active so
-        # delimiter tokens (e.g. <|tool_call|>) remain visible to the parser.
-        self._skip_special_tokens = tool_call_parser is None
+        # Preserve special tokens when a parser is active so tool-call and
+        # reasoning delimiters remain visible during incremental decoding.
+        self._skip_special_tokens = self._fast_plain_text
         self._is_json_array_parser = isinstance(tool_call_parser, JsonArrayParser)
+        # Required/named guided output may be either bare JSON or
+        # reasoning followed by JSON. Delay only the ambiguous bracket-leading
+        # prefix so bare JSON does not get trapped as reasoning.
+        self._pending_guided_reasoning_parts: list[str] | None = (
+            [] if (self._is_json_array_parser or guided_decoding_active)
+            and reasoning_parser is not None
+            else None
+        )
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
         self._pending_stop_text = ""
@@ -1172,6 +1284,56 @@ class SglangStreamingPostProcessor:
             return text[:-pending_len]
         return text
 
+    def _parse_reasoning_delta(
+        self, delta_text: str, finish_reason: str | None
+    ) -> tuple[str | None, str]:
+        assert self.reasoning_parser is not None
+
+        pending = self._pending_guided_reasoning_parts
+        if pending is None:
+            if not delta_text:
+                return None, ""
+            reasoning_text, normal_text = self.reasoning_parser.parse_stream_chunk(
+                delta_text
+            )
+            return reasoning_text or None, normal_text or ""
+
+        if delta_text:
+            pending.append(delta_text)
+        buffered = "".join(pending)
+        stripped = buffered.lstrip()
+
+        detector = getattr(self.reasoning_parser, "detector", None)
+        think_start = getattr(detector, "think_start_token", "")
+        starts_reasoning = bool(think_start and stripped.startswith(think_start))
+        could_be_partial_start = bool(
+            stripped
+            and think_start
+            and len(stripped) < len(think_start)
+            and think_start.startswith(stripped)
+        )
+
+        if not finish_reason and (
+            not stripped
+            or could_be_partial_start
+            or (stripped[0] in "[{" and not starts_reasoning)
+        ):
+            return None, ""
+
+        self._pending_guided_reasoning_parts = None
+        if finish_reason and (_try_parse_json_array(buffered) is not None or _try_parse_json_object(buffered) is not None):
+            return None, buffered
+
+        if finish_reason and stripped and stripped[0] in "[{" and not starts_reasoning:
+            reasoning_text, normal_text = self.reasoning_parser.parse_non_stream(
+                buffered
+            )
+        else:
+            reasoning_text, normal_text = self.reasoning_parser.parse_stream_chunk(
+                buffered
+            )
+        return reasoning_text or None, normal_text or ""
+
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
 
@@ -1219,17 +1381,15 @@ class SglangStreamingPostProcessor:
         # -- Reasoning parsing --
         reasoning_text = None
         normal_text = delta_text
-        if self.reasoning_parser and delta_text:
-            r_text, n_text = self.reasoning_parser.parse_stream_chunk(delta_text)
-            reasoning_text = r_text or None
-            normal_text = n_text or ""
+        if self.reasoning_parser and (delta_text or finish_reason):
+            reasoning_text, normal_text = self._parse_reasoning_delta(
+                delta_text, finish_reason
+            )
             if reasoning_text:
                 self._reasoning_token_count += len(token_ids)
             elif normal_text and not self._saw_normal_output:
                 # First content after thinking: that chunk's tokens include
-                # the reasoning-end marker (the parser consumed it as text),
-                # and at stream_interval=1 it is exactly the closing tag.
-                # Attribute the transition chunk to thinking.
+                # the reasoning-end marker; attribute the transition chunk to thinking.
                 self._reasoning_token_count += len(token_ids)
         if self._is_kimi_k3:
             reasoning_text = _strip_kimi_k3_control_markers(reasoning_text) or None
