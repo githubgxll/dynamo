@@ -18,6 +18,7 @@ from dingo.common.constants import EmbeddingTransferMode
 from dingo.sglang._compat import (
     ensure_sglang_top_level_exports,
     filter_supported_async_generate_kwargs,
+    require_reasoning_kwargs,
 )
 from dingo.sglang.args import (
     _normalize_multimodal_disaggregation_args,
@@ -148,6 +149,27 @@ def test_compat_keeps_async_generate_kwargs_for_variadic_engines():
     kwargs = {"return_routed_experts": True}
 
     assert filter_supported_async_generate_kwargs(VariadicEngine(), kwargs) == kwargs
+
+
+def test_require_reasoning_forwarded_when_supported():
+    class NewEngine:
+        async def async_generate(self, require_reasoning=False):
+            return None
+
+    assert require_reasoning_kwargs(NewEngine(), {"require_reasoning": True}) == {
+        "require_reasoning": True
+    }
+
+
+def test_require_reasoning_dropped_when_unsupported(caplog):
+    class OldEngine:
+        async def async_generate(self, input_ids=None):
+            return None
+
+    sglang_compat._warn_require_reasoning_unsupported.cache_clear()
+    assert require_reasoning_kwargs(OldEngine(), {"require_reasoning": True}) == {}
+    assert "Dropping require_reasoning=true" in caplog.text
+    sglang_compat._warn_require_reasoning_unsupported.cache_clear()
 
 
 def test_routed_experts_kwarg_omitted_when_flag_off():

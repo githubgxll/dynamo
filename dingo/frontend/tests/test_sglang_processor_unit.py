@@ -26,10 +26,13 @@ from dingo.frontend.sglang_prepost import (
     SglangPreprocessResult,
     SglangStreamingPostProcessor,
     _flatten_message_content,
+    _guided_json_start_chars,
+    _guided_output_requires_reasoning,
     _normalize_assistant_tool_call_arguments,
     _normalize_prompt_token_ids,
     _normalize_sglang_parser_name,
     _parse_json_array_buffer,
+    build_response_format_guided_decoding,
     build_tool_call_guided_decoding,
     convert_tools,
     create_parsers,
@@ -44,6 +47,7 @@ from dingo.frontend.sglang_processor import (
     _init_worker,
     _map_finish_reason,
     _normalize_eos_token_ids,
+    _preprocess_worker,
     _request_stop_strings,
     _runtime_config_parser_name,
     _tokenizer_eos_token_ids,
@@ -209,6 +213,29 @@ class TestBuildDynamoPreproc:  # FRONTEND.7 — worker subprocess preproc constr
         assert result["sampling_options"]["guided_decoding"] == {
             "json": {"type": "object"}
         }
+
+    @pytest.mark.parametrize("require_reasoning", [False, True])
+    def test_require_reasoning_passthrough(self, require_reasoning):
+        result = _build_dynamo_preproc(
+            {"model": "test"},
+            prompt_token_ids=[1, 2, 3],
+            model_name="test",
+            eos_token_ids=None,
+            require_reasoning=require_reasoning,
+        )
+
+        assert result["require_reasoning"] is require_reasoning
+
+    def test_reasoning_parser_preserves_special_tokens(self):
+        result = _build_dynamo_preproc(
+            {"model": "test"},
+            prompt_token_ids=[1],
+            model_name="test",
+            eos_token_ids=None,
+            reasoning_parser=object(),
+        )
+
+        assert result["output_options"]["skip_special_tokens"] is False
 
     def test_stop_conditions_string(self):
         """Single stop string is wrapped in a list."""
@@ -550,8 +577,9 @@ class TestCreateParsers:  # FRONTEND.2 — tool/reasoning parser dispatch
         assert tcp is None
         assert rp is not None
 
-    def test_reasoning_disabled_when_tool_choice_required(self):
-        """Reasoning parser is skipped when guided decoding is active."""
+    @pytest.mark.parametrize("force_reasoning", [False, True])
+    def test_reasoning_for_required_tool_follows_effective_mode(self, force_reasoning):
+        """Required tools retain a parser only when reasoning is enabled."""
         tools = [
             {
                 "type": "function",
@@ -565,12 +593,14 @@ class TestCreateParsers:  # FRONTEND.2 — tool/reasoning parser dispatch
             {"tools": tools, "tool_choice": "required"},
             tool_call_parser_name="qwen25",
             reasoning_parser_name="qwen3",
+            force_reasoning=force_reasoning,
         )
         assert tcp is not None
-        assert rp is None
+        assert (rp is not None) is force_reasoning
 
-    def test_reasoning_disabled_when_tool_choice_named(self):
-        """Reasoning parser is skipped for named tool_choice (guided decoding)."""
+    @pytest.mark.parametrize("force_reasoning", [False, True])
+    def test_reasoning_for_named_tool_follows_effective_mode(self, force_reasoning):
+        """Named tools retain a parser only when reasoning is enabled."""
         tools = [
             {
                 "type": "function",
@@ -590,9 +620,10 @@ class TestCreateParsers:  # FRONTEND.2 — tool/reasoning parser dispatch
             },
             tool_call_parser_name="qwen25",
             reasoning_parser_name="qwen3",
+            force_reasoning=force_reasoning,
         )
         assert tcp is not None
-        assert rp is None
+        assert (rp is not None) is force_reasoning
 
     def test_reasoning_active_when_tool_choice_auto(self):
         """Reasoning parser remains active for tool_choice=auto (no guided decoding)."""
@@ -771,6 +802,133 @@ def test_minimax_m3_reasoning_effort_none_keeps_explicit_thinking_mode(monkeypat
     assert result.force_reasoning is True
     assert result.reasoning_parser.model_type == "minimax-m3"
     assert result.reasoning_parser.force_reasoning is True
+
+
+@pytest.mark.parametrize(
+    (
+        "force_reasoning",
+        "parser_name",
+        "response_format_guided_active",
+        "tool_guided_active",
+        "expected",
+    ),
+    [
+        (True, "glm45", True, False, True),
+        (True, "glm45", False, True, True),
+        (True, "gpt_oss", True, False, False),
+        (True, "gpt-oss", True, False, False),
+        (True, "gpt_oss", False, True, True),
+        (False, "glm45", True, False, False),
+        (True, None, True, False, False),
+    ],
+)
+def test_guided_output_requires_reasoning_uses_exact_source(
+    force_reasoning,
+    parser_name,
+    response_format_guided_active,
+    tool_guided_active,
+    expected,
+):
+    assert (
+        _guided_output_requires_reasoning(
+            force_reasoning=force_reasoning,
+            reasoning_parser_name=parser_name,
+            response_format_guided_active=response_format_guided_active,
+            tool_guided_active=tool_guided_active,
+        )
+        is expected
+    )
+
+
+def test_guided_json_start_chars_prefers_response_format_source():
+    assert _guided_json_start_chars(
+        {"json": {"type": "object"}},
+        response_format_guided_active=True,
+        tool_guided_active=True,
+    ) == frozenset({"{"})
+
+
+class TestBuildResponseFormatGuidedDecoding:  # FRONTEND.3 — response_format → guided decoding
+    """OpenAI response_format must reach the engine as guided-decoding options.
+
+    Regression: the chat-processor path used to drop response_format
+    entirely, so json_object requests came back wrapped in ```json fences.
+    """
+
+    def test_none_when_absent(self):
+        assert build_response_format_guided_decoding({"messages": []}) is None
+
+    def test_none_when_text(self):
+        request = {"response_format": {"type": "text"}}
+        assert build_response_format_guided_decoding(request) is None
+
+    def test_json_object_maps_to_any_object_schema(self):
+        request = {"response_format": {"type": "json_object"}}
+        assert build_response_format_guided_decoding(request) == {
+            "json": {"type": "object"}
+        }
+
+    def test_json_schema_uses_nested_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+        }
+        request = {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "okn", "schema": schema},
+            }
+        }
+        original = json.loads(json.dumps(request))
+        result = build_response_format_guided_decoding(request)
+        assert result == {"json": schema}
+        assert request == original
+
+    def test_legacy_top_level_schema_is_copied_before_normalization(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "strict": {"type": "boolean"},
+                "ok": {"type": "boolean"},
+            },
+        }
+        request = {"response_format": {"type": "json_schema", "schema": schema}}
+
+        result = build_response_format_guided_decoding(request)
+
+        assert result == {
+            "json": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+            }
+        }
+        assert "strict" in schema["properties"]
+
+    def test_json_schema_without_schema_raises_preprocess_error(self):
+        from dingo.frontend.utils import PreprocessError
+
+        request = {"response_format": {"type": "json_schema"}}
+        with pytest.raises(PreprocessError):
+            build_response_format_guided_decoding(request)
+
+    def test_json_schema_non_dict_schema_raises_preprocess_error(self):
+        from dingo.frontend.utils import PreprocessError
+
+        request = {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "x", "schema": "not-a-dict"},
+            }
+        }
+        with pytest.raises(PreprocessError):
+            build_response_format_guided_decoding(request)
+
+    def test_structural_tag_passthrough(self):
+        request = {"response_format": {"type": "structural_tag"}}
+        assert build_response_format_guided_decoding(request) == {
+            "structural_tag": {"type": "structural_tag"}
+        }
 
 
 class TestBuildToolCallGuidedDecoding:  # FRONTEND.3 — guided-decoding setup for tool_choice
@@ -1308,6 +1466,101 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
         assert len(result.prompt_token_ids) > 0
         assert result.tool_call_parser is None
         assert result.reasoning_parser is None
+
+    def test_response_format_json_object_yields_guided_decoding(self, tokenizer):
+        """response_format must not be dropped: it maps to guided decoding."""
+        result = preprocess_chat_request(
+            {
+                "model": MODEL,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "response_format": {"type": "json_object"},
+            },
+            tokenizer=tokenizer,
+            tool_call_parser_name=None,
+            reasoning_parser_name=None,
+        )
+        assert result.guided_decoding == {"json": {"type": "object"}}
+        assert result.response_format_guided_active is True
+        assert result.tool_guided_active is False
+        assert result.tool_call_parser is None
+        assert result.require_reasoning is False
+
+    def test_glm_response_format_sets_reasoning_gate(self, tokenizer):
+        result = preprocess_chat_request(
+            {
+                "model": MODEL,
+                "messages": [{"role": "user", "content": "Return JSON"}],
+                "response_format": {"type": "json_object"},
+            },
+            tokenizer=tokenizer,
+            tool_call_parser_name=None,
+            reasoning_parser_name="glm45",
+            template_force_reasoning=True,
+        )
+
+        assert result.response_format_guided_active is True
+        assert result.tool_guided_active is False
+        assert result.force_reasoning is True
+        assert result.require_reasoning is True
+        assert result.reasoning_parser is not None
+
+    def test_pool_result_preserves_exact_guided_source(self, tokenizer, monkeypatch):
+        monkeypatch.setattr(sglang_processor_module, "_w_tokenizer", tokenizer)
+        monkeypatch.setattr(sglang_processor_module, "_w_tool_call_parser_name", None)
+        monkeypatch.setattr(
+            sglang_processor_module, "_w_reasoning_parser_name", "glm45"
+        )
+        monkeypatch.setattr(
+            sglang_processor_module,
+            "_w_exclude_tools_when_tool_choice_none",
+            True,
+        )
+        monkeypatch.setattr(
+            sglang_processor_module, "_w_template_force_reasoning", True
+        )
+        request = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "response_format": {"type": "json_object"},
+        }
+
+        result = _preprocess_worker(request, MODEL, eos_token_ids=None)
+
+        assert result.response_format_guided_active is True
+        assert result.tool_guided_active is False
+        assert result.dynamo_preproc["require_reasoning"] is True
+
+    def test_response_format_takes_precedence_over_tool_constraint(self, tokenizer):
+        """When both response_format and a guided tool_choice exist, the
+        explicit response_format wins (mirrors upstream fix #10259)."""
+        result = preprocess_chat_request(
+            {
+                "model": MODEL,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "response_format": {"type": "json_object"},
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "description": "w",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
+                "tool_choice": "required",
+            },
+            tokenizer=tokenizer,
+            tool_call_parser_name="qwen25",
+            reasoning_parser_name=None,
+        )
+        assert result.guided_decoding == {"json": {"type": "object"}}
+        assert result.response_format_guided_active is True
+        assert result.tool_guided_active is False
+        assert result.tool_call_parser is None
 
     def test_multi_turn(self, tokenizer):
         """Multi-turn conversation produces more tokens than single turn."""
@@ -2469,9 +2722,7 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         def __init__(self, texts: dict[int, str]) -> None:
             self.texts = texts
 
-        def decode(
-            self, token_ids: list[int], *, skip_special_tokens: bool
-        ) -> str:
+        def decode(self, token_ids: list[int], *, skip_special_tokens: bool) -> str:
             return "".join(self.texts[token_id] for token_id in token_ids)
 
     class _AllReasoningParser:
@@ -2531,6 +2782,125 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         delta = choice["delta"]
         assert delta["content"] == "最终答复。"
         assert "<|" not in delta["reasoning_content"]
+
+
+class TestGuidedReasoningPrefix:
+    """Bare guided JSON is released after a bounded prefix decision."""
+
+    class _LiteralTokenizer:
+        def __init__(self, texts: dict[int, str]) -> None:
+            self.texts = texts
+
+        def decode(
+            self, token_ids: list[int], *, skip_special_tokens: bool
+        ) -> str:
+            return "".join(self.texts[token_id] for token_id in token_ids)
+
+    class _DelimitedReasoningParser:
+        def __init__(self, start: str, end: str) -> None:
+            self.detector = types.SimpleNamespace(think_start_token=start)
+            self._start = start
+            self._end = end
+            self._done = False
+
+        def parse_stream_chunk(self, text: str) -> tuple[str, str]:
+            if self._done:
+                return "", text
+            if text.startswith(self._start):
+                text = text[len(self._start) :]
+            if self._end in text:
+                reasoning, content = text.split(self._end, 1)
+                self._done = True
+                return reasoning, content
+            return text, ""
+
+    def test_glm_object_streams_before_finish_without_reasoning_leak(self):
+        tokenizer = self._LiteralTokenizer(
+            {1: " ", 2: "{", 3: '"ok":', 4: "true", 5: "}"}
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=self._DelimitedReasoningParser("<think>", "</think>"),
+            guided_decoding={"json": {"type": "object"}},
+            response_format_guided_active=True,
+        )
+
+        assert post.process_output({"token_ids": [1], "finish_reason": None}) is None
+        first = post.process_output({"token_ids": [2], "finish_reason": None})
+        assert first is not None
+        assert first["delta"]["content"] == " {"
+        assert "reasoning_content" not in first["delta"]
+
+        content = first["delta"]["content"]
+        for token_id, finish_reason in ((3, None), (4, None), (5, "stop")):
+            choice = post.process_output(
+                {"token_ids": [token_id], "finish_reason": finish_reason}
+            )
+            assert choice is not None
+            content += choice["delta"].get("content", "")
+
+        assert json.loads(content) == {"ok": True}
+        assert post._pending_guided_reasoning_prefix is None
+        assert post.pop_reasoning_token_count() is None
+
+    def test_reasoning_then_object_stays_on_reasoning_parser_path(self):
+        tokenizer = self._LiteralTokenizer({1: "plan", 2: "</think>", 3: '{"ok":true}'})
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=self._DelimitedReasoningParser("<think>", "</think>"),
+            guided_decoding={"json": {"type": "object"}},
+            response_format_guided_active=True,
+        )
+
+        reasoning = ""
+        content = ""
+        for token_id, finish_reason in ((1, None), (2, None), (3, "stop")):
+            choice = post.process_output(
+                {"token_ids": [token_id], "finish_reason": finish_reason}
+            )
+            if choice is not None:
+                reasoning += choice["delta"].get("reasoning_content", "")
+                content += choice["delta"].get("content", "")
+
+        assert reasoning == "plan"
+        assert json.loads(content) == {"ok": True}
+
+    def test_mistral_array_waits_only_until_opener_diverges(self):
+        tokenizer = self._LiteralTokenizer({1: "[", 2: "{"})
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=self._DelimitedReasoningParser("[THINK]", "[/THINK]"),
+            guided_decoding={"json": {"type": "array"}},
+            response_format_guided_active=True,
+        )
+
+        assert post.process_output({"token_ids": [1], "finish_reason": None}) is None
+        choice = post.process_output({"token_ids": [2], "finish_reason": None})
+
+        assert choice is not None
+        assert choice["delta"]["content"] == "[{"
+
+    def test_prefix_buffer_is_bounded(self):
+        tokenizer = self._LiteralTokenizer({1: " "})
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=self._DelimitedReasoningParser("<think>", "</think>"),
+            guided_decoding={"json": {"type": "object"}},
+            response_format_guided_active=True,
+        )
+
+        for _ in range(post.GUIDED_REASONING_PREFIX_LIMIT - 1):
+            assert (
+                post.process_output({"token_ids": [1], "finish_reason": None}) is None
+            )
+        choice = post.process_output({"token_ids": [1], "finish_reason": None})
+
+        assert choice is not None
+        assert post._pending_guided_reasoning_prefix is None
 
 
 class TestReasoningTokenAccounting:  # FRONTEND.9 — thinking-token count for usage
@@ -2670,6 +3040,9 @@ class TestWorkerResultPicklability:  # FRONTEND.7 — worker subprocess boundary
                 "annotations": [],
             },
             request={"model": "test-model", "messages": [], "tools": None},
+            force_reasoning=True,
+            response_format_guided_active=True,
+            tool_guided_active=False,
         )
 
         data = pickle.dumps(result)
@@ -2678,6 +3051,9 @@ class TestWorkerResultPicklability:  # FRONTEND.7 — worker subprocess boundary
         assert restored.prompt_token_ids == result.prompt_token_ids
         assert restored.dynamo_preproc == result.dynamo_preproc
         assert restored.request == result.request
+        assert restored.force_reasoning is True
+        assert restored.response_format_guided_active is True
+        assert restored.tool_guided_active is False
 
 
 # ---------------------------------------------------------------------------

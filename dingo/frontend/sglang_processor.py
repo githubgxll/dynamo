@@ -16,16 +16,16 @@ from concurrent.futures import wait as _futures_wait
 from dataclasses import dataclass
 from typing import Any
 
+from dynamo._internal import ModelDeploymentCard
+from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
+from dynamo.llm.exceptions import InvalidArgument, Unknown
 from sglang.srt.utils.hf_transformers_utils import (
     get_config,
     get_generation_config,
     get_tokenizer,
 )
 
-from dynamo._internal import ModelDeploymentCard
 from dingo.frontend.frontend_args import FrontendConfig
-from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
-from dynamo.llm.exceptions import InvalidArgument, Unknown
 
 from .sglang_prepost import (
     SglangStreamingPostProcessor,
@@ -284,6 +284,8 @@ class SglangPreprocessWorkerResult:
     dynamo_preproc: dict[str, Any]
     request: dict[str, Any]
     force_reasoning: bool = False
+    response_format_guided_active: bool = False
+    tool_guided_active: bool = False
     # ``effective_reasoning_parser_name`` is None when the request opted out
     # via ``separate_reasoning=False``; the main process must skip creating
     # a reasoning parser in that case so the pool path matches the inline
@@ -335,6 +337,8 @@ def _preprocess_worker(
         eos_token_ids,
         pre.guided_decoding,
         pre.tool_call_parser,
+        pre.reasoning_parser,
+        require_reasoning=pre.require_reasoning,
     )
 
     effective_reasoning_parser_name = (
@@ -346,6 +350,8 @@ def _preprocess_worker(
         dynamo_preproc=dynamo_preproc,
         request=request,
         force_reasoning=pre.force_reasoning,
+        response_format_guided_active=pre.response_format_guided_active,
+        tool_guided_active=pre.tool_guided_active,
         effective_reasoning_parser_name=effective_reasoning_parser_name,
     )
 
@@ -357,6 +363,8 @@ def _build_dynamo_preproc(
     eos_token_ids: int | list[int] | None,
     guided_decoding: dict[str, Any] | None = None,
     tool_call_parser: ToolCallParserType | None = None,
+    reasoning_parser: Any | None = None,
+    require_reasoning: bool = False,
 ) -> dict[str, Any]:
     """Build the Dynamo preprocessed request dict from request fields."""
     max_tokens = request.get("max_completion_tokens") or request.get("max_tokens")
@@ -387,6 +395,7 @@ def _build_dynamo_preproc(
     preproc = {
         "model": model_name,
         "token_ids": prompt_token_ids,
+        "require_reasoning": require_reasoning,
         "stop_conditions": {
             "max_tokens": max_tokens,
             "stop": stop,
@@ -413,11 +422,11 @@ def _build_dynamo_preproc(
         "output_options": {
             "logprobs": logprobs_val,
             "prompt_logprobs": None,
-            # Preserve special tokens only when a tool-call parser is
-            # actually active — the parser needs delimiter tokens
-            # (e.g. <|tool_call|>) to detect calls. Mirrors the
-            # post-processor's _skip_special_tokens logic.
-            "skip_special_tokens": tool_call_parser is None,
+            # Preserve special tokens whenever a parser is active so its
+            # reasoning/tool delimiters survive the worker boundary.
+            "skip_special_tokens": (
+                tool_call_parser is None and reasoning_parser is None
+            ),
             "return_tokens_as_token_ids": request.get("return_tokens_as_token_ids"),
         },
         "eos_token_ids": _normalize_eos_token_ids(eos_token_ids),
@@ -555,7 +564,11 @@ class SglangProcessor:
                 self.eos_token_ids,
                 pre.guided_decoding,
                 pre.tool_call_parser,
+                pre.reasoning_parser,
+                require_reasoning=pre.require_reasoning,
             )
+        except PreprocessError as exc:
+            raise InvalidArgument(str(exc)) from exc
         except InvalidArgument:
             raise
         except Exception as exc:
@@ -574,6 +587,9 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            guided_decoding=pre.guided_decoding,
+            response_format_guided_active=pre.response_format_guided_active,
+            tool_guided_active=pre.tool_guided_active,
         )
 
         async for item in self._generate_and_stream(
@@ -619,6 +635,9 @@ class SglangProcessor:
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=preproc_result.effective_reasoning_parser_name,
             force_reasoning=preproc_result.force_reasoning,
+            response_format_guided_active=(
+                preproc_result.response_format_guided_active
+            ),
         )
 
         post = SglangStreamingPostProcessor(
@@ -633,6 +652,13 @@ class SglangProcessor:
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
             stop_strings=_request_stop_strings(request),
+            guided_decoding=preproc_result.dynamo_preproc.get(
+                "sampling_options", {}
+            ).get("guided_decoding"),
+            response_format_guided_active=(
+                preproc_result.response_format_guided_active
+            ),
+            tool_guided_active=preproc_result.tool_guided_active,
         )
 
         async for item in self._generate_and_stream(
