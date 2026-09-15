@@ -22,10 +22,20 @@ Runtime data-contract notes (not code-level shims):
 
 import inspect
 import logging
+from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _warn_require_reasoning_unsupported() -> None:
+    logger.warning(
+        "Dropping require_reasoning=true because SGLang Engine.async_generate "
+        "does not support it; reasoning-aware guided decoding may fail. "
+        "Upgrade SGLang to enable this request mode."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +118,23 @@ def filter_supported_async_generate_kwargs(
     return {key: value for key, value in kwargs.items() if key in supported_kwarg_names}
 
 
+def require_reasoning_kwargs(engine: Any, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the optional SGLang per-request reasoning-gate argument."""
+    require_reasoning = bool(request.get("require_reasoning", False))
+    # Fallback for older SGLang 0.5.x snapshots that predate the
+    # require_reasoning kwarg. Remove when every supported N/N-1 engine
+    # signature declares it.
+    kwargs = filter_supported_async_generate_kwargs(
+        engine,
+        {"require_reasoning": require_reasoning},
+    )
+    if require_reasoning and "require_reasoning" not in kwargs:
+        _warn_require_reasoning_unsupported()
+    return kwargs
+
+
 __all__ = [
     "ensure_sglang_top_level_exports",
     "filter_supported_async_generate_kwargs",
+    "require_reasoning_kwargs",
 ]

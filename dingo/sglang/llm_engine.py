@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any, Optional
 import sglang as sgl
 import zmq
 import zmq.asyncio
+from dynamo._core import Context
+from dynamo.llm import ModelInput
 from sglang.srt.disaggregation.kv_events import ZmqEventPublisher
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
 from sglang.srt.managers.io_struct import (
@@ -33,7 +35,6 @@ from sglang.srt.managers.io_struct import (
 )
 from sglang.srt.utils.network import get_local_ip_auto, get_zmq_socket
 
-from dynamo._core import Context
 from dingo.common.backend import logprobs as _shared_logprobs
 from dingo.common.backend import telemetry
 from dingo.common.backend.dp_rank import forced_dp_rank, validate_global_dp_rank
@@ -59,7 +60,7 @@ from dingo.common.backend.worker import WorkerConfig
 from dingo.common.constants import DisaggregationMode
 from dingo.common.utils.input_params import InputParamManager
 from dingo.common.utils.structural_tag import serialize_structural_tag
-from dynamo.llm import ModelInput
+from dingo.sglang._compat import require_reasoning_kwargs
 from dingo.sglang._disagg import (
     SGLANG_WORKER_GROUP_ID_KEY,
     compute_bootstrap_address,
@@ -392,6 +393,7 @@ class SglangLLMEngine(LLMEngine):
             **input_param,
             sampling_params=sampling_params,
             stream=True,
+            **require_reasoning_kwargs(self.engine, request),
             rid=context.trace_id,
             data_parallel_rank=sgl_dp_rank,
             **telemetry.engine_trace_kwargs(
