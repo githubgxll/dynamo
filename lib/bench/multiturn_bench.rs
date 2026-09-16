@@ -68,6 +68,10 @@ struct Args {
     #[arg(long)]
     speculative_prefill: bool,
 
+    /// Send x-dynamo-session-id header for session affinity routing
+    #[arg(long)]
+    with_affinity: bool,
+
     /// Write results to JSON file
     #[arg(long)]
     output: Option<String>,
@@ -294,6 +298,12 @@ async fn run_user(
     session: SessionTrace,
     progress: ProgressBar,
 ) -> Vec<TurnResult> {
+    let session_id = if args.with_affinity {
+        Some(format!("bench-{}-{}", args.seed, user_id))
+    } else {
+        None
+    };
+
     let mut rng = StdRng::seed_from_u64(args.seed.wrapping_add(user_id as u64));
 
     let system_prompt = generate_system_prompt(user_id);
@@ -329,7 +339,11 @@ async fn run_user(
         };
 
         let req_start = Instant::now();
-        let response = client.post(&url).json(&body).send().await;
+        let mut request_builder = client.post(&url).json(&body);
+        if let Some(sid) = &session_id {
+            request_builder = request_builder.header("x-dynamo-session-id", sid);
+        }
+        let response = request_builder.send().await;
 
         let result = match response {
             Ok(resp) if resp.status().is_success() => match consume_sse_stream(resp).await {
@@ -576,6 +590,7 @@ async fn main() -> Result<()> {
     println!("  Ignore EOS: {}", args.ignore_eos);
     println!("  Mean delay: {}ms", args.mean_delay_ms);
     println!("  Speculative prefill: {}", args.speculative_prefill);
+    println!("  Session affinity: {}", args.with_affinity);
     println!("  Seed: {}", args.seed);
     println!();
 
