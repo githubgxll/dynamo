@@ -130,10 +130,7 @@ class MediaConfig:
     def max_task_memory_bytes(self) -> int:
         # Mixed-reference construction briefly holds both the individual data
         # URLs and their final JSON envelope.
-        return (
-            2 * self.max_encoded_reference_bytes
-            + self.result_task_memory_bytes
-        )
+        return 2 * self.max_encoded_reference_bytes + self.result_task_memory_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +170,13 @@ class LifecycleConfig:
 @dataclass(frozen=True, slots=True)
 class SchedulingConfig:
     worker_capacity: int = 1
+    worker_prefetch_capacity: int = 0
+    early_release_slot: bool = False
+    finalization_timeout_s: float = 60.0
+    finalization_max_retries: int = 2
+    finalization_retry_delay_s: float = 0.1
+    finalization_concurrency: int = 4
+    finalization_pending_limit: int = 64
     queue_limit: int = 32
     accept_without_workers: bool = False
     execution_timeout_s: float = 1800.0
@@ -245,9 +249,7 @@ def _runtime_config(raw: Any) -> RuntimeConfig:
     )
     watchdog_enabled = _boolean(watchdog_data, "enabled", False)
     watchdog_interval_s = float(watchdog_data.get("interval_s", 2.0))
-    watchdog_mismatch_grace_s = float(
-        watchdog_data.get("mismatch_grace_s", 6.0)
-    )
+    watchdog_mismatch_grace_s = float(watchdog_data.get("mismatch_grace_s", 6.0))
     if watchdog_interval_s <= 0:
         raise ValueError("runtime.discovery_watchdog.interval_s must be positive")
     if watchdog_mismatch_grace_s < watchdog_interval_s:
@@ -401,8 +403,7 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
             not isinstance(endpoints_raw, list)
             or not endpoints_raw
             or any(
-                not isinstance(item, str) or not item.strip()
-                for item in endpoints_raw
+                not isinstance(item, str) or not item.strip() for item in endpoints_raw
             )
         ):
             raise ValueError(
@@ -426,9 +427,7 @@ def _task_store_config(raw: Any) -> TaskStoreConfig:
     if timeout <= 0:
         raise ValueError("task_store.request_timeout_s must be positive")
     watch_timeout_raw = data.get("watch_response_timeout_s")
-    watch_timeout = (
-        None if watch_timeout_raw is None else float(watch_timeout_raw)
-    )
+    watch_timeout = None if watch_timeout_raw is None else float(watch_timeout_raw)
     if watch_timeout is not None and watch_timeout <= 0:
         raise ValueError("task_store.watch_response_timeout_s must be positive")
     return TaskStoreConfig(
@@ -488,8 +487,7 @@ def _lifecycle_config(raw: Any) -> LifecycleConfig:
     allowed = duration_fields | {"sweeper_batch_size", "orphan_cleanup_dry_run"}
     _only(data, allowed, "lifecycle")
     durations = {
-        name: float(data.get(name, getattr(defaults, name)))
-        for name in duration_fields
+        name: float(data.get(name, getattr(defaults, name))) for name in duration_fields
     }
     if any(value <= 0 for value in durations.values()):
         raise ValueError("lifecycle TTL, grace and interval values must be positive")
@@ -511,6 +509,13 @@ def _scheduling_config(raw: Any, pool_name: str) -> SchedulingConfig:
         data,
         {
             "worker_capacity",
+            "worker_prefetch_capacity",
+            "early_release_slot",
+            "finalization_timeout_s",
+            "finalization_max_retries",
+            "finalization_retry_delay_s",
+            "finalization_concurrency",
+            "finalization_pending_limit",
             "queue_limit",
             "accept_without_workers",
             "execution_timeout_s",
@@ -520,8 +525,24 @@ def _scheduling_config(raw: Any, pool_name: str) -> SchedulingConfig:
         },
         f"pools[{pool_name}].scheduling",
     )
+    for key in (
+        "worker_capacity",
+        "worker_prefetch_capacity",
+        "finalization_max_retries",
+        "finalization_concurrency",
+        "finalization_pending_limit",
+    ):
+        if key in data and type(data[key]) is not int:
+            raise ValueError(f"scheduling.{key} must be an integer")
     config = SchedulingConfig(
         worker_capacity=int(data.get("worker_capacity", 1)),
+        worker_prefetch_capacity=int(data.get("worker_prefetch_capacity", 0)),
+        early_release_slot=_boolean(data, "early_release_slot", False),
+        finalization_timeout_s=float(data.get("finalization_timeout_s", 60)),
+        finalization_max_retries=int(data.get("finalization_max_retries", 2)),
+        finalization_retry_delay_s=float(data.get("finalization_retry_delay_s", 0.1)),
+        finalization_concurrency=int(data.get("finalization_concurrency", 4)),
+        finalization_pending_limit=int(data.get("finalization_pending_limit", 64)),
         queue_limit=int(data.get("queue_limit", 32)),
         accept_without_workers=_boolean(data, "accept_without_workers", False),
         execution_timeout_s=float(data.get("execution_timeout_s", 1800.0)),
@@ -529,8 +550,20 @@ def _scheduling_config(raw: Any, pool_name: str) -> SchedulingConfig:
         discovery_interval_s=float(data.get("discovery_interval_s", 1.0)),
         dispatch_interval_s=float(data.get("dispatch_interval_s", 0.25)),
     )
-    if config.worker_capacity != 1:
-        raise ValueError("version 1 requires scheduling.worker_capacity=1")
+    if config.worker_capacity < 1:
+        raise ValueError("scheduling.worker_capacity must be positive")
+    if config.worker_prefetch_capacity not in {0, 1}:
+        raise ValueError("scheduling.worker_prefetch_capacity must be 0 or 1")
+    if config.worker_prefetch_capacity and not config.early_release_slot:
+        raise ValueError("Worker prefetch requires early_release_slot")
+    if (
+        not 0 <= config.finalization_max_retries <= 16
+        or config.finalization_concurrency < 1
+        or config.finalization_pending_limit < config.finalization_concurrency
+        or not 0 < config.finalization_timeout_s <= 86400
+        or not 0 < config.finalization_retry_delay_s <= 60
+    ):
+        raise ValueError("invalid scheduling finalization limits")
     if config.queue_limit < 1:
         raise ValueError("scheduling.queue_limit must be positive")
     if (
@@ -620,6 +653,10 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         },
     )
     scheduling = _scheduling_config(data.get("scheduling"), pool_id)
+    if scheduling.early_release_slot and execution_mode != "detached":
+        raise ValueError("early slot release requires detached execution_mode")
+    if scheduling.worker_capacity > 1 and execution_mode != "detached":
+        raise ValueError("multiple Worker slots require detached execution_mode")
     revision_payload = {
         "pool_id": pool_id,
         "served_models": served_models,

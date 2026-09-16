@@ -427,9 +427,7 @@ def test_media_type_is_normalized_from_mime_and_signature(
         ("audio/mpeg", b"ID3\x04\0\0\0\0\0\0"),
     ],
 )
-def test_media_not_supported_by_current_worker_is_rejected(
-    tmp_path, declared, payload
-):
+def test_media_not_supported_by_current_worker_is_rejected(tmp_path, declared, payload):
     path = tmp_path / "reference.bin"
     path.write_bytes(payload)
     upload = UploadedArtifact(
@@ -512,9 +510,7 @@ def test_reference_wav_rejects_non_pcm_codec(tmp_path, codec):
     ("width", "height"),
     [(255, 512), (512, 5761), (256, 1024), (1024, 256)],
 )
-def test_reference_image_shape_is_rejected_before_worker(
-    tmp_path, width, height
-):
+def test_reference_image_shape_is_rejected_before_worker(tmp_path, width, height):
     path = tmp_path / "reference.png"
     path.write_bytes(b"unused")
     upload = UploadedArtifact(
@@ -663,19 +659,13 @@ async def test_worker_bridge_materializes_mov_wav_and_subset_envelope(tmp_path):
     envelope = json.dumps(
         {
             "type": "ref2va_mixed_v1",
-            "videos": [
-                _data_url(
-                    "video/quicktime", b"\0\0\0\x18ftypqt  \0\0\0\0qt  "
-                )
-            ],
+            "videos": [_data_url("video/quicktime", b"\0\0\0\x18ftypqt  \0\0\0\0qt  ")],
             "audios": [_data_url("audio/wav", b"RIFF\0\0\0\0WAVEpayload")],
         }
     )
 
     async with adapter.request_scope("request-1") as scope:
-        reference = await adapter._decode_mixed_envelope(
-            envelope, Loader(), scope
-        )
+        reference = await adapter._decode_mixed_envelope(envelope, Loader(), scope)
         assert [Path(item.path).suffix for item in reference.videos] == [".mov"]
         assert [Path(item.path).suffix for item in reference.audios] == [".wav"]
         inputs = adapter.build_engine_inputs(
@@ -797,3 +787,120 @@ def test_generate_sound_false_remuxes_without_reencoding_video(
         assert len(container.streams.audio) == 0
     assert media["video_codec"] == "h264"
     assert media["audio_codec"] is None
+
+
+def test_video_only_mp4_is_not_rewritten(tmp_path, make_gateway_config, monkeypatch):
+    import av
+
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    normalized = {
+        "width": 256,
+        "height": 256,
+        "num_frames": 120,
+        "generate_sound": False,
+    }
+    # First strip real AAC audio, then exercise the already-video-only path.
+    adapter.prepare_artifact(result, normalized)
+    before = result.read_bytes()
+    before_stat = result.stat()
+    original_open = av.open
+
+    def read_only_open(*args, **kwargs):
+        assert kwargs.get("mode", "r") == "r", "unexpected MP4 rewrite"
+        return original_open(*args, **kwargs)
+
+    def no_write(*_args, **_kwargs):
+        pytest.fail("already-video-only MP4 must not be replaced or fsynced")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(av, "open", read_only_open)
+        patch.setattr(h3_module.os, "replace", no_write)
+        patch.setattr(h3_module.os, "fsync", no_write)
+        adapter.prepare_artifact(result, normalized)
+        media = adapter.validate_artifact(result, normalized)
+    assert result.read_bytes() == before
+    assert result.stat().st_ino == before_stat.st_ino
+    assert result.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert media["frames"] == 124 and media["audio_codec"] is None
+    assert not result.with_name("result.mp4.video-only.mp4").exists()
+
+
+@pytest.mark.parametrize("normalized", [{"generate_sound": True}, {}])
+def test_preserve_audio_does_not_enter_remux_path(
+    tmp_path, make_gateway_config, monkeypatch, normalized
+):
+    import av
+
+    adapter = _adapter(make_gateway_config)
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    before = result.read_bytes()
+
+    def unexpected_open(*_args, **_kwargs):
+        pytest.fail("audio-preserving requests must not enter remux processing")
+
+    monkeypatch.setattr(av, "open", unexpected_open)
+    adapter.prepare_artifact(result, normalized)
+    assert result.read_bytes() == before
+
+
+async def test_video_only_fast_path_still_validates_before_publication(
+    tmp_path, make_gateway_config
+):
+    from dingo.video_gateway.artifact_store import FileArtifactStore
+
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    adapter.prepare_artifact(result, {"generate_sound": False})
+    store = FileArtifactStore(tmp_path / "artifacts")
+    task_root = store.task_root("deployment", "pool", "task")
+    with pytest.raises(RuntimeError, match="dimensions"):
+        await store.finalize_b64_mp4(
+            task_root,
+            base64.b64encode(result.read_bytes()).decode(),
+            {"width": 128, "height": 256, "num_frames": 120, "generate_sound": False},
+            adapter.validate_artifact,
+            adapter.prepare_artifact,
+        )
+    assert not list((task_root / "result").iterdir())
+    assert not list((task_root / "tmp").iterdir())
+
+
+@pytest.mark.parametrize(
+    "stream_count,header", [(2, b"\0\0\0\x18ftypisom"), (1, b"not-an-mp4!!")]
+)
+def test_fast_path_preserves_other_stream_and_container_handling(
+    tmp_path, make_gateway_config, monkeypatch, stream_count, header
+):
+    from contextlib import nullcontext
+
+    import av
+
+    class Streams:
+        video = [object()]
+
+        def __len__(self):
+            return stream_count
+
+    result = tmp_path / "result.mp4"
+    result.write_bytes(header)
+    writes = []
+
+    def fake_open(path, **kwargs):
+        if kwargs.get("mode") == "w":
+            writes.append(path)
+            raise RuntimeError("remux attempted")
+        return nullcontext(SimpleNamespace(streams=Streams()))
+
+    monkeypatch.setattr(av, "open", fake_open)
+    with pytest.raises(RuntimeError, match="remux attempted"):
+        _adapter(make_gateway_config).prepare_artifact(
+            result, {"generate_sound": False}
+        )
+    assert len(writes) == 1
+    assert result.read_bytes() == header

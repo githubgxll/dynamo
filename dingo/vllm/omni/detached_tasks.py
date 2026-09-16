@@ -11,6 +11,7 @@ explicit shared task root configured before this code is reachable.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -22,13 +23,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_result_file import (
+    BINARY_RESULT_WRITER,
+    INLINE_RESULT_FORMAT,
+    BinaryResultWriter,
+    normalize_inline_result,
+)
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
+    EXECUTION_CAPACITY_CAPABILITY,
+    PREFETCH_CAPABILITY,
     SCHEMA_VERSION,
     WAIT_TERMINAL_CAPABILITY,
     DetachedTaskIdentity,
     detached_attempt_root,
-    detached_envelope,
+)
+from dingo.common.video_task_protocol import (
+    detached_envelope as detached_envelope,  # retained compatibility re-export
 )
 
 logger = logging.getLogger(__name__)
@@ -76,6 +87,10 @@ class _RunningTask:
     identity: DetachedTaskIdentity
     context: _DetachedContext
     execution: asyncio.Task[None]
+    # Published only after the terminal write succeeds. Existing waiters hold
+    # this execution-scoped record; completed tasks are not retained globally.
+    persisted_terminal: dict[str, Any] | None = None
+    started: bool = False
 
 
 class DetachedOmniTaskManager:
@@ -89,9 +104,21 @@ class DetachedOmniTaskManager:
         drain_timeout_s: float = 1800.0,
         cancel_poll_interval_s: float = 0.25,
         cancel_grace_s: float = 5.0,
+        binary_results: bool | None = None,
+        inline_results: bool | None = None,
+        execution_capacity: int = 1,
+        prefetch_capacity: int = 0,
     ) -> None:
+        if (
+            isinstance(execution_capacity, bool)
+            or not isinstance(execution_capacity, int)
+            or execution_capacity < 1
+        ):
+            raise ValueError("detached execution capacity must be a positive integer")
         if drain_timeout_s <= 0:
             raise ValueError("detached drain timeout must be positive")
+        if type(prefetch_capacity) is not int or prefetch_capacity not in {0, 1}:
+            raise ValueError("detached prefetch capacity must be 0 or 1")
         if cancel_poll_interval_s <= 0:
             raise ValueError("detached cancel poll interval must be positive")
         if cancel_grace_s <= 0:
@@ -105,21 +132,70 @@ class DetachedOmniTaskManager:
         self._running: dict[tuple[str, str, str, int, str], _RunningTask] = {}
         self._lock = asyncio.Lock()
         self._accepting = True
+        self.execution_capacity = execution_capacity
+        self.prefetch_capacity = prefetch_capacity
+        self._execution_slots = asyncio.Semaphore(execution_capacity)
+        self._direct_running = 0
+        self.binary_results = (
+            os.getenv("DINGO_VIDEO_BINARY_RESULTS") == "1"
+            if binary_results is None
+            else binary_results
+        )
+        self.inline_results = (
+            os.getenv("DINGO_VIDEO_INLINE_RESULT") == "1"
+            if inline_results is None
+            else inline_results
+        )
+        if self.inline_results and not self.binary_results:
+            raise ValueError("inline results require binary results")
 
     async def generate(
         self, request: dict[str, Any], context: Any
     ) -> AsyncGenerator[dict[str, Any], None]:
         envelope = request.get(ENVELOPE_KEY)
         if envelope is None:
-            async for chunk in self.handler.generate(request, context):
-                yield chunk
+            async with self._lock:
+                if not self._accepting:
+                    raise RuntimeError("detached Worker is draining")
+                if len(self._running) + self._direct_running >= self.execution_capacity:
+                    raise RuntimeError("Worker execution capacity exhausted")
+                self._direct_running += 1
+            try:
+                async with self._execution_slots:
+                    async for chunk in self.handler.generate(request, context):
+                        yield chunk
+            finally:
+                self._direct_running -= 1
             return
         if set(request) != {ENVELOPE_KEY} or not isinstance(envelope, Mapping):
             raise ValueError("detached task request must contain only its envelope")
-        identity = DetachedTaskIdentity.from_envelope(envelope)
         op = envelope.get("op")
+        if op == "capabilities":
+            if (
+                set(envelope) != {"schema_version", "op"}
+                or envelope.get("schema_version") != SCHEMA_VERSION
+            ):
+                raise ValueError("invalid detached capabilities request")
+            yield {
+                "schema_version": SCHEMA_VERSION,
+                "capabilities": [
+                    WAIT_TERMINAL_CAPABILITY,
+                    EXECUTION_CAPACITY_CAPABILITY,
+                    PREFETCH_CAPABILITY,
+                ],
+                "execution_capacity": self.execution_capacity,
+                "prefetch_capacity": self.prefetch_capacity,
+                "admission_capacity": self.execution_capacity + self.prefetch_capacity,
+                "accepting": self._accepting,
+            }
+            return
+        identity = DetachedTaskIdentity.from_envelope(envelope)
         if op == "submit":
-            yield await self._submit(identity, envelope.get("payload"))
+            yield await self._submit(
+                identity,
+                envelope.get("payload"),
+                deadline_at_ms=envelope.get("deadline_at_ms"),
+            )
         elif op == "wait":
             async for status in self._wait_terminal(identity):
                 yield status
@@ -148,7 +224,7 @@ class DetachedOmniTaskManager:
     def _cancel_path(self, identity: DetachedTaskIdentity) -> Path:
         return self._attempt_root(identity) / "cancel.requested"
 
-    def _validate_task_manifest(self, identity: DetachedTaskIdentity) -> None:
+    def _validate_task_manifest(self, identity: DetachedTaskIdentity) -> Path:
         attempt_root = self._attempt_root(identity)
         task_root = attempt_root.parent.parent
         manifest_path = task_root / "_artifact.json"
@@ -171,22 +247,32 @@ class DetachedOmniTaskManager:
             manifest.get(key) != value for key, value in expected.items()
         ):
             raise RuntimeError("detached task manifest identity mismatch")
+        return attempt_root
 
     @staticmethod
     def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
-        path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
         temporary = path.with_name(path.name + f".part-{uuid.uuid4().hex}")
         payload = json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
+        renamed = False
         try:
-            with temporary.open("xb") as stream:
+            try:
+                stream = temporary.open("xb")
+            except FileNotFoundError:
+                # Existing attempt directories are the common path. Retain
+                # creation behavior without a redundant mkdir on every update.
+                path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+                stream = temporary.open("xb")
+            with stream:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
+            renamed = True
         finally:
-            temporary.unlink(missing_ok=True)
+            if not renamed:
+                temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _read_status(path: Path) -> dict[str, Any] | None:
@@ -215,22 +301,41 @@ class DetachedOmniTaskManager:
         }
 
     async def _submit(
-        self, identity: DetachedTaskIdentity, payload: Any
+        self,
+        identity: DetachedTaskIdentity,
+        payload: Any,
+        *,
+        deadline_at_ms: int | None = None,
     ) -> dict[str, Any]:
         if not self._accepting:
             raise RuntimeError("detached Worker is draining")
         if not isinstance(payload, dict):
             raise ValueError("detached submit payload must be an object")
-        await asyncio.to_thread(self._validate_task_manifest, identity)
-        attempt_root = self._attempt_root(identity)
-        status_path = self._status_path(identity)
+        attempt_root = await asyncio.to_thread(self._validate_task_manifest, identity)
+        status_path = attempt_root / "worker-status.json"
         async with self._lock:
             running = self._running.get(identity.key)
             if running is not None:
-                return {**self._base_status(identity, "running"), "accepted": False}
+                state = (
+                    "accepted"
+                    if self.prefetch_capacity and not running.started
+                    else "running"
+                )
+                return {**self._base_status(identity, state), "accepted": False}
             existing = await asyncio.to_thread(self._read_status, status_path)
             if existing is not None and existing.get("state") in _TERMINAL:
                 return {**existing, "accepted": False}
+            if (
+                len(self._running) + self._direct_running
+                >= self.execution_capacity + self.prefetch_capacity
+            ):
+                # No execution lock/status is written for rejected work. A
+                # caller can requeue it without mistaking it for an execution.
+                return {
+                    **self._base_status(identity, "busy"),
+                    "accepted": False,
+                    "execution_capacity": self.execution_capacity,
+                }
             await asyncio.to_thread(attempt_root.mkdir, 0o750, True, True)
             lock_path = attempt_root / "execution.lock"
 
@@ -253,14 +358,23 @@ class DetachedOmniTaskManager:
                 current = existing or self._base_status(identity, "running")
                 return {**current, "accepted": False}
             initial = self._base_status(identity, "accepted")
+            queued_at_ms = int(time.time() * 1000)
+            if self.prefetch_capacity:
+                initial["queued_at_ms"] = queued_at_ms
             await asyncio.to_thread(self._atomic_json, status_path, initial)
             request_id = (
-                f"{identity.task_id}-{identity.attempt}-"
-                f"{identity.execution_token[:12]}"
+                f"{identity.task_id}-{identity.attempt}-{identity.execution_token[:12]}"
             )
             detached_context = _DetachedContext(request_id)
             execution = asyncio.create_task(
-                self._execute(identity, payload, detached_context),
+                self._execute(
+                    identity,
+                    payload,
+                    detached_context,
+                    deadline_at_ms=deadline_at_ms,
+                    queued_at_ms=queued_at_ms,
+                    status_path=status_path,
+                ),
                 name=f"omni-detached-{identity.task_id}-{identity.attempt}",
             )
             self._running[identity.key] = _RunningTask(
@@ -291,7 +405,7 @@ class DetachedOmniTaskManager:
     async def _watch_cancel(
         self, identity: DetachedTaskIdentity, context: _DetachedContext
     ) -> None:
-        path = self._cancel_path(identity)
+        path = await asyncio.to_thread(self._cancel_path, identity)
         while not context.is_stopped():
             if await asyncio.to_thread(path.exists):
                 context.stop_generating()
@@ -330,24 +444,112 @@ class DetachedOmniTaskManager:
                 },
             )
 
+    async def _record_terminal(
+        self, identity: DetachedTaskIdentity, path: Path, status: dict[str, Any]
+    ) -> None:
+        """Notify local waiters only after the terminal write completes."""
+        await asyncio.to_thread(self._atomic_json, path, status)
+        running = self._running.get(identity.key)
+        if running is not None:
+            running.persisted_terminal = copy.deepcopy(status)
+
     async def _execute(
+        self,
+        identity,
+        payload,
+        context,
+        *,
+        deadline_at_ms=None,
+        queued_at_ms=None,
+        status_path=None,
+    ):
+        if not self.prefetch_capacity:
+            return await self._execute_started(identity, payload, context)
+        # Submission already resolved this path before publishing accepted.
+        # Do not insert a filesystem await before acquiring the FIFO permit:
+        # two concurrent metadata reads can complete in the opposite order.
+        if status_path is None:
+            status_path = await asyncio.to_thread(self._status_path, identity)
+        acquire = asyncio.create_task(self._execution_slots.acquire())
+        stopped = context.async_killed_or_stopped()
+        cancel_watch = asyncio.create_task(self._watch_cancel(identity, context))
+        try:
+            timeout = (
+                None
+                if deadline_at_ms is None
+                else max(0, (deadline_at_ms - int(time.time() * 1000)) / 1000)
+            )
+            done, _ = await asyncio.wait(
+                {acquire, stopped}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            if stopped in done or context.is_stopped():
+                await self._record_terminal(
+                    identity, status_path, self._base_status(identity, "cancelled")
+                )
+                return
+            if acquire not in done or (
+                deadline_at_ms is not None and int(time.time() * 1000) >= deadline_at_ms
+            ):
+                await self._record_terminal(
+                    identity,
+                    status_path,
+                    {
+                        **self._base_status(identity, "failed"),
+                        "error": {
+                            "code": "worker_queue_timeout",
+                            "message": "Worker prefetch wait expired",
+                        },
+                    },
+                )
+                return
+            await self._execute_started(
+                identity, payload, context, queued_at_ms=queued_at_ms
+            )
+        except asyncio.CancelledError:
+            context.stop_generating()
+            running = self._running.get(identity.key)
+            if running is None or running.persisted_terminal is None:
+                await self._record_terminal(
+                    identity, status_path, self._base_status(identity, "cancelled")
+                )
+            raise
+        finally:
+            if not acquire.done():
+                acquire.cancel()
+            cancel_watch.cancel()
+            stopped.cancel()
+            await asyncio.gather(acquire, cancel_watch, stopped, return_exceptions=True)
+            if (
+                not acquire.cancelled()
+                and acquire.exception() is None
+                and acquire.result()
+            ):
+                self._execution_slots.release()
+            await context.close()
+
+    async def _execute_started(
         self,
         identity: DetachedTaskIdentity,
         payload: dict[str, Any],
         context: _DetachedContext,
+        *,
+        queued_at_ms: int | None = None,
     ) -> None:
-        attempt_root = self._attempt_root(identity)
-        status_path = self._status_path(identity)
-        response_path = self._response_path(identity)
+        running = self._running.get(identity.key)
+        if running is not None:
+            running.started = True
+        # Validate the directory once for this operation, off the event loop;
+        # deriving sibling filenames does not require rechecking each parent.
+        attempt_root = await asyncio.to_thread(self._attempt_root, identity)
+        status_path = attempt_root / "worker-status.json"
+        response_path = attempt_root / "worker-response.jsonl"
         temporary = response_path.with_name(
             response_path.name + f".part-{uuid.uuid4().hex}"
         )
         execution = asyncio.current_task()
         assert execution is not None
         cancel_watch = asyncio.create_task(self._watch_cancel(identity, context))
-        cancel_enforcer = asyncio.create_task(
-            self._enforce_cancel(context, execution)
-        )
+        cancel_enforcer = asyncio.create_task(self._enforce_cancel(context, execution))
         started_at_ms = int(time.time() * 1000)
         status_stop = asyncio.Event()
         status_heartbeat = asyncio.create_task(
@@ -359,29 +561,57 @@ class DetachedOmniTaskManager:
             status_path,
             {**self._base_status(identity, "running"), "started_at_ms": started_at_ms},
         )
+        result_token = BINARY_RESULT_WRITER.set(
+            BinaryResultWriter(attempt_root) if self.binary_results else None
+        )
         try:
-            digest = hashlib.sha256()
-            written = 0
-            with temporary.open("xb") as stream:
+            if self.inline_results:
+                terminal = None
                 async for chunk in self.handler.generate(payload, context):
                     if not isinstance(chunk, dict):
                         raise RuntimeError(
                             "Omni detached response chunk is not an object"
                         )
-                    encoded = await asyncio.to_thread(
-                        lambda value: json.dumps(
-                            value,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        + b"\n",
-                        chunk,
-                    )
-                    await asyncio.to_thread(stream.write, encoded)
-                    digest.update(encoded)
-                    written += len(encoded)
-                await asyncio.to_thread(stream.flush)
-                await asyncio.to_thread(os.fsync, stream.fileno())
+                    if chunk.get("status") in _TERMINAL:
+                        if terminal is not None:
+                            raise RuntimeError(
+                                "Worker returned multiple terminal responses"
+                            )
+                        terminal = normalize_inline_result(chunk)
+                if terminal is None and not context.is_stopped():
+                    raise RuntimeError("Worker stream ended without terminal response")
+                response_fields = {
+                    "result_format": INLINE_RESULT_FORMAT,
+                    "inline_result": terminal,
+                }
+            else:
+                digest = hashlib.sha256()
+                written = 0
+                with temporary.open("xb") as stream:
+                    async for chunk in self.handler.generate(payload, context):
+                        if not isinstance(chunk, dict):
+                            raise RuntimeError(
+                                "Omni detached response chunk is not an object"
+                            )
+                        encoded = await asyncio.to_thread(
+                            lambda value: (
+                                json.dumps(
+                                    value, ensure_ascii=False, separators=(",", ":")
+                                ).encode("utf-8")
+                                + b"\n"
+                            ),
+                            chunk,
+                        )
+                        await asyncio.to_thread(stream.write, encoded)
+                        digest.update(encoded)
+                        written += len(encoded)
+                    await asyncio.to_thread(stream.flush)
+                    await asyncio.to_thread(os.fsync, stream.fileno())
+                response_fields = {
+                    "response_path": str(response_path),
+                    "response_bytes": written,
+                    "response_sha256": digest.hexdigest(),
+                }
             if context.is_stopped():
                 temporary.unlink(missing_ok=True)
                 status_stop.set()
@@ -392,17 +622,20 @@ class DetachedOmniTaskManager:
                     {**self._base_status(identity, "cancelled")},
                 )
                 return
-            await asyncio.to_thread(os.replace, temporary, response_path)
+            if not self.inline_results:
+                await asyncio.to_thread(os.replace, temporary, response_path)
             status_stop.set()
             await asyncio.gather(status_heartbeat, return_exceptions=True)
             completed = {
                 **self._base_status(identity, "completed"),
-                "response_path": str(response_path),
-                "response_bytes": written,
-                "response_sha256": digest.hexdigest(),
+                **response_fields,
                 "inference_time_s": max(0.0, time.monotonic() - started),
             }
-            await asyncio.to_thread(self._atomic_json, status_path, completed)
+            if queued_at_ms is not None:
+                completed["worker_queue_wait_s"] = max(
+                    0.0, (started_at_ms - queued_at_ms) / 1000
+                )
+            await self._record_terminal(identity, status_path, completed)
         except asyncio.CancelledError:
             context.stop_generating()
             temporary.unlink(missing_ok=True)
@@ -426,8 +659,9 @@ class DetachedOmniTaskManager:
                     "message": str(exc)[:1024] or "detached Omni task failed",
                 },
             }
-            await asyncio.to_thread(self._atomic_json, status_path, failed)
+            await self._record_terminal(identity, status_path, failed)
         finally:
+            BINARY_RESULT_WRITER.reset(result_token)
             cancel_watch.cancel()
             cancel_enforcer.cancel()
             status_stop.set()
@@ -441,9 +675,10 @@ class DetachedOmniTaskManager:
             await context.close()
 
     async def _status(self, identity: DetachedTaskIdentity) -> dict[str, Any]:
-        value = await asyncio.to_thread(
-            self._read_status, self._status_path(identity)
-        )
+        def read():
+            return self._read_status(self._status_path(identity))
+
+        value = await asyncio.to_thread(read)
         if value is None:
             return {**self._base_status(identity, "not_found")}
         return value
@@ -459,21 +694,20 @@ class DetachedOmniTaskManager:
         detached inference task, so the execution is always shielded.
         """
 
-        status_path = self._status_path(identity)
-        status = await asyncio.to_thread(self._read_status, status_path)
-        if status is None:
-            yield self._base_status(identity, "not_found")
-            return
-        if status.get("state") in _TERMINAL:
-            yield status
-            return
+        def read():
+            path = self._status_path(identity)
+            return path, self._read_status(path)
 
         running = self._running.get(identity.key)
         if running is None:
-            # A different or restarted process may own the durable status.
-            # The Gateway will use its shared-filesystem fallback rather than
-            # treating the missing local waiter as an inference failure.
-            yield status
+            # Reconnects and restarted processes still recover from disk. A
+            # local execution is already validated against the full identity.
+            _, status = await asyncio.to_thread(read)
+            yield (
+                status
+                if status is not None
+                else self._base_status(identity, "not_found")
+            )
             return
 
         yield self._base_status(identity, "watching")
@@ -487,7 +721,11 @@ class DetachedOmniTaskManager:
             # exception across the private protocol.
             pass
 
-        terminal = await asyncio.to_thread(self._read_status, status_path)
+        terminal = copy.deepcopy(running.persisted_terminal)
+        if terminal is None:
+            # Cancellation, legacy subclasses and exceptional recorder paths
+            # still read disk. Never invent a successful completion.
+            _, terminal = await asyncio.to_thread(read)
         if terminal is None or terminal.get("state") not in _TERMINAL:
             raise RuntimeError(
                 "detached execution ended without a durable terminal status"
@@ -495,9 +733,8 @@ class DetachedOmniTaskManager:
         yield terminal
 
     async def _cancel(self, identity: DetachedTaskIdentity) -> dict[str, Any]:
-        path = self._cancel_path(identity)
-
         def _write_cancel() -> None:
+            path = self._cancel_path(identity)
             path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
             os.close(descriptor)
