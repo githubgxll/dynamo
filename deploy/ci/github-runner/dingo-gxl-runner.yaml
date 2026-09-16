@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: dingo-gxl-runner
-  namespace: dingo-runner
+  namespace: elm-test
 automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: dingo-gxl-runner
-  namespace: dingo-runner
+  namespace: elm-test
 data:
   daemon.json: |
     {
@@ -202,7 +202,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: dingo-gxl-runner-data
-  namespace: dingo-runner
+  namespace: elm-test
 spec:
   accessModes:
     - ReadWriteOnce
@@ -215,7 +215,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: dingo-gxl-runner
-  namespace: dingo-runner
+  namespace: elm-test
   labels:
     app.kubernetes.io/name: dingo-gxl-runner
     app.kubernetes.io/part-of: dingo-ci
