@@ -13,10 +13,12 @@ import math
 import os
 import secrets
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_result_file import validate_descriptor
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
@@ -43,6 +45,57 @@ _AUDIO_TYPE_ALIASES = {
     "audio/vnd.wave": "audio/wav",
 }
 _GENERIC_BINARY_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+
+
+@contextmanager
+def _open_artifact_metadata(path: Path):
+    """Avoid pixel reconstruction while probing indexed H.264/AAC results.
+
+    This is metadata validation, not a full bitstream/decode integrity scan.
+    Incomplete/unsupported metadata falls back to the original probe. Restore
+    normal decode settings before callers can use the frame-count fallback.
+    """
+    import av
+
+    container = None
+    try:
+        try:
+            container = av.open(str(path), options={"skip_frame": "all"})
+            videos = list(container.streams.video)
+            audios = list(container.streams.audio)
+            complete = (
+                len(videos) == 1
+                and len(container.streams) == len(videos) + len(audios)
+                and videos[0].codec_context.name == "h264"
+                and bool(videos[0].codec_context.extradata)
+                and videos[0].width > 0
+                and videos[0].height > 0
+                and bool(videos[0].average_rate)
+                and int(videos[0].frames or 0) > 0
+                and all(
+                    a.codec_context.name == "aac"
+                    and a.codec_context.extradata
+                    and a.duration
+                    and a.time_base
+                    for a in audios
+                )
+            )
+        except av.error.FFmpegError:
+            complete = False
+        if not complete:
+            if container is not None:
+                container.close()
+            container = av.open(str(path))
+        else:
+            for stream in container.streams:
+                stream.codec_context.options.pop("skip_frame", None)
+                stream.codec_context.skip_frame = "DEFAULT"
+        yield container
+    finally:
+        if container is not None:
+            container.close()
+
+
 _HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
 _ALLOWED_FIELDS = {
     "model",
@@ -258,8 +311,7 @@ def _iso_bmff_brands(header: bytes) -> set[bytes]:
         return set()
     brands = {header[8:12]}
     brands.update(
-        header[offset : offset + 4]
-        for offset in range(16, len(header) - 3, 4)
+        header[offset : offset + 4] for offset in range(16, len(header) - 3, 4)
     )
     return brands
 
@@ -397,14 +449,10 @@ def _probe_image(
             400, "invalid_media", "image could not be decoded", upload.field_name
         ) from exc
     _validate_image_dimensions(width, height, upload)
-    return _MediaProbe(
-        "image", width=width, height=height, content_type=content_type
-    )
+    return _MediaProbe("image", width=width, height=height, content_type=content_type)
 
 
-def _probe_av(
-    upload: UploadedArtifact, kind: str, content_type: str
-) -> _MediaProbe:
+def _probe_av(upload: UploadedArtifact, kind: str, content_type: str) -> _MediaProbe:
     try:
         import av
     except ImportError as exc:
@@ -447,9 +495,7 @@ def _probe_av(
             streams = list(container.streams.audio)
             if not streams:
                 raise ValueError("missing audio stream")
-            _validate_reference_audio_codec(
-                streams[0].codec_context.name, upload
-            )
+            _validate_reference_audio_codec(streams[0].codec_context.name, upload)
             if next(container.decode(streams[0]), None) is None:
                 raise ValueError("audio stream has no decodable frames")
             return _MediaProbe(
@@ -465,9 +511,7 @@ def _probe_av(
         ) from exc
 
 
-def _probe_upload(
-    upload: UploadedArtifact, limits: _MiniMaxH3Limits
-) -> _MediaProbe:
+def _probe_upload(upload: UploadedArtifact, limits: _MiniMaxH3Limits) -> _MediaProbe:
     with upload.path.open("rb") as stream:
         header = stream.read(64)
     content_type = _canonical_content_type(upload, header)
@@ -599,7 +643,13 @@ class _MiniMaxH3WorkerStreamConsumer:
             raise TypeError("Worker video data has an invalid shape")
         output_format = str(first.get("output_format") or "")
         b64_json = first.get("b64_json")
-        if output_format != "mp4" or not isinstance(b64_json, str) or not b64_json:
+        artifact = first.get("artifact")
+        if artifact is not None:
+            artifact = validate_descriptor(artifact)
+            if b64_json is not None or output_format != "mp4":
+                raise RuntimeError("ambiguous binary Worker result")
+            b64_json = ""
+        elif output_format != "mp4" or not isinstance(b64_json, str) or not b64_json:
             raise RuntimeError("Worker must return output_format=mp4 with b64_json")
         inference_time_raw = terminal.get("inference_time_s")
         inference_time = (
@@ -629,6 +679,7 @@ class _MiniMaxH3WorkerStreamConsumer:
                 stage_durations[name] = duration
         return WorkerVideoResult(
             b64_json=b64_json,
+            artifact=artifact,
             output_format=output_format,
             inference_time_s=inference_time,
             stage_durations=stage_durations,
@@ -705,9 +756,7 @@ class MiniMaxH3VideoAdapter:
 
     @property
     def max_encoded_reference_bytes(self) -> int:
-        return int(
-            self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024)
-        )
+        return int(self.options.get("max_encoded_reference_bytes", 384 * 1024 * 1024))
 
     def capabilities(self, *, max_result_bytes: int) -> dict[str, Any]:
         supports_reference_media = self.workflow == "ref2va"
@@ -1271,14 +1320,58 @@ class MiniMaxH3VideoAdapter:
             consumer.consume(chunk)
         return consumer.finish()
 
-    def prepare_artifact(
+    def inspect_artifact_for_publication(
         self, path: Path, normalized: Mapping[str, Any]
-    ) -> None:
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Probe once; return reusable validation only for unchanged output.
+
+        The caller may reuse this media result only when publishing the same
+        checked inode. Copies and transformed outputs must be validated anew.
+        """
+        if bool(normalized.get("generate_sound", True)):
+            return False, self.validate_artifact(path, normalized)
+        try:
+            import av  # noqa: F401 - fail early with the optional-extra diagnostic
+        except ImportError as exc:
+            raise RuntimeError(
+                "MiniMax-H3 media inspection requires the video-gateway optional extra"
+            ) from exc
+        with path.open("rb") as stream:
+            header = stream.read(32)
+        with _open_artifact_metadata(path) as container:
+            if not (
+                len(container.streams) == 1
+                and len(container.streams.video) == 1
+                and len(header) >= 12
+                and header[4:8] == b"ftyp"
+            ):
+                return True, None
+            return False, self._validate_open_artifact(container, normalized)
+
+    def artifact_requires_processing(
+        self, path: Path, normalized: Mapping[str, Any]
+    ) -> bool:
+        if bool(normalized.get("generate_sound", True)):
+            return False
+        import av
+
+        with av.open(str(path)) as source:
+            with path.open("rb") as stream:
+                header = stream.read(12)
+            return not (
+                len(source.streams) == 1
+                and len(source.streams.video) == 1
+                and len(header) == 12
+                and header[4:8] == b"ftyp"
+            )
+
+    def prepare_artifact(self, path: Path, normalized: Mapping[str, Any]) -> None:
         """Match vLLM-Omni's generate_sound=false response semantics.
 
         MiniMax-H3 always computes the audio branch in the currently supported
         Worker path. Remuxing only the H.264 packets avoids a second video encode
-        and therefore does not change image quality.
+        and therefore does not change image quality. An already video-only MP4
+        needs no rewrite; the normal artifact validator still runs afterwards.
         """
 
         if bool(normalized.get("generate_sound", True)):
@@ -1290,12 +1383,21 @@ class MiniMaxH3VideoAdapter:
                 "MiniMax-H3 audio stripping requires the video-gateway optional extra"
             ) from exc
         remuxed = path.with_name(f"{path.name}.video-only.mp4")
+        remux_started = False
         try:
             with av.open(str(path)) as source:
                 video_streams = list(source.streams.video)
                 if not video_streams:
                     raise RuntimeError("Worker MP4 is missing a video stream")
+                # Preserve the old stripping behavior for additional streams
+                # and non-MP4 inputs. Do not bypass the caller's media validator.
+                if len(source.streams) == 1:
+                    with path.open("rb") as stream:
+                        header = stream.read(12)
+                    if len(header) == 12 and header[4:8] == b"ftyp":
+                        return
                 source_video = video_streams[0]
+                remux_started = True
                 with av.open(str(remuxed), mode="w", format="mp4") as output:
                     output_video = output.add_stream_from_template(source_video)
                     for packet in source.demux(source_video):
@@ -1307,7 +1409,7 @@ class MiniMaxH3VideoAdapter:
                 os.fsync(stream.fileno())
             os.replace(remuxed, path)
         finally:
-            if remuxed.exists():
+            if remux_started and remuxed.exists():
                 remuxed.unlink()
 
     def validate_artifact(
@@ -1320,71 +1422,75 @@ class MiniMaxH3VideoAdapter:
         if not bool(self.options.get("validate_media", True)):
             return {"container": "mp4"}
         try:
-            import av
+            import av  # noqa: F401 - fail early with the optional-extra diagnostic
         except ImportError as exc:
             raise RuntimeError(
                 "MiniMax-H3 media validation requires the video-gateway optional extra"
             ) from exc
-        with av.open(str(path)) as container:
-            video_streams = list(container.streams.video)
-            audio_streams = list(container.streams.audio)
-            if not video_streams or video_streams[0].codec_context.name != "h264":
-                raise RuntimeError("MP4 must contain an H.264 video stream")
-            generate_sound = bool(normalized.get("generate_sound", True))
-            if generate_sound:
-                if not audio_streams or audio_streams[0].codec_context.name != "aac":
-                    raise RuntimeError("MP4 must contain an AAC audio stream")
-            elif audio_streams:
-                raise RuntimeError("MP4 must not contain audio when generate_sound=false")
-            video = video_streams[0]
-            if (
-                video.width != normalized["width"]
-                or video.height != normalized["height"]
-            ):
-                raise RuntimeError(
-                    f"MP4 dimensions {video.width}x{video.height} do not match request"
-                )
-            average_rate = float(video.average_rate) if video.average_rate else 0.0
-            if abs(average_rate - 24.0) > 0.05:
-                raise RuntimeError(
-                    f"MP4 frame rate {average_rate} does not match 24 fps"
-                )
-            frame_count = int(video.frames or 0)
-            if frame_count <= 0:
-                frame_count = sum(1 for _frame in container.decode(video=0))
-            expected_frames = align_frame_count(int(normalized["num_frames"]))
-            if frame_count != expected_frames:
-                raise RuntimeError(
-                    f"MP4 frame count {frame_count} does not match expected "
-                    f"MiniMax-H3 aligned count {expected_frames}"
-                )
-            video_duration = frame_count / average_rate
-            container_duration = (
-                float(container.duration / av.time_base)
-                if container.duration is not None
-                else 0.0
+        with _open_artifact_metadata(path) as container:
+            return self._validate_open_artifact(container, normalized)
+
+    def _validate_open_artifact(
+        self, container, normalized: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if not bool(self.options.get("validate_media", True)):
+            return {"container": "mp4"}
+        import av
+
+        video_streams = list(container.streams.video)
+        audio_streams = list(container.streams.audio)
+        if not video_streams or video_streams[0].codec_context.name != "h264":
+            raise RuntimeError("MP4 must contain an H.264 video stream")
+        generate_sound = bool(normalized.get("generate_sound", True))
+        if generate_sound:
+            if not audio_streams or audio_streams[0].codec_context.name != "aac":
+                raise RuntimeError("MP4 must contain an AAC audio stream")
+        elif audio_streams:
+            raise RuntimeError("MP4 must not contain audio when generate_sound=false")
+        video = video_streams[0]
+        if video.width != normalized["width"] or video.height != normalized["height"]:
+            raise RuntimeError(
+                f"MP4 dimensions {video.width}x{video.height} do not match request"
             )
-            audio_duration: float | None = None
-            if generate_sound:
-                audio = audio_streams[0]
-                audio_duration = _stream_duration(container, audio)
-                if audio_duration <= 0:
-                    raise RuntimeError("MP4 AAC stream has no measurable duration")
-                if abs(video_duration - audio_duration) > 0.1:
-                    raise RuntimeError(
-                        "MP4 audio/video duration difference exceeds 100 milliseconds"
-                    )
-            return {
-                "container": "mp4",
-                "video_codec": "h264",
-                "audio_codec": "aac" if generate_sound else None,
-                "width": video.width,
-                "height": video.height,
-                "fps": average_rate,
-                "frames": frame_count,
-                "duration_s": max(
-                    video_duration, audio_duration or 0.0, container_duration
-                ),
-                "video_duration_s": video_duration,
-                "audio_duration_s": audio_duration,
-            }
+        average_rate = float(video.average_rate) if video.average_rate else 0.0
+        if abs(average_rate - 24.0) > 0.05:
+            raise RuntimeError(f"MP4 frame rate {average_rate} does not match 24 fps")
+        frame_count = int(video.frames or 0)
+        if frame_count <= 0:
+            frame_count = sum(1 for _frame in container.decode(video=0))
+        expected_frames = align_frame_count(int(normalized["num_frames"]))
+        if frame_count != expected_frames:
+            raise RuntimeError(
+                f"MP4 frame count {frame_count} does not match expected "
+                f"MiniMax-H3 aligned count {expected_frames}"
+            )
+        video_duration = frame_count / average_rate
+        container_duration = (
+            float(container.duration / av.time_base)
+            if container.duration is not None
+            else 0.0
+        )
+        audio_duration: float | None = None
+        if generate_sound:
+            audio = audio_streams[0]
+            audio_duration = _stream_duration(container, audio)
+            if audio_duration <= 0:
+                raise RuntimeError("MP4 AAC stream has no measurable duration")
+            if abs(video_duration - audio_duration) > 0.1:
+                raise RuntimeError(
+                    "MP4 audio/video duration difference exceeds 100 milliseconds"
+                )
+        return {
+            "container": "mp4",
+            "video_codec": "h264",
+            "audio_codec": "aac" if generate_sound else None,
+            "width": video.width,
+            "height": video.height,
+            "fps": average_rate,
+            "frames": frame_count,
+            "duration_s": max(
+                video_duration, audio_duration or 0.0, container_duration
+            ),
+            "video_duration_s": video_duration,
+            "audio_duration_s": audio_duration,
+        }

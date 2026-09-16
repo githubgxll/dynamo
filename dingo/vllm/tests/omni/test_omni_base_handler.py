@@ -25,12 +25,18 @@ pytestmark = [
     pytest.mark.pre_merge,
 ]
 
-# These fields are not exposed in OmniParallelKwargs, because they are derived from other fields.
+# Fields deliberately not exposed in OmniParallelKwargs. Derived fields and
+# upstream-only tuning controls retain the native DiffusionParallelConfig values.
 _SKIP_FIELDS = {
     "sequence_parallel_size",
     "enable_expert_parallel",
     "ulysses_mode",
     "mask_sp_padding",
+    # 0.29 sequence-parallel transport tuning, independent of request slots.
+    # Dingo does not currently expose these controls; retain upstream defaults
+    # instead of changing the existing TP/SP topology during slot migration.
+    "ulysses_a2a_permute",
+    "allgather_degree",
 }
 
 
@@ -59,6 +65,21 @@ def _make_config(**parallel_overrides):
 def _build_kwargs(config):
     handler = BaseOmniHandler.__new__(BaseOmniHandler)
     return handler._build_omni_kwargs(config)
+
+
+def test_step_execution_and_capacity_forwarded():
+    config = _make_config()
+    config.diffusion = dataclasses.replace(
+        config.diffusion, step_execution=True, max_num_seqs=2
+    )
+    kwargs = _build_kwargs(config)
+    assert kwargs["step_execution"] is True
+    assert kwargs["max_num_seqs"] == 2
+
+
+def test_unset_capacity_preserves_upstream_default():
+    kwargs = _build_kwargs(_make_config())
+    assert "max_num_seqs" not in kwargs
 
 
 class TestDiffusionParallelConfigCoverage:

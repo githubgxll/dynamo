@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import logging
 import os
@@ -16,6 +15,7 @@ import aiohttp
 from aiohttp import web
 
 from dingo.video_gateway.errors import GatewayError, StoreUnavailable
+from dingo.video_gateway.file_io import opened_file, run_file_io
 from dingo.video_gateway.form_parser import parse_multipart
 from dingo.video_gateway.models import TERMINAL_STATUSES, TaskStatus
 from dingo.video_gateway.service import VideoGatewayService
@@ -166,7 +166,9 @@ async def _submit(request: web.Request, *, delivery_mode: str):
     service = _service(request)
     if service.dispatcher.draining:
         raise _gateway_draining_error()
-    anticipated_input = request.content_length or service.config.media.max_total_file_bytes
+    anticipated_input = (
+        request.content_length or service.config.media.max_total_file_bytes
+    )
     await service.ensure_submission_capacity(
         anticipated_input + service.config.media.max_result_bytes
     )
@@ -328,26 +330,27 @@ async def _content_response(
         if task.status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
             raise GatewayError(422, "video_generation_failed", task.status.value)
         raise GatewayError(409, "video_not_ready", "video result is not ready")
-    try:
-        path = service.artifacts.result_path(task.result_path)
-    except (FileNotFoundError, RuntimeError) as exc:
-        raise GatewayError(
-            410, "video_expired", "video result artifact is unavailable"
-        ) from exc
     if not task.result_sha256:
         raise GatewayError(410, "video_expired", "video result checksum is unavailable")
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise GatewayError(
-            410, "video_expired", "video result artifact is unavailable"
-        ) from exc
 
-    stream = os.fdopen(descriptor, "rb", closefd=True)
-    try:
-        metadata = os.fstat(descriptor)
+    def _open():
+        try:
+            path = service.artifacts.result_path(task.result_path)
+            descriptor = os.open(path, flags)
+        except (OSError, RuntimeError) as exc:
+            raise GatewayError(
+                410, "video_expired", "video result artifact is unavailable"
+            ) from exc
+        try:
+            return os.fdopen(descriptor, "rb", closefd=True)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    async with opened_file(_open) as stream:
+        metadata = await run_file_io(os.fstat, stream.fileno())
         if not stat.S_ISREG(metadata.st_mode):
             raise GatewayError(
                 410, "video_expired", "video result artifact is unavailable"
@@ -373,12 +376,10 @@ async def _content_response(
         if media.get("frames") is not None:
             common_headers["X-Video-Frames"] = str(media["frames"])
         if media.get("fps") is not None:
-            common_headers["X-Video-FPS"] = f'{float(media["fps"]):.9g}'
+            common_headers["X-Video-FPS"] = f"{float(media['fps']):.9g}"
         duration = media.get("duration_s", media.get("video_duration_s"))
         if duration is not None:
-            common_headers["X-Video-Duration-Seconds"] = (
-                f"{float(duration):.9g}"
-            )
+            common_headers["X-Video-Duration-Seconds"] = f"{float(duration):.9g}"
         if _etag_matches(request.headers.get("If-None-Match"), etag):
             return web.Response(status=304, headers=common_headers)
 
@@ -399,20 +400,16 @@ async def _content_response(
         response = web.StreamResponse(status=206 if partial else 200, headers=headers)
         await response.prepare(request)
         if request.method != "HEAD" and length:
-            await asyncio.to_thread(stream.seek, start)
+            await run_file_io(stream.seek, start)
             remaining = length
             while remaining:
-                chunk = await asyncio.to_thread(
-                    stream.read, min(1024 * 1024, remaining)
-                )
+                chunk = await run_file_io(stream.read, min(1024 * 1024, remaining))
                 if not chunk:
                     raise ConnectionError("video artifact ended during download")
                 await response.write(chunk)
                 remaining -= len(chunk)
         await response.write_eof()
         return response
-    finally:
-        stream.close()
 
 
 async def get_video_content(request: web.Request) -> web.StreamResponse:
@@ -494,6 +491,7 @@ async def metrics(request: web.Request) -> web.Response:
         "# TYPE dingo_video_worker_busy gauge",
         "# TYPE dingo_video_queue_depth gauge",
         "# TYPE dingo_video_tasks gauge",
+        "# TYPE dingo_video_finalization_pending_local gauge",
         "# TYPE dingo_video_media_memory_budget_bytes gauge",
         "# TYPE dingo_video_media_memory_used_bytes gauge",
         "# TYPE dingo_video_media_memory_peak_bytes gauge",
@@ -525,8 +523,7 @@ async def metrics(request: web.Request) -> web.Response:
         f"{media.legacy_input_encoded_bytes}",
         "dingo_video_media_legacy_output_encoded_bytes_total "
         f"{media.legacy_output_encoded_bytes}",
-        "dingo_video_media_payload_build_seconds_total "
-        f"{media.payload_build_seconds}",
+        f"dingo_video_media_payload_build_seconds_total {media.payload_build_seconds}",
         f"dingo_video_media_payload_build_total {media.payload_build_count}",
         f"dingo_video_media_finalize_seconds_total {media.finalize_seconds}",
         f"dingo_video_media_finalize_total {media.finalize_count}",
@@ -536,25 +533,63 @@ async def metrics(request: web.Request) -> web.Response:
         f"dingo_video_artifact_total_bytes {capacity.total_bytes}",
         f"dingo_video_artifact_free_bytes {capacity.free_bytes}",
         f"dingo_video_artifact_sweep_due_tasks {artifact.sweep_due_tasks}",
-        "dingo_video_artifact_expired_tasks_total "
-        f"{artifact.expired_tasks_total}",
+        f"dingo_video_artifact_expired_tasks_total {artifact.expired_tasks_total}",
         "dingo_video_artifact_orphan_candidates_total "
         f"{artifact.orphan_candidates_total}",
-        "dingo_video_artifact_orphan_trashed_total "
-        f"{artifact.orphan_trashed_total}",
+        f"dingo_video_artifact_orphan_trashed_total {artifact.orphan_trashed_total}",
         "dingo_video_artifact_cleanup_failures_total "
         f"{artifact.cleanup_failures_total}",
-        "dingo_video_artifact_released_bytes_total "
-        f"{artifact.released_bytes_total}",
+        f"dingo_video_artifact_released_bytes_total {artifact.released_bytes_total}",
     ]
     for pool in service.config.pools:
-        workers = len(service.dispatcher.pool_instances(pool.pool_id))
         queue = await service.store.queue_depth(pool.pool_id)
+        # Dispatch may skip all queue/counter reads when no Worker is free.
+        # Refresh these gauges at scrape time instead of exposing stale values
+        # merely because the pool is saturated or has no registered Workers.
+        if hasattr(service.store, "retry_budget_used"):
+            waiting = await service.store.retry_queue_depth(pool.pool_id)
+            credits = await service.store.retry_budget_used(pool.pool_id)
+            service.telemetry.set_gauge(
+                "dingo_video_retry_waiting_tasks",
+                waiting,
+                labels={"pool": pool.pool_id},
+            )
+            service.telemetry.set_gauge(
+                "dingo_video_retry_credits_used",
+                credits,
+                labels={"pool": pool.pool_id},
+            )
+            service.telemetry.set_gauge(
+                "dingo_video_normal_queue_depth",
+                max(0, queue - waiting),
+                labels={"pool": pool.pool_id},
+            )
         leases = await service.dispatcher.pool_leases(pool.pool_id)
-        busy = sum(lease.state != "quarantined" for lease in leases)
+        worker_capacity = service.dispatcher.pool_capacity_snapshot(
+            pool.pool_id, leases
+        )
+        scheduling = service.dispatcher.pools[pool.pool_id].config.scheduling
+        worker_capacity.update(
+            {
+                "worker_execution_capacity_configured": scheduling.worker_capacity,
+                "worker_prefetch_capacity_configured": scheduling.worker_prefetch_capacity,
+                "early_release_slot_enabled": int(scheduling.early_release_slot),
+                "finalization_concurrency_configured": scheduling.finalization_concurrency,
+                "finalization_pending_limit_configured": scheduling.finalization_pending_limit,
+            }
+        )
         counts = await service.store.task_counts(pool.pool_id)
-        lines.append(f'dingo_video_workers{{pool="{pool.pool_id}"}} {workers}')
-        lines.append(f'dingo_video_worker_busy{{pool="{pool.pool_id}"}} {busy}')
+        for name, value in worker_capacity.items():
+            if pool is service.config.pools[0] and name not in {
+                "workers",
+                "worker_busy",
+            }:
+                lines.append(f"# TYPE dingo_video_{name} gauge")
+            lines.append(f'dingo_video_{name}{{pool="{pool.pool_id}"}} {value}')
+        lines.append(
+            f'dingo_video_finalization_pending_local{{pool="{pool.pool_id}"}} '
+            f"{service.dispatcher.pool_finalization_pending(pool.pool_id)}"
+        )
         lines.append(f'dingo_video_queue_depth{{pool="{pool.pool_id}"}} {queue}')
         lines.extend(
             f'dingo_video_tasks{{pool="{pool.pool_id}",status="{status.value}"}} '

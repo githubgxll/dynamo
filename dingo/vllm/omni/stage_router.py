@@ -3,22 +3,23 @@
 
 """Stage router for disaggregated omni pipelines."""
 
+import asyncio
 import json
 import logging
 import uuid
 from typing import Any, AsyncGenerator, Dict, List
 
+from dynamo import prometheus_names
+from dynamo.llm import ModelInput, WorkerType, register_model
+from dynamo.runtime import DistributedRuntime
 from vllm_omni.entrypoints.utils import load_and_resolve_stage_configs
 
-from dynamo import prometheus_names
 from dingo.common.storage import get_fs
 from dingo.common.utils.output_modalities import (
     RequestType,
     get_output_modalities,
     parse_request_type,
 )
-from dynamo.llm import ModelInput, WorkerType, register_model
-from dynamo.runtime import DistributedRuntime
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.args import OmniConfig
 from dingo.vllm.omni.output_formatter import OutputFormatter
@@ -235,3 +236,5 @@ async def init_omni_stage_router(
     except Exception as e:
         logger.error("OmniStageRouter endpoint failed: %s", e)
         raise
+    finally:
+        await asyncio.to_thread(router._formatter.close)

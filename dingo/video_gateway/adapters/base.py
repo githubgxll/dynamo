@@ -39,6 +39,7 @@ class WorkerVideoResult:
     output_format: str
     inference_time_s: float | None = None
     stage_durations: Mapping[str, float] | None = None
+    artifact: Mapping[str, Any] | None = None
 
 
 class WorkerStreamConsumer(Protocol):
@@ -83,6 +84,12 @@ class VideoBackendAdapter(Protocol):
         self, path: Path, normalized: Mapping[str, Any]
     ) -> dict[str, Any]: ...
 
-    def prepare_artifact(
+    def prepare_artifact(self, path: Path, normalized: Mapping[str, Any]) -> None: ...
+
+    def artifact_requires_processing(
         self, path: Path, normalized: Mapping[str, Any]
-    ) -> None: ...
+    ) -> bool: ...
+
+    def inspect_artifact_for_publication(
+        self, path: Path, normalized: Mapping[str, Any]
+    ) -> tuple[bool, dict[str, Any] | None]: ...

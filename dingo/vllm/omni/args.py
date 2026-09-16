@@ -80,6 +80,9 @@ class OmniDiffusionKwargs:
     enable_diffusion_pipeline_profiler: bool = False
     diffusion_attention_backend: Optional[str] = None
     diffusion_quantization_config: Optional[dict] = None
+    # Opt-in diffusion scheduler controls. None preserves the upstream default.
+    step_execution: bool = False
+    max_num_seqs: Optional[int] = None
 
 
 @dataclasses.dataclass
@@ -193,8 +196,31 @@ class OmniArgGroup(ArgGroup):
                 "accepted video tasks during graceful shutdown."
             ),
         )
+        add_argument(
+            g,
+            flag_name="--detached-video-prefetch-capacity",
+            env_var="DYN_OMNI_DETACHED_VIDEO_PREFETCH_CAPACITY",
+            arg_type=int,
+            default=0,
+            help="Additional detached requests waiting locally; 0 or 1, separate from engine execution capacity.",
+        )
 
         # OmniDiffusionKwargs fields
+        add_negatable_bool_argument(
+            g,
+            flag_name="--step-execution",
+            env_var="DYN_OMNI_STEP_EXECUTION",
+            default=False,
+            help="Enable Omni diffusion step execution (required for concurrent H3 tasks).",
+        )
+        add_argument(
+            g,
+            flag_name="--max-num-seqs",
+            env_var="DYN_OMNI_MAX_NUM_SEQS",
+            default=None,
+            arg_type=int,
+            help="Maximum concurrent sequences in the Omni diffusion engine; unset keeps its default.",
+        )
         add_negatable_bool_argument(
             g,
             flag_name="--enable-layerwise-offload",
@@ -515,6 +541,7 @@ class OmniConfig(DynamoRuntimeConfig):
     request_adapter_media_max_bytes: int = 2 * 1024 * 1024 * 1024
     detached_video_task_root: Optional[str] = None
     detached_video_drain_timeout: float = 1800.0
+    detached_video_prefetch_capacity: int = 0
 
     # Nested structs — each group of fields has a clear destination
     diffusion: OmniDiffusionKwargs = dataclasses.field(
@@ -559,6 +586,20 @@ class OmniConfig(DynamoRuntimeConfig):
 
     def validate(self) -> None:
         DynamoRuntimeConfig.validate(self)
+        capacity = self.diffusion.max_num_seqs
+        if capacity is not None and (
+            isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1
+        ):
+            raise ValueError("--max-num-seqs must be a positive integer")
+        if self.diffusion.step_execution and self.diffusion.cache_backend:
+            raise ValueError("--step-execution cannot be combined with --cache-backend")
+        if (
+            self.request_adapter == "minimax_h3"
+            and capacity is not None
+            and capacity > 1
+            and not self.diffusion.step_execution
+        ):
+            raise ValueError("concurrent MiniMax-H3 requires --step-execution")
         if self.default_video_fps <= 0:
             raise ValueError("--default-video-fps must be > 0")
         if self.request_adapter is None and self.request_adapter_workflow is not None:
@@ -580,8 +621,7 @@ class OmniConfig(DynamoRuntimeConfig):
                 raise ValueError("--detached-video-task-root must not be empty")
             if self.request_adapter != "minimax_h3":
                 raise ValueError(
-                    "--detached-video-task-root requires "
-                    "--request-adapter minimax_h3"
+                    "--detached-video-task-root requires --request-adapter minimax_h3"
                 )
             if self.stage_id is not None or self.omni_router or self.realtime:
                 raise ValueError(
@@ -589,6 +629,12 @@ class OmniConfig(DynamoRuntimeConfig):
                 )
         if self.detached_video_drain_timeout <= 0:
             raise ValueError("--detached-video-drain-timeout must be > 0")
+        if type(
+            self.detached_video_prefetch_capacity
+        ) is not int or self.detached_video_prefetch_capacity not in {0, 1}:
+            raise ValueError("--detached-video-prefetch-capacity must be 0 or 1")
+        if self.detached_video_prefetch_capacity and not self.detached_video_task_root:
+            raise ValueError("detached prefetch requires --detached-video-task-root")
         if self.parallel.ulysses_degree <= 0:
             raise ValueError("--ulysses-degree must be > 0")
         if self.parallel.ring_degree <= 0:
@@ -670,6 +716,10 @@ def parse_omni_args() -> OmniConfig:
             )
 
     engine_args = OmniEngineArgs.from_cli_args(vllm_args)
+    # The Omni parser owns this flag, but disaggregated modes also read the
+    # native engine_args object. Keep the two views consistent.
+    if config.diffusion.max_num_seqs is not None:
+        engine_args.max_num_seqs = config.diffusion.max_num_seqs
 
     if getattr(engine_args, "served_model_name", None) is not None:
         served = engine_args.served_model_name

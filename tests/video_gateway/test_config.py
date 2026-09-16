@@ -61,6 +61,15 @@ def test_config_maps_arbitrary_full_targets_without_namespace_assumptions(tmp_pa
     assert config.pools[0].execution_mode == "stream"
 
 
+@pytest.mark.parametrize("capacity", [True, False, 1.5, "2", None])
+def test_worker_capacity_requires_integer_without_coercion(tmp_path, capacity):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = {"worker_capacity": capacity}
+    with pytest.raises(ValueError, match="worker_capacity must be an integer"):
+        parse_config(raw)
+
+
 def test_legacy_compatibility_version_is_derived_without_revision_drift(tmp_path):
     raw = _raw(tmp_path)
     without_legacy = parse_config(deepcopy(raw))
@@ -96,6 +105,53 @@ def test_detached_execution_requires_explicit_pool_setting(tmp_path):
     raw["pools"][0]["execution_mode"] = "implicit"
     with pytest.raises(ValueError, match="execution_mode"):
         parse_config(raw)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"worker_prefetch_capacity": 1},
+        {"worker_prefetch_capacity": 2, "early_release_slot": True},
+        {"worker_prefetch_capacity": True, "early_release_slot": True},
+        {"worker_prefetch_capacity": 1.5, "early_release_slot": True},
+        {"finalization_timeout_s": float("nan")},
+        {"finalization_timeout_s": float("inf")},
+        {"finalization_timeout_s": 0},
+        {"finalization_max_retries": -1},
+        {"finalization_max_retries": 17},
+        {"finalization_concurrency": 0},
+        {"finalization_concurrency": 4, "finalization_pending_limit": 3},
+    ],
+)
+def test_invalid_continuous_execution_settings_fail_fast(tmp_path, settings):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = settings
+    with pytest.raises(ValueError):
+        parse_config(raw)
+
+
+def test_early_release_requires_detached_mode(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["scheduling"] = {"early_release_slot": True}
+    with pytest.raises(ValueError, match="detached"):
+        parse_config(raw)
+
+
+def test_continuous_execution_defaults_off_and_does_not_change_adapter_revision(
+    tmp_path,
+):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    original = parse_config(raw).pools[0]
+    assert original.scheduling.early_release_slot is False
+    assert original.scheduling.worker_prefetch_capacity == 0
+    raw["pools"][0]["scheduling"] = {
+        "early_release_slot": True,
+        "worker_prefetch_capacity": 1,
+    }
+    updated = parse_config(raw).pools[0]
+    assert updated.configuration_revision == original.configuration_revision
 
 
 @pytest.mark.parametrize(
@@ -320,8 +376,7 @@ def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
     assert config.media.max_single_file_bytes == 50 * 1024 * 1024
     assert config.media.max_result_encoded_bytes >= config.media.max_result_bytes
     assert (
-        config.media.inflight_memory_budget_bytes
-        >= config.media.max_task_memory_bytes
+        config.media.inflight_memory_budget_bytes >= config.media.max_task_memory_bytes
     )
 
 

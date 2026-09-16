@@ -61,12 +61,17 @@ class _Context:
         return False
 
 
-def _request(*, op: str = "submit", payload: dict[str, Any] | None = None):
+def _request(
+    *,
+    op: str = "submit",
+    payload: dict[str, Any] | None = None,
+    task_id: str = "01TASK",
+):
     return detached_envelope(
         op=op,
         deployment_id="deployment-a",
         pool_id="fl-pool",
-        task_id="01TASK",
+        task_id=task_id,
         attempt=1,
         execution_token="a" * 32,
         payload=payload,
@@ -86,8 +91,8 @@ async def _terminal_status(manager: DetachedOmniTaskManager) -> dict[str, Any]:
     raise AssertionError("detached task did not become terminal")
 
 
-def _write_manifest(root: Path) -> None:
-    task_root = root / "deployment-a" / "v1" / "pools" / "fl-pool" / "tasks" / "01TASK"
+def _write_manifest(root: Path, task_id: str = "01TASK") -> None:
+    task_root = root / "deployment-a" / "v1" / "pools" / "fl-pool" / "tasks" / task_id
     task_root.mkdir(parents=True)
     (task_root / "_artifact.json").write_text(
         json.dumps(
@@ -95,10 +100,96 @@ def _write_manifest(root: Path) -> None:
                 "schema_version": 1,
                 "deployment_id": "deployment-a",
                 "pool_id": "fl-pool",
-                "task_id": "01TASK",
+                "task_id": task_id,
             }
         )
     )
+
+
+async def test_capabilities_are_explicit_and_do_not_create_task_files(tmp_path):
+    from dingo.common.video_task_protocol import (
+        ENVELOPE_KEY,
+        EXECUTION_CAPACITY_CAPABILITY,
+    )
+
+    manager = DetachedOmniTaskManager(_Handler(), tmp_path, execution_capacity=2)
+    value = (
+        await _one(manager, {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities"}})
+    )[0]
+    assert value["execution_capacity"] == 2 and value["accepting"]
+    assert EXECUTION_CAPACITY_CAPABILITY in value["capabilities"]
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="capabilities"):
+        await _one(
+            manager,
+            {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities", "payload": {}}},
+        )
+    await manager.shutdown()
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+async def test_invalid_execution_capacity(tmp_path, capacity):
+    with pytest.raises(ValueError, match="capacity"):
+        DetachedOmniTaskManager(_Handler(), tmp_path, execution_capacity=capacity)
+
+
+async def test_two_slots_reject_overflow_without_persisting_execution(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, execution_capacity=2, drain_timeout_s=1
+    )
+    ids = [f"task-{i}" for i in range(10)]
+    for task_id in ids:
+        _write_manifest(tmp_path, task_id)
+    try:
+        rows = await asyncio.gather(
+            *[_one(manager, _request(task_id=i, payload={})) for i in ids]
+        )
+        accepted = [i for i, row in zip(ids, rows) if row[0]["accepted"]]
+        rejected = [i for i, row in zip(ids, rows) if row[0]["state"] == "busy"]
+        assert len(accepted) == 2 and len(rejected) == 8
+        assert len(manager._running) == 2
+        duplicate = (await _one(manager, _request(task_id=accepted[0], payload={})))[0]
+        assert duplicate["state"] == "running" and not duplicate["accepted"]
+        for task_id in rejected:
+            attempt = detached_attempt_root(
+                tmp_path, "deployment-a", "fl-pool", task_id, 1, "a" * 32
+            )
+            assert not attempt.exists()
+        handler.release.set()
+        await asyncio.gather(
+            *(item.execution for item in list(manager._running.values()))
+        )
+        await asyncio.sleep(0)
+        assert not manager._running
+        assert (await _one(manager, _request(task_id=rejected[0], payload={})))[0][
+            "accepted"
+        ]
+    finally:
+        handler.release.set()
+        await manager.shutdown()
+
+
+async def test_direct_requests_share_detached_execution_budget(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, execution_capacity=1, drain_timeout_s=1
+    )
+    _write_manifest(tmp_path)
+    direct = asyncio.create_task(_one(manager, {"prompt": "direct"}))
+    try:
+        await asyncio.wait_for(handler.started.wait(), 1)
+        assert (await _one(manager, _request(payload={})))[0]["state"] == "busy"
+        with pytest.raises(RuntimeError, match="capacity"):
+            await _one(manager, {"prompt": "another direct"})
+        handler.release.set()
+        await direct
+        assert manager._direct_running == 0
+        assert (await _one(manager, _request(payload={})))[0]["accepted"]
+    finally:
+        handler.release.set()
+        await direct
+        await manager.shutdown()
 
 
 async def test_submit_ack_is_independent_and_duplicate_is_idempotent(tmp_path: Path):
