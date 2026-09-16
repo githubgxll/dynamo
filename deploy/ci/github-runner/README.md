@@ -4,8 +4,8 @@ This directory deploys persistent repository-level GitHub Actions runners:
 
 | Runner | Repository | Namespace | Manifest | Persistent volume |
 | --- | --- | --- | --- | --- |
-| `dingo-runner-k8s-1` | `zhaoxianhua/dynamo` | `dingo-runner` | `dingo-runner-k8s-1.yaml` | `dingo-runner-k8s-1-data` |
-| `dingo-gxl-runner` | `githubgxll/dynamo` | `dingo-runner` | `dingo-gxl-runner.yaml` | `dingo-gxl-runner-data` |
+| `dingo-runner-k8s-1` | `zhaoxianhua/dynamo` | `elm-test` | `dingo-runner-k8s-1.yaml` | `dingo-runner-k8s-1-data` |
+| `dingo-gxl-runner` | `githubgxll/dynamo` | `elm-test` | `dingo-gxl-runner.yaml` | `dingo-gxl-runner-data` |
 
 GitHub adds the standard `self-hosted`, `linux`, and `x64` labels. Both
 deployments add `hd-04`, `dingo`, and `kubernetes`; `dingo-gxl-runner` also
@@ -46,7 +46,7 @@ The token is short-lived. Enter it without echoing it into the terminal:
 ```bash
 tsh ssh --user=zhaoli@zetyun.com root@hd04-cci-k8s-master-1
 read -rsp 'GitHub runner registration token: ' RUNNER_TOKEN; echo
-kubectl -n dingo-runner create secret generic dingo-runner-k8s-1-registration \
+kubectl -n elm-test create secret generic dingo-runner-k8s-1-registration \
   --from-literal=token="${RUNNER_TOKEN}" \
   --dry-run=client -o yaml | kubectl apply -f -
 unset RUNNER_TOKEN
@@ -56,7 +56,7 @@ For `githubgxll/dynamo`, use the same procedure with the independent Secret:
 
 ```bash
 read -rsp 'GitHub runner registration token: ' RUNNER_TOKEN; echo
-kubectl -n dingo-runner create secret generic dingo-gxl-runner-registration \
+kubectl -n elm-test create secret generic dingo-gxl-runner-registration \
   --from-literal=token="${RUNNER_TOKEN}" \
   --dry-run=client -o yaml | kubectl apply -f -
 unset RUNNER_TOKEN
@@ -72,10 +72,10 @@ kubectl apply -f /root/zhaoli/dingo-gxl-runner/dingo-gxl-runner.yaml
 Verify registration and Docker readiness:
 
 ```bash
-kubectl -n dingo-runner get pod -l app.kubernetes.io/name=dingo-runner-k8s-1 -o wide
-kubectl -n dingo-runner logs -f deployment/dingo-runner-k8s-1
-kubectl -n dingo-runner get pod -l app.kubernetes.io/name=dingo-gxl-runner -o wide
-kubectl -n dingo-runner logs -f deployment/dingo-gxl-runner
+kubectl -n elm-test get pod -l app.kubernetes.io/name=dingo-runner-k8s-1 -o wide
+kubectl -n elm-test logs -f deployment/dingo-runner-k8s-1
+kubectl -n elm-test get pod -l app.kubernetes.io/name=dingo-gxl-runner -o wide
+kubectl -n elm-test logs -f deployment/dingo-gxl-runner
 ```
 
 After the log reports `Runner successfully added`, replace the consumed
@@ -83,11 +83,11 @@ short-lived token with a non-sensitive value. The Secret must remain because
 the Pod mounts it, but normal restarts use the `.runner` file on the PVC:
 
 ```bash
-kubectl -n dingo-runner create secret generic dingo-runner-k8s-1-registration \
+kubectl -n elm-test create secret generic dingo-runner-k8s-1-registration \
   --from-literal=token=registration-complete \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl -n dingo-runner create secret generic dingo-gxl-runner-registration \
+kubectl -n elm-test create secret generic dingo-gxl-runner-registration \
   --from-literal=token=registration-complete \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
