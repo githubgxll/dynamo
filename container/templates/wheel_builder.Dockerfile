@@ -535,6 +535,11 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 
 FROM wheel_builder_base AS runtime_wheel_builder
 
+# Re-declare after FROM so --builder-image does not retain its baked-in
+# compilation parallelism when the current build has a smaller resource budget.
+ARG CARGO_BUILD_JOBS
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16}
+
 {% if target not in ("dev", "local-dev") %}
 # Copy source code (order matters for layer caching)
 COPY .cargo/ /opt/dynamo/.cargo/
@@ -758,6 +763,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 # Dynamo source is intentionally copied only after the reusable builder stage,
 # so code-only commits never invalidate the published dependency image.
 FROM reusable_builder_base AS wheel_builder
+
+ARG CARGO_BUILD_JOBS
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16}
 
 ARG TARGETARCH
 ARG DEVICE
