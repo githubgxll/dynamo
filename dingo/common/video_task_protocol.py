@@ -14,6 +14,8 @@ from typing import Any
 ENVELOPE_KEY = "_dingo_video_task"
 SCHEMA_VERSION = 1
 WAIT_TERMINAL_CAPABILITY = "wait_terminal_v1"
+EXECUTION_CAPACITY_CAPABILITY = "execution_capacity_v1"
+PREFETCH_CAPABILITY = "execution_prefetch_v1"
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 TOKEN = re.compile(r"^[0-9a-f]{32,64}$")
@@ -73,12 +75,16 @@ class DetachedTaskIdentity:
             "attempt",
             "execution_token",
             "payload",
+            "deadline_at_ms",
         }
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"unknown detached task fields: {sorted(unknown)}")
         if value.get("schema_version") != SCHEMA_VERSION:
             raise ValueError("unsupported detached task schema_version")
+        deadline = value.get("deadline_at_ms")
+        if deadline is not None and (type(deadline) is not int or deadline <= 0):
+            raise ValueError("invalid detached deadline_at_ms")
         identity = cls(
             deployment_id=str(value.get("deployment_id", "")),
             pool_id=str(value.get("pool_id", "")),
@@ -116,6 +122,7 @@ def detached_envelope(
     attempt: int,
     execution_token: str,
     payload: dict[str, Any] | None = None,
+    deadline_at_ms: int | None = None,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -128,5 +135,7 @@ def detached_envelope(
     }
     if payload is not None:
         value["payload"] = payload
+    if deadline_at_ms is not None:
+        value["deadline_at_ms"] = deadline_at_ms
     DetachedTaskIdentity.from_envelope(value)
     return {ENVELOPE_KEY: value}

@@ -16,6 +16,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from dingo.common.video_result_file import INLINE_RESULT_FORMAT, normalize_inline_result
+from dingo.common.video_task_protocol import (
+    ENVELOPE_KEY,
+    EXECUTION_CAPACITY_CAPABILITY,
+    PREFETCH_CAPABILITY,
+    WAIT_TERMINAL_CAPABILITY,
+    detached_envelope,
+)
 from dingo.video_gateway.adapters.base import VideoBackendAdapter
 from dingo.video_gateway.artifact_store import FileArtifactStore
 from dingo.video_gateway.config import GatewayConfig, PoolConfig
@@ -24,7 +32,15 @@ from dingo.video_gateway.dingo_adapter import (
     EndpointClient,
     create_context,
 )
-from dingo.video_gateway.errors import ResultTooLarge, StoreConflict, WorkerUnavailable, worker_execution_error
+from dingo.video_gateway.errors import (
+    HandoffReservationLost,
+    ResultTooLarge,
+    StoreConflict,
+    WorkerUnavailable,
+    worker_execution_error,
+)
+from dingo.video_gateway.file_io import run_file_io
+from dingo.video_gateway.finalization import ResultFinalizer
 from dingo.video_gateway.memory_budget import (
     MemoryBudgetSnapshot,
     WeightedMemoryBudget,
@@ -33,16 +49,19 @@ from dingo.video_gateway.models import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     StoredTask,
+    TaskError,
     TaskStatus,
     WorkerLease,
     now_ms,
 )
-from dingo.video_gateway.task_store import TaskStore, terminal_error, worker_key
-from dingo.video_gateway.telemetry import GatewayTelemetry
-from dingo.common.video_task_protocol import (
-    WAIT_TERMINAL_CAPABILITY,
-    detached_envelope,
+from dingo.video_gateway.result_handoff import HANDOFF_KEY, make_handoff, read_handoff
+from dingo.video_gateway.task_store import (
+    TaskStore,
+    retry_excludes_worker,
+    terminal_error,
+    worker_key,
 )
+from dingo.video_gateway.telemetry import GatewayTelemetry
 
 logger = logging.getLogger(__name__)
 _GATEWAY_OWNER_TTL_S = 15
@@ -131,6 +150,9 @@ class PoolRuntime:
     lease_cache: dict[str, WorkerLease] = field(default_factory=dict)
     lease_revision: int = 0
     lease_watch_healthy: bool = True
+    # Fixed per physical registration; failed probes are retried with backoff.
+    capacity_cache: dict[int, tuple[int, float]] = field(default_factory=dict)
+    prefetch_instances: set[int] = field(default_factory=set)
 
 
 class VideoDispatcher:
@@ -153,9 +175,16 @@ class VideoDispatcher:
         self.generation = generation or uuid.uuid4().hex
         self._worker_retry_once = os.getenv("DINGO_VIDEO_WORKER_RETRY_ONCE", "0") == "1"
         self._retry_budget_limit = int(os.getenv("DINGO_VIDEO_RETRY_BUDGET", "32"))
-        self._retry_wait_timeout_s = float(os.getenv("DINGO_VIDEO_RETRY_WAIT_TIMEOUT_S", "600"))
-        self._failed_instance_backoff_s = float(os.getenv("DINGO_VIDEO_RETRY_FAILED_INSTANCE_BACKOFF_S", "30"))
-        if not 1 <= self._retry_budget_limit <= 1024 or not 0 < self._retry_wait_timeout_s <= 86400:
+        self._retry_wait_timeout_s = float(
+            os.getenv("DINGO_VIDEO_RETRY_WAIT_TIMEOUT_S", "600")
+        )
+        self._failed_instance_backoff_s = float(
+            os.getenv("DINGO_VIDEO_RETRY_FAILED_INSTANCE_BACKOFF_S", "30")
+        )
+        if (
+            not 1 <= self._retry_budget_limit <= 1024
+            or not 0 < self._retry_wait_timeout_s <= 86400
+        ):
             raise ValueError("invalid retry budget or wait timeout")
         if not 0 <= self._failed_instance_backoff_s <= 86400:
             raise ValueError("invalid failed instance backoff")
@@ -172,6 +201,14 @@ class VideoDispatcher:
             for pool in config.pools
         }
         self.running_calls: dict[str, RunningCall] = {}
+        self._finalizing: dict[str, str] = {}
+        self._finalization_slots = {
+            pool.pool_id: asyncio.Semaphore(pool.scheduling.finalization_concurrency)
+            for pool in config.pools
+        }
+        self._finalizer = ResultFinalizer(
+            store, artifacts, config, self.telemetry, self.generation
+        )
         self.memory_budget = WeightedMemoryBudget(
             config.media.inflight_memory_budget_bytes
         )
@@ -327,6 +364,12 @@ class VideoDispatcher:
                     self._orphan_recovery_loop(), name="video-orphan-recovery"
                 )
             )
+        self._loops.append(
+            asyncio.create_task(
+                self._owned_finalization_recovery_loop(),
+                name="video-finalization-recovery",
+            )
+        )
         self._ready = True
 
     async def stop(self) -> None:
@@ -393,10 +436,65 @@ class VideoDispatcher:
 
     def has_workers(self, pool_id: str) -> bool:
         pool = self.pools[pool_id]
-        return bool(pool.instance_ids)
+        # Registration alone is not capacity; saturation still allows queuing.
+        return bool(self._worker_slots(pool))
 
     def pool_instances(self, pool_id: str) -> list[int]:
         return list(self.pools[pool_id].instance_ids)
+
+    def pool_capacity_snapshot(
+        self, pool_id: str, leases: list[WorkerLease]
+    ) -> dict[str, int]:
+        """Local discovery + shared leases, without per-Worker scrape RPCs.
+
+        Admission leases are NOT engine-running tasks. With prefetch enabled,
+        a lease can cover execution, Worker queuing or output writing. Slot
+        numbers are fungible and cannot identify the prefetch occupant.
+        """
+        pool = self.pools[pool_id]
+        slots = self._worker_slots(pool)
+        keys = {
+            worker_key(pool.config.backend_target, instance, slot)
+            for instance, slot in slots
+        }
+        registered = {str(i) for i in pool.instance_ids}
+        mapped = {
+            lease.worker_key: lease for lease in leases if lease.worker_key in keys
+        }
+        busy = sum(lease.state != "quarantined" for lease in mapped.values())
+        quarantined = len(mapped) - busy
+        physical_busy = {
+            str(lease.worker_instance_id)
+            for lease in leases
+            if str(lease.worker_instance_id) in registered
+            and lease.backend_target == pool.config.backend_target
+            and lease.state != "quarantined"
+        }
+        prefetch = sum(
+            instance in pool.prefetch_instances
+            for instance in {instance for instance, _ in slots}
+        )
+        healthy = pool.discovery_healthy and (
+            not self.store.lease_watch_supported or pool.lease_watch_healthy
+        )
+        return {
+            "workers": len(registered),
+            "worker_busy": len(physical_busy),
+            "worker_execution_capacity": len(slots) - prefetch,
+            "worker_prefetch_capacity": prefetch,
+            "worker_admission_capacity": len(slots),
+            "worker_slots_busy": busy,
+            "worker_slots_quarantined": quarantined,
+            "worker_slots_free": len(keys - mapped.keys()) if healthy else 0,
+            "worker_unmapped_leases": len(
+                {lease.worker_key for lease in leases} - keys
+            ),
+            "worker_capacity_view_healthy": int(healthy),
+        }
+
+    def pool_finalization_pending(self, pool_id: str) -> int:
+        """This Gateway's pending/running finalizers, not a shared pool total."""
+        return sum(p == pool_id for p in self._finalizing.values())
 
     async def pool_leases(self, pool_id: str) -> list[WorkerLease]:
         pool = self.pools[pool_id]
@@ -612,6 +710,140 @@ class VideoDispatcher:
             )
             pool.instance_ids = []
             pool.discovery_healthy = False
+        pool.capacity_cache = {
+            i: v for i, v in pool.capacity_cache.items() if i in pool.instance_ids
+        }
+        if hasattr(pool, "prefetch_instances"):
+            pool.prefetch_instances.intersection_update(pool.instance_ids)
+        if pool.config.scheduling.worker_capacity > 1 or getattr(
+            pool.config.scheduling, "worker_prefetch_capacity", 0
+        ):
+            semaphore = asyncio.Semaphore(8)
+
+            async def probe(instance: int) -> None:
+                if pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic():
+                    return
+                async with semaphore:
+                    pool.capacity_cache[instance] = await self._worker_capacity(
+                        pool, instance
+                    )
+
+            await asyncio.gather(*(probe(i) for i in pool.instance_ids))
+
+    async def _worker_capacity(
+        self, pool: PoolRuntime, instance: int
+    ) -> tuple[int, float]:
+        pool.prefetch_instances.discard(instance)
+        context = self.context_factory(
+            f"capacity-{uuid.uuid4().hex}", {"pool_id": pool.config.pool_id}
+        )
+
+        async def query() -> int:
+            stream = await pool.client.direct(
+                {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities"}},
+                instance,
+                context,
+            )
+            response = None
+            async for item in stream:
+                if hasattr(item, "is_error") and item.is_error():
+                    raise RuntimeError("Worker capability query failed")
+                value = item.data() if hasattr(item, "data") else item
+                if response is not None or not isinstance(value, dict):
+                    raise ValueError("invalid Worker capabilities response")
+                response = value
+            if (
+                response is None
+                or response.get("schema_version") != 1
+                or EXECUTION_CAPACITY_CAPABILITY not in response.get("capabilities", [])
+            ):
+                raise ValueError("Worker does not advertise execution capacity")
+            capacity = response.get("execution_capacity")
+            if (
+                isinstance(capacity, bool)
+                or not isinstance(capacity, int)
+                or capacity < 1
+            ):
+                raise ValueError("invalid Worker execution capacity")
+            if response.get("accepting") is not True:
+                return 0
+            effective = min(capacity, pool.config.scheduling.worker_capacity)
+            prefetch = getattr(pool.config.scheduling, "worker_prefetch_capacity", 0)
+            if (
+                prefetch
+                and capacity == pool.config.scheduling.worker_capacity
+                and PREFETCH_CAPABILITY in response.get("capabilities", [])
+            ):
+                advertised = response.get("prefetch_capacity")
+                admission = response.get("admission_capacity")
+                if (
+                    type(advertised) is not int
+                    or advertised not in {0, 1}
+                    or type(admission) is not int
+                    or admission != capacity + advertised
+                ):
+                    raise ValueError("invalid Worker prefetch capacity")
+                if advertised:
+                    pool.prefetch_instances.add(instance)
+                    effective += min(prefetch, advertised)
+            return effective
+
+        try:
+            capacity = await asyncio.wait_for(query(), timeout=2.0)
+            return capacity, float("inf") if capacity else time.monotonic() + 5.0
+        except Exception:
+            # Legacy Workers are still usable as single-slot instances. Never
+            # infer N slots from the configured ceiling or a failed RPC.
+            logger.warning("Worker %s capacity unavailable; using one slot", instance)
+            return 1, time.monotonic() + 30.0
+        finally:
+            context.stop_generating()
+
+    @staticmethod
+    def _worker_slots(pool: PoolRuntime) -> list[tuple[int, int]]:
+        ceiling = pool.config.scheduling.worker_capacity + getattr(
+            pool.config.scheduling, "worker_prefetch_capacity", 0
+        )
+        return [
+            (instance, slot)
+            for instance in pool.instance_ids
+            for slot in range(
+                1
+                if ceiling == 1
+                else min(ceiling, pool.capacity_cache.get(instance, (0, 0))[0])
+            )
+        ]
+
+    async def _detached_submit_ack(self, pool, task, submit, context, validate):
+        """Busy means not executed: retry admission, not the task attempt."""
+        while True:
+            if task.deadline_at_ms is not None and now_ms() >= task.deadline_at_ms:
+                raise asyncio.TimeoutError("Worker admission deadline exceeded")
+            stream = await pool.client.direct(
+                submit, int(task.worker_instance_id), context
+            )
+            response = None
+            async for item in stream:
+                if hasattr(item, "is_error") and item.is_error():
+                    comments = item.comments() if hasattr(item, "comments") else []
+                    raise RuntimeError(
+                        "; ".join(comments) or "detached Worker submit failed"
+                    )
+                value = item.data() if hasattr(item, "data") else item
+                if response is not None or not isinstance(value, dict):
+                    raise RuntimeError("invalid detached Worker acknowledgement")
+                response = validate(value)
+            if response is None:
+                raise RuntimeError("detached Worker returned no acknowledgement")
+            if response.get("state") != "busy":
+                return response
+            if response.get("accepted") is not False:
+                raise RuntimeError("busy Worker incorrectly acknowledged execution")
+            self.telemetry.increment(
+                "dingo_video_worker_admission_busy_total",
+                labels={"pool": pool.config.pool_id},
+            )
+            await asyncio.sleep(0.25)
 
     def _record_discovery_match(
         self,
@@ -623,7 +855,8 @@ class VideoDispatcher:
         stale = runtime_ids - truth_ids
         labels = {"pool": pool.config.pool_id}
         self.telemetry.set_gauge(
-            "dingo_video_discovery_consistent", 0 if missing or stale else 1,
+            "dingo_video_discovery_consistent",
+            0 if missing or stale else 1,
             labels=labels,
         )
         self.telemetry.set_gauge(
@@ -706,9 +939,7 @@ class VideoDispatcher:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.telemetry.increment(
-                    "dingo_video_discovery_watchdog_errors_total"
-                )
+                self.telemetry.increment("dingo_video_discovery_watchdog_errors_total")
                 logger.exception("Dynamo discovery watchdog check failed")
             remaining = watchdog.interval_s - (time.monotonic() - started)
             if remaining <= 0:
@@ -834,16 +1065,66 @@ class VideoDispatcher:
                 await self.store.release_lease(pool.config.pool_id, lease.worker_key)
 
     async def _dispatch_once(self, pool: PoolRuntime) -> bool:
+        if (
+            sum(
+                p == pool.config.pool_id
+                for p in getattr(self, "_finalizing", {}).values()
+            )
+            >= pool.config.scheduling.finalization_pending_limit
+        ):
+            await self._clear_budget_waiter(pool)
+            return False
+        # A healthy lease view can prove that no instance is usable without
+        # reading queue indexes, task bodies, or shared retry counters. Keep
+        # the later checks and reserve CAS: availability can change while the
+        # awaited queue reads are in flight.
+        skip_reason = None
+        if not pool.instance_ids:
+            skip_reason = "no_workers"
+        elif self.store.lease_watch_supported and not pool.lease_watch_healthy:
+            skip_reason = "lease_watch_unhealthy"
+        else:
+            occupied = {
+                lease.worker_key
+                for lease in await self.pool_leases(pool.config.pool_id)
+            }
+            if all(
+                worker_key(pool.config.backend_target, instance, slot) in occupied
+                for instance, slot in self._worker_slots(pool)
+            ):
+                skip_reason = "no_free_worker"
+        if skip_reason is not None:
+            await self._clear_budget_waiter(pool)
+            self.telemetry.increment(
+                "dingo_video_dispatch_skips_total",
+                labels={"pool": pool.config.pool_id, "reason": skip_reason},
+            )
+            return False
         ledger = hasattr(self.store, "retry_budget_used")
         budget_limit = getattr(self, "_retry_budget_limit", 32)
-        queued = await self.store.list_queued(pool.config.pool_id, limit=min(10000, pool.config.scheduling.queue_limit + budget_limit))
+        queued = await self.store.list_queued(
+            pool.config.pool_id,
+            limit=min(10000, pool.config.scheduling.queue_limit + budget_limit),
+        )
         used = 0
         if ledger:
             waiting = await self.store.retry_queue_depth(pool.config.pool_id)
             used = await self.store.retry_budget_used(pool.config.pool_id)
-            self.telemetry.set_gauge("dingo_video_retry_waiting_tasks", waiting, labels={"pool": pool.config.pool_id})
-            self.telemetry.set_gauge("dingo_video_retry_credits_used", used, labels={"pool": pool.config.pool_id})
-            self.telemetry.set_gauge("dingo_video_normal_queue_depth", max(0, await self.store.queue_depth(pool.config.pool_id) - waiting), labels={"pool": pool.config.pool_id})
+            self.telemetry.set_gauge(
+                "dingo_video_retry_waiting_tasks",
+                waiting,
+                labels={"pool": pool.config.pool_id},
+            )
+            self.telemetry.set_gauge(
+                "dingo_video_retry_credits_used",
+                used,
+                labels={"pool": pool.config.pool_id},
+            )
+            self.telemetry.set_gauge(
+                "dingo_video_normal_queue_depth",
+                max(0, await self.store.queue_depth(pool.config.pool_id) - waiting),
+                labels={"pool": pool.config.pool_id},
+            )
         if not queued or not pool.instance_ids:
             await self._clear_budget_waiter(pool)
             return False
@@ -858,15 +1139,26 @@ class VideoDispatcher:
         # Retry first, but do not let a retry that excludes the only available
         # instance block unrelated runnable work behind it.
         for candidate in sorted(queued, key=lambda item: item.task.attempt == 0):
-            if candidate.task.id in self.running_calls or candidate.task.expires_at_ms <= now_ms():
+            if (
+                candidate.task.id in self.running_calls
+                or candidate.task.expires_at_ms <= now_ms()
+            ):
                 continue
-            if (ledger and getattr(self, "_worker_retry_once", False)
-                    and candidate.task.attempt == 0 and used >= budget_limit):
+            if (
+                ledger
+                and getattr(self, "_worker_retry_once", False)
+                and candidate.task.attempt == 0
+                and used >= budget_limit
+            ):
                 continue
-            available = [instance for instance in pool.instance_ids
-                         if worker_key(pool.config.backend_target, instance) not in leased
-                         and not (candidate.task.attempt > 0
-                                  and worker_key(pool.config.backend_target, instance) == candidate.task.worker_key)]
+            available = [
+                (instance, slot)
+                for instance, slot in self._worker_slots(pool)
+                if worker_key(pool.config.backend_target, instance, slot) not in leased
+                and not retry_excludes_worker(
+                    candidate.task, pool.config.backend_target, instance
+                )
+            ]
             if available:
                 selected = candidate
                 break
@@ -890,9 +1182,9 @@ class VideoDispatcher:
             await self.memory_budget.release(task_id)
             return False
         index = pool.cursor % len(available)
-        instance_id = available[index]
+        instance_id, slot_id = available[index]
         pool.cursor = (index + 1) % len(available)
-        key = worker_key(pool.config.backend_target, instance_id)
+        key = worker_key(pool.config.backend_target, instance_id, slot_id)
         lease = WorkerLease(
             pool_id=pool.config.pool_id,
             worker_key=key,
@@ -907,9 +1199,15 @@ class VideoDispatcher:
         )
         deadline = now_ms() + int(pool.config.scheduling.execution_timeout_s * 1000)
         try:
-            retry_options = ({"reserve_retry": getattr(self, "_worker_retry_once", False)
-                              and pool.config.execution_mode == "detached", "retry_limit": budget_limit}
-                             if ledger else {})
+            retry_options = (
+                {
+                    "reserve_retry": getattr(self, "_worker_retry_once", False)
+                    and pool.config.execution_mode == "detached",
+                    "retry_limit": budget_limit,
+                }
+                if ledger
+                else {}
+            )
             reserved = await self.store.reserve(
                 queued[0], lease, deadline_at_ms=deadline, **retry_options
             )
@@ -980,9 +1278,7 @@ class VideoDispatcher:
         cancellation_task = (
             asyncio.create_task(cancellation) if cancellation is not None else None
         )
-        liveness_task = (
-            asyncio.create_task(liveness) if liveness is not None else None
-        )
+        liveness_task = asyncio.create_task(liveness) if liveness is not None else None
         try:
             monitored = {operation_task, heartbeat}
             if cancellation_task is not None:
@@ -1011,7 +1307,8 @@ class VideoDispatcher:
         finally:
             children = [operation_task]
             children.extend(
-                monitor for monitor in (cancellation_task, liveness_task)
+                monitor
+                for monitor in (cancellation_task, liveness_task)
                 if monitor is not None
             )
             for child in children:
@@ -1051,20 +1348,29 @@ class VideoDispatcher:
                     return False
                 current = await self._current_owned_execution(task)
                 if current is None:
-                    raise _TaskOwnershipLost("task ownership moved during Worker liveness check")
-                if (current.task.status != TaskStatus.IN_PROGRESS
-                        or current.task.cancel_requested_at_ms is not None):
+                    raise _TaskOwnershipLost(
+                        "task ownership moved during Worker liveness check"
+                    )
+                if (
+                    current.task.status != TaskStatus.IN_PROGRESS
+                    or current.task.cancel_requested_at_ms is not None
+                ):
                     return False
                 status = await self.artifacts.read_detached_status(
-                    task.deployment_id, task.pool_id, task.id, task.attempt,
+                    task.deployment_id,
+                    task.pool_id,
+                    task.id,
+                    task.attempt,
                     task.execution_token,
                 )
                 if status is None or status.get("state") not in {"accepted", "running"}:
                     return False
                 updated_at_ms = status.get("updated_at_ms")
-                if (not isinstance(updated_at_ms, int)
-                        or isinstance(updated_at_ms, bool)
-                        or now_ms() - updated_at_ms <= int(_DETACHED_WORKER_STALE_S * 1000)):
+                if (
+                    not isinstance(updated_at_ms, int)
+                    or isinstance(updated_at_ms, bool)
+                    or now_ms() - updated_at_ms <= int(_DETACHED_WORKER_STALE_S * 1000)
+                ):
                     return False
                 return self._can_check_missing_worker(pool, task)
             except _TaskOwnershipLost:
@@ -1076,7 +1382,11 @@ class VideoDispatcher:
                     "dingo_video_worker_liveness_checks_total",
                     labels={"pool": pool.config.pool_id, "outcome": "inconclusive"},
                 )
-                logger.debug("Worker liveness evidence unavailable for %s", task.id, exc_info=True)
+                logger.debug(
+                    "Worker liveness evidence unavailable for %s",
+                    task.id,
+                    exc_info=True,
+                )
                 return False
 
     async def _monitor_worker_liveness(
@@ -1131,9 +1441,7 @@ class VideoDispatcher:
             if remaining_s <= 0:
                 raise _CancellationConfirmationTimedOut(expected.id)
             try:
-                await asyncio.wait_for(
-                    running.task_changed.wait(), timeout=remaining_s
-                )
+                await asyncio.wait_for(running.task_changed.wait(), timeout=remaining_s)
             except asyncio.TimeoutError as exc:
                 raise _CancellationConfirmationTimedOut(expected.id) from exc
 
@@ -1197,18 +1505,16 @@ class VideoDispatcher:
             if initial_worker_status is None:
                 manifest = await self.artifacts.read_json(task.input_manifest_path)
                 payload_build_started = time.monotonic()
-                payload = await asyncio.to_thread(
+                payload = await run_file_io(
                     pool.adapter.build_worker_payload,
                     normalized,
                     manifest,
-                    self.artifacts.task_root(
+                    await self.artifacts.resolve_task_root(
                         task.deployment_id, task.pool_id, task.id
                     ),
                 )
                 self._payload_build_count += 1
-                self._payload_build_seconds += (
-                    time.monotonic() - payload_build_started
-                )
+                self._payload_build_seconds += time.monotonic() - payload_build_started
             self._raise_if_heartbeat_stopped(heartbeat)
             if stored.task.status == TaskStatus.DISPATCHING:
                 before = stored
@@ -1221,9 +1527,7 @@ class VideoDispatcher:
                         "started_at_ms": stored.task.started_at_ms or now_ms(),
                         "queue_wait_s": stored.task.queue_wait_s
                         if stored.task.queue_wait_s is not None
-                        else max(
-                            0.0, (now_ms() - task.queued_at_ms) / 1000.0
-                        ),
+                        else max(0.0, (now_ms() - task.queued_at_ms) / 1000.0),
                     },
                 )
                 self.telemetry.record_transition(
@@ -1350,19 +1654,36 @@ class VideoDispatcher:
             result = response_consumer.finish()
             response_consumer = None
             encoded_result = result.b64_json
+            binary_artifact = result.artifact
+            if binary_artifact is not None and not detached:
+                raise RuntimeError(
+                    "binary artifact references require detached execution"
+                )
             inference_time_s = result.inference_time_s
             stage_durations = dict(result.stage_durations or {})
             result = None
             self._legacy_output_encoded_bytes += len(encoded_result)
             if len(encoded_result) > self.config.media.max_result_encoded_bytes:
                 self._result_oversize_count += 1
-                raise ResultTooLarge(
-                    "Worker base64 result exceeds configured maximum"
-                )
+                raise ResultTooLarge("Worker base64 result exceeds configured maximum")
             if inference_time_s is not None:
                 self.telemetry.record_stage_duration(
                     task.pool_id, "execution", inference_time_s
                 )
+            if (
+                detached
+                and binary_artifact is not None
+                and pool.config.scheduling.early_release_slot
+                and latest.task.status == TaskStatus.IN_PROGRESS
+            ):
+                handed_off = await self._commit_result_handoff(
+                    pool, task, binary_artifact, inference_time_s, stage_durations
+                )
+                if handed_off is not None:
+                    self.running_calls.pop(task.id, None)
+                    pool.wakeup.set()
+                    await self._run_result_finalizer(pool, handed_off)
+                return
             if latest.task.status == TaskStatus.IN_PROGRESS:
                 finalizing = await self.store.transition(
                     task.id,
@@ -1391,9 +1712,34 @@ class VideoDispatcher:
                 (stored.task.execution_token or "legacy").encode()
             ).hexdigest()[:16]
             try:
-                final_path, size, sha256, media = (
-                    await self.artifacts.finalize_b64_mp4(
-                        self.artifacts.task_root(
+                if binary_artifact is not None:
+                    (
+                        final_path,
+                        size,
+                        sha256,
+                        media,
+                    ) = await self.artifacts.finalize_worker_mp4(
+                        task.deployment_id,
+                        task.pool_id,
+                        task.id,
+                        task.attempt,
+                        task.execution_token,
+                        binary_artifact,
+                        normalized,
+                        pool.adapter.validate_artifact,
+                        pool.adapter.prepare_artifact,
+                        pool.adapter.artifact_requires_processing,
+                        inspector=pool.adapter.inspect_artifact_for_publication,
+                        max_result_bytes=self.config.media.max_result_bytes,
+                    )
+                else:
+                    (
+                        final_path,
+                        size,
+                        sha256,
+                        media,
+                    ) = await self.artifacts.finalize_b64_mp4(
+                        await self.artifacts.resolve_task_root(
                             task.deployment_id, task.pool_id, task.id
                         ),
                         encoded_result,
@@ -1403,7 +1749,6 @@ class VideoDispatcher:
                         max_result_bytes=self.config.media.max_result_bytes,
                         publication_scope=f"a{stored.task.attempt}-{token_digest}",
                     )
-                )
             finally:
                 # Decoding/validation has either published a file candidate or
                 # failed.  No later state transition needs the Base64 string.
@@ -1418,12 +1763,12 @@ class VideoDispatcher:
             if latest is None:
                 raise RuntimeError("task disappeared during finalization")
             if latest.task.status in TERMINAL_STATUSES:
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
                 return
             self._require_execution_owner(latest.task, task)
             if latest.task.cancel_requested_at_ms is not None:
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
                 await self._finish_cancelled(pool, latest, quarantine=False)
                 return
@@ -1451,7 +1796,7 @@ class VideoDispatcher:
             except StoreConflict:
                 # Another owner may have published a different immutable
                 # candidate. Delete only this Gateway's candidate.
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
                 current = await self.store.get_task(task.id)
                 if current is not None and current.task.status in TERMINAL_STATUSES:
@@ -1471,7 +1816,7 @@ class VideoDispatcher:
             )
         except _TaskOwnershipLost:
             if final_path is not None:
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
             logger.info(
                 "Gateway relinquished task %s after execution ownership moved",
@@ -1516,9 +1861,7 @@ class VideoDispatcher:
         except _WorkerLeaseLost as exc:
             if await self._current_owned_execution(task) is None:
                 return
-            worker_accepted = (
-                running_call is not None and running_call.worker_accepted
-            )
+            worker_accepted = running_call is not None and running_call.worker_accepted
             if detached and task.execution_token is not None and worker_accepted:
                 try:
                     await self._request_detached_cancel(task)
@@ -1556,7 +1899,7 @@ class VideoDispatcher:
                 await self._finish_cancelled(pool, latest, quarantine=True)
         except ResultTooLarge as exc:
             if final_path is not None:
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
             if await self._current_owned_execution(task) is None:
                 return
@@ -1571,7 +1914,7 @@ class VideoDispatcher:
             )
         except Exception as exc:
             if final_path is not None:
-                await asyncio.to_thread(final_path.unlink, True)
+                await run_file_io(final_path.unlink, True)
                 final_path = None
             current = await self._current_owned_execution(task)
             if current is None:
@@ -1635,6 +1978,7 @@ class VideoDispatcher:
             result = None
             encoded_result = None
             released_budget = await self.memory_budget.release(task.id)
+            self._finalizing.pop(task.id, None)
             self.running_calls.pop(task.id, None)
             if heartbeat is not None:
                 heartbeat.cancel()
@@ -1655,6 +1999,171 @@ class VideoDispatcher:
             task.attempt,
             task.execution_token,
         )
+
+    async def _commit_result_handoff(
+        self, pool, expected, artifact, inference_time_s, stage_durations
+    ):
+        """Retry ambiguous storage responses by reading the durable task first."""
+        reservation_lost = False
+        while not self._stop.is_set():
+            try:
+                latest = await self.store.get_task(expected.id)
+                if latest is None or latest.task.status in TERMINAL_STATUSES:
+                    return None
+                self._require_execution_owner(latest.task, expected)
+                if (
+                    latest.task.status == TaskStatus.FINALIZING
+                    and read_handoff(latest.task) is not None
+                ):
+                    return latest
+                if reservation_lost:
+                    # A definite fencing failure is not transient CAS contention.
+                    # End only our task, never cancel/release/quarantine the new
+                    # occupant of the historical Worker slot.
+                    await self.store.transition(
+                        expected.id,
+                        expected={TaskStatus.IN_PROGRESS},
+                        expected_revision=latest.revision,
+                        release_lease=False,
+                        patch={
+                            "status": TaskStatus.FAILED,
+                            "error": TaskError(
+                                "result_handoff_lost_reservation",
+                                "execution reservation changed before result handoff",
+                            ),
+                            "completed_at_ms": now_ms(),
+                            "expires_at_ms": now_ms()
+                            + int(self.config.lifecycle.failed_ttl_s * 1000),
+                        },
+                    )
+                    return None
+                if latest.task.cancel_requested_at_ms is not None:
+                    await self._finish_cancelled(pool, latest, quarantine=False)
+                    return None
+                reference = make_handoff(
+                    latest.task,
+                    artifact,
+                    timeout_s=pool.config.scheduling.finalization_timeout_s,
+                )
+                result = await self.store.transition(
+                    expected.id,
+                    expected={TaskStatus.IN_PROGRESS},
+                    expected_revision=latest.revision,
+                    release_lease=True,
+                    release_execution=True,
+                    patch={
+                        "status": TaskStatus.FINALIZING,
+                        "worker_lease_id": None,
+                        "normalized_request": {
+                            **latest.task.normalized_request,
+                            HANDOFF_KEY: reference,
+                        },
+                        "inference_time_s": inference_time_s,
+                        "stage_durations": stage_durations,
+                    },
+                )
+                self.telemetry.record_transition(
+                    "result_handoff",
+                    latest.task,
+                    result.task,
+                    gateway_generation=self.generation,
+                    revision=result.revision,
+                )
+                return result
+            except HandoffReservationLost:
+                reservation_lost = True
+            except (_TaskOwnershipLost, ValueError):
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Includes a lost transaction response. Never discard the source
+                # or call the Worker again while the outcome is uncertain.
+                logger.warning(
+                    "result handoff awaiting storage for task %s",
+                    expected.id,
+                    exc_info=True,
+                )
+                await asyncio.sleep(0.2)
+        raise asyncio.CancelledError
+
+    async def _run_result_finalizer(self, pool, stored):
+        self._finalizing[stored.task.id] = pool.config.pool_id
+        try:
+            async with self._finalization_slots[pool.config.pool_id]:
+                await self._finalizer.run(stored, pool)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep the durable handoff for our live-owner recovery loop or HA
+            # takeover. Do not route storage failures through model retry/cancel.
+            logger.exception("postprocessing suspended for task %s", stored.task.id)
+
+    async def _resume_result_finalizer(self, pool, stored):
+        try:
+            await self._run_result_finalizer(pool, stored)
+        finally:
+            await self.memory_budget.release(stored.task.id)
+            self._finalizing.pop(stored.task.id, None)
+            pool.wakeup.set()
+
+    async def _schedule_result_finalizer(self, pool, stored):
+        if stored.task.id in self._finalizing or stored.task.id in self.running_calls:
+            return
+        if (
+            sum(p == pool.config.pool_id for p in self._finalizing.values())
+            >= pool.config.scheduling.finalization_pending_limit
+        ):
+            return
+        # Reserve before the first await: owner recovery and the live-owner
+        # scanner can otherwise start two finalizers sharing one allocation.
+        self._finalizing[stored.task.id] = pool.config.pool_id
+        scheduled = False
+        try:
+            if not await self.memory_budget.try_acquire(
+                stored.task.id, self.config.media.result_task_memory_bytes
+            ):
+                return
+            execution = asyncio.create_task(
+                self._resume_result_finalizer(pool, stored),
+                name=f"video-finalizing-{stored.task.id}",
+            )
+            scheduled = True
+        finally:
+            if not scheduled:
+                await self.memory_budget.release(stored.task.id)
+                self._finalizing.pop(stored.task.id, None)
+        self._executions.add(execution)
+        execution.add_done_callback(self._execution_done)
+
+    async def _owned_finalization_recovery_loop(self):
+        while not self._stop.is_set():
+            try:
+                after = None
+                while not self._stop.is_set():
+                    page = await self.store.list_tasks(
+                        status=TaskStatus.FINALIZING, after=after, limit=256
+                    )
+                    if not page:
+                        break
+                    for stored in page:
+                        if (
+                            stored.task.owner_generation != self.generation
+                            or read_handoff(stored.task) is None
+                        ):
+                            continue
+                        pool = self.pools.get(stored.task.pool_id)
+                        if pool is not None:
+                            await self._schedule_result_finalizer(pool, stored)
+                    after = page[-1].task.id
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("owned finalization recovery failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
 
     async def _consume_detached_worker(
         self,
@@ -1719,6 +2228,38 @@ class VideoDispatcher:
             worker_status = _validate_identity(value)
             state = worker_status.get("state")
             if state == "completed":
+                queue_wait = worker_status.get("worker_queue_wait_s")
+                if (
+                    isinstance(queue_wait, (int, float))
+                    and not isinstance(queue_wait, bool)
+                    and 0 <= queue_wait <= 86400
+                ):
+                    self.telemetry.record_stage_duration(
+                        task.pool_id, "worker_queue", queue_wait
+                    )
+                if "result_format" in worker_status or "inline_result" in worker_status:
+                    if worker_status.get(
+                        "result_format"
+                    ) != INLINE_RESULT_FORMAT or any(
+                        key in worker_status
+                        for key in (
+                            "response_path",
+                            "response_bytes",
+                            "response_sha256",
+                        )
+                    ):
+                        raise _DetachedWaitProtocolError(
+                            "unsupported or ambiguous inline Worker result"
+                        )
+                    response_consumer.consume(
+                        normalize_inline_result(worker_status.get("inline_result"))
+                    )
+                    self.telemetry.increment(
+                        "dingo_video_detached_inline_results_total",
+                        labels={"pool": task.pool_id},
+                    )
+                    running_call.worker_accepted = False
+                    return True
                 response_sha256 = worker_status.get("response_sha256")
                 response_bytes = worker_status.get("response_bytes")
                 if (
@@ -1730,9 +2271,7 @@ class VideoDispatcher:
                     or response_bytes
                     > self.config.media.max_result_encoded_bytes + 1024 * 1024
                 ):
-                    raise RuntimeError(
-                        "detached Worker completed metadata is invalid"
-                    )
+                    raise RuntimeError("detached Worker completed metadata is invalid")
                 consumed = await self.artifacts.consume_detached_response(
                     task.deployment_id,
                     task.pool_id,
@@ -1762,8 +2301,7 @@ class VideoDispatcher:
             if (
                 state in {"accepted", "running"}
                 and isinstance(updated_at_ms, int)
-                and now_ms() - updated_at_ms
-                > int(_DETACHED_WORKER_STALE_S * 1000)
+                and now_ms() - updated_at_ms > int(_DETACHED_WORKER_STALE_S * 1000)
                 and await self._confirm_worker_loss(pool, task)
             ):
                 raise _RetryableWorkerFailure(
@@ -1789,12 +2327,9 @@ class VideoDispatcher:
                 count = 0
                 async for item in stream:
                     if hasattr(item, "is_error") and item.is_error():
-                        comments = (
-                            item.comments() if hasattr(item, "comments") else []
-                        )
+                        comments = item.comments() if hasattr(item, "comments") else []
                         raise _DetachedWaitUnavailable(
-                            "; ".join(comments)
-                            or "detached Worker wait request failed"
+                            "; ".join(comments) or "detached Worker wait request failed"
                         )
                     value = _validate_identity(
                         item.data() if hasattr(item, "data") else item
@@ -1858,9 +2393,7 @@ class VideoDispatcher:
                         "dingo_video_detached_wait_connections_total",
                         labels={"pool": task.pool_id, "outcome": "attached"},
                     )
-                    remaining_s = (
-                        (task.deadline_at_ms or 0) - now_ms()
-                    ) / 1000.0
+                    remaining_s = ((task.deadline_at_ms or 0) - now_ms()) / 1000.0
                     if remaining_s <= 0:
                         raise asyncio.TimeoutError
                     return await asyncio.wait_for(wait_task, timeout=remaining_s)
@@ -1887,29 +2420,20 @@ class VideoDispatcher:
                 attempt=task.attempt,
                 execution_token=task.execution_token,
                 payload=payload,
+                deadline_at_ms=(
+                    task.deadline_at_ms
+                    if task.worker_instance_id in pool.prefetch_instances
+                    else None
+                ),
             )
-            stream = await pool.client.direct(
-                submit, int(task.worker_instance_id), context
+            acknowledgement = await asyncio.wait_for(
+                self._detached_submit_ack(
+                    pool, task, submit, context, _validate_identity
+                ),
+                timeout=max(
+                    0.0, ((task.deadline_at_ms or now_ms()) - now_ms()) / 1000.0
+                ),
             )
-            acknowledgements: list[dict[str, Any]] = []
-            async for item in stream:
-                if hasattr(item, "is_error") and item.is_error():
-                    comments = item.comments() if hasattr(item, "comments") else []
-                    raise RuntimeError(
-                        "; ".join(comments) or "detached Worker submit failed"
-                    )
-                value = item.data() if hasattr(item, "data") else item
-                if not isinstance(value, dict):
-                    raise RuntimeError("detached Worker acknowledgement is invalid")
-                acknowledgements.append(value)
-                if len(acknowledgements) > 1:
-                    raise RuntimeError(
-                        "detached Worker returned multiple acknowledgements"
-                    )
-            if len(acknowledgements) != 1:
-                raise RuntimeError("detached Worker returned no acknowledgement")
-            acknowledgement = acknowledgements[0]
-            acknowledgement = _validate_identity(acknowledgement)
             if acknowledgement.get("state") not in {
                 "accepted",
                 "running",
@@ -1922,9 +2446,7 @@ class VideoDispatcher:
             # The direct response stream is exhausted and the Worker has
             # durably accepted this detached execution.  Drop the envelope and
             # its Base64 references before entering the long status-poll loop.
-            acknowledgements.clear()
             del acknowledgement
-            del stream
             del submit
         else:
             running_call.worker_accepted = worker_status.get("state") in {
@@ -1966,9 +2488,7 @@ class VideoDispatcher:
                         labels={"pool": task.pool_id, "outcome": "unavailable"},
                     )
                     next_wait_retry = time.monotonic() + retry_delay_s
-                    retry_delay_s = min(
-                        retry_delay_s * 2.0, _DETACHED_WAIT_RETRY_MAX_S
-                    )
+                    retry_delay_s = min(retry_delay_s * 2.0, _DETACHED_WAIT_RETRY_MAX_S)
 
             worker_status = await _status()
             self.telemetry.increment(
@@ -1984,9 +2504,7 @@ class VideoDispatcher:
                 raise asyncio.TimeoutError
             sleep_s = min(_DETACHED_STATUS_FALLBACK_S, remaining_ms / 1000.0)
             if supports_wait:
-                sleep_s = min(
-                    sleep_s, max(0.0, next_wait_retry - time.monotonic())
-                )
+                sleep_s = min(sleep_s, max(0.0, next_wait_retry - time.monotonic()))
             if sleep_s > 0:
                 await asyncio.sleep(sleep_s)
 
@@ -2065,42 +2583,66 @@ class VideoDispatcher:
             revision=cancelled.revision,
         )
 
-    async def _try_worker_retry(self, pool: PoolRuntime, stored: StoredTask, *, quarantine: bool) -> bool:
+    async def _try_worker_retry(
+        self, pool: PoolRuntime, stored: StoredTask, *, quarantine: bool
+    ) -> bool:
         task = stored.task
-        if (not getattr(self, "_worker_retry_once", False)
-                or pool.config.execution_mode != "detached"
-                or task.attempt != 1
-                or task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
-                or task.cancel_requested_at_ms is not None
-                or task.owner_generation != self.generation
-                or not hasattr(self.store, "retry_budget_used")):
+        if (
+            not getattr(self, "_worker_retry_once", False)
+            or pool.config.execution_mode != "detached"
+            or task.attempt != 1
+            or task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
+            or task.cancel_requested_at_ms is not None
+            or task.owner_generation != self.generation
+            or not hasattr(self.store, "retry_budget_used")
+        ):
             return False
         retry = None
         for _ in range(16):
             try:
                 retry = await self.store.requeue_failed_attempt(
-                    stored, queue_limit=pool.config.scheduling.queue_limit,
+                    stored,
+                    queue_limit=pool.config.scheduling.queue_limit,
                     retry_wait_timeout_s=getattr(self, "_retry_wait_timeout_s", 600),
-                    quarantine_until_ms=(max(task.deadline_at_ms or now_ms(), now_ms())
-                                         + int(pool.config.scheduling.abort_grace_s * 1000)) if quarantine
-                    else now_ms() + int(getattr(self, "_failed_instance_backoff_s", 30) * 1000),
+                    quarantine_until_ms=(
+                        max(task.deadline_at_ms or now_ms(), now_ms())
+                        + int(pool.config.scheduling.abort_grace_s * 1000)
+                    )
+                    if quarantine
+                    else now_ms()
+                    + int(getattr(self, "_failed_instance_backoff_s", 30) * 1000),
                 )
                 break
             except StoreConflict:
                 current = await self.store.get_task(task.id)
-                if (current is None or current.task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
-                        or not self._same_execution_owner(current.task, task)
-                        or current.task.cancel_requested_at_ms is not None):
+                if (
+                    current is None
+                    or current.task.status
+                    not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
+                    or not self._same_execution_owner(current.task, task)
+                    or current.task.cancel_requested_at_ms is not None
+                ):
                     return False
                 stored = current
                 await asyncio.sleep(0.01)
         if retry is None:
             return False
-        self.telemetry.increment("dingo_video_worker_retries_total", labels={"pool": task.pool_id})
-        self.telemetry.record_transition("worker_retry_queued", task, retry.task,
-                                         gateway_generation=self.generation, revision=retry.revision)
-        logger.warning("queued one Worker retry for task %s after attempt %s; excluding instance %s",
-                       task.id, task.attempt, task.worker_instance_id)
+        self.telemetry.increment(
+            "dingo_video_worker_retries_total", labels={"pool": task.pool_id}
+        )
+        self.telemetry.record_transition(
+            "worker_retry_queued",
+            task,
+            retry.task,
+            gateway_generation=self.generation,
+            revision=retry.revision,
+        )
+        logger.warning(
+            "queued one Worker retry for task %s after attempt %s; excluding instance %s",
+            task.id,
+            task.attempt,
+            task.worker_instance_id,
+        )
         pool.wakeup.set()
         return True
 
@@ -2118,7 +2660,9 @@ class VideoDispatcher:
         latest = await self.store.get_task(task_id)
         if latest is None or latest.task.status in TERMINAL_STATUSES:
             return
-        if expected_execution is not None and not self._same_execution_owner(latest.task, expected_execution):
+        if expected_execution is not None and not self._same_execution_owner(
+            latest.task, expected_execution
+        ):
             return
         if retryable and latest.task.cancel_requested_at_ms is None:
             previous = latest
@@ -2130,8 +2674,11 @@ class VideoDispatcher:
                 # before falling back; never fail an already requeued attempt.
                 logger.exception("Worker retry decision failed for task %s", task_id)
             latest = await self.store.get_task(task_id)
-            if (latest is None or latest.task.status in TERMINAL_STATUSES
-                    or not self._same_execution_owner(latest.task, previous.task)):
+            if (
+                latest is None
+                or latest.task.status in TERMINAL_STATUSES
+                or not self._same_execution_owner(latest.task, previous.task)
+            ):
                 return
         if latest.task.cancel_requested_at_ms is not None:
             try:
@@ -2207,9 +2754,7 @@ class VideoDispatcher:
                                     "status": TaskStatus.FAILED,
                                     "completed_at_ms": now_ms(),
                                     "expires_at_ms": now_ms()
-                                    + int(
-                                        self.config.lifecycle.failed_ttl_s * 1000
-                                    ),
+                                    + int(self.config.lifecycle.failed_ttl_s * 1000),
                                     "error": terminal_error(
                                         "configuration_changed",
                                         "task pool configuration changed before dispatch",
@@ -2249,6 +2794,18 @@ class VideoDispatcher:
     async def _recover_orphaned_active(self, stored: StoredTask) -> None:
         task = stored.task
         pool = self.pools.get(task.pool_id)
+        if task.status == TaskStatus.FINALIZING and read_handoff(task) is not None:
+            if pool is None:
+                return
+            if task.owner_generation == self.generation:
+                await self._schedule_result_finalizer(pool, stored)
+            elif self.store.gateway_owner_supported:
+                claimed = await self.store.claim_finalizing(
+                    stored, new_owner_generation=self.generation
+                )
+                if claimed is not None:
+                    await self._schedule_result_finalizer(pool, claimed)
+            return
         if (
             self.store.gateway_owner_supported
             and pool is not None
@@ -2258,8 +2815,7 @@ class VideoDispatcher:
             and task.worker_instance_id is not None
         ):
             weight_bytes = (
-                task.estimated_payload_bytes
-                or self.config.media.max_task_memory_bytes
+                task.estimated_payload_bytes or self.config.media.max_task_memory_bytes
             )
             if not await self.memory_budget.try_acquire(task.id, weight_bytes):
                 return
@@ -2345,11 +2901,7 @@ class VideoDispatcher:
                 release_lease=True,
                 quarantine_until_ms=max(task.deadline_at_ms or now_ms(), now_ms())
                 + int(
-                    (
-                        pool.config.scheduling.abort_grace_s
-                        if pool is not None
-                        else 30.0
-                    )
+                    (pool.config.scheduling.abort_grace_s if pool is not None else 30.0)
                     * 1000
                 ),
             )
@@ -2432,7 +2984,7 @@ class VideoDispatcher:
             return stored
         if task.artifact_deleted_at_ms is not None:
             return stored
-        task_root = self.artifacts.task_root(
+        task_root = await self.artifacts.resolve_task_root(
             task.deployment_id, task.pool_id, task.id
         )
         self._artifact_released_bytes += await self.artifacts.discard(task_root)
@@ -2475,7 +3027,10 @@ class VideoDispatcher:
                     candidate,
                     dry_run=self.config.lifecycle.orphan_cleanup_dry_run,
                 )
-                if moved is not None and not self.config.lifecycle.orphan_cleanup_dry_run:
+                if (
+                    moved is not None
+                    and not self.config.lifecycle.orphan_cleanup_dry_run
+                ):
                     self._orphan_trashed_total += 1
             except Exception:
                 self._artifact_cleanup_failures += 1
@@ -2519,8 +3074,12 @@ class VideoDispatcher:
                             "expires_at_ms": current
                             + int(self.config.lifecycle.failed_ttl_s * 1000),
                             "error": terminal_error(
-                                "retry_wait_timeout" if task.attempt > 0 else "queue_timeout",
-                                "video retry wait expired" if task.attempt > 0 else "video task expired while queued"
+                                "retry_wait_timeout"
+                                if task.attempt > 0
+                                else "queue_timeout",
+                                "video retry wait expired"
+                                if task.attempt > 0
+                                else "video task expired while queued",
                             ),
                         },
                     )
@@ -2530,7 +3089,9 @@ class VideoDispatcher:
                         failed.task,
                         gateway_generation=self.generation,
                         revision=failed.revision,
-                        reason="retry_wait_timeout" if task.attempt > 0 else "queue_timeout",
+                        reason="retry_wait_timeout"
+                        if task.attempt > 0
+                        else "queue_timeout",
                     )
                 elif task.status in {
                     TaskStatus.COMPLETED,

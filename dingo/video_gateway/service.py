@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -17,6 +16,7 @@ from dingo.video_gateway.artifact_store import FileArtifactStore
 from dingo.video_gateway.config import GatewayConfig, PoolConfig
 from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.errors import GatewayError, StoreConflict
+from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.ids import new_video_id
 from dingo.video_gateway.models import StoredTask, TaskStatus, VideoTask, now_ms
 from dingo.video_gateway.task_store import TaskStore
@@ -60,12 +60,9 @@ class VideoGatewayService:
         watermarks = self.config.artifact_store
         capacity = await self.artifacts.capacity()
         remaining = capacity.free_bytes - required_bytes
-        if (
-            remaining < watermarks.hard_min_free_bytes
-            or (
-                watermarks.soft_min_free_bytes > 0
-                and remaining < watermarks.soft_min_free_bytes
-            )
+        if remaining < watermarks.hard_min_free_bytes or (
+            watermarks.soft_min_free_bytes > 0
+            and remaining < watermarks.soft_min_free_bytes
         ):
             await self.dispatcher.sweep_now()
             capacity = await self.artifacts.capacity()
@@ -126,7 +123,7 @@ class VideoGatewayService:
         normalized_fields = {key: list(values) for key, values in fields.items()}
         normalized_fields["model"] = [model]
         try:
-            normalized = await asyncio.to_thread(
+            normalized = await run_file_io(
                 adapter.normalize_request, normalized_fields, uploads, model
             )
         except Exception:
@@ -228,17 +225,15 @@ class VideoGatewayService:
                 )
                 raise GatewayError(429, "queue_full", "video queue is full")
         except Exception:
-            if upload_root.exists():
-                await self.artifacts.discard(upload_root)
+            # discard is idempotent and performs its existence check off-loop.
+            await self.artifacts.discard(upload_root)
             raise
 
         task_root: Path | None = None
         try:
             task_id = new_video_id()
             created_at = now_ms()
-            expires_at_ms = created_at + int(
-                self.config.lifecycle.queue_ttl_s * 1000
-            )
+            expires_at_ms = created_at + int(self.config.lifecycle.queue_ttl_s * 1000)
             task_root = await self.artifacts.commit_upload(
                 upload_root,
                 self.config.deployment_id,

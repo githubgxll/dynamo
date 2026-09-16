@@ -8,11 +8,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -20,8 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_result_file import validate_descriptor
 from dingo.common.video_task_protocol import detached_attempt_root
 from dingo.video_gateway.errors import ResultTooLarge
+from dingo.video_gateway.file_io import run_cancellable_file_io, run_file_io
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +61,9 @@ class FileArtifactStore:
         return resolved
 
     def _lexically_contained(self, path: Path) -> Path:
-        absolute = path.absolute()
+        # Lexical normalization performs no filesystem I/O. Keep the separate
+        # realpath/symlink checks at the operation boundary in a worker thread.
+        absolute = Path(os.path.abspath(path))
         if absolute != self.root and self.root not in absolute.parents:
             raise RuntimeError(f"artifact path escaped configured root: {absolute}")
         return absolute
@@ -84,14 +90,17 @@ class FileArtifactStore:
                 os.fsync(stream.fileno())
             probe.unlink()
 
-        await asyncio.to_thread(_probe)
+        await run_file_io(_probe)
 
     async def create_upload(self) -> Path:
         path = self.upload_root / uuid.uuid4().hex
-        await asyncio.to_thread(path.mkdir, 0o700, True, False)
-        inputs = path / "inputs"
-        await asyncio.to_thread(inputs.mkdir, 0o700, False, False)
-        return self._contained(path)
+
+        def _create() -> Path:
+            path.mkdir(0o700, True, False)
+            (path / "inputs").mkdir(0o700, False, False)
+            return self._contained(path)
+
+        return await run_file_io(_create)
 
     @staticmethod
     def _tree_size(path: Path) -> int:
@@ -114,33 +123,30 @@ class FileArtifactStore:
         return total
 
     async def discard(self, path: Path) -> int:
-        target = self._lexically_contained(path)
-        if target.is_symlink():
-            try:
-                await asyncio.to_thread(target.unlink)
-            except FileNotFoundError:
-                # Concurrent idempotent DELETE/sweeper cleanup won the race.
-                pass
-            return 0
-        elif target.exists():
-            resolved = self._contained(target)
-            size = await asyncio.to_thread(self._tree_size, resolved)
-
-            def _remove_tree() -> bool:
+        def _discard() -> int:
+            target = self._lexically_contained(path)
+            if target == self.root:
+                raise RuntimeError("refusing to discard artifact root")
+            # Validate parents before unlinking a leaf symlink; never follow
+            # an escaped parent directory into another deployment's files.
+            self._contained(target.parent)
+            if target.is_symlink():
+                target.unlink(missing_ok=True)
+                return 0
+            if target.exists():
+                resolved = self._contained(target)
+                size = self._tree_size(resolved)
                 try:
                     shutil.rmtree(resolved)
                 except FileNotFoundError:
-                    # rmtree may observe a concurrently removed child even
-                    # when the root existed at the containment check above.
-                    return False
-                return True
+                    return 0
+                return size
+            return 0
 
-            removed = await asyncio.to_thread(_remove_tree)
-            return size if removed else 0
-        return 0
+        return await run_file_io(_discard)
 
     async def capacity(self) -> ArtifactCapacity:
-        usage = await asyncio.to_thread(shutil.disk_usage, self.root)
+        usage = await run_file_io(shutil.disk_usage, self.root)
         return ArtifactCapacity(usage.total, usage.used, usage.free)
 
     async def cleanup_orphan_uploads(self, *, minimum_age_s: float = 3600.0) -> int:
@@ -166,12 +172,18 @@ class FileArtifactStore:
                 removed += 1
             return removed
 
-        return await asyncio.to_thread(_cleanup)
+        return await run_file_io(_cleanup)
 
     def task_root(self, deployment_id: str, pool_id: str, task_id: str) -> Path:
+        """Synchronous checked path API; async callers use resolve_task_root."""
         return self._contained(
             self.root / deployment_id / "v1" / "pools" / pool_id / "tasks" / task_id
         )
+
+    async def resolve_task_root(
+        self, deployment_id: str, pool_id: str, task_id: str
+    ) -> Path:
+        return await run_file_io(self.task_root, deployment_id, pool_id, task_id)
 
     async def commit_upload(
         self,
@@ -182,12 +194,18 @@ class FileArtifactStore:
         *,
         artifact_manifest: Mapping[str, Any] | None = None,
     ) -> Path:
-        source = self._contained(upload_root)
-        target = self.task_root(deployment_id, pool_id, task_id)
-        await asyncio.to_thread(target.parent.mkdir, 0o750, True, True)
-        if target.exists():
-            raise FileExistsError(f"task artifact directory already exists: {task_id}")
-        await asyncio.to_thread(os.replace, source, target)
+        def _commit() -> Path:
+            source = self._contained(upload_root)
+            target = self.task_root(deployment_id, pool_id, task_id)
+            target.parent.mkdir(0o750, True, True)
+            if target.exists():
+                raise FileExistsError(
+                    f"task artifact directory already exists: {task_id}"
+                )
+            os.replace(source, target)
+            return target
+
+        target = await run_file_io(_commit)
         if artifact_manifest is not None:
             try:
                 await self.write_json(target / "_artifact.json", artifact_manifest)
@@ -204,19 +222,14 @@ class FileArtifactStore:
         minimum_age_s: float,
     ) -> list[TaskArtifactCandidate]:
         cutoff = time.time() - minimum_age_s
-        root_device = (await asyncio.to_thread(self.root.stat)).st_dev
+        root_device = (await run_file_io(self.root.stat)).st_dev
 
         def _scan() -> list[TaskArtifactCandidate]:
             candidates: list[TaskArtifactCandidate] = []
             for pool_id in pool_ids:
                 try:
                     tasks_root = self._symlink_free(
-                        self.root
-                        / deployment_id
-                        / "v1"
-                        / "pools"
-                        / pool_id
-                        / "tasks"
+                        self.root / deployment_id / "v1" / "pools" / pool_id / "tasks"
                     )
                 except (FileNotFoundError, RuntimeError):
                     continue
@@ -228,7 +241,9 @@ class FileArtifactStore:
                             metadata = entry.stat(follow_symlinks=False)
                         except FileNotFoundError:
                             continue
-                        if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        if entry.is_symlink() or not entry.is_dir(
+                            follow_symlinks=False
+                        ):
                             continue
                         if metadata.st_dev != root_device or metadata.st_mtime > cutoff:
                             continue
@@ -263,7 +278,7 @@ class FileArtifactStore:
                         )
             return candidates
 
-        return await asyncio.to_thread(_scan)
+        return await run_file_io(_scan)
 
     async def trash_orphan(
         self, candidate: TaskArtifactCandidate, *, dry_run: bool = False
@@ -273,30 +288,32 @@ class FileArtifactStore:
             raise RuntimeError("orphan candidate is not a task directory")
         if dry_run:
             return source
-        if not source.exists() and not source.is_symlink():
-            return None
-        source_parent = self._symlink_free(source.parent)
         target = self.trash_root / f"{uuid.uuid4().hex}-{candidate.task_id}"
 
-        def _move() -> None:
+        def _move() -> Path | None:
+            if not source.exists() and not source.is_symlink():
+                return None
+            source_parent = self._symlink_free(source.parent)
             directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             nofollow = getattr(os, "O_NOFOLLOW", 0)
             source_fd = os.open(source_parent, directory_flags | nofollow)
-            trash_fd = os.open(self.trash_root, directory_flags | nofollow)
             try:
-                os.rename(
-                    source.name,
-                    target.name,
-                    src_dir_fd=source_fd,
-                    dst_dir_fd=trash_fd,
-                )
+                trash_fd = os.open(self.trash_root, directory_flags | nofollow)
+                try:
+                    os.rename(
+                        source.name,
+                        target.name,
+                        src_dir_fd=source_fd,
+                        dst_dir_fd=trash_fd,
+                    )
+                finally:
+                    os.close(trash_fd)
             finally:
                 os.close(source_fd)
-                os.close(trash_fd)
             os.utime(target, None, follow_symlinks=False)
+            return self._contained(target)
 
-        await asyncio.to_thread(_move)
-        return self._contained(target)
+        return await run_file_io(_move)
 
     async def cleanup_trash(self, *, minimum_age_s: float) -> tuple[int, int]:
         cutoff = time.time() - minimum_age_s
@@ -324,33 +341,34 @@ class FileArtifactStore:
                     removed += 1
             return removed, released
 
-        return await asyncio.to_thread(_cleanup)
+        return await run_file_io(_cleanup)
 
     async def write_json(self, path: Path, value: Any) -> None:
-        target = self._contained(path)
-        await asyncio.to_thread(target.parent.mkdir, 0o750, True, True)
-        payload = json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
-
         def _write() -> None:
-            with temporary.open("xb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
+            target = self._contained(path)
+            target.parent.mkdir(0o750, True, True)
+            payload = json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
 
-        await asyncio.to_thread(_write)
+        await run_file_io(_write)
 
     async def read_json(self, path: str | Path) -> Any:
-        target = self._contained(Path(path))
-
         def _read() -> Any:
+            target = self._contained(Path(path))
             with target.open("r", encoding="utf-8") as stream:
                 return json.load(stream)
 
-        return await asyncio.to_thread(_read)
+        return await run_file_io(_read)
 
     def detached_attempt_root(
         self,
@@ -378,12 +396,11 @@ class FileArtifactStore:
         attempt: int,
         execution_token: str,
     ) -> dict[str, Any] | None:
-        attempt_root = self.detached_attempt_root(
-            deployment_id, pool_id, task_id, attempt, execution_token
-        )
-        path = attempt_root / "worker-status.json"
-
         def _read() -> dict[str, Any] | None:
+            attempt_root = self.detached_attempt_root(
+                deployment_id, pool_id, task_id, attempt, execution_token
+            )
+            path = attempt_root / "worker-status.json"
             try:
                 if path.is_symlink():
                     raise RuntimeError("detached Worker status is a symlink")
@@ -411,7 +428,7 @@ class FileArtifactStore:
                 raise RuntimeError("unsupported detached Worker status schema")
             return value
 
-        return await asyncio.to_thread(_read)
+        return await run_file_io(_read)
 
     async def request_detached_cancel(
         self,
@@ -421,17 +438,16 @@ class FileArtifactStore:
         attempt: int,
         execution_token: str,
     ) -> None:
-        attempt_root = self.detached_attempt_root(
-            deployment_id, pool_id, task_id, attempt, execution_token
-        )
-        path = attempt_root / "cancel.requested"
-
         def _write() -> None:
+            attempt_root = self.detached_attempt_root(
+                deployment_id, pool_id, task_id, attempt, execution_token
+            )
+            path = attempt_root / "cancel.requested"
             attempt_root.mkdir(mode=0o750, parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
             os.close(descriptor)
 
-        await asyncio.to_thread(_write)
+        await run_file_io(_write)
 
     async def consume_detached_response(
         self,
@@ -445,12 +461,11 @@ class FileArtifactStore:
         expected_sha256: str,
         max_response_bytes: int,
     ) -> int:
-        attempt_root = self.detached_attempt_root(
-            deployment_id, pool_id, task_id, attempt, execution_token
-        )
-        path = attempt_root / "worker-response.jsonl"
-
         def _consume() -> int:
+            attempt_root = self.detached_attempt_root(
+                deployment_id, pool_id, task_id, attempt, execution_token
+            )
+            path = attempt_root / "worker-response.jsonl"
             if path.is_symlink() or not path.is_file():
                 raise RuntimeError("detached Worker response is not a regular file")
             digest = hashlib.sha256()
@@ -486,7 +501,148 @@ class FileArtifactStore:
                 raise RuntimeError("detached Worker response checksum mismatch")
             return consumed
 
-        return await asyncio.to_thread(_consume)
+        return await run_file_io(_consume)
+
+    async def finalize_worker_mp4(
+        self,
+        deployment_id,
+        pool_id,
+        task_id,
+        attempt,
+        execution_token,
+        descriptor,
+        normalized,
+        validator,
+        processor,
+        requires_processing,
+        *,
+        max_result_bytes=128 * 1024 * 1024,
+        inspector=None,
+    ):
+        descriptor = validate_descriptor(dict(descriptor))
+        if descriptor["bytes"] > max_result_bytes:
+            raise ResultTooLarge("Worker binary result exceeds configured maximum")
+        final = None
+
+        def finalize(cancelled):
+            nonlocal final
+
+            def check():
+                if cancelled.is_set():
+                    raise asyncio.CancelledError
+
+            check()
+            attempt_root = self.detached_attempt_root(
+                deployment_id, pool_id, task_id, attempt, execution_token
+            )
+            source = attempt_root / descriptor["filename"]
+            try:
+                verified = source.lstat()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "Worker binary result is not a regular file"
+                ) from exc
+            if not stat.S_ISREG(verified.st_mode):
+                raise RuntimeError("Worker binary result is not a regular file")
+            size = verified.st_size
+            if size != descriptor["bytes"]:
+                raise RuntimeError("Worker binary result size mismatch")
+            # Trusted Worker/shared-store handoff: retain metadata/media checks,
+            # but do not reread the whole unmodified MP4 to repeat its digest.
+            # This deliberately does not detect same-size content corruption.
+            result_sha256 = descriptor["sha256"]
+            root = self.task_root(deployment_id, pool_id, task_id)
+            result_dir = root / "result"
+            result_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+            final = result_dir / f"video-a{attempt}-{uuid.uuid4().hex}.mp4"
+            check()
+            inspected_media = None
+            if inspector is None:
+                processing = requires_processing(source, normalized)
+            else:
+                processing, inspected_media = inspector(source, normalized)
+            current = source.lstat()
+            if (
+                current.st_dev,
+                current.st_ino,
+                current.st_size,
+                current.st_mtime_ns,
+            ) != (
+                verified.st_dev,
+                verified.st_ino,
+                verified.st_size,
+                verified.st_mtime_ns,
+            ):
+                raise RuntimeError("Worker binary result changed during validation")
+            copied = processing
+            if processing:
+                shutil.copyfile(source, final)
+                processor(final, normalized)
+            else:
+                try:
+                    os.link(source, final, follow_symlinks=False)
+                    linked = final.lstat()
+                    if (linked.st_dev, linked.st_ino) != (
+                        verified.st_dev,
+                        verified.st_ino,
+                    ):
+                        raise RuntimeError(
+                            "Worker binary result changed before publication"
+                        )
+                except OSError as exc:
+                    if exc.errno not in {errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS}:
+                        raise
+                    shutil.copyfile(source, final)
+                    copied = True
+            check()
+            media = (
+                inspected_media
+                if not copied and inspected_media is not None
+                else validator(final, normalized)
+            )
+            if processing:
+                digest = hashlib.sha256()
+                size = 0
+                with final.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        check()
+                        size += len(chunk)
+                        if size > max_result_bytes:
+                            raise ResultTooLarge(
+                                "processed Worker result exceeds maximum"
+                            )
+                        digest.update(chunk)
+                result_sha256 = digest.hexdigest()
+            published = final.lstat()
+            if not stat.S_ISREG(published.st_mode) or published.st_size != size:
+                raise RuntimeError("published Worker result size/type changed")
+            # DingoFS updates mtime when creating a hardlink. Compare against
+            # the post-link snapshot, not the pre-link Worker-file timestamp.
+            if not copied and (
+                published.st_dev,
+                published.st_ino,
+                published.st_mtime_ns,
+            ) != (linked.st_dev, linked.st_ino, linked.st_mtime_ns):
+                raise RuntimeError(
+                    "Worker binary result changed during media validation"
+                )
+            if copied:
+                with final.open("rb") as stream:
+                    os.fsync(stream.fileno())
+            check()
+            directory = os.open(result_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return final, size, result_sha256, media
+
+        try:
+            return await run_cancellable_file_io(finalize)
+        except BaseException:
+            if final is not None:
+                await run_file_io(final.unlink, missing_ok=True)
+            raise
 
     async def finalize_b64_mp4(
         self,
@@ -499,70 +655,86 @@ class FileArtifactStore:
         max_result_bytes: int = 128 * 1024 * 1024,
         publication_scope: str | None = None,
     ) -> tuple[Path, int, str, dict[str, Any]]:
-        root = self._contained(task_root)
-        result_dir = root / "result"
-        temporary_dir = root / "tmp"
-        await asyncio.to_thread(result_dir.mkdir, 0o750, True, True)
-        await asyncio.to_thread(temporary_dir.mkdir, 0o750, True, True)
         estimated = (len(b64_json) // 4) * 3
         if estimated > max_result_bytes:
-            raise ResultTooLarge(
-                "Worker base64 result exceeds configured maximum"
-            )
+            raise ResultTooLarge("Worker base64 result exceeds configured maximum")
         if len(b64_json) % 4:
             raise RuntimeError("Worker base64 result has invalid padding length")
-        temporary = temporary_dir / f"result-{uuid.uuid4().hex}.part"
         scope = publication_scope or "legacy"
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", scope) is None:
             raise ValueError("result publication scope is invalid")
-        # The task CAS publishes one unique candidate. A stale Gateway can
-        # safely unlink its own losing candidate without touching the winner.
-        final = result_dir / f"video-{scope}-{uuid.uuid4().hex}.mp4"
+        final: Path | None = None
 
-        def _decode() -> tuple[int, str]:
-            digest = hashlib.sha256()
-            written = 0
-            chunk_chars = 4 * 1024 * 1024
-            with temporary.open("xb") as output:
-                for offset in range(0, len(b64_json), chunk_chars):
-                    encoded = b64_json[offset : offset + chunk_chars]
-                    try:
-                        decoded = base64.b64decode(encoded, validate=True)
-                    except (binascii.Error, ValueError) as exc:
-                        raise RuntimeError(
-                            "Worker returned invalid base64 video data"
-                        ) from exc
-                    written += len(decoded)
-                    if written > max_result_bytes:
-                        raise ResultTooLarge(
-                            "Worker result exceeds configured maximum"
-                        )
-                    digest.update(decoded)
-                    output.write(decoded)
-                output.flush()
-                os.fsync(output.fileno())
-            return written, digest.hexdigest()
+        def _finalize(cancelled) -> tuple[Path, int, str, dict[str, Any]]:
+            nonlocal final
 
-        def _digest() -> tuple[int, str]:
-            digest = hashlib.sha256()
-            size = 0
-            with temporary.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-                    size += len(chunk)
-                    digest.update(chunk)
-            return size, digest.hexdigest()
+            def check_cancelled() -> None:
+                if cancelled.is_set():
+                    raise asyncio.CancelledError
 
+            check_cancelled()
+            root = self._contained(task_root)
+            result_dir = root / "result"
+            temporary_dir = root / "tmp"
+            result_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+            temporary_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+            temporary = temporary_dir / f"result-{uuid.uuid4().hex}.part"
+            # Only the later etcd CAS publishes this unique candidate. Neither
+            # cancellation nor a stale owner may remove another owner's file.
+            final = result_dir / f"video-{scope}-{uuid.uuid4().hex}.mp4"
+            try:
+                check_cancelled()
+                written = 0
+                chunk_chars = 4 * 1024 * 1024
+                with temporary.open("xb") as output:
+                    for offset in range(0, len(b64_json), chunk_chars):
+                        check_cancelled()
+                        encoded = b64_json[offset : offset + chunk_chars]
+                        try:
+                            decoded = base64.b64decode(encoded, validate=True)
+                        except (binascii.Error, ValueError) as exc:
+                            raise RuntimeError(
+                                "Worker returned invalid base64 video data"
+                            ) from exc
+                        written += len(decoded)
+                        if written > max_result_bytes:
+                            raise ResultTooLarge(
+                                "Worker result exceeds configured maximum"
+                            )
+                        output.write(decoded)
+                    output.flush()
+                    os.fsync(output.fileno())
+                check_cancelled()
+                if processor is not None:
+                    processor(temporary, normalized)
+                check_cancelled()
+                media = validator(temporary, normalized)
+                check_cancelled()
+                digest = hashlib.sha256()
+                size = 0
+                with temporary.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                        check_cancelled()
+                        size += len(chunk)
+                        digest.update(chunk)
+                check_cancelled()
+                os.replace(temporary, final)
+                return final, size, digest.hexdigest(), media
+            finally:
+                temporary.unlink(missing_ok=True)
+
+        # One bounded off-loop pipeline, rather than a separate thread/loop
+        # round trip for each dependent file operation. The media memory budget
+        # remains held by the caller until this operation has fully drained.
         try:
-            await asyncio.to_thread(_decode)
-            if processor is not None:
-                await asyncio.to_thread(processor, temporary, normalized)
-            media = await asyncio.to_thread(validator, temporary, normalized)
-            size, sha256 = await asyncio.to_thread(_digest)
-            await asyncio.to_thread(os.replace, temporary, final)
-            return final, size, sha256, media
-        finally:
-            if temporary.exists():
-                await asyncio.to_thread(temporary.unlink)
+            return await run_cancellable_file_io(_finalize)
+        except BaseException:
+            # Cancellation can arrive after rename but before the thread result
+            # is delivered. The thread is drained here; this unpublished file
+            # belongs only to this invocation and is now safe to remove.
+            if final is not None:
+                await run_file_io(final.unlink, missing_ok=True)
+            raise
 
     def result_path(self, path: str | Path) -> Path:
         original = self._lexically_contained(Path(path))
