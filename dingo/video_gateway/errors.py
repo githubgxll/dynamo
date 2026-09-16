@@ -42,6 +42,10 @@ class StoreUnavailable(RuntimeError):
     """Raised when the configured Task Store cannot be reached safely."""
 
 
+class HandoffReservationLost(StoreConflict):
+    """Result handoff definitively no longer owns its execution reservation."""
+
+
 class ResultTooLarge(RuntimeError):
     """Raised when a Worker result exceeds the configured artifact policy."""
 
@@ -65,7 +69,9 @@ def worker_execution_error(error: object) -> WorkerExecutionFailed:
     message = error
     if isinstance(error, dict):
         if error.get("code") != "worker_failed":
-            return WorkerExecutionFailed(str(error.get("message") or "Worker generation failed"))
+            return WorkerExecutionFailed(
+                str(error.get("message") or "Worker generation failed")
+            )
         message = error.get("message")
     if isinstance(message, str) and message in {
         "Executor shut down",

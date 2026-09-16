@@ -10,6 +10,7 @@ output without creating an engine or loading model weights.
 
 import asyncio
 import base64
+import json
 import logging
 import time
 import uuid
@@ -19,6 +20,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import soundfile as sf
 import torch
+
 from dingo.common.protocols.audio_protocol import AudioData, NvAudioSpeechResponse
 from dingo.common.protocols.image_protocol import ImageData, NvImagesResponse
 from dingo.common.protocols.video_protocol import NvVideosResponse, VideoData
@@ -26,6 +28,8 @@ from dingo.common.storage import upload_to_fs
 from dingo.common.utils.engine_response import normalize_finish_reason
 from dingo.common.utils.output_modalities import RequestType
 from dingo.common.utils.video_utils import normalize_video_frames
+from dingo.common.video_encoding import VideoEncoder, frame_conversion_workers
+from dingo.common.video_result_file import BINARY_RESULT_WRITER
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +80,8 @@ class TextFormatter:
 class DiffusionFormatter:
     """Formats diffusion output (images/video frames) for the frontend.
 
-    Handles both image and video — routes by request_type since vllm-omni
-    reports final_output_type="image" for all diffusion outputs.
+    Handles both image and video. Older vllm-omni reports "image" for video;
+    0.29 also reports the explicit final_output_type="video".
     """
 
     def __init__(
@@ -91,6 +95,10 @@ class DiffusionFormatter:
         self._media_fs = media_fs
         self._media_http_url = media_http_url
         self._default_fps = default_fps
+        self._video_encoder = VideoEncoder(frame_conversion_workers())
+
+    def close(self) -> None:
+        self._video_encoder.close()
 
     async def format(
         self, stage_output: Any, request_id: str, *, request_type: Any, **ctx: Any
@@ -141,13 +149,13 @@ class DiffusionFormatter:
             return None, None
 
         metadata = mm_output.get("metadata")
-        audio_metadata = (
-            metadata.get("audio") if isinstance(metadata, dict) else None
-        )
+        audio_metadata = metadata.get("audio") if isinstance(metadata, dict) else None
         for candidate in (
             mm_output.get("audio_sample_rate"),
             mm_output.get("sr"),
-            audio_metadata.get("sample_rate") if isinstance(audio_metadata, dict) else None,
+            audio_metadata.get("sample_rate")
+            if isinstance(audio_metadata, dict)
+            else None,
         ):
             if candidate is None:
                 continue
@@ -186,6 +194,8 @@ class DiffusionFormatter:
             )
         try:
             start_time = time.time()
+            output_started = time.perf_counter()
+            stages: Dict[str, float] = {}
             frame_list = normalize_video_frames(images)
 
             encode_kwargs: Dict[str, Any] = {
@@ -204,10 +214,7 @@ class DiffusionFormatter:
             # AAC audio into an MP4 byte string. It handles the conversion from
             # normalized frame tensors to the byte format expected by the
             # frontend, including audio sample rate negotiation for AAC encoding.
-            from vllm_omni.entrypoints.openai.video_api_utils import (
-                _encode_video_bytes,
-            )
-
+            from vllm_omni.entrypoints.openai import video_api_utils
             from vllm_omni.entrypoints.openai.serving_video import (
                 OmniOpenAIServingVideo,
             )
@@ -219,13 +226,48 @@ class DiffusionFormatter:
                     f"video encoding requires a single normalized video tensor"
                 )
 
-            video_bytes = await asyncio.to_thread(
-                _encode_video_bytes,
-                normalized[0],
-                fps=fps,
-                **encode_kwargs,
+            stages["output_normalize_s"] = time.perf_counter() - output_started
+            submitted = time.perf_counter()
+
+            def encode():
+                began = time.perf_counter()
+                stages["encode_queue_s"] = began - submitted
+                try:
+                    return self._video_encoder.encode(
+                        video_api_utils, normalized[0], fps=fps, **encode_kwargs
+                    )
+                finally:
+                    stages["encode_work_s"] = time.perf_counter() - began
+
+            video_bytes = await asyncio.to_thread(encode)
+            stages["encode_resume_s"] = max(
+                0.0,
+                time.perf_counter()
+                - submitted
+                - stages["encode_queue_s"]
+                - stages["encode_work_s"],
             )
 
+            binary_writer = BINARY_RESULT_WRITER.get()
+            if binary_writer is not None:
+                artifact = await binary_writer.write(video_bytes)
+                stages.update(binary_writer.stage_durations)
+                stages["output_total_s"] = time.perf_counter() - output_started
+                logger.info(
+                    "video_output_timing request_id=%s stages=%s",
+                    request_id,
+                    json.dumps(stages, sort_keys=True),
+                )
+                return {
+                    "id": request_id,
+                    "object": "video",
+                    "model": self._model_name,
+                    "status": "completed",
+                    "progress": 100,
+                    "data": [{"output_format": "mp4", "artifact": artifact}],
+                    "inference_time_s": time.time() - start_time,
+                    "stage_durations": stages,
+                }
             if response_format == "b64_json":
                 video_data = VideoData(
                     output_format=output_format,
@@ -541,13 +583,18 @@ class OutputFormatter:
         media_http_url: Optional[str] = None,
         default_fps: int = 16,
     ) -> None:
+        diffusion = DiffusionFormatter(
+            model_name, media_fs, media_http_url, default_fps
+        )
         self._formatters: Dict[str, Any] = {
             "text": TextFormatter(model_name),
-            "image": DiffusionFormatter(
-                model_name, media_fs, media_http_url, default_fps
-            ),
+            "image": diffusion,
+            "video": diffusion,
             "audio": AudioFormatter(model_name, media_fs, media_http_url),
         }
+
+    def close(self) -> None:
+        self._formatters["video"].close()
 
     async def format(
         self,

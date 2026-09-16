@@ -30,6 +30,102 @@ from tests.video_gateway.test_task_store import _lease, _task
 _ETCD_URL = os.environ.get("DINGO_VIDEO_TEST_ETCD_URL")
 
 
+@pytest.mark.skipif(not _ETCD_URL, reason="requires a real etcd v3 endpoint")
+async def test_result_handoff_and_owner_takeover_never_touch_reused_slot():
+    from dingo.video_gateway.models import now_ms
+    from tests.video_gateway.test_result_handoff import patch_for
+
+    client = EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0)
+    prefix = f"/dingo/continuous-execution-contract/{uuid.uuid4().hex}"
+    store = EtcdTaskStore(client, prefix=prefix, deployment_id="contract")
+    owners = []
+    try:
+        for generation in ["generation", "gateway-b", "gateway-c"]:
+            owners.append(await store.register_gateway(generation, ttl_s=30))
+        first = _task("first")
+        stored, _ = await store.create_task(
+            first, principal_hash="p", idempotency_hash=None, queue_limit=8
+        )
+        lease = _lease(first)
+        lease.execution_token = "c" * 32
+        stored = await store.reserve(
+            stored, lease, deadline_at_ms=now_ms() + 60000, reserve_retry=True
+        )
+        stored = await store.transition(
+            first.id,
+            expected={TaskStatus.DISPATCHING},
+            patch={"status": TaskStatus.IN_PROGRESS},
+        )
+        ready = await store.transition(
+            first.id,
+            expected={TaskStatus.IN_PROGRESS},
+            expected_revision=stored.revision,
+            patch=patch_for(stored),
+            release_lease=True,
+            release_execution=True,
+        )
+        assert not await store.list_leases(first.pool_id)
+        assert await client.get(store._retry_credit_key(ready.task)) is None
+        assert (
+            int(
+                (
+                    await client.get(store._retry_counter_key(first.pool_id, "credits"))
+                ).value
+            )
+            == 0
+        )
+        second = _task("second")
+        queued, _ = await store.create_task(
+            second, principal_hash="p", idempotency_hash=None, queue_limit=8
+        )
+        next_lease = _lease(second)
+        next_lease.owner_generation = "gateway-b"
+        next_lease.execution_token = "d" * 32
+        reserved = await store.reserve(
+            queued, next_lease, deadline_at_ms=now_ms() + 60000, reserve_retry=True
+        )
+        assert reserved is not None
+        key = store._lease_key(second.pool_id, reserved.task.worker_key)
+        occupant = await client.get(key)
+        assert (
+            await store.claim_finalizing(ready, new_owner_generation="gateway-b")
+            is None
+        )
+        await store.unregister_gateway(owners.pop(0))
+        claims = await asyncio.gather(
+            *[
+                store.claim_orphaned_active(ready, new_owner_generation=owner)
+                for owner in ["gateway-b", "gateway-c"]
+            ]
+        )
+        winners = [claim for claim in claims if claim is not None]
+        assert len(winners) == 1
+        claimed = winners[0]
+        assert claimed.task.worker_lease_id is None
+        assert await client.get(key) == occupant
+        await store.transition(
+            first.id,
+            expected={TaskStatus.FINALIZING},
+            expected_revision=claimed.revision,
+            patch={"status": TaskStatus.COMPLETED},
+            release_lease=False,
+        )
+        assert await client.get(key) == occupant
+        assert (
+            int(
+                (
+                    await client.get(store._retry_counter_key(first.pool_id, "credits"))
+                ).value
+            )
+            == 1
+        )
+    finally:
+        for lease_id in owners:
+            await store.unregister_gateway(lease_id)
+        await _delete_prefix(client, prefix)
+        await client.close()
+
+
 async def _delete_prefix(client: EtcdHttpClient, prefix: str) -> None:
     values, _revision = await client.range_all(prefix, prefix=True)
     for offset in range(0, len(values), 100):
@@ -106,10 +202,7 @@ async def test_real_etcd_range_all_reads_every_page_from_one_snapshot():
         for offset in range(0, len(items), 100):
             succeeded, _revision = await client.txn(
                 [],
-                [
-                    client.put(key, value)
-                    for key, value in items[offset : offset + 100]
-                ],
+                [client.put(key, value) for key, value in items[offset : offset + 100]],
             )
             assert succeeded is True
 
@@ -186,9 +279,7 @@ async def test_real_etcd_count_descending_and_batch_get_contract():
         )
         assert succeeded is True
         assert await client.count_prefix(prefix) == len(keys)
-        descending = await client.range(
-            prefix, prefix=True, limit=2, descending=True
-        )
+        descending = await client.range(prefix, prefix=True, limit=2, descending=True)
         assert [value.key for value in descending] == list(reversed(keys[-2:]))
         values, snapshot_revision = await client.get_many(
             [keys[1], prefix + "missing", keys[3]], revision=revision
@@ -339,9 +430,7 @@ async def test_two_gateways_preserve_task_owned_by_healthy_peer(
         context_factory=FakeContext,
         generation="gateway-b",
     )
-    service_a = VideoGatewayService(
-        config, store_a, artifacts, dispatcher_a, adapters
-    )
+    service_a = VideoGatewayService(config, store_a, artifacts, dispatcher_a, adapters)
     started_a = False
     started_b = False
     try:
@@ -385,9 +474,7 @@ async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
     make_gateway_config,
 ):
     prefix = f"/dingo/video-gateway-detached-ha-tests/{uuid.uuid4().hex}"
-    pool_raw = _pool(
-        "fl-pool", "public-fl", "dyn://scope-a.backend.generate"
-    )
+    pool_raw = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
     pool_raw["execution_mode"] = "detached"
     config = make_gateway_config(pools=[pool_raw])
     cleanup_client = EtcdHttpClient(str(_ETCD_URL), timeout_s=5.0)
@@ -427,16 +514,14 @@ async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
         context_factory=FakeContext,
         generation="detached-gateway-b",
     )
-    service_a = VideoGatewayService(
-        config, store_a, artifacts, dispatcher_a, adapters
-    )
+    service_a = VideoGatewayService(config, store_a, artifacts, dispatcher_a, adapters)
     started_a = False
     started_b = False
     try:
         await dispatcher_a.start()
         started_a = True
-        await dispatcher_b.start()
-        started_b = True
+        # Submitting through A does not force A to win a shared queue. First
+        # establish the intended owner, then start its standby before failure.
         submission = await _submit(service_a, "public-fl")
         await asyncio.wait_for(handler.started.wait(), timeout=2)
         active = await store_b.get_task(submission.stored.task.id)
@@ -444,6 +529,8 @@ async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
         assert active.task.status == TaskStatus.IN_PROGRESS
         assert active.task.owner_generation == "detached-gateway-a"
 
+        await dispatcher_b.start()
+        started_b = True
         await dispatcher_a.stop()
         started_a = False
         handler.release.set()

@@ -465,6 +465,44 @@ class TestOutputFormatter:
         assert chunk["choices"][0]["delta"]["content"][0]["type"] == "image_url"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("output_type", ["image", "video"])
+    async def test_routes_legacy_and_029_video(self, output_type):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from dingo.common.utils.output_modalities import RequestType
+        from dingo.vllm.omni.output_formatter import OutputFormatter
+
+        f = OutputFormatter(model_name="test-model")
+        stage = SimpleNamespace(
+            final_output_type=output_type, images=[object()], multimodal_output=None
+        )
+        expected = {"status": "completed", "data": [{"output_format": "mp4"}]}
+        with patch.object(
+            f._formatters[output_type],
+            "_encode_video",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as encode:
+            result = await f.format(
+                stage,
+                "req-video",
+                request_type=RequestType.VIDEO_GENERATION,
+                fps=24,
+                output_format="mp4",
+            )
+        assert result == expected
+        encode.assert_awaited_once_with(
+            stage.images,
+            "req-video",
+            fps=24,
+            response_format=None,
+            output_format="mp4",
+            audio=None,
+            audio_sample_rate=None,
+        )
+
+    @pytest.mark.asyncio
     async def test_routes_audio(self):
         import numpy as np
 
@@ -587,14 +625,17 @@ class TestDiffusionFormatterVideoOutputFormat:
                 "dingo.vllm.omni.output_formatter.normalize_video_frames",
                 return_value=[MagicMock()],
             ),
-            _patch("dingo.vllm.omni.output_formatter.export_to_video"),
+            _patch(
+                "vllm_omni.entrypoints.openai.video_api_utils._encode_video_bytes",
+                return_value=b"encoded-mp4-bytes",
+            ),
             _patch(
                 "dingo.vllm.omni.output_formatter.upload_to_fs",
                 return_value="http://x/v.mp4",
             ),
             _patch(
-                "dingo.vllm.omni.output_formatter.asyncio.to_thread",
-                side_effect=lambda fn, *a, **kw: fn(*a, **kw),
+                "vllm_omni.entrypoints.openai.serving_video.OmniOpenAIServingVideo._normalize_video_outputs",
+                return_value=[object()],
             ),
         )
 
@@ -648,7 +689,7 @@ class TestDiffusionFormatterVideoOutputFormat:
         assert result["data"][0]["output_format"] == "mp4"
         assert result["data"][0].get("url") is None
         assert result["data"][0]["b64_json"] is not None
-        base64.b64decode(result["data"][0]["b64_json"])  # must be valid base64
+        assert base64.b64decode(result["data"][0]["b64_json"]) == b"encoded-mp4-bytes"
         mock_upload.assert_not_called()
 
     @pytest.mark.asyncio
