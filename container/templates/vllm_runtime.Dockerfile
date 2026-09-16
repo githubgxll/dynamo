@@ -280,7 +280,7 @@ RUN set -eux; \
 RUN --mount=type=bind,source=./container/deps/vllm/validate_torch_compile_smoke.py,target=/tmp/validate_torch_compile_smoke.py,readonly \
     python3 /tmp/validate_torch_compile_smoke.py
 
-# Copy the LGPL ffmpeg from wheel_builder: versioned shared libs (libav*.so*,
+# Copy the LGPL ffmpeg and ffprobe from wheel_builder: versioned shared libs (libav*.so*,
 # libsw*.so*) + libvpx + the LGPL CLI binary that imageio/diffusers target via
 # IMAGEIO_FFMPEG_EXE. Ungated by enable_media_ffmpeg because the base GPL ffmpeg
 # was just purged, so the LGPL CLI must always be present for the omni
@@ -292,9 +292,16 @@ RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/loca
     cp -nL /tmp/usr/local/lib/lib*vpx*.so* /usr/local/lib/ 2>/dev/null || true && \
     cp -nL /tmp/usr/local/lib/pkgconfig/libav*.pc /tmp/usr/local/lib/pkgconfig/libsw*.pc /usr/local/lib/pkgconfig/ && \
     cp -nL /tmp/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg && \
+    cp -nL /tmp/usr/local/bin/ffprobe /usr/local/bin/ffprobe && \
     cp -r /tmp/usr/local/src/ffmpeg /usr/local/src/ && \
     ldconfig
 ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
+
+# H3 reference-media preprocessing invokes ffprobe directly. The upstream
+# package purge removes /usr/bin/ffprobe too; copying only ffmpeg leaves a
+# runtime failure even though the Python imports and output encoding work.
+RUN --mount=type=bind,source=./container/deps/vllm/validate_media_probe.py,target=/tmp/validate_media_probe.py,readonly \
+    python3 /tmp/validate_media_probe.py
 {% endif %}
 
 # Replace the upstream vllm/vllm-openai image's imageio-ffmpeg (which ships a
