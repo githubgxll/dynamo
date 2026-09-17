@@ -13,11 +13,15 @@ FROM framework AS runtime
 FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
 {% endif %}
 
+<<<<<<< HEAD
 # Apply the selected index to every pip install in this independent stage.
 # ARG keeps the CI mirror out of the final image environment.
 ARG PIP_INDEX_URL
 ARG UV_DEFAULT_INDEX
 ARG MODELEXPRESS_VERSION
+=======
+ARG MODELEXPRESS_REF
+>>>>>>> ci(container): update SGLang and enable hardened Dynamo image builds
 
 WORKDIR /workspace
 
@@ -137,13 +141,14 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     fi
 
 {% if context.sglang.enable_modelexpress == "true" %}
-# Install only the ModelExpress client package. --no-deps preserves the upstream
-# SGLang runtime dependency stack.
+# Install the current upstream ModelExpress client, replacing any copy inherited
+# from the SGLang base image. --no-deps preserves the engine-owned CUDA, NIXL,
+# Torch, gRPC, and protobuf dependency stack.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     set -eux; \
     export PIP_CACHE_DIR=/root/.cache/pip; \
-    pip install --break-system-packages --no-deps \
-        "modelexpress==${MODELEXPRESS_VERSION}"
+    pip install --break-system-packages --no-deps --upgrade --force-reinstall \
+        "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@${MODELEXPRESS_REF}#subdirectory=modelexpress_client/python"
 {% endif %}
 {% endif %}
 {% endif %}
