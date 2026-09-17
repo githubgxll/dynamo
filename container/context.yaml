@@ -128,4 +128,6 @@ sglang:
   enable_gpu_memory_service: "true"
   enable_kvbm: "false"
   enable_modelexpress: "true"
-  modelexpress_version: "0.4.0"
+  # Follow upstream ModelExpress development for the SGLang integration. Pass
+  # an immutable commit SHA as MODELEXPRESS_REF for reproducible builds.
+  modelexpress_ref: "main"
