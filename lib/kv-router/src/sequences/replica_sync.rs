@@ -1,88 +1,23 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 
 use rustc_hash::FxHashMap;
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::multi_worker::{
     ActiveSequencesMultiWorker, ReplicaWorkerPolicy, SequencePublisher, SequenceSubscriber,
 };
 use super::prompt_registry::WorkerLoadSnapshot;
-use crate::protocols::{ActiveSequenceEvent, ActiveSequenceEventData, WorkerWithDpRank};
-
-const MAX_REPLICA_BATCH_EVENTS: usize = 256;
-const MAX_REPLICA_BATCH_DURATION: Duration = Duration::from_millis(1);
-const REPLICA_REORDER_STATE_TTL: Duration = Duration::from_secs(300);
-
-type ReplicaLifecycleKey = (u64, String);
-
-/// Short-lived state for lifecycle events that overtake AddRequest in the transport.
-///
-/// The publisher serializes new events per request, but this also protects rolling upgrades
-/// and transports with at-least-once delivery or multiple in-flight publishers.
-#[derive(Default)]
-struct ReplicaLifecycleReorderState {
-    free_tombstones: HashMap<ReplicaLifecycleKey, Instant>,
-    free_tombstone_order: VecDeque<(Instant, ReplicaLifecycleKey)>,
-    pending_prefill_completed: HashMap<ReplicaLifecycleKey, Instant>,
-    pending_prefill_completed_order: VecDeque<(Instant, ReplicaLifecycleKey)>,
-}
-
-impl ReplicaLifecycleReorderState {
-    fn prune(&mut self, now: Instant) {
-        Self::prune_entries(
-            &mut self.free_tombstones,
-            &mut self.free_tombstone_order,
-            now,
-        );
-        Self::prune_entries(
-            &mut self.pending_prefill_completed,
-            &mut self.pending_prefill_completed_order,
-            now,
-        );
-    }
-
-    fn prune_entries(
-        entries: &mut HashMap<ReplicaLifecycleKey, Instant>,
-        order: &mut VecDeque<(Instant, ReplicaLifecycleKey)>,
-        now: Instant,
-    ) {
-        while order.front().is_some_and(|(observed_at, _)| {
-            now.saturating_duration_since(*observed_at) > REPLICA_REORDER_STATE_TTL
-        }) {
-            let (observed_at, key) = order
-                .pop_front()
-                .expect("front entry must exist while pruning replica lifecycle state");
-            if entries.get(&key) == Some(&observed_at) {
-                entries.remove(&key);
-            }
-        }
-    }
-
-    fn record_free(&mut self, key: ReplicaLifecycleKey, now: Instant) {
-        self.free_tombstones.insert(key.clone(), now);
-        self.free_tombstone_order.push_back((now, key));
-    }
-
-    fn was_freed(&self, key: &ReplicaLifecycleKey) -> bool {
-        self.free_tombstones.contains_key(key)
-    }
-
-    fn record_pending_prefill_completed(&mut self, key: ReplicaLifecycleKey, now: Instant) {
-        self.pending_prefill_completed.insert(key.clone(), now);
-        self.pending_prefill_completed_order.push_back((now, key));
-    }
-
-    fn take_pending_prefill_completed(&mut self, key: &ReplicaLifecycleKey) -> bool {
-        self.pending_prefill_completed.remove(key).is_some()
-    }
-}
+use crate::protocols::{
+    ActiveSequenceEvent, ActiveSequenceEventData, MAX_REPLICA_BATCH_DURATION,
+    MAX_REPLICA_BATCH_EVENTS, WorkerWithDpRank,
+};
+use crate::scheduling::queue::SchedulerBookingDescriptor;
 
 #[derive(Default)]
 struct ReplicaBatchEffects {
@@ -117,6 +52,15 @@ impl ReplicaBatchEffects {
 }
 
 impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
+    /// Apply one decoded replica-sync batch and flush its deferred effects once.
+    pub fn apply_replica_batch(&self, events: Vec<ActiveSequenceEvent>) {
+        let mut effects = ReplicaBatchEffects::default();
+        for event in events {
+            self.apply_replica_event(event, &mut effects);
+        }
+        self.flush_replica_batch_effects(&mut effects);
+    }
+
     /// Spawn a background task that subscribes to replica-sync events from peer routers
     /// and applies them to the local state.
     pub fn start_replica_sync<S: SequenceSubscriber + 'static>(
@@ -138,7 +82,6 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<()> {
         let mut effects = ReplicaBatchEffects::default();
-        let mut reorder_state = ReplicaLifecycleReorderState::default();
 
         loop {
             let result = tokio::select! {
@@ -170,7 +113,7 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
                 let event = next_event
                     .take()
                     .expect("replica batch event must be present");
-                self.apply_replica_event(event, &mut effects, &mut reorder_state);
+                self.apply_replica_event(event, &mut effects);
                 batch_events += 1;
 
                 if cancel_token.is_cancelled() {
@@ -212,12 +155,7 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
         Ok(())
     }
 
-    fn apply_replica_event(
-        &self,
-        event: ActiveSequenceEvent,
-        effects: &mut ReplicaBatchEffects,
-        reorder_state: &mut ReplicaLifecycleReorderState,
-    ) {
+    fn apply_replica_event(&self, event: ActiveSequenceEvent, effects: &mut ReplicaBatchEffects) {
         let ActiveSequenceEvent {
             request_id,
             worker: event_worker,
@@ -229,12 +167,13 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
         if router_id == self.router_id {
             return;
         }
+        if !self.replica_sync && !matches!(data, ActiveSequenceEventData::MarkPrefillCompleted) {
+            return;
+        }
 
         // ActiveSequenceEvent does not carry prompt-load decay timestamps yet.
         // Peer routers still approximate decay anchoring with local receive time.
         let decay_now = Instant::now();
-        reorder_state.prune(decay_now);
-        let lifecycle_key = (router_id, request_id.clone());
 
         match data {
             ActiveSequenceEventData::AddRequest {
@@ -243,37 +182,37 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
                 expected_output_tokens,
                 prefill_load_hint,
             } => {
-                if reorder_state.was_freed(&lifecycle_key) {
-                    reorder_state.take_pending_prefill_completed(&lifecycle_key);
-                    tracing::debug!(
-                        request_id = %request_id,
-                        worker = ?event_worker,
-                        router_id,
-                        "Dropping replica AddRequest superseded by an earlier Free"
-                    );
+                let Ok(attempt_id) = self.request_index.try_insert_request(
+                    request_id.clone(),
+                    event_worker,
+                    lora_name,
+                ) else {
                     return;
-                }
-                let prefill_already_completed =
-                    reorder_state.take_pending_prefill_completed(&lifecycle_key);
+                };
+                let booking = SchedulerBookingDescriptor {
+                    request_id: request_id.clone(),
+                    worker: event_worker,
+                    attempt_id,
+                };
                 if self.replica_worker_policy == ReplicaWorkerPolicy::LazyRegister {
                     self.ensure_worker_registered(event_worker);
                 }
                 let table = self.workers.read();
                 let Some(&idx) = table.index.get(&event_worker) else {
+                    self.request_index.remove_request_if_booking(
+                        &request_id,
+                        event_worker,
+                        attempt_id,
+                    );
                     tracing::debug!(
                         worker = ?event_worker,
                         "Dropping replica AddRequest for unregistered worker"
                     );
                     return;
                 };
-
-                self.request_index
-                    .set_request(request_id.clone(), event_worker, lora_name);
                 let (expired_request_ids, load) = {
                     let slot = &table.slots[idx];
                     let mut seq = slot.sequences.write();
-                    let prefill_completed_request_id =
-                        prefill_already_completed.then(|| request_id.clone());
                     let outcome = seq.add_request_with_prefill_tracking(
                         request_id,
                         token_sequence,
@@ -282,14 +221,10 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
                         prefill_load_hint,
                         decay_now,
                     );
-                    if let Some(request_id) = prefill_completed_request_id {
-                        seq.mark_prefill_completed(&request_id, decay_now);
-                    }
                     let load = seq.worker_load_snapshot();
                     self.prompt_registry
                         .apply_membership_delta_and_load_without_cleanup(
                             event_worker,
-                            &slot.trie_lookup,
                             outcome.membership_delta,
                             load,
                         );
@@ -298,60 +233,87 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
                 drop(table);
                 self.request_index
                     .remove_requests(expired_request_ids.iter());
+                if let Some(observer) = self.replica_request_lease_observer() {
+                    observer.admitted(booking);
+                }
                 effects.record_worker_load(event_worker, load, true);
-                effects.wake_scheduler |= prefill_already_completed;
                 effects.cleanup_prompt_trie = true;
             }
             ActiveSequenceEventData::Free => {
-                let Some(worker) = self.request_index.remove_request(&request_id) else {
-                    reorder_state.take_pending_prefill_completed(&lifecycle_key);
-                    reorder_state.record_free(lifecycle_key, decay_now);
+                let Some(current) = self.request_index.booking_for(&request_id) else {
                     return;
                 };
-                reorder_state.take_pending_prefill_completed(&lifecycle_key);
-                reorder_state.record_free(lifecycle_key, decay_now);
+                if current.worker != event_worker {
+                    return;
+                }
+                let booking = SchedulerBookingDescriptor {
+                    request_id: request_id.clone(),
+                    worker: current.worker,
+                    attempt_id: current.attempt_id,
+                };
                 let table = self.workers.read();
-                let Some(&idx) = table.index.get(&worker) else {
+                let Some(&idx) = table.index.get(&current.worker) else {
                     return;
                 };
                 let load = {
                     let slot = &table.slots[idx];
                     let mut seq = slot.sequences.write();
-                    let delta = seq.free(&request_id, decay_now);
+                    let Some(delta) = seq.free(&request_id, decay_now) else {
+                        return;
+                    };
                     let load = seq.worker_load_snapshot();
                     self.prompt_registry
                         .apply_membership_delta_and_load_without_cleanup(
-                            worker,
-                            &slot.trie_lookup,
+                            current.worker,
                             delta,
                             load,
                         );
                     load
                 };
                 drop(table);
-                effects.record_worker_load(worker, load, true);
+                self.request_index.remove_request_if_booking(
+                    &request_id,
+                    current.worker,
+                    current.attempt_id,
+                );
+                if let Some(observer) = self.replica_request_lease_observer() {
+                    observer.completed(&booking);
+                }
+                effects.record_worker_load(current.worker, load, true);
                 effects.wake_scheduler = true;
                 effects.cleanup_prompt_trie = true;
             }
             ActiveSequenceEventData::MarkPrefillCompleted => {
-                let Some(worker) = self.request_index.worker_for(&request_id) else {
-                    reorder_state.record_pending_prefill_completed(lifecycle_key, decay_now);
+                let Some(current) = self.request_index.booking_for(&request_id) else {
                     return;
                 };
-                reorder_state.take_pending_prefill_completed(&lifecycle_key);
+                if current.worker != event_worker {
+                    return;
+                }
+                let booking = SchedulerBookingDescriptor {
+                    request_id: request_id.clone(),
+                    worker: current.worker,
+                    attempt_id: current.attempt_id,
+                };
                 let table = self.workers.read();
-                let Some(&idx) = table.index.get(&worker) else {
+                let Some(&idx) = table.index.get(&current.worker) else {
                     return;
                 };
                 let load = {
                     let mut seq = table.slots[idx].sequences.write();
-                    seq.mark_prefill_completed(&request_id, decay_now);
+                    if !seq.mark_prefill_completed(&request_id, decay_now) {
+                        return;
+                    }
                     let load = seq.worker_load_snapshot();
-                    self.prompt_registry.replace_worker_load_state(worker, load);
+                    self.prompt_registry
+                        .replace_worker_load_state(current.worker, load);
                     load
                 };
                 drop(table);
-                effects.record_worker_load(worker, load, false);
+                if let Some(observer) = self.replica_request_lease_observer() {
+                    observer.progressed(&booking);
+                }
+                effects.record_worker_load(current.worker, load, false);
                 effects.wake_scheduler = true;
             }
         }
@@ -359,18 +321,18 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
 
     fn flush_replica_batch_effects(&self, effects: &mut ReplicaBatchEffects) {
         let decay_now = Instant::now();
-        let mut active_loads = Vec::with_capacity(effects.worker_loads.len());
+        let mut scheduler_loads = Vec::with_capacity(effects.worker_loads.len());
         for (worker, pending) in effects.worker_loads.drain() {
             if pending.publish {
-                active_loads.push(self.observe_worker_load_snapshot(
+                scheduler_loads.push(self.observe_worker_load_snapshot(
                     worker,
                     pending.latest_load,
                     decay_now,
                 ));
             }
         }
-        if !active_loads.is_empty() {
-            self.publisher.publish_load_batch(active_loads);
+        if !scheduler_loads.is_empty() {
+            self.publisher.publish_scheduler_load_batch(scheduler_loads);
         }
 
         if std::mem::take(&mut effects.wake_scheduler) {

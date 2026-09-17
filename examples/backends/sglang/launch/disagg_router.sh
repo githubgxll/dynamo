@@ -53,11 +53,10 @@ print_launch_banner "Launching Disaggregated + KV Routing (4 GPUs)" "$MODEL" "$H
 # Start frontend with KV routing
 # The frontend will automatically detect prefill workers and activate an internal prefill router
 # No standalone prefill router needed - the frontend handles prefill routing internally
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dingo.frontend \
-    --router-mode kv \
-    --router-reset-states &
+python3 -m dynamo.frontend \
+    --router-mode kv &
 
 # NOTE: Each worker picks a random NCCL port (get_free_port) for torch.distributed.
 # This has a TOCTOU race — the port can be grabbed before init_process_group binds it,
@@ -65,7 +64,7 @@ python3 -m dingo.frontend \
 
 # run prefill worker
 OTEL_SERVICE_NAME=dynamo-worker-prefill-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-python3 -m dingo.sglang \
+python3 -m dynamo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -81,7 +80,7 @@ python3 -m dingo.sglang \
 
 # run prefill worker
 OTEL_SERVICE_NAME=dynamo-worker-prefill-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -97,7 +96,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
 
 # run decode worker
 OTEL_SERVICE_NAME=dynamo-worker-decode-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT3:-8083} \
-CUDA_VISIBLE_DEVICES=3 python3 -m dingo.sglang \
+CUDA_VISIBLE_DEVICES=3 python3 -m dynamo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \
@@ -113,7 +112,7 @@ CUDA_VISIBLE_DEVICES=3 python3 -m dingo.sglang \
 
 # run decode worker
 OTEL_SERVICE_NAME=dynamo-worker-decode-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT4:-8084} \
-CUDA_VISIBLE_DEVICES=2 python3 -m dingo.sglang \
+CUDA_VISIBLE_DEVICES=2 python3 -m dynamo.sglang \
   --model-path Qwen/Qwen3-0.6B \
   --served-model-name Qwen/Qwen3-0.6B \
   --page-size 64 \

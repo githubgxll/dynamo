@@ -9,4 +9,7 @@ so that existing imports from dingo.vllm.constants continue to work.
 
 from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
 
-__all__ = ["DisaggregationMode", "EmbeddingTransferMode"]
+__all__ = [
+    "DisaggregationMode",
+    "EmbeddingTransferMode",
+]

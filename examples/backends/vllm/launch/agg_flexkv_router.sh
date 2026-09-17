@@ -13,10 +13,9 @@ print_launch_banner "Launching Aggregated Serving + FlexKV + KV Routing (2 GPUs)
 
 
 # Run frontend and KV router
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dingo.frontend \
-    --router-mode kv \
-    --router-reset-states &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dynamo.frontend \
+    --router-mode kv &
 
 # Run worker with FlexKV
 DYNAMO_USE_FLEXKV=1 \

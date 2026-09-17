@@ -30,16 +30,14 @@ RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64")
     mv "sccache-${SCCACHE_VERSION}-${ARCH_ALT}-unknown-linux-musl/sccache" /usr/local/bin/ && \
     rm -rf sccache*
 
-# Install uv package manager.
-# Download the uv release tarball directly from GitHub instead of pulling the
-# ghcr.io/astral-sh/uv image: ghcr.io is unreachable (TLS handshake timeout) from
-# some CI/build networks, and pinning the version keeps builds reproducible.
-ARG UV_VERSION=0.10.7
-RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
-    wget --tries=3 --waitretry=5 \
-        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" && \
-    tar -xzf "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" -C /usr/local/bin --strip-components=1 && \
-    rm -f "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz"
+# Install uv package manager. It lives in a directory of its own, prepended to
+# PATH, because some bases ship a uv earlier on PATH than /usr/local/bin
+# (/root/.local/bin, /opt/venv/bin). All stages share one uv cache mount and uv
+# rejects cache entries written by a newer version, so the pinned copy has to be
+# the one that runs. Holding only uv/uvx keeps the prepend from shadowing
+# anything else, notably a framework venv's python.
+COPY --from=ghcr.io/astral-sh/uv:{{ context.dynamo.uv_version }} /uv /uvx /opt/uv/bin/
+ENV PATH=/opt/uv/bin:${PATH}
 
 # Install NATS server
 ARG NATS_VERSION
@@ -59,7 +57,7 @@ ENV PATH=/usr/local/bin/etcd/:$PATH
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH \
-    RUST_VERSION=1.93.1
+    RUST_VERSION=1.96.1
 
 # Install Rust — ARCH_ALT (x86_64/aarch64) is derived from TARGETARCH at build time
 RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \

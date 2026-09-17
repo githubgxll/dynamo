@@ -41,17 +41,14 @@ fi
 
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
-# Select legacy vs unified worker entry point. `--unified` routes workers
-# through dingo.vllm.unified_main (the Rust backend-common Worker, which
-# owns the prefill drain loop); default stays on the legacy main.
-pick_worker_module dingo.vllm dingo.vllm.unified_main "$@"
+WORKER_MODULE="dynamo.vllm"
 
 HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Disaggregated on Same GPU (1 GPU)" "$MODEL" "$HTTP_PORT" \
     "Workers:     2 (prefill + decode, fraction is per worker)"
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 # Set DYN_CHAT_PROCESSOR=vllm to exercise the Python pre/post processor instead of Rust.
 FRONTEND_ARGS=()
 if [[ -n "${DYN_CHAT_PROCESSOR:-}" ]]; then
@@ -60,7 +57,7 @@ fi
 if [[ -n "${DYN_ROUTER_MODE:-}" ]]; then
     FRONTEND_ARGS+=(--router-mode "$DYN_ROUTER_MODE")
 fi
-python3 -m dingo.frontend "${FRONTEND_ARGS[@]}" &
+python3 -m dynamo.frontend "${FRONTEND_ARGS[@]}" &
 
 # run decode worker with metrics on port 8081
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag

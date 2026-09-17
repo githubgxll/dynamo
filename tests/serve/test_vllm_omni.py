@@ -8,12 +8,14 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from tests.utils.vllm_omni import vllm_omni_skip_reason
+
+if _omni_skip_reason := vllm_omni_skip_reason():
+    pytest.skip(_omni_skip_reason, allow_module_level=True)
+
 try:
-    from dingo.vllm.omni.args import OmniConfig  # noqa: F401
-except Exception:
-    # vllm_omni's import chain can raise NotImplementedError (and other
-    # non-ImportError types) on platforms it doesn't support — e.g. a
-    # CPU-only runner where vllm._C can't load libcuda.so.1.
+    from dynamo.vllm.omni.args import OmniConfig  # noqa: F401
+except (ImportError, OSError, NotImplementedError):
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
 
 from tests.serve.common import (
@@ -21,6 +23,7 @@ from tests.serve.common import (
     params_with_model_mark,
     run_serve_deployment,
 )
+from tests.utils.device import detect_target_device
 from tests.utils.engine_process import EngineConfig
 from tests.utils.payloads import (
     AudioSpeechPayload,
@@ -143,7 +146,6 @@ vllm_omni_configs = {
         ],
         marks=[
             pytest.mark.gpu_1,
-            pytest.mark.xpu_1,
             pytest.mark.post_merge,
             pytest.mark.timeout(1200),
         ],
@@ -178,10 +180,6 @@ vllm_omni_configs = {
             pytest.mark.xpu_1,
             pytest.mark.pre_merge,
             pytest.mark.timeout(1200),
-            pytest.mark.skip(
-                reason="vLLM-Omni audio release/v0.19.0rc1 uses the pre-vLLM 0.20 "
-                "GPUModelRunner._bookkeeping_sync signature"
-            ),
         ],
         model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         request_payloads=[
@@ -201,7 +199,10 @@ vllm_omni_configs = {
     # Known flake (post-merge): URL check fails after 600s with "StageDiffusionProc
     # died during handshake (exit code 143)" — the diffusion child process is
     # SIGTERM'd before the handshake completes. Bumping the timeout will not fix this;
-    # needs investigation of why StageDiffusionProc is dying.
+    # needs investigation of why StageDiffusionProc is dying. On XPU, this
+    # currently manifests as `RuntimeError: level_zero backend failed with error:
+    # 20 (UR_RESULT_ERROR_DEVICE_LOST)`, so skip the XPU variant until the
+    # backend path is stabilized.
     "omni_t2v": VLLMOmniConfig(
         name="omni_t2v",
         directory=vllm_dir,
@@ -213,7 +214,6 @@ vllm_omni_configs = {
         ],
         marks=[
             pytest.mark.gpu_1,
-            pytest.mark.xpu_1,
             pytest.mark.post_merge,
             pytest.mark.timeout(1200),
             pytest.mark.profiled_vram_gib(16.8),  # actual profiled peak with kv-bytes
@@ -234,22 +234,6 @@ vllm_omni_configs = {
                     },
                 },
                 repeat_count=1,
-                expected_response=[],
-                expected_log=[],
-            ),
-            # Streaming video generation
-            VideoGenerationPayload(
-                body={
-                    "prompt": "Dog running on a beach",
-                    "size": "480x272",
-                    "response_format": "url",
-                    "nvext": {
-                        "num_inference_steps": 10,
-                        "num_frames": 17,
-                    },
-                },
-                repeat_count=1,
-                http_stream=True,
                 expected_response=[],
                 expected_log=[],
             ),
@@ -278,4 +262,11 @@ def test_omni_serve_deployment(
     config = dataclasses.replace(
         vllm_omni_config_test, frontend_port=dynamo_dynamic_ports.frontend_port
     )
-    run_serve_deployment(config, request, ports=dynamo_dynamic_ports)
+    extra_env = (
+        {"_PROFILE_OVERRIDE_VLLM_KV_CACHE_BYTES": "536870912"}
+        if config.name == "omni_audio" and detect_target_device() == "xpu"
+        else None
+    )
+    run_serve_deployment(
+        config, request, ports=dynamo_dynamic_ports, extra_env=extra_env
+    )

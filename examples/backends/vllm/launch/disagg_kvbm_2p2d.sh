@@ -13,14 +13,14 @@ print_launch_banner "Launching Disaggregated + KVBM 2P+2D (4 GPUs)" "$MODEL" "$H
 
 
 # run ingress with KV router
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dingo.frontend --router-mode kv &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dynamo.frontend --router-mode kv &
 
 # run decode workers on GPU 0 and 1, without enabling KVBM
 # NOTE: remove --enforce-eager for production use
-CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --enforce-eager --disaggregation-mode decode &
+CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --enforce-eager --disaggregation-mode decode --disable-hybrid-kv-cache-manager &
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --enforce-eager --disaggregation-mode decode &
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm --model "$MODEL" --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' --enforce-eager --disaggregation-mode decode --disable-hybrid-kv-cache-manager &
 
 # run prefill workers on GPU 2 and 3 with KVBM enabled using 20GB of CPU cache
 # NOTE: use different barrier id prefixes for each prefill worker to avoid conflicts
@@ -28,9 +28,10 @@ CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm --model "$MODEL" --kv-transfer-conf
 VLLM_NIXL_SIDE_CHANNEL_PORT=20098 \
 DYN_KVBM_CPU_CACHE_GB=20 \
 CUDA_VISIBLE_DEVICES=2 \
-  python3 -m dingo.vllm \
+  python3 -m dynamo.vllm \
     --model "$MODEL" \
     --disaggregation-mode prefill \
+    --disable-hybrid-kv-cache-manager \
     --kv-transfer-config '{"kv_connector":"PdConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"},{"kv_connector":"NixlConnector","kv_role":"kv_both"}]},"kv_connector_module_path":"kvbm.vllm_integration.connector"}' \
     --enforce-eager \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20082","enable_kv_cache_events":true}' &
@@ -40,9 +41,10 @@ DYN_KVBM_LEADER_ZMQ_PUB_PORT=56003 \
 DYN_KVBM_LEADER_ZMQ_ACK_PORT=56004 \
 DYN_KVBM_CPU_CACHE_GB=20 \
 CUDA_VISIBLE_DEVICES=3 \
-  python3 -m dingo.vllm \
+  python3 -m dynamo.vllm \
     --model "$MODEL" \
     --disaggregation-mode prefill \
+    --disable-hybrid-kv-cache-manager \
     --kv-transfer-config '{"kv_connector":"PdConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"DynamoConnector","kv_connector_module_path":"kvbm.vllm_integration.connector","kv_role":"kv_both"},{"kv_connector":"NixlConnector","kv_role":"kv_both"}]},"kv_connector_module_path":"kvbm.vllm_integration.connector"}' \
     --enforce-eager \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20083","enable_kv_cache_events":true}' &

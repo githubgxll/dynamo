@@ -1,0 +1,211 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Argument parsing and typed config for Dynamo TRT-LLM."""
+
+import argparse
+import json
+import logging
+import os
+import sys
+import warnings
+from typing import Any, Dict, Optional, Sequence
+
+from dynamo.common.config_dump import register_encoder
+from dynamo.common.configuration.groups.router_args import (
+    WorkerRouterConfig,
+    parse_worker_router_config,
+    register_worker_router_help,
+)
+from dynamo.common.configuration.groups.runtime_args import (
+    DynamoRuntimeArgGroup,
+    DynamoRuntimeConfig,
+)
+from dynamo.common.utils.runtime import parse_endpoint
+from dynamo.trtllm.backend_args import DynamoTrtllmArgGroup, DynamoTrtllmConfig
+from dynamo.trtllm.constants import DisaggregationMode, Modality
+from dynamo.trtllm.dynamic_flags import parse_dynamic_flags
+
+
+def _warn_deprecated(message: str) -> None:
+    logging.warning(message)
+    warnings.warn(message, DeprecationWarning, stacklevel=3)
+
+
+DEFAULT_ENDPOINT_COMPONENT = "backend"
+DEFAULT_PREFILL_COMPONENT = "prefill"
+DEFAULT_ENCODE_COMPONENT = "encode"
+DEFAULT_DIFFUSION_COMPONENT = "diffusion"
+DEFAULT_ENDPOINT_NAME = "generate"
+VALID_TRTLLM_CONNECTORS = {"none", "kvbm"}
+
+
+class Config(DynamoRuntimeConfig, DynamoTrtllmConfig):
+    component: str
+    # Whether this worker publishes KV events. Distinct from the router-side
+    # `use_kv_events` on `router_advertisement`, which means the router
+    # subscribes to them -- the reason the two live on separate objects.
+    use_kv_events: bool
+    # Routing this worker set advertises in its model card; None inherits the
+    # frontend's configuration.
+    router_advertisement: Optional[WorkerRouterConfig] = None
+    connector: list[str]  # Redeclare for mypy (inherited from DynamoRuntimeConfig)
+
+    def validate(self) -> None:
+        DynamoRuntimeConfig.validate(self)
+        DynamoTrtllmConfig.validate(self)
+        self.use_kv_events = self.publish_kv_events
+
+        # fix the connector as trtllm accepts only one connector and it should be in VALID_TRTLLM_CONNECTORS
+        # while the runtime args accepts a list of connectors
+        if self.connector:
+            if len(self.connector) > 1:
+                raise ValueError(
+                    "TRT-LLM supports at most one connector entry. Use `--connector none` or `--connector kvbm`."
+                )
+            elif self.connector[0] not in VALID_TRTLLM_CONNECTORS:
+                source = (
+                    f"DYN_CONNECTOR environment variable ('{os.environ['DYN_CONNECTOR']}')"
+                    if "DYN_CONNECTOR" in os.environ
+                    else f"shared runtime default ('{self.connector[0]}')"
+                )
+                logging.warning(
+                    f"TRT-LLM does not support connector '{self.connector[0]}' (set via {source}). "
+                    f"Supported connectors: {VALID_TRTLLM_CONNECTORS}. Falling back to 'none'."
+                )
+                self.connector = ["none"]
+
+    def has_connector(self, connector_name: str) -> bool:
+        return (
+            self.connector is not None
+            and len(self.connector) > 0
+            and connector_name == self.connector[0]
+        )
+
+
+@register_encoder(Config)
+def _preprocess_for_encode_config(config: Config) -> Dict[str, Any]:
+    return config.__dict__
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> Config:
+    """Parse command-line arguments for the TensorRT-LLM backend.
+
+    In addition to the known flags, supports dynamic configuration flags
+    of the form ``--trtllm.<group>.<subgroup>.<key> <value>`` which are
+    collected into a nested dict and passed through ``override_engine_args``.
+    Cannot be combined with the explicit ``--override-engine-args`` flag.
+    """
+    cli_args = list(argv) if argv is not None else sys.argv[1:]
+
+    # The deprecated combined spelling maps to both independent controls.
+    expanded_cli_args = []
+    legacy_cli_seen = False
+    for arg in cli_args:
+        flag = arg.split("=", 1)[0]
+        if flag == "--publish-events-and-metrics":
+            legacy_cli_seen = True
+            expanded_cli_args.extend(["--publish-kv-events", "--publish-metrics"])
+        elif flag == "--no-publish-events-and-metrics":
+            legacy_cli_seen = True
+            expanded_cli_args.extend(["--no-publish-kv-events", "--no-publish-metrics"])
+        else:
+            expanded_cli_args.append(arg)
+    cli_args = expanded_cli_args
+
+    if legacy_cli_seen:
+        _warn_deprecated(
+            "--publish-events-and-metrics is deprecated; use both "
+            "--publish-kv-events and --publish-metrics. The old flag remains "
+            "an alias for both controls for one release."
+        )
+    if "DYN_TRTLLM_PUBLISH_EVENTS_AND_METRICS" in os.environ:
+        _warn_deprecated(
+            "DYN_TRTLLM_PUBLISH_EVENTS_AND_METRICS is deprecated; use "
+            "DYN_TRTLLM_PUBLISH_KV_EVENTS and DYN_TRTLLM_PUBLISH_METRICS. "
+            "The old env var remains an alias for both controls for one release."
+        )
+        legacy_value = os.environ["DYN_TRTLLM_PUBLISH_EVENTS_AND_METRICS"]
+        os.environ.setdefault("DYN_TRTLLM_PUBLISH_KV_EVENTS", legacy_value)
+        os.environ.setdefault("DYN_TRTLLM_PUBLISH_METRICS", legacy_value)
+
+    parser = argparse.ArgumentParser(
+        description="Dynamo TensorRT-LLM worker configuration\n\n"
+        "Dynamic engine configuration can be passed via dotted flags:\n"
+        "  --trtllm.<group>.<key> <value>\n"
+        "Example:\n"
+        "  --trtllm.kv_cache_config.free_gpu_memory_fraction 0.7\n"
+        "These flags are mutually exclusive with --override-engine-args.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
+    DynamoRuntimeArgGroup().add_arguments(parser)
+    DynamoTrtllmArgGroup().add_arguments(parser)
+
+    # Router advertisement flags are parsed into their own config object rather
+    # than flattened onto Config: the router's --router-kv-events lands on
+    # `use_kv_events`, which Config already uses for "this worker publishes KV
+    # events". Registered here for --help only; parsed below.
+    register_worker_router_help(parser)
+
+    parsed_args, remaining = parser.parse_known_args(cli_args)
+    config = Config.from_cli_args(parsed_args)
+
+    # Consume the router flags before the dynamic --trtllm.* scan sees them.
+    config.router_advertisement, remaining = parse_worker_router_config(remaining)
+
+    # Parse dynamic --trtllm.* flags from the remaining args
+    dynamic_overrides = parse_dynamic_flags(remaining)
+
+    if dynamic_overrides and config.override_engine_args:
+        logging.error(
+            "--override-engine-args and --trtllm.* dynamic flags are mutually "
+            "exclusive. Use one or the other."
+        )
+        sys.exit(1)
+
+    if dynamic_overrides:
+        config.override_engine_args = json.dumps(dynamic_overrides)
+
+    config.validate()
+
+    # TODO: move this to common configuration.
+    if config.custom_jinja_template:
+        expanded_template_path = os.path.expanduser(
+            os.path.expandvars(config.custom_jinja_template)
+        )
+        if not os.path.isfile(expanded_template_path):
+            raise FileNotFoundError(
+                f"Custom Jinja template file not found: {expanded_template_path}"
+            )
+        config.custom_jinja_template = expanded_template_path
+    else:
+        config.custom_jinja_template = None
+
+    endpoint = config.endpoint or _default_endpoint(
+        namespace=config.namespace,
+        modality=config.modality,
+        disaggregation_mode=config.disaggregation_mode,
+    )
+    parsed_namespace, parsed_component_name, parsed_endpoint_name = parse_endpoint(
+        endpoint
+    )
+    config.namespace = parsed_namespace
+    config.component = parsed_component_name
+    config.endpoint = parsed_endpoint_name
+
+    return config
+
+
+def _default_endpoint(
+    namespace: str, modality: Modality, disaggregation_mode: DisaggregationMode
+) -> str:
+    if Modality.is_diffusion(modality):
+        component_name = DEFAULT_DIFFUSION_COMPONENT
+    elif disaggregation_mode == DisaggregationMode.ENCODE:
+        component_name = DEFAULT_ENCODE_COMPONENT
+    elif disaggregation_mode == DisaggregationMode.PREFILL:
+        component_name = DEFAULT_PREFILL_COMPONENT
+    else:
+        component_name = DEFAULT_ENDPOINT_COMPONENT
+    return f"dyn://{namespace}.{component_name}.{DEFAULT_ENDPOINT_NAME}"

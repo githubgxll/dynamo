@@ -23,13 +23,7 @@ MODEL="Qwen/Qwen3-0.6B"
 
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
-# Strip --unified via the shared helper, then parse the remaining flags.
-# `--unified` routes workers through dingo.sglang.unified_main (the Rust
-# backend-common Worker, which owns the prefill drain loop); default stays
-# on the legacy main. Done before the arg loop so it isn't rejected as an
-# unknown option.
-pick_worker_module dingo.sglang dingo.sglang.unified_main "$@"
-set -- "${REMAINING_ARGS[@]}"
+WORKER_MODULE="dynamo.sglang"
 
 # --model overrides the default (e.g. a VLM for the multimodal P/D test).
 # --single-gpu is a no-op kept for parity with the other launch scripts.
@@ -48,10 +42,9 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--model <name>] [--single-gpu] [--unified]"
+            echo "Usage: $0 [--model <name>] [--single-gpu]"
             echo "  --model <name>  Model to serve (default: $MODEL)"
             echo "  --single-gpu    Accepted no-op; both workers already share GPU 0"
-            echo "  --unified       Use the unified_main entry point (Rust Worker)"
             exit 0
             ;;
         *)
@@ -89,7 +82,7 @@ print_launch_banner "Launching Disaggregated (same GPU)" "$MODEL" "$HTTP_PORT" \
     "Workers:     2 (prefill + decode, fraction is per worker)"
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 # Set DYN_CHAT_PROCESSOR=sglang to exercise the Python pre/post processor instead of Rust.
 FRONTEND_ARGS=()
 if [[ -n "${DYN_CHAT_PROCESSOR:-}" ]]; then
@@ -98,7 +91,7 @@ fi
 if [[ -n "${DYN_ROUTER_MODE:-}" ]]; then
     FRONTEND_ARGS+=(--router-mode "$DYN_ROUTER_MODE")
 fi
-python3 -m dingo.frontend "${FRONTEND_ARGS[@]}" &
+python3 -m dynamo.frontend "${FRONTEND_ARGS[@]}" &
 
 # NOTE: Each worker picks a random NCCL port (get_free_port) for torch.distributed.
 # This has a TOCTOU race — the port can be grabbed before init_process_group binds it,

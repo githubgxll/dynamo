@@ -8,9 +8,11 @@ from dingo.planner.plugins.builtins.local_planner import (
     BuiltinLoadPropose,
     BuiltinThroughputPropose,
 )
+from dynamo.planner.plugins.builtins.observe import EnvironmentObservePlugin
 
 __all__ = [
     "BuiltinLoadPredict",
     "BuiltinLoadPropose",
     "BuiltinThroughputPropose",
+    "EnvironmentObservePlugin",
 ]

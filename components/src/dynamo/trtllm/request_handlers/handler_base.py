@@ -1,0 +1,1667 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import asyncio
+import dataclasses
+import inspect
+import logging
+import os
+import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any, Optional, Protocol, Union
+
+import torch
+from tensorrt_llm.executor.request import DEFAULT_REQUEST_PRIORITY
+from tensorrt_llm.executor.result import GenerationResult
+from tensorrt_llm.executor.utils import RequestError
+from tensorrt_llm.llmapi import DisaggregatedParams as LlmDisaggregatedParams
+from tensorrt_llm.llmapi.llm import SamplingParams
+from tensorrt_llm.sampling_params import GuidedDecodingParams
+from tensorrt_llm.scheduling_params import SchedulingParams
+
+from dynamo._core import Client, Context
+from dynamo.common.backend import logprobs as _shared_logprobs
+from dynamo.common.backend.agent_context import session_id_from_request
+from dynamo.common.backend.engine import is_generation_stage
+from dynamo.common.constants import DisaggregationMode as CommonDisaggregationMode
+from dynamo.common.multimodal.cache_uuid import reject_unsupported_multimodal_uuids
+from dynamo.common.utils.structural_tag import serialize_structural_tag
+from dynamo.health_check import HEALTH_CHECK_KEY
+from dynamo.llm.exceptions import EngineShutdown, InvalidArgument
+from dynamo.logits_processing.examples import HelloWorldLogitsProcessor
+from dynamo.nixl_connect import Connector
+from dynamo.runtime import DistributedRuntime
+from dynamo.runtime.logging import configure_dynamo_logging
+from dynamo.trtllm.constants import DisaggregationMode
+from dynamo.trtllm.conversation_affinity import (
+    CONVERSATION_PARAMS_AVAILABLE,
+    conversation_params_for,
+    engine_conversation_affinity_enabled,
+)
+from dynamo.trtllm.engine import TensorRTLLMEngine
+from dynamo.trtllm.logits_processing.adapter import create_trtllm_adapters
+from dynamo.trtllm.metrics import AdditionalMetricsCollector
+from dynamo.trtllm.multimodal_processor import MultimodalRequestProcessor
+from dynamo.trtllm.publisher import Publisher
+from dynamo.trtllm.request_handlers.base_generative_handler import BaseGenerativeHandler
+from dynamo.trtllm.utils.disagg_utils import (
+    DisaggregatedParams,
+    DisaggregatedParamsCodec,
+    get_compatible_global_disagg_request_id,
+)
+from dynamo.trtllm.utils.request_utils import (
+    apply_stop_conditions_to_sampling_params,
+    normalize_top_k_for_trtllm,
+    request_cache_salt,
+)
+
+if TYPE_CHECKING:
+    # tensorrt_llm may use a different version that doesn't have MetricsCollector,
+    # so guard this import inside TYPE_CHECKING to avoid runtime import errors.
+    from tensorrt_llm.metrics import MetricsCollector
+
+configure_dynamo_logging()
+
+logger = logging.getLogger(__name__)
+
+BYPASS_REMOTE_PREFILL_ANNOTATION = "x-bypass-remote-prefill"
+
+
+class TRTLLMEnginePauseController:
+    """Adapts TRT-LLM sleep/wake to the standard pause controller interface.
+
+    Two memory domains: KV cache via TRT-LLM collective_rpc, weights via GMS.
+    """
+
+    def __init__(self, engine: TensorRTLLMEngine):
+        self._engine = engine
+        self._is_paused = False
+        self._pending_resume_tags: set[str] = set()
+
+    @property
+    def is_paused(self) -> bool:
+        return self._is_paused
+
+    @property
+    def needs_resume_recovery(self) -> bool:
+        return bool(self._pending_resume_tags)
+
+    async def pause(self, tags: list[str] | None = None) -> bool:
+        if self._is_paused or self._pending_resume_tags:
+            return False
+        tags = tags or ["kv_cache", "weights"]
+        if "kv_cache" in tags:
+            self._pending_resume_tags.add("kv_cache")
+            self._collective_rpc("sleep", ["kv_cache"])
+        if "weights" in tags:
+            self._pending_resume_tags.add("weights")
+            self._release_gms_weights()
+        self._is_paused = True
+        return True
+
+    async def resume(self, tags: list[str] | None = None) -> bool:
+        if not self._is_paused and not self._pending_resume_tags:
+            return False
+        requested_tags = set(tags or ["kv_cache", "weights"])
+        # During recovery, restore the domains that may actually be asleep
+        # instead of trusting a narrower resume request.
+        resume_tags = self._pending_resume_tags or requested_tags
+        if "weights" in resume_tags:
+            self._restore_gms_weights()
+            self._pending_resume_tags.discard("weights")
+        if "kv_cache" in resume_tags:
+            self._collective_rpc("wakeup", ["kv_cache"])
+            self._pending_resume_tags.discard("kv_cache")
+        return True
+
+    def mark_resumed(self) -> None:
+        self._is_paused = False
+        self._pending_resume_tags.clear()
+
+    def _collective_rpc(self, method: str, rpc_tags: list[str]) -> None:
+        """Call TRT-LLM collective_rpc for KV cache sleep/wake."""
+        rpc = getattr(self._engine.llm, "_collective_rpc", None)
+        if rpc is None:
+            logger.warning(
+                "TRT-LLM does not expose _collective_rpc; skipping %s", method
+            )
+            return
+
+        rpc(method, args=(rpc_tags,), kwargs={}, non_block=False)
+
+    @staticmethod
+    def _release_gms_weights() -> None:
+        """Release GMS-managed weight memory."""
+        try:
+            from gpu_memory_service.client.torch.allocator import (
+                get_gms_client_memory_manager,
+            )
+        except ImportError:
+            return
+        manager = get_gms_client_memory_manager("weights")
+        if manager is None:
+            return
+        manager.unmap_all_vas()
+        manager.abort()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+    @staticmethod
+    def _restore_gms_weights() -> None:
+        """Restore GMS-managed weight memory."""
+        try:
+            from gpu_memory_service.client.torch.allocator import (
+                get_gms_client_memory_manager,
+            )
+            from gpu_memory_service.integrations.trtllm.model_loader import (
+                get_gms_lock_mode,
+            )
+        except ImportError:
+            return
+        manager = get_gms_client_memory_manager("weights")
+        if manager is None or not manager.is_unmapped:
+            return
+        manager.connect(get_gms_lock_mode())
+        manager.remap_all_vas()
+
+
+class _Abortable(Protocol):
+    """Structural type for objects that support abort(). Satisfied by both
+    GenerationResult and _DeferredAbort."""
+
+    def abort(self) -> None:
+        ...
+
+
+class _DeferredAbort:
+    """Wraps GenerationResult.abort() to defer until first token in disagg decode.
+
+    When abort() is called before the first generation result, spawns a
+    background asyncio.Task that reads from GenerationResult.aqueue (TRT-LLM's
+    internal asyncio.Queue, decoupled from Dynamo RPC transport) until the
+    first result arrives, then calls the real abort().
+    """
+
+    def __init__(self, generation_result: GenerationResult):
+        self._generation_result = generation_result
+        self._first_token_received = False
+
+    def signal_first_token(self) -> None:
+        """Called by generate_locally() when first generation result is yielded."""
+        self._first_token_received = True
+
+    def abort(self) -> None:
+        """Abort immediately if first token received, otherwise defer."""
+        if self._first_token_received:
+            self._generation_result.abort()
+            logging.debug("Deferred abort: immediate path, engine abort fired")
+        else:
+            logging.debug(
+                "Deferred abort: first token not received, spawning background task"
+            )
+            asyncio.create_task(self._wait_and_abort())
+
+    async def _wait_and_abort(self) -> None:
+        """Background task: read from GenerationResult until first token, then abort."""
+        try:
+            async for _ in self._generation_result:
+                break  # First result = KV transfer complete
+        except Exception:
+            pass
+        self._generation_result.abort()
+        logging.debug("Deferred abort: deferred path, engine abort fired")
+
+
+@dataclass
+class RequestHandlerConfig:
+    """
+    Configuration for the request handler
+    """
+
+    engine: TensorRTLLMEngine
+    default_sampling_params: SamplingParams
+    publisher: Optional[Publisher]
+    disaggregation_mode: DisaggregationMode
+    encode_client: Optional[Client] = None
+    multimodal_processor: Optional[
+        MultimodalRequestProcessor
+    ] = None  # for multimodal support
+    connector: Optional[Connector] = None
+    runtime: Optional[
+        DistributedRuntime
+    ] = None  # DistributedRuntime reference for graceful shutdown
+    metrics_collector: Optional["MetricsCollector"] = None
+    kv_block_size: int = 32
+    shutdown_event: Optional[asyncio.Event] = None
+    generate_endpoint: Optional[Any] = None
+    encoder_cache_capacity_gb: float = 0  # Encoder cache capacity in GB
+    additional_metrics: Optional["AdditionalMetricsCollector"] = None
+    max_seq_len: Optional[int] = None
+    disagg_machine_id: int = 0  # 10-bit machine_id for snowflake disagg_request_id
+    # Force conversation-affinity ADP routing regardless of engine config detection.
+    conversation_affinity: bool = False
+    # Select whether the engine or Dynamo owns initial DP-rank placement in affinity mode.
+    conversation_affinity_dp_rank_source: str = "engine"
+    first_token_source: Optional[Any] = None
+
+
+class HandlerBase(BaseGenerativeHandler):
+    """
+    Base class for LLM request handlers (text generation, multimodal LLM).
+
+    This class is dedicated to LLM-based generation using TensorRT-LLM engine.
+    For diffusion-based handlers (video, image), see VideoGenerationHandler
+    and ImageGenerationHandler which inherit directly from BaseGenerativeHandler.
+
+    Inherits from BaseGenerativeHandler to ensure a consistent interface
+    across all generative handlers (LLM, video, image).
+    """
+
+    def __init__(self, config: RequestHandlerConfig):
+        self.engine = config.engine
+        self.default_sampling_params = config.default_sampling_params
+        self.publisher = config.publisher
+        self.metrics_collector = config.metrics_collector
+        self.disaggregation_mode = config.disaggregation_mode
+        # Engine-owned conversation-affinity ADP routing gate; resolved lazily on first
+        # request (engine may not be initialized at handler construction). See
+        # conversation_affinity.py. None = not yet resolved.
+        self._conversation_affinity: Optional[bool] = None
+        # Manual override (--conversation-affinity / DYN_ENGINE_CONV_AFFINITY) to force
+        # engine-side assignment of conversation-affinity regardless of engine detection.
+        self._engine_conversation_affinity_override: bool = config.conversation_affinity
+        self._conversation_affinity_dp_rank_source: str = (
+            config.conversation_affinity_dp_rank_source
+        )
+        self.encode_client = config.encode_client
+        self.multimodal_processor = config.multimodal_processor
+        self.first_generation = True
+        self.connector = config.connector
+        # Store runtime reference for graceful shutdown
+        self.runtime = config.runtime
+        self.kv_block_size: int = config.kv_block_size
+        self.shutdown_event = config.shutdown_event
+        self.generate_endpoint = config.generate_endpoint
+        self.additional_metrics = config.additional_metrics
+        self.max_seq_len = config.max_seq_len
+        self.disagg_machine_id = config.disagg_machine_id
+        self.first_token_source = config.first_token_source
+        # Sleep/wake state
+        self._pause_lock = asyncio.Lock()
+        self._inflight_lock = asyncio.Lock()
+        self._inflight_requests = 0
+        self._no_inflight_requests = asyncio.Event()
+        self._no_inflight_requests.set()
+        self._pause_controller = TRTLLMEnginePauseController(config.engine)
+        self._reject_new_requests = False
+
+    def check_error(self, result: dict) -> bool:
+        """
+        Check if there is an error in the result.
+        """
+        if self.disaggregation_mode == DisaggregationMode.PREFILL:
+            return result["finish_reason"] == "error"
+        else:
+            return (
+                result["finish_reason"] == "stop" or result["finish_reason"] == "error"
+            )
+
+    # ------------------------------------------------------------------
+    # In-flight request tracking (used by sleep/wake)
+    # ------------------------------------------------------------------
+
+    async def _set_reject_new_requests(self, reject: bool) -> None:
+        async with self._inflight_lock:
+            self._reject_new_requests = reject
+
+    async def _mark_request_started(self) -> bool:
+        async with self._inflight_lock:
+            if self._reject_new_requests:
+                return False
+            self._inflight_requests += 1
+            self._no_inflight_requests.clear()
+            return True
+
+    async def _mark_request_finished(self) -> None:
+        async with self._inflight_lock:
+            if self._inflight_requests == 0:
+                return
+            self._inflight_requests -= 1
+            if self._inflight_requests == 0:
+                self._no_inflight_requests.set()
+
+    async def _wait_for_inflight_requests(self, timeout_s: float) -> None:
+        try:
+            await asyncio.wait_for(self._no_inflight_requests.wait(), timeout_s)
+        except asyncio.TimeoutError as exc:
+            async with self._inflight_lock:
+                inflight = self._inflight_requests
+            raise RuntimeError(
+                f"Timed out waiting for {inflight} in-flight request(s) to finish"
+            ) from exc
+
+    @staticmethod
+    def _controller_needs_resume_recovery(
+        controller: TRTLLMEnginePauseController,
+    ) -> bool:
+        needs_recovery = getattr(controller, "needs_resume_recovery", False)
+        return needs_recovery if isinstance(needs_recovery, bool) else False
+
+    # ------------------------------------------------------------------
+    # Sleep / wake public API (delegates to TRTLLMEnginePauseController)
+    # ------------------------------------------------------------------
+
+    async def release_memory_occupation(self, body: dict) -> dict:
+        """Release GPU memory: unregister endpoint, drain requests, pause engine."""
+        body = body or {}
+        tags = body.get("tags")
+
+        async with self._pause_lock:
+            if self._pause_controller.is_paused:
+                return {"status": "ok", "message": "Memory already released"}
+            if self._controller_needs_resume_recovery(self._pause_controller):
+                # A prior release rolled back into a half-paused state; pause()
+                # would no-op and falsely report success. Force a resume first.
+                return {
+                    "status": "error",
+                    "message": "resume_memory_occupation required before retrying release",
+                }
+
+            try:
+                await self._set_reject_new_requests(True)
+
+                if self.generate_endpoint is not None:
+                    await self.generate_endpoint.unregister_endpoint_instance()
+
+                timeout_s = float(body.get("timeout_s", 30.0))
+                await self._wait_for_inflight_requests(timeout_s)
+                await self._pause_controller.pause(tags)
+
+                return {"status": "ok", "message": "Memory released"}
+            except Exception as exc:
+                logger.error("release_memory_occupation failed: %s", exc)
+                # Rollback: TRT-LLM has no pause_generation(), so we
+                # manually unregistered the endpoint and set reject flag
+                # above. Restore both on failure. If pause partially
+                # succeeded, resume the completed domains first.
+                if self._controller_needs_resume_recovery(self._pause_controller):
+                    try:
+                        await self._pause_controller.resume(tags)
+                        self._pause_controller.mark_resumed()
+                    except Exception as resume_exc:
+                        logger.error(
+                            "release_memory_occupation rollback resume failed: %s",
+                            resume_exc,
+                        )
+                        return {
+                            "status": "error",
+                            "message": (f"{exc}; rollback resume failed: {resume_exc}"),
+                        }
+                if self.generate_endpoint is not None:
+                    await self.generate_endpoint.register_endpoint_instance()
+                await self._set_reject_new_requests(False)
+                return {"status": "error", "message": str(exc)}
+
+    async def resume_memory_occupation(self, body: dict) -> dict:
+        """Restore GPU memory: resume engine, re-register endpoint."""
+        body = body or {}
+        tags = body.get("tags")
+
+        async with self._pause_lock:
+            needs_recovery = self._controller_needs_resume_recovery(
+                self._pause_controller
+            )
+            if not self._pause_controller.is_paused and not needs_recovery:
+                return {"status": "ok", "message": "Memory already resumed"}
+
+            try:
+                await self._pause_controller.resume(tags)
+
+                if self.generate_endpoint is not None:
+                    await self.generate_endpoint.register_endpoint_instance()
+
+                await self._set_reject_new_requests(False)
+                self._pause_controller.mark_resumed()
+                return {"status": "ok", "message": "Memory resumed"}
+            except Exception as exc:
+                logger.error("resume_memory_occupation failed: %s", exc)
+                return {"status": "error", "message": str(exc)}
+
+    @staticmethod
+    def _extract_logprobs(
+        output, num_output_tokens_so_far: int
+    ) -> tuple[list[float] | None, list[list[dict]] | None]:
+        return _shared_logprobs.extract_from_completion_output(
+            output,
+            num_output_tokens_so_far,
+            fallback_to_first_on_missing=True,
+            include_bytes=False,
+        )
+
+    async def _handle_cancellation(
+        self,
+        generation_result: _Abortable,
+        context: Context,
+    ):
+        """
+        Background task to trigger cancellation if request is cancelled or shutdown
+        event is set.
+
+        In disaggregated decode mode, generation_result may be a _DeferredAbort
+        wrapper that defers abort() until the first token is received (KV
+        transfer complete).
+
+        Raise EngineShutdown if shutdown event is triggered.
+        """
+        cancellation_triggers: list[asyncio.Future[Any]] = []
+        try:
+            cancellation_triggers = [
+                context.async_killed_or_stopped(),  # Request cancellation
+            ]
+            # Shutdown cancellation
+            shutdown_task = None
+            if self.shutdown_event is not None:
+                shutdown_task = asyncio.create_task(self.shutdown_event.wait())
+                cancellation_triggers.append(shutdown_task)
+
+            # Wait for cancellation to be triggered
+            done, pending = await asyncio.wait(
+                cancellation_triggers,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            generation_result.abort()
+            logging.debug(f"Aborted Request ID: {context.id()}")
+
+            # Clean up any remaining background task
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # Raise EngineShutdown if cancellation is due to shutdown event triggered
+            if shutdown_task in done:
+                raise EngineShutdown("Engine was shut down during generation.")
+
+        except asyncio.CancelledError:
+            # Task was cancelled, which is expected when generation completes normally
+            pass
+        finally:
+            to_drain = []
+            for task in cancellation_triggers:
+                if not task.done():
+                    task.cancel()
+                    to_drain.append(task)
+            if to_drain:
+                await asyncio.gather(*to_drain, return_exceptions=True)
+
+    @asynccontextmanager
+    async def _cancellation_monitor(
+        self,
+        generation_result: _Abortable,
+        context: Context,
+    ) -> AsyncGenerator[asyncio.Task, None]:
+        """
+        Monitor for cancellation triggers and cancel by calling
+        generation_result.abort().
+
+        In disaggregated decode mode, generation_result may be a _DeferredAbort
+        wrapper that defers abort() until the first token.
+
+        Raise EngineShutdown if shutdown event is triggered.
+
+        Yields:
+            asyncio.Task: The cancellation monitoring task
+        """
+        monitor_task = asyncio.create_task(
+            self._handle_cancellation(generation_result, context)
+        )
+
+        try:
+            yield monitor_task
+        finally:
+            if not monitor_task.done():
+                # Cancellation not triggered - clean up the background monitoring task
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
+            else:
+                # Cancellation triggered - propagate any exceptions
+                monitor_task.result()
+
+    def _decode_disaggregated_params_from_prefill(
+        self, prefill_result: dict
+    ) -> tuple[Any, dict]:
+        """
+        Extract and decode disaggregated params from prefill_result.
+
+        Args:
+            prefill_result: Result from prefill worker containing encoded disaggregated params
+
+        Returns:
+            Tuple of (disaggregated_params, epd_metadata) where:
+            - disaggregated_params: Decoded LlmDisaggregatedParams object
+            - epd_metadata: Dictionary containing EPD-specific metadata (_epd_processed_prompt, etc.)
+        """
+        params_dict = prefill_result["disaggregated_params"]
+
+        # Remove worker_id if present (added by prefill worker, not needed for decode)
+        params_dict.pop("worker_id", None)
+
+        # Deserialize first_gen_log_probs from transport format back to
+        # TRT-LLM's internal {token_id: Logprob} dict format.
+        DisaggregatedParamsCodec.deserialize_first_gen_log_probs(params_dict)
+
+        # Extract EPD metadata that was packed by prefill worker
+        epd_metadata = {}
+        if "_epd_metadata" in params_dict:
+            epd_metadata = params_dict.pop("_epd_metadata")
+            logging.debug(
+                f"DECODE: Extracted _epd_metadata with {len(epd_metadata)} fields"
+            )
+
+        # Decode the disaggregated params
+        disaggregated_params = DisaggregatedParamsCodec.decode(
+            DisaggregatedParams(**params_dict)
+        )
+        # Set to generation_only mode for decode phase
+        disaggregated_params.request_type = "generation_only"
+
+        # In generation-only mode, multimodal embeddings are already processed and in KV cache
+        # Remove multimodal_embedding_handles to avoid TRT-LLM validation error
+        # NOTE: `hasattr` is used because multimodal_embedding_handles may not be present
+        # on DisaggregatedParams in all EPD flows (e.g., text-only requests or certain stages).
+        if (
+            hasattr(disaggregated_params, "multimodal_embedding_handles")
+            and disaggregated_params.multimodal_embedding_handles
+        ):
+            disaggregated_params.multimodal_embedding_handles = None
+
+        logging.debug("DECODE: Set request_type to generation_only")
+
+        return disaggregated_params, epd_metadata
+
+    def _encode_and_pack_disaggregated_params(
+        self,
+        output: GenerationResult,
+        disaggregated_params: Any,
+        request: dict,
+        res: Any,
+        processed_input: Any = None,
+    ) -> Optional[dict]:
+        """
+        Encode and pack disaggregated params for PREFILL mode response.
+
+        Handles:
+        - Choosing between output and input disaggregated params
+        - Preserving multimodal_embedding_handles in EPD flow
+        - Encoding params for transmission
+        - Packing prefill metadata for DECODE optimization
+
+        Args:
+            output: GenerationResult from the engine
+            disaggregated_params: Input disaggregated params
+            request: Original request dict
+            res: RequestOutput object with prompt and prompt_token_ids attributes
+            processed_input: The processed input dict from process_openai_request (contains correct prompt)
+
+        Returns:
+            Dictionary with encoded disaggregated params, or None if encoding failed
+        """
+        # In EPD flow, output.disaggregated_params might be None, use the input params
+        params_to_encode = (
+            output.disaggregated_params
+            if output.disaggregated_params is not None
+            else disaggregated_params
+        )
+
+        # In EPD flow, manually preserve multimodal_embedding_handles from input
+        # because TRT-LLM engine may not propagate them through prefill
+        if params_to_encode is not None and disaggregated_params is not None:
+            input_handles = getattr(
+                disaggregated_params,
+                "multimodal_embedding_handles",
+                None,
+            )
+            output_handles = getattr(
+                params_to_encode, "multimodal_embedding_handles", None
+            )
+
+            if input_handles is not None and output_handles is None:
+                params_to_encode.multimodal_embedding_handles = input_handles
+                # Also preserve hashes if they exist
+                input_hashes = getattr(disaggregated_params, "multimodal_hashes", None)
+                if input_hashes is not None:
+                    params_to_encode.multimodal_hashes = input_hashes
+
+        encoded_params = DisaggregatedParamsCodec.encode(params_to_encode)
+
+        if encoded_params is None:
+            logging.error("PREFILL: encoded_params is None - decode worker will fail!")
+            return None
+
+        logging.debug("PREFILL: Successfully encoded disaggregated params")
+        params_dict = asdict(encoded_params)
+
+        # Serialize first_gen_log_probs for the Rust transport layer.
+        DisaggregatedParamsCodec.serialize_first_gen_log_probs(params_dict)
+
+        # Text-only decode requests already carry the original token_ids.
+        # Prompt metadata is only needed to avoid reprocessing multimodal input.
+        if not self._request_has_multimodal(request) and not any(
+            key in request for key in ("_epd_processed_prompt", "_epd_prompt_token_ids")
+        ):
+            return params_dict
+
+        # Pack prefill metadata for DECODE worker optimization
+        # The frontend only forwards disaggregated_params from prefill response
+        # Note: max_tokens is already handled by Rust frontend's PrefillRouter
+        prefill_metadata = {}
+
+        # Pack prompt info for DECODE to skip re-processing
+        # Per TRT-LLM team: DECODE never needs to reload images - KV cache has the context
+        # Use processed_input['prompt'] (from process_openai_request) which is the actual
+        # multimodal prompt used by TRT-LLM, not res.prompt which might be raw
+        if (
+            processed_input
+            and isinstance(processed_input, dict)
+            and processed_input.get("prompt")
+        ):
+            prefill_metadata["_prefill_prompt"] = processed_input["prompt"]
+        elif res.prompt:
+            prefill_metadata["_prefill_prompt"] = res.prompt
+        if res.prompt_token_ids:
+            prefill_metadata["_prefill_prompt_token_ids"] = list(res.prompt_token_ids)
+
+        # EPD-specific: use encoder's prompt if available
+        if "_epd_processed_prompt" in request and res.prompt:
+            prefill_metadata["_epd_processed_prompt"] = res.prompt
+        if "_epd_prompt_token_ids" in request and res.prompt_token_ids:
+            prefill_metadata["_epd_prompt_token_ids"] = list(res.prompt_token_ids)
+
+        # Add metadata to the disaggregated_params dict
+        if prefill_metadata:
+            params_dict["_epd_metadata"] = prefill_metadata
+
+        return params_dict
+
+    def _setup_disaggregated_params_for_mode(
+        self,
+        request: dict,
+        ep_disaggregated_params: Optional[Any],
+    ) -> tuple[Any, Any, dict]:
+        """
+        Setup disaggregated_params based on disaggregation mode.
+
+        For PREFILL mode:
+        - Uses ep_disaggregated_params from encode worker if available
+        - Otherwise creates new LlmDisaggregatedParams with request_type="context_only"
+
+        For DECODE mode:
+        - Decodes disaggregated_params from prefill_result
+        - Extracts EPD metadata for prompt optimization
+
+        For PREFILL_AND_DECODE (aggregated) mode:
+        - Uses ep_disaggregated_params from encode worker if available
+          (passes multimodal_embedding_handles to TRT-LLM and sets
+          request_type="context_and_generation" for full prefill + decode)
+
+        Args:
+            request: Request dictionary (may contain prefill_result)
+            ep_disaggregated_params: Optional params from encode worker (EPD flow)
+
+        Returns:
+            Tuple of (disaggregated_params, ep_disaggregated_params, epd_metadata)
+        """
+        disaggregated_params = None
+        epd_metadata: dict[str, Any] = {}
+
+        use_request_disagg_params = request.get(HEALTH_CHECK_KEY) or (
+            self.disaggregation_mode == DisaggregationMode.DECODE
+            and BYPASS_REMOTE_PREFILL_ANNOTATION in (request.get("annotations") or [])
+        )
+
+        if (
+            use_request_disagg_params
+            and ep_disaggregated_params is not None
+            and BYPASS_REMOTE_PREFILL_ANNOTATION in (request.get("annotations") or [])
+        ):
+            disaggregated_params = DisaggregatedParamsCodec.decode(
+                ep_disaggregated_params
+            )
+            disaggregated_params.request_type = "context_and_generation"
+            return disaggregated_params, ep_disaggregated_params, {}
+
+        # Canary probes and text-only conditional-disagg bypasses run a full
+        # context+generation request on a disagg-mode worker, so they use
+        # the pre-built params and skip the normal prefill-result handoff.
+        if use_request_disagg_params and request.get("disaggregated_params"):
+            return (
+                LlmDisaggregatedParams(**request["disaggregated_params"]),
+                ep_disaggregated_params,
+                {},
+            )
+
+        # PREFILL mode: setup context_only params
+        if self.disaggregation_mode == DisaggregationMode.PREFILL:
+            if ep_disaggregated_params:
+                ep_disaggregated_params.request_type = "context_only"
+                disaggregated_params = ep_disaggregated_params
+            else:
+                disaggregated_params = LlmDisaggregatedParams(
+                    request_type="context_only",
+                    disagg_request_id=get_compatible_global_disagg_request_id(
+                        self.disagg_machine_id
+                    ),
+                )
+
+            # Ensure disagg_request_id is set even when using
+            # ep_disaggregated_params, so the PYTHON transceiver can track
+            # requests across prefill/decode workers.
+            if disaggregated_params.disagg_request_id is None:
+                disaggregated_params.disagg_request_id = (
+                    get_compatible_global_disagg_request_id(self.disagg_machine_id)
+                )
+
+        # AGGREGATED (prefill_and_decode) mode with encoder disaggregation:
+        # Pass the encode worker's DisaggregatedParams (containing
+        # multimodal_embedding_handles) directly so TRT-LLM can import
+        # the vision embeddings.  Use "context_and_generation" so the
+        # engine runs a full prefill + decode cycle.
+        elif (
+            self.disaggregation_mode == DisaggregationMode.AGGREGATED
+            and ep_disaggregated_params is not None
+        ):
+            disaggregated_params = DisaggregatedParamsCodec.decode(
+                ep_disaggregated_params
+            )
+            disaggregated_params.request_type = "context_and_generation"
+
+        # DECODE mode: decode params from prefill_result
+        prefill_result = request.get("prefill_result")
+        if prefill_result and "disaggregated_params" in prefill_result:
+            (
+                disaggregated_params,
+                epd_metadata,
+            ) = self._decode_disaggregated_params_from_prefill(prefill_result)
+            # For full EPD flow, make decoded params available to multimodal processor
+            ep_disaggregated_params = disaggregated_params
+
+        return disaggregated_params, ep_disaggregated_params, epd_metadata
+
+    async def _prepare_input_for_generation(
+        self,
+        request: dict,
+        embeddings: Optional[Union[torch.Tensor, dict]],
+        ep_disaggregated_params: Optional[Any],
+        epd_metadata: dict,
+    ) -> Any:
+        """
+        Prepare input for TRT-LLM generation (handles multimodal/text flows).
+
+        Three paths:
+        1. DECODE with prefill metadata: Use cached prompt, skip image re-processing
+        2. Multimodal: Process via multimodal_processor
+        3. Text-only: Use token_ids from request
+
+        Args:
+            request: Request dictionary
+            embeddings: Optional embeddings tensor/dict from encode worker
+            ep_disaggregated_params: Optional params from encode worker (EPD flow)
+            epd_metadata: Metadata from prefill worker (DECODE optimization)
+
+        Returns:
+            Processed input for TRT-LLM (dict with prompt/token_ids, or raw token_ids)
+        """
+        # DECODE mode: Use prefill metadata to skip re-processing multimodal content
+        # Per TRT-LLM team: DECODE never needs to reload images - KV cache has the context
+        has_prefill_metadata = epd_metadata and (
+            epd_metadata.get("_prefill_prompt")
+            or epd_metadata.get("_epd_processed_prompt")
+        )
+
+        if (
+            self.disaggregation_mode == DisaggregationMode.DECODE
+            and has_prefill_metadata
+        ):
+            # Use prompt/token_ids from PREFILL, skip image re-processing
+            prefill_prompt = epd_metadata.get("_prefill_prompt") or epd_metadata.get(
+                "_epd_processed_prompt"
+            )
+            prefill_token_ids = epd_metadata.get(
+                "_prefill_prompt_token_ids"
+            ) or epd_metadata.get("_epd_prompt_token_ids")
+
+            # Build input without multimodal data (already in KV cache)
+            # Use the SAME multimodal key that PREFILL used:
+            # - EPD/Embeddings flow: PREFILL used multi_modal_embeddings
+            # - Simple P→D (image URL): PREFILL used multi_modal_data
+            is_epd_flow = epd_metadata.get("_epd_processed_prompt") is not None
+
+            processed_input = {
+                "prompt": prefill_prompt,
+                "prompt_token_ids": prefill_token_ids,
+            }
+            if is_epd_flow:
+                processed_input["multi_modal_embeddings"] = None
+            else:
+                processed_input["multi_modal_data"] = None
+            return processed_input
+
+        if self.multimodal_processor is None and self._request_has_multimodal(request):
+            # InvalidArgument, not RuntimeError: no worker in the pool can
+            # serve this request. RuntimeError maps to Backend(Unknown) and so
+            # to a sanitized 500 that reads as a server fault; this maps to
+            # Backend(InvalidArgument), which the frontend answers 4xx.
+            #
+            # That 4xx reaches a non-streaming client. A streaming client still
+            # sees 200 then an SSE error frame unless the operator sets
+            # DYN_HTTP_PRE_COMMIT_ERROR_PEEK_MS, which is unset by default.
+            raise InvalidArgument(
+                "Multimodal input received but worker started without --modality multimodal. "
+                "Restart the worker with --modality multimodal or remove image_url content."
+            )
+
+        # PREFILL/ENCODE/AGGREGATED: Process multimodal content if available
+        if self.multimodal_processor:
+            mm_result = await self.multimodal_processor.process_openai_request(
+                request, embeddings, ep_disaggregated_params
+            )
+            if mm_result:
+                return mm_result
+
+            # If multimodal processing returned None but request has multimodal data,
+            # this is an error (not a text-only request). Raise instead of falling back.
+            if request.get("multi_modal_data"):
+                raise RuntimeError(
+                    "Failed to process multimodal request. Check server logs for details. "
+                    "Common issues: missing allowed_local_media_path configuration, "
+                    "file not found, or file outside allowed directory."
+                )
+
+        # Fallback: text-only flow (no multimodal processor or no multimodal data)
+        return request.get("token_ids")
+
+    def _request_has_multimodal(self, request: dict) -> bool:
+        if request.get("multi_modal_data"):
+            return True
+
+        extra_args = request.get("extra_args") or {}
+        messages = extra_args.get("messages") or request.get("messages") or []
+        for message in messages:
+            content = message.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        return True
+        return False
+
+    @staticmethod
+    def _normalize_request_format(request: dict) -> None:
+        """
+        Convert OpenAI request format to TRT-LLM internal format.
+
+        Moves fields from OpenAI locations to where TRT-LLM expects them:
+        - max_tokens: top-level → stop_conditions.max_tokens
+        - min_tokens: top-level → stop_conditions.min_tokens
+        - ignore_eos: top-level → stop_conditions.ignore_eos
+        - temperature: top-level → sampling_options.temperature
+
+        Note: The Rust frontend's PrefillRouter handles the *value* of max_tokens
+        (sets to 1 for prefill, restores original for decode). This method only
+        moves fields to the correct location.
+
+        Args:
+            request: Request dictionary to normalize (modified in place)
+        """
+        # Ensure stop_conditions exists
+        if "stop_conditions" not in request:
+            request["stop_conditions"] = {}
+        for field in ("max_tokens", "min_tokens", "ignore_eos"):
+            if field in request:
+                value = request.pop(field)
+                request["stop_conditions"].setdefault(field, value)
+
+        # Ensure sampling_options exists
+        if "sampling_options" not in request:
+            request["sampling_options"] = {}
+        if "temperature" in request:
+            temperature = request.pop("temperature")
+            request["sampling_options"].setdefault("temperature", temperature)
+
+    async def _initiate_shutdown(self, error: Exception):
+        """Initiate graceful shutdown after fatal error"""
+        logging.warning(f"Initiating graceful shutdown due to: {error}")
+
+        try:
+            if self.runtime:
+                logging.info("Shutting down Dynamo runtime...")
+                self.runtime.shutdown()
+
+            if self.engine:
+                logging.info("Shutting down TensorRT-LLM engine...")
+                await self.engine.cleanup()
+        except Exception as cleanup_error:
+            logging.error(f"Error during graceful shutdown: {cleanup_error}")
+        finally:
+            logging.critical("Forcing process exit for restart")
+            os._exit(1)
+
+    async def generate_locally(
+        self,
+        request: dict,
+        context: Context,
+        embeddings: Optional[Union[torch.Tensor, dict]] = None,
+        ep_disaggregated_params: Optional[DisaggregatedParams] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Track in-flight count, reject during sleep, then delegate to implementation."""
+        routing = request.get("routing") or {}
+        if self.first_token_source is not None:
+            self.first_token_source.bind(context, routing.get("dp_rank"))
+        started = await self._mark_request_started()
+        if not started:
+            yield {
+                "finish_reason": {
+                    "error": "Worker is temporarily rejecting new requests"
+                },
+                "token_ids": [],
+            }
+            return
+        try:
+            async for chunk in self._generate_locally_impl(
+                request, context, embeddings, ep_disaggregated_params
+            ):
+                yield chunk
+        finally:
+            await self._mark_request_finished()
+
+    async def _generate_locally_impl(
+        self,
+        request: dict,
+        context: Context,
+        embeddings: Optional[Union[torch.Tensor, dict]] = None,
+        ep_disaggregated_params: Optional[DisaggregatedParams] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """
+        Generate responses based on the disaggregation mode in the request.
+
+        Args:
+            request: The request dictionary containing generation parameters
+            context: Context object for cancellation handling
+            embeddings: Optional tensor or dict containing embeddings for multimodal processing
+            ep_disaggregated_params: Optional DisaggregatedParams from encode worker (full EPD flow)
+        """
+        reject_unsupported_multimodal_uuids(request.get("multi_modal_uuids"))
+
+        request_token_ids = request.get("token_ids")
+        logging.debug(
+            "Request summary: token_ids=%s keys=%s has_embeddings=%s has_ep_disaggregated_params=%s",
+            len(request_token_ids) if isinstance(request_token_ids, list) else None,
+            len(request),
+            embeddings is not None,
+            ep_disaggregated_params is not None,
+        )
+
+        # Additional metrics: request type detection
+        metrics_collector = self.additional_metrics
+
+        if metrics_collector:
+            try:
+                # Detect request types for metrics
+                sampling_options = request.get("sampling_options", {})
+                guided = sampling_options.get("guided_decoding")
+                if guided and isinstance(guided, dict):
+                    has_structured_guidance = any(
+                        guided.get(k) is not None
+                        for k in (
+                            "json",
+                            "regex",
+                            "grammar",
+                            "json_object",
+                            "structural_tag",
+                        )
+                    ) or bool(guided.get("choice"))
+                    if has_structured_guidance:
+                        metrics_collector.record_request_type_structured_output()
+                if (
+                    request.get("multi_modal_data")
+                    or embeddings is not None
+                    or request.get("_epd_processed_prompt") is not None
+                ):
+                    metrics_collector.record_request_type_image()
+            except Exception as e:
+                logging.warning("Additional metrics (request type): %s", e)
+
+        # Normalize OpenAI format to TRT-LLM internal format
+        self._normalize_request_format(request)
+        bypass_remote_prefill = (
+            self.disaggregation_mode == DisaggregationMode.DECODE
+            and BYPASS_REMOTE_PREFILL_ANNOTATION in (request.get("annotations") or [])
+        )
+        if bypass_remote_prefill:
+            request_id = request.get("id") or request.get("request_id", "unknown-id")
+            logging.debug(
+                "DECODE: conditional-disagg bypass annotation present; "
+                "running request %s as AGG (prefill+decode on this worker).",
+                request_id,
+            )
+            request["disaggregated_params"] = {"request_type": "context_and_generation"}
+
+        # Setup disaggregated params based on PREFILL/DECODE mode
+        (
+            disaggregated_params,
+            ep_disaggregated_params,
+            epd_metadata,
+        ) = self._setup_disaggregated_params_for_mode(request, ep_disaggregated_params)
+
+        # Prepare input for generation (handles multimodal/text flows)
+        processed_input = await self._prepare_input_for_generation(
+            request, embeddings, ep_disaggregated_params, epd_metadata
+        )
+
+        # Check if there is an error in the publisher error queue
+        publishers_error = (
+            self.publisher.check_error_queue() if self.publisher else None
+        )
+        if publishers_error:
+            raise publishers_error
+
+        # For PREFILL mode, set max_tokens=1 (we only need to process context)
+        if self.disaggregation_mode == DisaggregationMode.PREFILL:
+            request["stop_conditions"]["max_tokens"] = 1
+            # disaggregated_params is already set above (lines 460-468)
+            # Don't overwrite it here as it may contain multimodal_embedding_handles from encoder
+
+        if (
+            self.disaggregation_mode == DisaggregationMode.DECODE
+            and disaggregated_params is None
+            and not bypass_remote_prefill
+        ):
+            logging.error("DECODE: disaggregated_params is None but required!")
+            logging.error(f"DECODE: Request keys: {list(request.keys())}")
+            raise ValueError("Disaggregated params are required for decode mode")
+
+        # TensorRT-LLM streams cumulative token_ids per output. For n>1 those
+        # outputs are interleaved by choice index, so maintain one cursor per
+        # choice and emit only the new slice for each Dynamo chunk.
+        output_tokens_per_choice: dict[int, int] = {}
+        prompt_logprobs_payload = None
+        first_output_seen = False
+
+        sampling_params = self._override_sampling_params(
+            self.default_sampling_params, request
+        )
+
+        # Additional sampling params in output options
+        output_options = request.get("output_options", {})
+        if output_options:
+            logprobs_value = output_options.get("logprobs")
+
+            # Handle logprobs
+            if logprobs_value is not None:
+                if hasattr(sampling_params, "logprobs"):
+                    setattr(
+                        sampling_params, "logprobs", max(1, int(logprobs_value))
+                    )  # If top_logprobs = 0, still want to see chosen token logprob
+
+            # Handle prompt_logprobs
+            prompt_logprobs_value = output_options.get("prompt_logprobs")
+            if prompt_logprobs_value is not None:
+                if hasattr(sampling_params, "prompt_logprobs"):
+                    setattr(
+                        sampling_params, "prompt_logprobs", int(prompt_logprobs_value)
+                    )
+
+        expanded_prompt_len = (
+            processed_input.pop("expanded_prompt_len", None)
+            if isinstance(processed_input, dict)
+            else None
+        )
+
+        max_tokens = request["stop_conditions"]["max_tokens"]
+        if max_tokens is not None:
+            sampling_params.max_tokens = max_tokens
+        else:
+            has_images = self._request_has_images(processed_input)
+            prompt_token_ids = (
+                processed_input.get("prompt_token_ids")
+                if isinstance(processed_input, dict)
+                else None
+            )
+            default_max_tokens = self._default_max_tokens(
+                self.max_seq_len,
+                prompt_token_ids
+                if prompt_token_ids is not None
+                else request.get("token_ids", []),
+                has_images,
+                expanded_prompt_len,
+            )
+            if default_max_tokens is not None:
+                sampling_params.max_tokens = default_max_tokens
+
+        # PREFILL forces max_tokens=1 above but must still apply the rest of
+        # the stop conditions (native TRT-LLM context_only overrides only
+        # max_tokens). Without this, TRT-LLM could stop on EOS at that single
+        # forced token and skip the KV handoff to decode entirely.
+        if (
+            is_generation_stage(CommonDisaggregationMode[self.disaggregation_mode.name])
+            or self.disaggregation_mode == DisaggregationMode.PREFILL
+        ):
+            apply_stop_conditions_to_sampling_params(
+                sampling_params, request["stop_conditions"]
+            )
+
+        # TODO: Instead of True, we should use streaming from the request.
+        # However, currently dynamo run does not send streaming in the request.
+        streaming = (
+            False if self.disaggregation_mode == DisaggregationMode.PREFILL else True
+        )
+
+        request_id = request.get("id") or request.get("request_id", "unknown-id")
+
+        # Optional test-only logits processing (enable with DYN_ENABLE_TEST_LOGITS_PROCESSOR=1)
+        if os.getenv("DYN_ENABLE_TEST_LOGITS_PROCESSOR") == "1":
+            processors = [HelloWorldLogitsProcessor(self.engine.llm.tokenizer)]
+            adapters = create_trtllm_adapters(processors)
+            sampling_params.logits_processor = adapters
+
+        prefill_result = request.get("prefill_result")
+        prefill_prompt_tokens_details = (
+            prefill_result.get("prompt_tokens_details") if prefill_result else None
+        )
+
+        # Build trace headers for distributed tracing
+        trace_headers = context.trace_headers()
+
+        # Resolve the engine conversation-affinity gate once (lazily; the engine is
+        # initialized by first request).
+        if self._conversation_affinity is None:
+            if (
+                self._engine_conversation_affinity_override
+                and not CONVERSATION_PARAMS_AVAILABLE
+            ):
+                raise RuntimeError(
+                    "--conversation-affinity / DYN_ENGINE_CONV_AFFINITY is set but "
+                    "the installed TensorRT-LLM build has no ConversationParams API (requires a "
+                    "release newer than 1.3.0rc20)."
+                )
+            self._conversation_affinity = (
+                self._engine_conversation_affinity_override
+                or engine_conversation_affinity_enabled(self.engine.llm)
+            )
+            if self._conversation_affinity and not CONVERSATION_PARAMS_AVAILABLE:
+                raise RuntimeError(
+                    "attention_dp_config.kv_cache_routing_conversation_affinity is enabled but "
+                    "the installed TensorRT-LLM build has no ConversationParams API (requires a "
+                    "release newer than 1.3.0rc20)."
+                )
+        conv_affinity = self._conversation_affinity
+
+        # Extract dp_rank from request's routing hints for attention DP routing
+        routing = request.get("routing", {})
+        dp_rank = routing.get("dp_rank") if routing else None
+        conversation_params = None
+        scheduling_params = None
+        if conv_affinity:
+            conversation_params = conversation_params_for(
+                session_id_from_request(request)
+            )
+            if (
+                self._conversation_affinity_dp_rank_source == "dynamo"
+                and conversation_params is not None
+                and dp_rank is not None
+            ):
+                # TensorRT-LLM#16815 records this explicit first-turn placement as the
+                # conversation binding. On later turns, the recorded binding takes
+                # precedence if Dynamo supplies a different rank.
+                scheduling_params = SchedulingParams(
+                    attention_dp_rank=dp_rank,
+                    attention_dp_relax=False,
+                )
+                logging.debug(
+                    "Using dynamo router dp_rank=%s for initial conversation-affinity "
+                    "placement",
+                    dp_rank,
+                )
+        elif dp_rank is not None:
+            scheduling_params = SchedulingParams(
+                attention_dp_rank=dp_rank,
+                attention_dp_relax=False,  # Strict routing - use the rank dynamo router selected
+            )
+            logging.debug(
+                f"Using dynamo router dp_rank={dp_rank} for TRTLLM attention DP scheduling"
+            )
+
+        # Priority is a float in [0.0, 1.0]; health checks use 1.0. Default is 0.5.
+        priority = request.get("priority", DEFAULT_REQUEST_PRIORITY)
+        cache_salt = request_cache_salt(request)
+
+        try:
+            # NEW: Updated engine call to include multimodal data
+            # Only pass conversation_params in affinity mode — older TRT-LLM builds'
+            # generate_async does not accept the keyword.
+            conv_kwargs = (
+                {"conversation_params": conversation_params} if conv_affinity else {}
+            )
+            generate_kwargs = {
+                "inputs": processed_input,  # Use the correctly extracted inputs
+                "sampling_params": sampling_params,
+                "disaggregated_params": disaggregated_params,
+                "streaming": streaming,
+                "trace_headers": trace_headers,
+                "scheduling_params": scheduling_params,
+                **conv_kwargs,
+                "priority": priority,
+                "cache_salt": cache_salt,
+            }
+            generate_async = self.engine.llm.generate_async
+            try:
+                generation_result = generate_async(**generate_kwargs)
+            except (ValueError, TypeError, NotImplementedError) as e:
+                # TRT-LLM performs request validation and preprocessing synchronously in
+                # `generate_async()`, before executor submission. A TypeError can also mean
+                # Dynamo called an incompatible TRT-LLM API, so only treat it as request-local
+                # when the call itself matches a meaningful runtime signature. The same
+                # exception types during result iteration can indicate an executor bug and should
+                # continue through the fatal path below.
+                if isinstance(e, TypeError) and not _call_signature_accepts_kwargs(
+                    generate_async, generate_kwargs
+                ):
+                    raise
+                error_msg = str(e)
+                logging.warning(
+                    "Request %s rejected during request validation (%s): %s",
+                    request_id,
+                    type(e).__name__,
+                    error_msg,
+                )
+                yield {
+                    "finish_reason": {"error": error_msg},
+                    "token_ids": [],
+                }
+                return
+
+            # Log the Dynamo-to-engine request-ID mapping exactly once per
+            # request, immediately after submission. This is the only place the
+            # Dynamo request UUID, the TRT-LLM executor client ID, and (in
+            # disaggregated mode) the cross-phase disagg_request_id coexist, and
+            # none of them is persisted together anywhere else. The line makes
+            # every engine-side per-request record (e.g. a perf-metrics JSONL
+            # keyed by the executor client ID, or requestStats keyed by the
+            # disagg ID) joinable to Dynamo traces, spans, and logs offline.
+            # Notes for consumers: the client ID is a per-worker-process
+            # counter, so join it only within this worker's own log; logging
+            # before the response iteration starts means cancelled requests
+            # still leave their mapping behind.
+            # context.id() is the canonical request UUID (the payload's id field
+            # is not guaranteed on every path), and this handler already treats
+            # it as authoritative elsewhere.
+            logging.info(
+                "Engine ID map: request_id=%s trtllm_client_id=%s disagg_request_id=%s",
+                context.id(),
+                getattr(generation_result, "request_id", None),
+                disaggregated_params.disagg_request_id
+                if disaggregated_params
+                else None,
+            )
+
+            # In disagg decode mode with remote prefill, wrap abort() to defer
+            # until the first token is received (KV transfer complete).
+            abort_guard = (
+                _DeferredAbort(generation_result)
+                if self.disaggregation_mode == DisaggregationMode.DECODE
+                and disaggregated_params is not None
+                and not bypass_remote_prefill
+                else None
+            )
+
+            # Monitor for cancellation triggers and cancel by calling abort()
+            async with self._cancellation_monitor(
+                abort_guard or generation_result, context
+            ):
+                async for res in generation_result:
+                    # Signal first token to deferred abort guard
+                    if abort_guard is not None:
+                        abort_guard.signal_first_token()
+
+                    # TRTLLM engine needs to start generating tokens first before stats
+                    # can be retrieved.
+                    if self.first_generation and self.publisher:
+                        self.publisher.start()
+                        self.first_generation = False
+
+                    # If we are not done generating, but there are no outputs, return an error
+                    if not res.outputs and not res.finished:
+                        yield {"finish_reason": "error", "token_ids": []}
+                        break
+
+                    for output in res.outputs:
+                        output_idx = getattr(output, "index", 0) or 0
+                        tokens_so_far = output_tokens_per_choice.get(output_idx, 0)
+                        next_total_toks = len(output.token_ids)
+
+                        # The engine returns all tokens generated so far for
+                        # this choice. Calculate only the new tokens generated
+                        # in this iteration to create the delta.
+                        out = {
+                            "token_ids": output.token_ids[tokens_so_far:],
+                            "index": output_idx,
+                        }
+                        if (
+                            self.first_token_source is not None
+                            and out["token_ids"]
+                            and not first_output_seen
+                        ):
+                            first_output_seen = True
+                            context.notify_first_token()
+
+                        # Extract logprobs from the output. Logprobs are
+                        # aligned with the cumulative token list, so use the
+                        # same per-choice cursor as token_ids.
+                        log_probs, top_logprobs = self._extract_logprobs(
+                            output, tokens_so_far
+                        )
+                        if log_probs:
+                            out["log_probs"] = log_probs
+                        if top_logprobs:
+                            out["top_logprobs"] = top_logprobs
+
+                        if prompt_logprobs_payload is None:
+                            prompt_logprobs_payload = _shared_logprobs.extract_prompt_logprobs_from_completion_output(
+                                output
+                            )
+
+                        if output.finish_reason:
+                            out["finish_reason"] = output.finish_reason
+                        if output.stop_reason:
+                            out["stop_reason"] = output.stop_reason
+                        if self.disaggregation_mode == DisaggregationMode.PREFILL:
+                            # Return the disaggregated params only when
+                            # operating in prefill mode.
+                            params_dict = self._encode_and_pack_disaggregated_params(
+                                output,
+                                disaggregated_params,
+                                request,
+                                res,
+                                processed_input,
+                            )
+                            if params_dict is not None:
+                                out["disaggregated_params"] = params_dict
+
+                        if out.get("finish_reason") or res.finished:
+                            if not out.get("finish_reason"):
+                                out["finish_reason"] = "unknown"
+                                logging.warning(
+                                    "Request finished with no finish reason set - "
+                                    "this indicates a possible bug"
+                                )
+
+                            if prompt_logprobs_payload is not None:
+                                out.setdefault("engine_data", {})[
+                                    "prompt_logprobs"
+                                ] = prompt_logprobs_payload
+
+                            num_input_tokens = len(request.get("token_ids", []))
+                            total_completion_tokens = sum(
+                                len(o.token_ids) for o in res.outputs
+                            )
+
+                            if prefill_prompt_tokens_details:
+                                prompt_tokens_details = prefill_prompt_tokens_details
+                            else:
+                                # Clamp to prompt size: image token_ids are unexpanded
+                                # placeholders, so the engine count (measured over the
+                                # expanded prompt) can exceed it.
+                                prompt_tokens_details = {
+                                    "cached_tokens": min(
+                                        num_input_tokens, int(res.cached_tokens or 0)
+                                    ),
+                                }
+
+                            out["completion_usage"] = {
+                                "prompt_tokens": int(num_input_tokens),
+                                "completion_tokens": int(total_completion_tokens),
+                                "total_tokens": int(
+                                    num_input_tokens + total_completion_tokens
+                                ),
+                                "prompt_tokens_details": prompt_tokens_details,
+                            }
+
+                        # Yield the chunk to the client and update the token
+                        # count for this output choice.
+                        #
+                        # Stays a yield under push egress: this hop is
+                        # pure-Python generator delegation on one thread. Only
+                        # the outermost hop into Rust pushes.
+                        yield out
+                        output_tokens_per_choice[output_idx] = next_total_toks
+
+                    # Record additional metrics on request finish once per iteration.
+                    if res.finished and metrics_collector:
+                        output = next(
+                            (
+                                output
+                                for output in res.outputs
+                                if getattr(output, "finish_reason", None)
+                            ),
+                            None,
+                        )
+                        if output is not None:
+                            try:
+                                if output.request_perf_metrics is not None:
+                                    tm = output.request_perf_metrics.timing_metrics
+                                    if tm is not None:
+                                        # record_kv_transfer_perf() only returns True on
+                                        # the decode worker (the receiver), which observes
+                                        # non-zero kv_cache_transfer_{start,end} in timing
+                                        # metrics. Count the success counter on the same
+                                        # signal so it stays in lock-step with the sibling
+                                        # histograms' _count for the same transfer event.
+                                        if metrics_collector.record_kv_transfer_perf(
+                                            tm
+                                        ):
+                                            metrics_collector.record_kv_transfer_success()
+                            except Exception as e:
+                                logging.warning(
+                                    "Additional metrics (request finish): %s", e
+                                )
+
+                    if (
+                        res.finished
+                        and self.metrics_collector
+                        and hasattr(res, "metrics_dict")
+                    ):
+                        try:
+                            if hasattr(
+                                self.metrics_collector,
+                                "log_request_metrics_dict",
+                            ):
+                                self.metrics_collector.log_request_metrics_dict(
+                                    res.metrics_dict
+                                )
+                            else:
+                                self.metrics_collector.log_metrics_dict(
+                                    res.metrics_dict
+                                )
+                        except Exception as e:
+                            logging.warning(f"Failed to log TensorRT-LLM metrics: {e}")
+
+        # 1. Client cancellation - don't shutdown
+        except asyncio.CancelledError:
+            logging.debug(f"Request {request_id}: Client cancelled")
+            # _cancellation_monitor already called abort_request
+            try:
+                if metrics_collector:
+                    metrics_collector.record_request_abort()
+            except Exception as e:
+                logging.debug("Additional metrics (request abort): %s", e)
+            return  # Just stop, no error response
+
+        # 2. Per-request errors - send to client, don't shutdown
+        except RequestError as e:
+            error_msg = str(e)
+            logging.warning(f"Request {request_id} error: {error_msg}")
+            yield {
+                "finish_reason": {"error": error_msg},
+                "token_ids": [],
+            }
+
+        # 3. EngineShutdown - let it propagate to the Rust bridge
+        except EngineShutdown:
+            raise
+
+        # 4. ALL OTHER ERRORS - graceful shutdown
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            logging.error(
+                f"Fatal {error_type} in request {request_id}: {error_msg}",
+                exc_info=True,
+            )
+
+            # Try to send error to client before shutdown
+            try:
+                yield {
+                    "finish_reason": {"error": error_msg},
+                    "token_ids": [],
+                }
+            except Exception:
+                pass  # Best effort
+
+            # Initiate graceful shutdown
+            await self._initiate_shutdown(e)
+
+    @staticmethod
+    def _request_has_images(processed_input) -> bool:
+        """Whether the processed input carries image content, as opposed to a
+        text-only request served by a multimodal worker.
+
+        This distinction drives max_tokens sizing: only image requests have
+        unexpanded placeholders in token_ids, so only they need the expanded
+        length; text requests use len(token_ids) directly.
+        """
+        return bool(
+            isinstance(processed_input, dict)
+            and (
+                processed_input.get("multi_modal_data")
+                or processed_input.get("multi_modal_embeddings")
+            )
+        )
+
+    @staticmethod
+    def _default_max_tokens(
+        max_seq_len: Optional[int],
+        token_ids: list,
+        has_images: bool,
+        expanded_prompt_len: Optional[int],
+    ) -> Optional[int]:
+        """Default for an omitted max_tokens: fill the model's remaining context.
+
+        For image requests, token_ids hold unexpanded placeholders, so sizing uses
+        expanded_prompt_len (placeholders replaced by their per-image token counts);
+        when that is unavailable, returns None to defer to the engine default rather
+        than overestimate. Text requests (including text-only requests to a
+        multimodal worker) use len(token_ids) directly. Returns None when no default
+        applies.
+        """
+        if max_seq_len is None:
+            return None
+        if has_images:
+            if expanded_prompt_len is None:
+                return None
+            return max(1, max_seq_len - expanded_prompt_len)
+        return max(1, max_seq_len - len(token_ids))
+
+    @staticmethod
+    def _override_sampling_params(sampling_params, request: dict) -> SamplingParams:
+        overrides = {
+            key: value
+            for key, value in request["sampling_options"].items()
+            if value is not None
+        }
+        if "top_k" in overrides:
+            overrides["top_k"] = normalize_top_k_for_trtllm(overrides["top_k"])
+
+        # Convert guided_decoding dict (from Rust serialization) to GuidedDecodingParams.
+        # Explicit field mapping avoids breakage if either side adds fields the other
+        # doesn't know about (e.g. Rust's "backend"/"choice" vs TRT-LLM's fields).
+        guided_decoding = overrides.pop("guided_decoding", None)
+        if guided_decoding is not None and isinstance(guided_decoding, dict):
+            # TRT-LLM's GuidedDecodingParams doesn't have a "choice" field.
+            # Convert choice list to a regex pattern: (choice1|choice2|...)
+            # This matches the approach used by vLLM's outlines backend.
+            regex = guided_decoding.get("regex")
+            choice = guided_decoding.get("choice")
+            if choice and not regex:
+                valid_choices = [c for c in choice if c is not None]
+                if valid_choices:
+                    regex = "(" + "|".join(re.escape(c) for c in valid_choices) + ")"
+
+            overrides["guided_decoding"] = GuidedDecodingParams(
+                json=guided_decoding.get("json"),
+                regex=regex,
+                grammar=guided_decoding.get("grammar"),
+                json_object=guided_decoding.get("json_object", False),
+                structural_tag=serialize_structural_tag(
+                    guided_decoding.get("structural_tag")
+                ),
+            )
+
+        n = overrides.get("n")
+        if (
+            isinstance(n, int)
+            and not isinstance(n, bool)
+            and n > 1
+            and hasattr(sampling_params, "best_of")
+        ):
+            # Dynamo does not expose best_of here, but TRT-LLM validates that
+            # its internal best_of is at least n when cloning SamplingParams.
+            # Keep that private field in lockstep so OpenAI n>1 requests do
+            # not fail before generation starts.
+            best_of = getattr(sampling_params, "best_of", None)
+            if best_of is None or best_of < n:
+                overrides["best_of"] = n
+
+        # NOTE: using `dataclasses.replace` has several benefits over a `setattr` based approach:
+        # 1. it catches unsupported fields / attributes.
+        # 2. it executes the class's `__post_init__`, which may contain helpful validation logic.
+        return dataclasses.replace(sampling_params, **overrides)
+
+
+def _call_signature_accepts_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> bool:
+    """Return whether a meaningfully inspectable callable accepts `kwargs`."""
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+
+    if all(
+        parameter.kind
+        in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for parameter in signature.parameters.values()
+    ):
+        return False
+
+    try:
+        signature.bind(**kwargs)
+    except TypeError:
+        return False
+    return True

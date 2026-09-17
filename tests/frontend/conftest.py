@@ -10,13 +10,13 @@ dependencies are not installed in the current environment.
 import importlib.util
 import logging
 import os
-import shutil
 import time
 
 import pytest
 import requests
 
 from tests.utils.constants import QWEN
+from tests.utils.http_checks import check_health_ready, models_available
 from tests.utils.managed_process import DynamoFrontendProcess, ManagedProcess
 from tests.utils.port_utils import allocate_port, deallocate_port
 
@@ -230,7 +230,6 @@ def start_services_with_grpc(
 class MockerWorkerProcess(ManagedProcess):
     """Shared mocker worker process for frontend tests.
 
-    Uses dingo.mocker with configurable model and speedup ratio.
     Can be used by any frontend test that needs a fast mock backend.
     """
 
@@ -270,30 +269,13 @@ class MockerWorkerProcess(ManagedProcess):
 
         log_dir = f"{request.node.name}_{worker_id}"
 
-        try:
-            shutil.rmtree(log_dir)
-        except FileNotFoundError:
-            pass
-
-        # In disaggregated mode, skip /v1/models check to avoid deadlock:
-        # prefill worker's health_check waits for /v1/models to list models,
-        # but /v1/models only returns models after both prefill + decode workers
-        # register — and decode worker hasn't started yet (blocked by prefill's
-        # `with` statement).  Only check /health in disagg mode.
-        has_disagg_mode = extra_args and "--disaggregation-mode" in extra_args
-
-        if has_disagg_mode:
-            health_urls = [(f"http://localhost:{system_port}/health", self.is_ready)]
-        else:
-            health_urls = [
-                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
-                (f"http://localhost:{system_port}/health", self.is_ready),
-            ]
-
         super().__init__(
             command=command,
             env=env,
-            health_check_urls=health_urls,
+            health_check_urls=[
+                (f"http://localhost:{frontend_port}/v1/models", models_available),
+                (f"http://localhost:{system_port}/health", check_health_ready),
+            ],
             timeout=300,
             display_output=True,
             terminate_all_matching_process_names=False,
@@ -301,31 +283,6 @@ class MockerWorkerProcess(ManagedProcess):
             straggler_commands=["-m dingo.mocker"],
             log_dir=log_dir,
         )
-
-    def _check_models_api(self, response):
-        """Check if models API is ready"""
-        try:
-            if response.status_code != 200:
-                return False
-            data = response.json()
-            models = data.get("data", [])
-            return len(models) > 0
-        except Exception:
-            return False
-
-    def is_ready(self, response) -> bool:
-        try:
-            status = (response.json() or {}).get("status")
-        except ValueError:
-            logger.warning("%s health response is not valid JSON", self.worker_id)
-            return False
-
-        is_ready = status == "ready"
-        if is_ready:
-            logger.info("%s status is ready", self.worker_id)
-        else:
-            logger.warning("%s status is not ready: %s", self.worker_id, status)
-        return is_ready
 
 
 @pytest.fixture(scope="function")
@@ -351,14 +308,13 @@ def start_services_with_mocker(
 
 
 class SampleUnifiedWorkerProcess(ManagedProcess):
-    """Unified-backend sample worker (`dingo.common.backend.sample_main`).
+    """Backend SDK sample worker (`dynamo.common.backend.sample_main`).
 
-    CPU-only Python reference engine that exercises the unified backend's
-    `Worker.run()` path — the same code path real backends (vllm/trtllm/
-    sglang) go through. Useful for tests that need to validate the unified
-    Worker/EngineAdapter pipeline without a GPU.
+    CPU-only Python reference engine that exercises the `Worker.run()` path.
+    Useful for tests that validate the Worker/EngineAdapter pipeline without a
+    GPU.
 
-    Mirrors `MockerWorkerProcess` but uses the unified entry point. Accepts
+    Mirrors `MockerWorkerProcess` but uses the Backend SDK entry point. Accepts
     `extra_env` for tests that need to inject telemetry / tracing env vars
     (e.g. `OTEL_EXPORT_ENABLED=1`, `DYN_LOGGING_JSONL=1`).
     """
@@ -402,53 +358,16 @@ class SampleUnifiedWorkerProcess(ManagedProcess):
 
         log_dir = f"{request.node.name}_{worker_id}"
 
-        try:
-            shutil.rmtree(log_dir)
-        except FileNotFoundError:
-            pass
-
-        # In disaggregated mode (prefill/decode), skip /v1/models check to
-        # avoid the same deadlock as MockerWorkerProcess: prefill worker
-        # waits for /v1/models while decode hasn't registered yet.
-        has_disagg_mode = disaggregation_mode in ("prefill", "decode")
-
-        if has_disagg_mode:
-            health_urls = [(f"http://localhost:{system_port}/health", self.is_ready)]
-        else:
-            health_urls = [
-                (f"http://localhost:{frontend_port}/v1/models", self._check_models_api),
-                (f"http://localhost:{system_port}/health", self.is_ready),
-            ]
-
         super().__init__(
             command=command,
             env=env,
-            health_check_urls=health_urls,
+            health_check_urls=[
+                (f"http://localhost:{frontend_port}/v1/models", models_available),
+                (f"http://localhost:{system_port}/health", check_health_ready),
+            ],
             timeout=120,
             display_output=True,
             terminate_all_matching_process_names=False,
             straggler_commands=["-m dingo.common.backend.sample_main"],
             log_dir=log_dir,
         )
-
-    def _check_models_api(self, response):
-        try:
-            if response.status_code != 200:
-                return False
-            data = response.json()
-            return len(data.get("data", [])) > 0
-        except Exception:
-            return False
-
-    def is_ready(self, response) -> bool:
-        try:
-            status = (response.json() or {}).get("status")
-        except ValueError:
-            logger.warning("%s health response is not valid JSON", self.worker_id)
-            return False
-        is_ready = status == "ready"
-        if is_ready:
-            logger.info("%s status is ready", self.worker_id)
-        else:
-            logger.warning("%s status is not ready: %s", self.worker_id, status)
-        return is_ready

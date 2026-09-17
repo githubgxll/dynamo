@@ -1,0 +1,85 @@
+# CI Filters
+
+The `filters.yaml` file controls which CI jobs run based on changed files.
+
+## How It Works
+
+When you open a PR, CI checks which files changed and runs only relevant jobs:
+
+| Filter                                                  | Triggers                                                                                                                                                                             |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `core`                                                  | Main test suite (vLLM, SGLang, TRT-LLM containers)                                                                                                                                   |
+| `dev_images`                                            | dev / local-dev image builds only (no runtime or GPU jobs)                                                                                                                           |
+| `operator`                                              | Kubernetes operator tests                                                                                                                                                            |
+| `snapshot`                                              | Checkpoint-placeholder image + all-framework standalone Snapshot deploy tests (github.com/ai-dynamo/snapshot is external; this covers Dynamo's integration surface)                  |
+| `snapshot_vllm` / `snapshot_sglang` / `snapshot_trtllm` | That framework's checkpoint deploy suite                                                                                                                                             |
+| `deploy`                                                | Deploy-specific tests                                                                                                                                                                |
+| `vllm` / `sglang` / `trtllm` / `triton`                 | Backend-specific tests                                                                                                                                                               |
+| `sidecar`                                               | Unified multi-architecture sidecar image build, publish, and compliance checks for changes under `lib/sidecar/**` (docs excluded), its shared workflow, and shared compliance inputs |
+| `benchmarks`                                            | Dynamo runtime pipeline (runs `tests/benchmarks/**` pytest suite)                                                                                                                    |
+| `sample`                                                | Sample-backend unified test (piggybacks on vllm image)                                                                                                                               |
+| `efa`                                                   | EFA runtime image builds for vLLM, SGLang, TRT-LLM (`container/templates/aws.Dockerfile` change)                                                                                     |
+| `docs`                                                  | Docs Lint, Fern Configuration, Docs Website Composition, and Fern Broken Links checks; Fern preview or publish workflow                                                              |
+| `fern_components`                                       | Parse custom MDX components (a step inside Fern Configuration Check)                                                                                                                 |
+| `examples`                                              | Recipe Kustomize generation and docs-artifact unit checks                                                                                                                            |
+| `ignore`                                                | Nothing (classification only)                                                                                                                                                        |
+| `rust`                                                  | Rust pre merge checks                                                                                                                                                                |
+
+> [!NOTE]
+> `ignore` doesn't directly trigger CI jobs.
+> It exists to satisfy coverage requirements - every file must match at least one filter.
+> Sidecar source and proto files also match `rust`, so the existing workspace Rust checks cover sidecar tests before the image is built and published.
+> `docs` gates the Docs Lint, Fern Configuration Check, Docs Website Composition Check, and Fern Broken Links Check jobs in `pre-merge.yml`.
+> `examples` gates Recipe Check.
+
+> [!TODO]
+> The sidecar image also consumes root Cargo files, shared libraries, and composite actions.
+> Expanding the filter to cover every remaining build input is deferred until the additional PR CI fan-out is evaluated and agreed.
+
+## Fixing "Uncovered Files" Errors
+
+If CI fails with:
+```
+ERROR: The following files are not covered by any CI filter
+```
+
+Add patterns to `filters.yaml`:
+
+1. **New source files** → Add to `core` or relevant backend filter
+2. **New examples, recipes, and recipe validation helpers** → Add to `examples`
+3. **Fern docs-site content** (anything under `docs/fern/`) → Add to `docs`
+4. **Markdown elsewhere in the repo** (a `lib/` or `container/` README) → Add to `ignore`.
+   It is documentation, but the Fern site does not read it, and `docs` gates four jobs
+   including the composition check.
+5. **Config files that don't need CI** → Add to `ignore`
+
+## Testing Locally
+
+```bash
+cd .github/scripts
+npm install
+npm run coverage  # Check if all repo files are covered
+```
+
+## Pattern Syntax
+
+- `**` matches any path depth (but not dotfiles by default)
+- `*` matches within a directory
+- `!pattern` excludes files (used in `core` to skip docs)
+- For dotfiles, add explicit pattern like `dir/.*`
+
+Example: `lib/**/*.rs` matches all Rust files under `lib/`.
+
+## Adding a New Filter Group
+
+If you create a new filter in `filters.yaml`, you must also update the shared
+changed-files action so the coverage check knows about it:
+
+1. Add the filter to `filters.yaml`.
+2. Edit `.github/actions/changed-files/action.yml`:
+   - Expose the new filter as an output (see the existing `core`, `planner`,
+     `vllm`, `sglang`, `trtllm`, etc. entries at the top of the file).
+   - Add its `*_all_modified_files` to the `COVERED_FILES` line in the
+     "Check for uncovered files" step.
+
+If you skip this step, CI will fail with "uncovered files" even though your filter exists.
