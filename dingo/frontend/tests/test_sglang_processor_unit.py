@@ -2729,11 +2729,12 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         def parse_stream_chunk(self, text: str) -> tuple[str, str]:
             return text, ""
 
+    class _AllContentParser:
+        def parse_stream_chunk(self, text: str) -> tuple[str, str]:
+            return "", text
+
     def test_kimi_k3_strips_malformed_control_markers(self) -> None:
-        text = (
-            "<|close|>thinkIDTHOOK_OUTPUT"
-            "<|close|>think<|close|>message<|sep|>"
-        )
+        text = "<|close|>thinkIDTHOOK_OUTPUT<|close|>think<|close|>message<|sep|>"
         post = SglangStreamingPostProcessor(
             tokenizer=self._LiteralTokenizer({1: text}),
             tool_call_parser=None,
@@ -2762,6 +2763,260 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
 
         assert choice is not None
         assert choice["delta"]["reasoning_content"] == "IDTHOOK_OUTPUT"
+
+    def test_kimi_k3_strips_bare_separator_from_reasoning(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: "prefix<|sep|>reasoning"}),
+            tool_call_parser=None,
+            reasoning_parser=self._AllReasoningParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["reasoning_content"] == "prefixreasoning"
+
+    def test_kimi_k3_strips_bare_separator_from_content(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: "reply<|sep|>content"}),
+            tool_call_parser=None,
+            reasoning_parser=self._AllContentParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["content"] == "replycontent"
+
+    def test_kimi_k3_strips_tools_markers_from_content(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer(
+                {1: ("prefix<|open|>tools<|sep|>content<|close|>tools<|sep|>suffix")}
+            ),
+            tool_call_parser=None,
+            reasoning_parser=self._AllContentParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["content"] == "prefixcontentsuffix"
+
+    def test_kimi_k3_strips_tools_close_marker_from_reasoning(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer(
+                {1: "prefix<|close|>tools<|sep|>reasoning"}
+            ),
+            tool_call_parser=None,
+            reasoning_parser=self._AllReasoningParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["reasoning_content"] == "prefixreasoning"
+
+    def test_kimi_k3_strips_split_tools_close_marker(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer(
+                {1: "prefix<|close|>tools", 2: "<|sep|>content"}
+            ),
+            tool_call_parser=None,
+            reasoning_parser=self._AllContentParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+
+        first = post.process_output({"token_ids": [1]})
+        second = post.process_output({"token_ids": [2], "finish_reason": "stop"})
+
+        assert first is not None
+        assert first["delta"]["content"] == "prefix"
+        assert second is not None
+        assert second["delta"]["content"] == "content"
+
+    def test_non_kimi_parser_preserves_bare_separator(self) -> None:
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: "reply<|sep|>content"}),
+            tool_call_parser=None,
+            reasoning_parser=self._AllContentParser(),
+            reasoning_parser_name="qwen3",
+        )
+
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+
+        assert choice is not None
+        assert choice["delta"]["content"] == "reply<|sep|>content"
+
+    def test_kimi_k3_all_marker_split_positions(self) -> None:
+        markers = (
+            "<|sep|>",
+            "<|open|>think<|sep|>",
+            "<|close|>think<|sep|>",
+            "<|open|>response<|sep|>",
+            "<|close|>response<|sep|>",
+            "<|open|>tools<|sep|>",
+            "<|close|>tools<|sep|>",
+            "<|close|>message<|sep|>",
+        )
+        for parser, field in (
+            (self._AllReasoningParser, "reasoning_content"),
+            (self._AllContentParser, "content"),
+        ):
+            for marker in markers:
+                for split in range(1, len(marker)):
+                    post = SglangStreamingPostProcessor(
+                        tokenizer=self._LiteralTokenizer(
+                            {1: "before" + marker[:split], 2: marker[split:] + "after"}
+                        ),
+                        tool_call_parser=None,
+                        reasoning_parser=parser(),
+                        reasoning_parser_name="kimi_k3",
+                    )
+                    chunks = [
+                        post.process_output({"token_ids": [1]}),
+                        post.process_output({"token_ids": [2]}),
+                        post.process_output({"token_ids": [], "finish_reason": "stop"}),
+                    ]
+                    actual = "".join(
+                        chunk["delta"].get(field, "") for chunk in chunks if chunk
+                    )
+                    assert actual == "beforeafter", (field, marker, split, actual)
+                    assert chunks[-1]["finish_reason"] == "stop"
+
+    def test_kimi_k3_preserves_non_protocol_text_and_eof_prefix(self) -> None:
+        text = "<system-injection><sys>bg_1</sys></system-injection> <|se"
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer(dict(enumerate(text, 1))),
+            tool_call_parser=None,
+            reasoning_parser=self._AllContentParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+        chunks = [
+            post.process_output({"token_ids": [i]}) for i in range(1, len(text) + 1)
+        ]
+        chunks.append(post.process_output({"token_ids": [], "finish_reason": "length"}))
+        assert "".join(c["delta"].get("content", "") for c in chunks if c) == text
+        assert chunks[-1]["finish_reason"] == "length"
+
+    def test_kimi_k3_real_reasoning_parser_tools_close(self) -> None:
+        from sglang.srt.parser.reasoning_parser import ReasoningParser
+
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer(
+                {1: "<|close|>", 2: "tools", 3: "<|sep|>", 4: "payload"}
+            ),
+            tool_call_parser=None,
+            reasoning_parser=ReasoningParser(
+                model_type="kimi_k3", force_reasoning=True
+            ),
+            reasoning_parser_name="kimi_k3",
+        )
+        assert all(post.process_output({"token_ids": [i]}) is None for i in (1, 2, 3))
+        choice = post.process_output({"token_ids": [4], "finish_reason": "stop"})
+        assert choice["delta"]["reasoning_content"] == "payload"
+        assert "content" not in choice["delta"]
+
+    def test_kimi_k3_tool_parser_receives_raw_markers(self) -> None:
+        class SpyParser:
+            def __init__(self) -> None:
+                self.received: list[str] = []
+
+            def parse_stream_chunk(self, text: str) -> tuple[str, list]:
+                self.received.append(text)
+                return text, []
+
+            def has_tool_call(self, text: str) -> bool:
+                return False
+
+        parser = SpyParser()
+        text = "<|open|>tools<|sep|><|close|>tools<|sep|>"
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: text}),
+            tool_call_parser=parser,
+            reasoning_parser=None,
+            tool_call_parser_name="kimi_k3",
+        )
+        choice = post.process_output({"token_ids": [1], "finish_reason": "stop"})
+        assert parser.received == [text]
+        assert choice["delta"] == {}
+        assert choice["finish_reason"] == "stop"
+
+    def test_kimi_k3_stream_filter_bounded_and_channel_isolated(self) -> None:
+        class AlternatingParser:
+            def parse_stream_chunk(self, text: str) -> tuple[str, str]:
+                return (text, "") if text == "<|se" else ("", text)
+
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._LiteralTokenizer({1: "<|se", 2: "p|>"}),
+            tool_call_parser=None,
+            reasoning_parser=AlternatingParser(),
+            reasoning_parser_name="kimi_k3",
+        )
+        assert post.process_output({"token_ids": [1]}) is None
+        choice = post.process_output({"token_ids": [2], "finish_reason": "stop"})
+        assert choice["delta"]["reasoning_content"] == "<|se"
+        assert choice["delta"]["content"] == "p|>"
+        cleaner = sglang_prepost_module._KimiK3TextFilter()
+        text = "plain<|close|>tools<|sep|>" * 100
+        output = []
+        for char in text:
+            output.append(cleaner.feed(char, finished=False))
+            assert len(cleaner.pending) < 32
+        output.append(cleaner.feed("", finished=True))
+        assert "".join(output) == "plain" * 100
+
+    def test_kimi_k3_real_tool_parser_preserves_arguments(self) -> None:
+        from sglang.srt.entrypoints.openai.protocol import Function, Tool
+        from sglang.srt.parser.reasoning_parser import ReasoningParser
+
+        tool = Tool(
+            type="function",
+            function=Function(
+                name="echo",
+                parameters={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                },
+            ),
+        )
+        text = (
+            "<|close|>think<|sep|><|open|>tools<|sep|>"
+            '<|open|>call tool="echo" index="1"<|sep|>'
+            '<|open|>argument key="text" type="string"<|sep|>'
+            "literal<|sep|>value<|close|>argument<|sep|>"
+            "<|close|>call<|sep|><|close|>tools<|sep|>"
+            "<|close|>message<|sep|>"
+        )
+        for fragments in ([text], list(text)):
+            post = SglangStreamingPostProcessor(
+                tokenizer=self._LiteralTokenizer(dict(enumerate(fragments, 1))),
+                tool_call_parser=FunctionCallParser(
+                    tools=[tool], tool_call_parser="kimi_k3"
+                ),
+                reasoning_parser=ReasoningParser(
+                    model_type="kimi_k3", force_reasoning=True
+                ),
+                reasoning_parser_name="kimi_k3",
+                tool_call_parser_name="kimi_k3",
+                sglang_tools=[tool],
+            )
+            chunks = [
+                post.process_output({"token_ids": [i]})
+                for i in range(1, len(fragments) + 1)
+            ]
+            final = post.process_output({"token_ids": [], "finish_reason": "stop"})
+            assert final["finish_reason"] == "tool_calls"
+            calls = final["delta"]["tool_calls"]
+            assert len(calls) == 1
+            assert calls[0]["function"]["name"] == "echo"
+            assert json.loads(calls[0]["function"]["arguments"]) == {
+                "text": "literal<|sep|>value"
+            }
+            assert not any(c["delta"].get("content") for c in chunks if c)
 
     def test_kimi_k3_recovers_response_misclassified_as_reasoning(self) -> None:
         text = (

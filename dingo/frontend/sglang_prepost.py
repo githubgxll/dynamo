@@ -132,14 +132,25 @@ _KIMI_K3_THINK_CLOSE = "<|close|>think<|sep|>"
 _KIMI_K3_THINK_CLOSE_WITHOUT_SEP = "<|close|>think"
 _KIMI_K3_RESPONSE_OPEN = "<|open|>response<|sep|>"
 _KIMI_K3_RESPONSE_CLOSE = "<|close|>response<|sep|>"
+_KIMI_K3_TOOLS_OPEN = "<|open|>tools<|sep|>"
+_KIMI_K3_TOOLS_CLOSE = "<|close|>tools<|sep|>"
+_KIMI_K3_TOOLS_CLOSE_WITHOUT_SEP = "<|close|>tools"
 _KIMI_K3_MESSAGE_CLOSE = "<|close|>message<|sep|>"
+_KIMI_K3_SEPARATOR = "<|sep|>"
 _KIMI_K3_CONTROL_MARKERS = (
     _KIMI_K3_THINK_OPEN,
     _KIMI_K3_THINK_CLOSE,
     _KIMI_K3_RESPONSE_OPEN,
     _KIMI_K3_RESPONSE_CLOSE,
+    _KIMI_K3_TOOLS_OPEN,
+    _KIMI_K3_TOOLS_CLOSE,
     _KIMI_K3_MESSAGE_CLOSE,
     _KIMI_K3_THINK_CLOSE_WITHOUT_SEP,
+    _KIMI_K3_TOOLS_CLOSE_WITHOUT_SEP,
+    # Keep the bare separator last so complete XTML markers are removed before
+    # their shared suffix. A bare separator can escape the upstream parser;
+    # it is protocol framing rather than visible reasoning or response text.
+    _KIMI_K3_SEPARATOR,
 )
 
 
@@ -150,6 +161,51 @@ def _strip_kimi_k3_control_markers(text: str | None) -> str:
     for marker in _KIMI_K3_CONTROL_MARKERS:
         text = text.replace(marker, "")
     return text
+
+
+class _KimiK3TextFilter:
+    """Remove known framing after parsing, retaining only a possible prefix.
+
+    Each visible channel owns a filter. Tool-parser input and tool arguments
+    must never pass through this filter. Incomplete markers at EOF are kept
+    unless they match an explicitly supported malformed marker.
+    """
+
+    MAX_MARKER_LEN = max(map(len, _KIMI_K3_CONTROL_MARKERS))
+
+    def __init__(self) -> None:
+        self.pending = ""
+
+    def feed(self, text: str | None, *, finished: bool) -> str:
+        text = self.pending + (text or "")
+        self.pending = ""
+        output: list[str] = []
+        offset = 0
+        while offset < len(text):
+            start = text.find("<", offset)
+            if start == -1:
+                output.append(text[offset:])
+                break
+            output.append(text[offset:start])
+            tail = text[start : start + self.MAX_MARKER_LEN]
+            # Hold even a complete short malformed marker when it could still
+            # become a longer marker (e.g. <|close|>tools + <|sep|>).
+            if not finished and any(
+                marker.startswith(tail) and len(tail) < len(marker)
+                for marker in _KIMI_K3_CONTROL_MARKERS
+            ):
+                self.pending = tail
+                break
+            marker = next(
+                (m for m in _KIMI_K3_CONTROL_MARKERS if tail.startswith(m)),
+                None,
+            )
+            if marker is None:
+                output.append("<")
+                offset = start + 1
+            else:
+                offset = start + len(marker)
+        return "".join(output)
 
 
 def _recover_kimi_k3_response(text: str) -> str:
@@ -1230,6 +1286,8 @@ class SglangStreamingPostProcessor:
         self._tool_text_parts: list[str] = []
         self._kimi_k3_raw_text_parts: list[str] = []
         self._saw_normal_output = False
+        self._kimi_k3_reasoning_filter = _KimiK3TextFilter()
+        self._kimi_k3_content_filter = _KimiK3TextFilter()
 
     def _strip_trailing_eos_token_ids(self, token_ids: list[int]) -> list[int]:
         if not self._eos_token_ids:
@@ -1470,7 +1528,10 @@ class SglangStreamingPostProcessor:
             )
             self._reasoning_token_count += reasoning_tokens
         if self._is_kimi_k3:
-            reasoning_text = _strip_kimi_k3_control_markers(reasoning_text) or None
+            reasoning_text = (
+                self._kimi_k3_reasoning_filter.feed(reasoning_text, finished=finished)
+                or None
+            )
 
         # -- Tool call parsing (accumulate deltas) --
         content_text = normal_text
@@ -1500,7 +1561,9 @@ class SglangStreamingPostProcessor:
                     self._tool_call_args.setdefault(idx, []).append(tc.parameters)
 
         if self._is_kimi_k3:
-            content_text = _strip_kimi_k3_control_markers(content_text)
+            content_text = self._kimi_k3_content_filter.feed(
+                content_text, finished=finished
+            )
         if content_text:
             self._saw_normal_output = True
 
