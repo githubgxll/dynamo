@@ -30,6 +30,14 @@ from tests.video_gateway.test_task_store import _lease, _task
 _ETCD_URL = os.environ.get("DINGO_VIDEO_TEST_ETCD_URL")
 
 
+def _eventual_timeout(default: float) -> float:
+    """Remote contract transports need an explicit non-SLO wait budget."""
+    value = float(os.environ.get("DINGO_VIDEO_TEST_EVENTUAL_TIMEOUT_S", default))
+    if not 0 < value <= 120:
+        raise ValueError("DINGO_VIDEO_TEST_EVENTUAL_TIMEOUT_S must be in (0, 120]")
+    return value
+
+
 @pytest.mark.skipif(not _ETCD_URL, reason="requires a real etcd v3 endpoint")
 async def test_result_handoff_and_owner_takeover_never_touch_reused_slot():
     from dingo.video_gateway.models import now_ms
@@ -437,10 +445,9 @@ async def test_two_gateways_preserve_task_owned_by_healthy_peer(
         await dispatcher_a.start()
         started_a = True
         submission = await _submit(service_a, "public-fl")
-        for _ in range(100):
-            if client_a.calls:
-                break
-            await asyncio.sleep(0.01)
+        async with asyncio.timeout(_eventual_timeout(1)):
+            while not client_a.calls:
+                await asyncio.sleep(0.01)
         assert len(client_a.calls) == 1
 
         await dispatcher_b.start()
@@ -452,7 +459,7 @@ async def test_two_gateways_preserve_task_owned_by_healthy_peer(
         assert client_b.calls == []
 
         client_a.release.set()
-        terminal = await dispatcher_b.wait_terminal(active.task.id, 2)
+        terminal = await dispatcher_b.wait_terminal(active.task.id, _eventual_timeout(2))
         assert terminal.task.status == TaskStatus.COMPLETED
         assert len(client_a.calls) + len(client_b.calls) == 1
     finally:
@@ -523,7 +530,7 @@ async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
         # Submitting through A does not force A to win a shared queue. First
         # establish the intended owner, then start its standby before failure.
         submission = await _submit(service_a, "public-fl")
-        await asyncio.wait_for(handler.started.wait(), timeout=2)
+        await asyncio.wait_for(handler.started.wait(), timeout=_eventual_timeout(2))
         active = await store_b.get_task(submission.stored.task.id)
         assert active is not None
         assert active.task.status == TaskStatus.IN_PROGRESS
@@ -534,7 +541,7 @@ async def test_detached_task_survives_owner_gateway_shutdown_and_is_claimed(
         await dispatcher_a.stop()
         started_a = False
         handler.release.set()
-        terminal = await dispatcher_b.wait_terminal(active.task.id, 12)
+        terminal = await dispatcher_b.wait_terminal(active.task.id, _eventual_timeout(12))
         assert terminal.task.status == TaskStatus.COMPLETED
         assert terminal.task.owner_generation == "detached-gateway-b"
         assert handler.calls == 1
