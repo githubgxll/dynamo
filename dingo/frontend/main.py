@@ -104,6 +104,8 @@ def parse_args() -> tuple[FrontendConfig, Optional[Namespace], Optional[Namespac
 
     config = FrontendConfig.from_cli_args(args)
     config.validate()
+    vllm_flags = None
+    sglang_flags = None
 
     # When chat_processor is "auto", try to import sglang and use it if available.
     # This lets the same image/CMD work on both sglang-enabled and pure-Rust images.
@@ -116,7 +118,6 @@ def parse_args() -> tuple[FrontendConfig, Optional[Namespace], Optional[Namespac
         except ImportError:
             config.chat_processor = "dynamo"
             logger.info("sglang not available; using dynamo (Rust) chat processor")
-
 
     # parse extra vllm flags using vllm native parser.
     if config.chat_processor == "vllm":
