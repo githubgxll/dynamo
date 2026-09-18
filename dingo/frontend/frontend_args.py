@@ -127,7 +127,7 @@ class FrontendConfig(RouterConfigBase, KvRouterConfigBase, AicPerfConfigBase):
                 raise ValueError(
                     "--router-prefill-load-model=aic requires --router-mode=kv"
                 )
-            if self.chat_processor != "dynamo":
+            if self.chat_processor not in ("dynamo", "auto"):
                 raise ValueError(
                     "--router-prefill-load-model=aic currently requires "
                     "--dyn-chat-processor=dynamo"
@@ -441,15 +441,16 @@ class FrontendArgGroup(ArgGroup):
             g,
             flag_name="--dyn-chat-processor",
             env_var="DYN_CHAT_PROCESSOR",
-            default="dynamo",
+            default="auto",
             dest="chat_processor",
             help=(
-                "[EXPERIMENTAL] Chat pre/post processor backend. 'dynamo' uses the Rust "
+                "[EXPERIMENTAL] Chat pre/post processor backend. 'auto' tries sglang first and "
+                "falls back to dynamo if sglang is not installed. 'dynamo' uses the Rust "
                 "preprocessor. 'vllm' uses local vLLM for pre and post processing. "
                 "'sglang' uses SGLang APIs for chat template rendering, tool call "
                 "parsing, and reasoning parsing."
             ),
-            choices=["dynamo", "vllm", "sglang"],
+            choices=["auto", "dynamo", "vllm", "sglang"],
         )
 
         add_negatable_bool_argument(
