@@ -136,10 +136,10 @@ ENV HOME=/home/dynamo \
 USER dynamo
 WORKDIR /workspace
 
-# The exact command uses the Rust-native Dynamo chat processor. Its Python
-# import boundary is pydantic + uvloop + typing_extensions; vLLM, SGLang,
-# transformers, Kubernetes client, pyzmq and NIXL wheels are intentionally not
-# installed.
+# The Rust-native Dynamo chat processor handles most request preprocessing
+# in Rust.  A CPU-only SGLang subset is installed in a subsequent layer
+# so that --dyn-chat-processor=sglang is also available for models that
+# need SGLang's tokenizer / chat-template / tool-call parsing.
 RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:0.10.7,source=/uv,target=/usr/local/bin/uv,ro \
     --mount=type=bind,from=router_wheel_builder,source=/opt/dynamo/dist,target=/tmp/wheelhouse,ro \
     --mount=type=cache,target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
@@ -161,5 +161,29 @@ RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:0.10.7,source=/uv,target=/usr/lo
         exit 1; \
     fi
 
+# Install a CPU-only SGLang subset so --dyn-chat-processor=sglang works
+# without the full CUDA/flashinfer stack.  SGLang's tokenizer loading,
+# chat-template rendering and tool-call/reasoning parsing are pure Python
+# and only need transformers + torch(CPU) + a few utilities.  Installing
+# sglang with --no-deps avoids pulling CUDA wheels; the explicit deps
+# below are the minimal set that satisfies the import chain.
+RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:0.10.7,source=/uv,target=/usr/local/bin/uv,ro \
+    --mount=type=cache,target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
+    export UV_CACHE_DIR=/home/dynamo/.cache/uv UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 && \
+    uv pip install \
+        'transformers>=4.48,<4.50' \
+        'tokenizers>=0.21,<0.22' \
+        'torch>=2.5,<2.6' \
+        'numpy>=1.26,<2.3' \
+        'openai>=1.60,<2.0' \
+        'jinja2>=3.1,<4.0' \
+        'pyyaml>=6.0' \
+        'requests>=2.31' \
+        'distro>=1.9,<2.0' \
+        'pyzmq>=26.0' && \
+    uv pip install --no-deps \
+        'sglang>=0.4.0,<0.5.0' && \
+    python3 -c "from sglang.srt.utils.hf_transformers_utils import get_config, get_tokenizer; print('sglang import ok')"
+
 ENTRYPOINT ["python3", "-m", "dingo.frontend"]
-CMD ["--namespace-prefix", "glm51-mixed-", "--discovery-backend", "etcd", "--request-plane", "tcp", "--event-plane", "nats", "--http-host", "0.0.0.0", "--http-port", "8000", "--dyn-chat-processor", "dynamo", "--router-mode", "round-robin", "--router-min-initial-workers", "1", "--trust-remote-code", "--metrics-prefix", "sg_glm51_mixed_dingo"]
+CMD ["--namespace-prefix", "glm51-mixed-", "--discovery-backend", "etcd", "--request-plane", "tcp", "--event-plane", "nats", "--http-host", "0.0.0.0", "--http-port", "8000", "--dyn-chat-processor", "sglang", "--router-mode", "round-robin", "--router-min-initial-workers", "1", "--trust-remote-code", "--metrics-prefix", "sg_glm51_mixed_dingo"]
