@@ -111,35 +111,48 @@ def parse_args() -> tuple[FrontendConfig, Optional[Namespace], Optional[Namespac
     # parse extra vllm flags using vllm native parser.
     if config.chat_processor == "vllm":
         try:
-            from vllm.utils import FlexibleArgumentParser
-        except ImportError:
             try:
                 from vllm.utils.argparse_utils import FlexibleArgumentParser
-            except ModuleNotFoundError:
-                logger.exception(
-                    "Flag '--chat-processor vllm' requires vllm be installed."
-                )
-                sys.exit(1)
+            except ModuleNotFoundError as exc:
+                if exc.name not in ("vllm.utils", "vllm.utils.argparse_utils"):
+                    raise
+                from vllm.utils import FlexibleArgumentParser
 
-        # On a host with no GPU and a CUDA-built wheel, vllm.platforms
-        # auto-detection picks UnspecifiedPlatform and the
-        # AsyncEngineArgs.add_cli_args call below crashes inside
-        # DeviceConfig.__post_init__. Frontend uses vLLM for parsers
-        # only and never constructs an engine, so coerce CpuPlatform.
-        # Must run before importing vllm.engine.arg_utils, which binds
-        # current_platform at module scope.
-        import vllm.platforms
+            # On a host with no GPU and a CUDA-built wheel, vllm.platforms
+            # auto-detection picks UnspecifiedPlatform and the
+            # AsyncEngineArgs.add_cli_args call below crashes inside
+            # DeviceConfig.__post_init__. Frontend uses vLLM for parsers
+            # only and never constructs an engine, so coerce CpuPlatform.
+            # Must run before importing vllm.engine.arg_utils, which binds
+            # current_platform at module scope.
+            import vllm.platforms
 
-        if vllm.platforms.current_platform.device_type == "":
-            from vllm.platforms.cpu import CpuPlatform
+            if vllm.platforms.current_platform.device_type == "":
+                from vllm.platforms.cpu import CpuPlatform
 
-            vllm.platforms.current_platform = CpuPlatform()
+                vllm.platforms.current_platform = CpuPlatform()
 
-        try:
             from vllm.engine.arg_utils import AsyncEngineArgs
-            from vllm.entrypoints.openai.cli_args import FrontendArgs
-        except ModuleNotFoundError:
-            logger.exception("Flag '--chat-processor vllm' requires vllm be installed.")
+
+            try:
+                from vllm.entrypoints.launchers.cli_args import FrontendArgs
+            except ModuleNotFoundError as exc:
+                if exc.name not in (
+                    "vllm.entrypoints.launchers",
+                    "vllm.entrypoints.launchers.cli_args",
+                ):
+                    raise
+                from vllm.entrypoints.openai.cli_args import FrontendArgs
+        except ImportError as exc:
+            if isinstance(exc, ModuleNotFoundError) and exc.name == "vllm":
+                logger.exception(
+                    "--dyn-chat-processor vllm requires vllm to be installed."
+                )
+            else:
+                logger.exception(
+                    "Unable to load vLLM frontend APIs for --dyn-chat-processor vllm; "
+                    "check the installed vLLM version and its dependencies."
+                )
             sys.exit(1)
 
         vllm_parser = FlexibleArgumentParser(add_help=False)

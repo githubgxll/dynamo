@@ -19,7 +19,17 @@ if HAS_VLLM:
         ChatCompletionRequest,
         ChatCompletionToolsParam,
     )
-    from vllm.entrypoints.openai.engine.protocol import FunctionDefinition
+
+    try:
+        from vllm.entrypoints.generate.base.protocol import FunctionDefinition
+    except ModuleNotFoundError as exc:
+        if exc.name not in (
+            "vllm.entrypoints.generate",
+            "vllm.entrypoints.generate.base",
+            "vllm.entrypoints.generate.base.protocol",
+        ):
+            raise
+        from vllm.entrypoints.openai.engine.protocol import FunctionDefinition
     from vllm.outputs import CompletionOutput
     from vllm.reasoning.mistral_reasoning_parser import MistralReasoningParser
     from vllm.sampling_params import SamplingParams

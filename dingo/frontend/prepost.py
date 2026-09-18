@@ -11,17 +11,31 @@ from typing import Any, Protocol
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.openai.engine.protocol import (
-    DeltaFunctionCall,
-    DeltaMessage,
-    DeltaToolCall,
-)
 from vllm.reasoning import ReasoningParser
 from vllm.renderers import ChatParams
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers import ToolParser
 from vllm.utils.async_utils import make_async
+
+try:
+    from vllm.entrypoints.generate.base.protocol import (
+        DeltaFunctionCall,
+        DeltaMessage,
+        DeltaToolCall,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in (
+        "vllm.entrypoints.generate",
+        "vllm.entrypoints.generate.base",
+        "vllm.entrypoints.generate.base.protocol",
+    ):
+        raise
+    from vllm.entrypoints.openai.engine.protocol import (
+        DeltaFunctionCall,
+        DeltaMessage,
+        DeltaToolCall,
+    )
 
 
 class _Renderer(Protocol):
