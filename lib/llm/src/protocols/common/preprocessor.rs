@@ -277,6 +277,14 @@ pub struct PreprocessedRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mm_processor_kwargs: Option<serde_json::Value>,
 
+    /// Whether the backend should allow a reasoning phase before enforcing
+    /// guided output (e.g. response_format=json_object). SGLang consumes
+    /// this as its per-request `require_reasoning` engine argument.
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_reasoning: bool,
+
+
     /// Optional request timestamp in milliseconds forwarded from nvext.
     #[builder(default)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
