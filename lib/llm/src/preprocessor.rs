@@ -175,6 +175,14 @@ struct ReasoningState {
     reasoning_parser: Option<Box<dyn ReasoningParser>>,
     bypass_bare_guided_json: bool,
     guided_json_bypass_decision: Option<bool>,
+    /// When true, response_format guided decoding is active (e.g.
+    /// json_object). The reasoning parser may misclassify the guided JSON
+    /// output as reasoning_content; we detect JSON-like output and
+    /// reclassify it to content.
+    response_format_guided_active: bool,
+    /// Per-choice buffer tracking whether we have decided the output is
+    /// JSON (reclassify to content) vs reasoning.
+    json_reclassified: HashMap<u32, bool>,
 }
 
 /// Per-image routing payload accumulated by `gather_multi_modal_data` and
@@ -911,6 +919,15 @@ impl OpenAIPreprocessor {
             && let Some(router_params) = &nvext.router
         {
             builder.router(Some(router_params.clone()));
+        }
+
+        // Set require_reasoning for response_format guided decoding so the
+        // backend knows to allow a reasoning phase before enforcing JSON.
+        if Self::guided_output_requires_reasoning(
+            request,
+            self.runtime_config.reasoning_parser.as_deref(),
+        ) {
+            builder.require_reasoning(true);
         }
 
         let mut preprocessed = builder.build()?;
@@ -2202,12 +2219,14 @@ impl OpenAIPreprocessor {
         // Future Solution:
         // To address the limitation if needed in future: move this step before transform_postprocessor_stream and add new field of reasoning_content to the backend output
         // Use backend_output.reasoning_content field to fill out the deltas.
+        let response_format_guided_active = Self::has_structured_response_format(request);
         let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if should_parse_reasoning {
             Box::pin(Self::parse_reasoning_content_from_stream_inner(
                 stream,
                 self.runtime_config.reasoning_parser.clone().unwrap(), // Safety: We already checked that parser is some, so gtg
                 prompt_injected_reasoning,
                 bypass_reasoning_for_bare_guided_json,
+                response_format_guided_active,
             ))
         } else if should_strip_disabled_reasoning_start {
             Box::pin(Self::strip_leading_reasoning_start_from_stream(
@@ -2974,6 +2993,7 @@ impl OpenAIPreprocessor {
             parser_name,
             prompt_injected_reasoning,
             false,
+            false,
         )
     }
 
@@ -2982,6 +3002,7 @@ impl OpenAIPreprocessor {
         parser_name: String,
         prompt_injected_reasoning: bool,
         bypass_bare_guided_json: bool,
+        response_format_guided_active: bool,
     ) -> impl Stream<Item = Annotated<NvCreateChatCompletionStreamResponse>> + Send
     where
         S: Stream<Item = Annotated<NvCreateChatCompletionStreamResponse>> + Send + 'static,
@@ -3000,6 +3021,8 @@ impl OpenAIPreprocessor {
             reasoning_parser: Some(reasoning_parser),
             bypass_bare_guided_json,
             guided_json_bypass_decision: None,
+            response_format_guided_active,
+            json_reclassified: HashMap::new(),
         };
 
         stream::unfold(state, |mut state| async move {
@@ -3051,6 +3074,51 @@ impl OpenAIPreprocessor {
                                     .get_some_normal_text()
                                     .map(ChatCompletionMessageContent::Text);
                                 choice.delta.reasoning_content = parser_result.get_some_reasoning();
+                            }
+
+                            // response_format JSON reclassification: when
+                            // guided decoding is active (e.g. json_object),
+                            // the reasoning parser may classify the JSON
+                            // output as reasoning_content. Detect JSON-like
+                            // content in reasoning_content and move it to
+                            // content so the client gets bare JSON.
+                            if state.response_format_guided_active {
+                                let idx = choice.index;
+                                let already_reclassified =
+                                    state.json_reclassified.get(&idx).copied().unwrap_or(false);
+                                if !already_reclassified {
+                                    if let Some(rc) = choice.delta.reasoning_content.as_ref() {
+                                        let trimmed = rc.trim_start();
+                                        if !trimmed.is_empty()
+                                            && matches!(trimmed.as_bytes()[0], b'{' | b'[')
+                                        {
+                                            // JSON detected in reasoning_content —
+                                            // reclassify to content
+                                            choice.delta.content = Some(
+                                                ChatCompletionMessageContent::Text(
+                                                    std::mem::take(
+                                                        &mut choice.delta.reasoning_content,
+                                                    )
+                                                    .unwrap_or_default(),
+                                                ),
+                                            );
+                                            choice.delta.reasoning_content = None;
+                                            state.json_reclassified.insert(idx, true);
+                                        }
+                                    }
+                                } else if let Some(rc) = choice.delta.reasoning_content.as_ref() {
+                                    // Already reclassified — append subsequent
+                                    // reasoning output to content
+                                    let existing = match choice.delta.content.take() {
+                                        Some(ChatCompletionMessageContent::Text(mut s)) => {
+                                            s.push_str(rc);
+                                            ChatCompletionMessageContent::Text(s)
+                                        }
+                                        _ => ChatCompletionMessageContent::Text(rc.clone()),
+                                    };
+                                    choice.delta.content = Some(existing);
+                                    choice.delta.reasoning_content = None;
+                                }
                             }
                             // For multimodal content, pass through unchanged
                         }
