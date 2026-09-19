@@ -171,6 +171,7 @@ jobs:
         shell: bash
         run: |
           images=(
+            "docker/dockerfile:1.10.0-labs"
             "rust:1.93.1-slim-bookworm"
             "ghcr.io/astral-sh/uv:0.10.7"
             "nvcr.io/nvidia/base/ubuntu:noble-20250619"
