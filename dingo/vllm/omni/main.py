@@ -23,6 +23,7 @@ from dingo.common.utils.runtime_termination import (
 )
 from dingo.vllm.health_check import VllmOmniHealthCheckPayload
 from dingo.vllm.main import setup_metrics_collection
+from dingo.vllm.omni.engine_monitor import OmniEngineMonitor
 
 from .args import OmniConfig, parse_omni_args
 
@@ -59,6 +60,13 @@ async def init_omni(
         ),
         media_output_fs=media_fs,
         media_output_http_url=config.media_output_http_url,
+    )
+    # Monitor AsyncOmni independently from the standard AsyncLLM worker path so
+    # a dead stage/rank cannot leave a registered endpoint with no live engine.
+    _engine_monitor = OmniEngineMonitor(
+        runtime,
+        handler.engine_client,
+        shutdown_event,
     )
     serve_handler = handler.generate
     if config.detached_video_task_root is not None:
