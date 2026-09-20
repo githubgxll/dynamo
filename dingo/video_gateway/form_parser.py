@@ -58,6 +58,8 @@ async def parse_multipart(
     request: web.Request,
     artifacts: FileArtifactStore,
     limits: MediaConfig,
+    *,
+    upload_root: Path | None = None,
 ) -> ParsedMultipart:
     if request.content_type != "multipart/form-data":
         raise GatewayError(
@@ -65,7 +67,8 @@ async def parse_multipart(
             "unsupported_media_type",
             "video requests require multipart/form-data",
         )
-    upload_root = await artifacts.create_upload()
+    if upload_root is None:
+        upload_root = await artifacts.create_upload()
     fields: dict[str, list[str]] = {}
     uploads: list[UploadedArtifact] = []
     total_file_bytes = 0

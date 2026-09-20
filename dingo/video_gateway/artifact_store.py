@@ -27,6 +27,8 @@ from dingo.common.video_task_protocol import detached_attempt_root
 from dingo.video_gateway.errors import ResultTooLarge
 from dingo.video_gateway.file_io import run_cancellable_file_io, run_file_io
 
+UPLOAD_HEARTBEAT_NAME = ".upload-heartbeat"
+
 
 @dataclass(frozen=True, slots=True)
 class ArtifactCapacity:
@@ -97,8 +99,13 @@ class FileArtifactStore:
 
         def _create() -> Path:
             path.mkdir(0o700, True, False)
-            (path / "inputs").mkdir(0o700, False, False)
-            return self._contained(path)
+            try:
+                (path / "inputs").mkdir(0o700, False, False)
+                (path / UPLOAD_HEARTBEAT_NAME).touch(exist_ok=False)
+                return self._contained(path)
+            except Exception:
+                shutil.rmtree(path, ignore_errors=True)
+                raise
 
         return await run_file_io(_create)
 
@@ -149,8 +156,16 @@ class FileArtifactStore:
         usage = await run_file_io(shutil.disk_usage, self.root)
         return ArtifactCapacity(usage.total, usage.used, usage.free)
 
-    async def cleanup_orphan_uploads(self, *, minimum_age_s: float = 3600.0) -> int:
-        """Remove only stale staging directories that were never task-owned."""
+    async def cleanup_orphan_uploads(
+        self,
+        *,
+        minimum_age_s: float = 3600.0,
+    ) -> int:
+        """Remove staging directories whose request heartbeat has expired.
+
+        Missing/legacy markers are kept for explicit migration cleanup. Neither
+        a live Gateway nor ordinary writes to inputs/ renew this heartbeat.
+        """
 
         cutoff = time.time() - minimum_age_s
 
@@ -166,7 +181,26 @@ class FileArtifactStore:
                 if candidate.is_symlink():
                     candidate.unlink(missing_ok=True)
                 elif candidate.is_dir():
-                    shutil.rmtree(self._contained(candidate))
+                    marker_path = candidate / UPLOAD_HEARTBEAT_NAME
+                    try:
+                        marker = marker_path.lstat()
+                        if (
+                            not stat.S_ISREG(marker.st_mode)
+                            or marker.st_mtime > cutoff
+                        ):
+                            continue
+                    except OSError:
+                        # Old Gateway versions do not renew request heartbeats.
+                        # Do not delete their staging directories during rollout.
+                        continue
+                    try:
+                        # Recheck after scanning: another process may have
+                        # refreshed or committed this upload in the meantime.
+                        if marker_path.lstat() != marker:
+                            continue
+                        shutil.rmtree(self._contained(candidate))
+                    except FileNotFoundError:
+                        continue
                 else:
                     candidate.unlink(missing_ok=True)
                 removed += 1
@@ -203,6 +237,12 @@ class FileArtifactStore:
                     f"task artifact directory already exists: {task_id}"
                 )
             os.replace(source, target)
+            try:
+                (target / UPLOAD_HEARTBEAT_NAME).unlink(missing_ok=True)
+            except OSError:
+                # The marker is harmless outside _uploads. A completed atomic
+                # move must not fail solely because marker cleanup was denied.
+                pass
             return target
 
         target = await run_file_io(_commit)
