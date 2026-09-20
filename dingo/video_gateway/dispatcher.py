@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
+import random
 import secrets
 import time
 import uuid
@@ -36,9 +38,11 @@ from dingo.video_gateway.errors import (
     HandoffReservationLost,
     ResultTooLarge,
     StoreConflict,
+    StoreUnavailable,
     WorkerUnavailable,
     worker_execution_error,
 )
+from dingo.video_gateway.etcd_http import EtcdWatchIdleTimeout
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.finalization import ResultFinalizer
 from dingo.video_gateway.memory_budget import (
@@ -70,6 +74,8 @@ _DETACHED_STATUS_FALLBACK_S = 1.0
 _DETACHED_WAIT_ATTACH_TIMEOUT_S = 1.0
 _DETACHED_WAIT_RETRY_INITIAL_S = 0.2
 _DETACHED_WAIT_RETRY_MAX_S = 5.0
+_HANDOFF_RETRY_INITIAL_S = 0.2
+_HANDOFF_RETRY_MAX_S = 5.0
 _DETACHED_WORKER_STALE_S = 20.0
 _WORKER_LIVENESS_CHECK_INTERVAL_S = 5.0
 _WORKER_LIVENESS_CHECK_CONCURRENCY = 4
@@ -647,9 +653,10 @@ class VideoDispatcher:
                 if not waiter.done():
                     waiter.set_result(None)
 
-    async def _resync_task_watch(self) -> None:
-        self._task_watch_healthy = False
-        self._task_watch_ready.clear()
+    async def _resync_task_watch(self, *, preserve_health: bool = False) -> None:
+        if not preserve_health:
+            self._task_watch_healthy = False
+            self._task_watch_ready.clear()
         self._task_watch_revision = await self.store.task_watch_revision()
         if self._task_watch_revision < 0:
             raise RuntimeError("task watch snapshot omitted its store revision")
@@ -680,19 +687,30 @@ class VideoDispatcher:
                 raise RuntimeError("task watch ended unexpectedly")
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._task_watch_healthy = False
-                self._task_watch_ready.clear()
+            except Exception as exc:
+                idle_refresh = isinstance(exc, EtcdWatchIdleTimeout)
+                if not idle_refresh:
+                    self._task_watch_healthy = False
+                    self._task_watch_ready.clear()
                 self.telemetry.increment(
-                    "dingo_video_etcd_watch_rebuilds_total",
+                    (
+                        "dingo_video_etcd_watch_idle_refreshes_total"
+                        if idle_refresh
+                        else "dingo_video_etcd_watch_rebuilds_total"
+                    ),
                     labels={"watch": "tasks", "pool": "_all"},
                 )
-                logger.exception("task watch failed and will be rebuilt")
+                if idle_refresh:
+                    logger.debug("task watch idle timeout; refreshing from snapshot")
+                else:
+                    logger.exception("task watch failed and will be rebuilt")
                 try:
-                    await self._resync_task_watch()
+                    await self._resync_task_watch(preserve_health=idle_refresh)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    self._task_watch_healthy = False
+                    self._task_watch_ready.clear()
                     logger.exception("task watch snapshot rebuild failed")
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=backoff_s)
@@ -950,8 +968,11 @@ class VideoDispatcher:
             except asyncio.TimeoutError:
                 pass
 
-    async def _resync_lease_cache(self, pool: PoolRuntime) -> None:
-        pool.lease_watch_healthy = False
+    async def _resync_lease_cache(
+        self, pool: PoolRuntime, *, preserve_health: bool = False
+    ) -> None:
+        if not preserve_health:
+            pool.lease_watch_healthy = False
         leases, revision = await self.store.lease_snapshot(pool.config.pool_id)
         if revision <= 0:
             raise RuntimeError("Worker lease snapshot omitted its etcd revision")
@@ -980,21 +1001,36 @@ class VideoDispatcher:
                 raise RuntimeError("Worker lease watch ended unexpectedly")
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pool.lease_watch_healthy = False
+            except Exception as exc:
+                idle_refresh = isinstance(exc, EtcdWatchIdleTimeout)
+                if not idle_refresh:
+                    pool.lease_watch_healthy = False
                 self.telemetry.increment(
-                    "dingo_video_etcd_watch_rebuilds_total",
+                    (
+                        "dingo_video_etcd_watch_idle_refreshes_total"
+                        if idle_refresh
+                        else "dingo_video_etcd_watch_rebuilds_total"
+                    ),
                     labels={"watch": "worker_leases", "pool": pool.config.pool_id},
                 )
-                logger.exception(
-                    "Worker lease watch failed and will be rebuilt: %s",
-                    pool.config.pool_id,
-                )
+                if idle_refresh:
+                    logger.debug(
+                        "Worker lease watch idle timeout; refreshing from snapshot: %s",
+                        pool.config.pool_id,
+                    )
+                else:
+                    logger.exception(
+                        "Worker lease watch failed and will be rebuilt: %s",
+                        pool.config.pool_id,
+                    )
                 try:
-                    await self._resync_lease_cache(pool)
+                    await self._resync_lease_cache(
+                        pool, preserve_health=idle_refresh
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    pool.lease_watch_healthy = False
                     logger.exception(
                         "Worker lease snapshot rebuild failed: %s",
                         pool.config.pool_id,
@@ -1601,6 +1637,7 @@ class VideoDispatcher:
                     )
                 worker_stream_finished = True
 
+            worker_queue_wait_s: float | None = None
             if detached:
                 detached_consumer = self._consume_detached_worker(
                     pool,
@@ -1614,7 +1651,7 @@ class VideoDispatcher:
                 # Ownership has moved into the detached consumer coroutine.
                 # Do not keep a second reference in this long-lived frame.
                 payload = None
-                await self._run_with_lease_monitor(
+                worker_queue_wait_s = await self._run_with_lease_monitor(
                     detached_consumer,
                     heartbeat,
                     self._monitor_cancellation(
@@ -1661,6 +1698,8 @@ class VideoDispatcher:
                 )
             inference_time_s = result.inference_time_s
             stage_durations = dict(result.stage_durations or {})
+            if worker_queue_wait_s is not None:
+                stage_durations["worker_queue_wait"] = worker_queue_wait_s
             result = None
             self._legacy_output_encoded_bytes += len(encoded_result)
             if len(encoded_result) > self.config.media.max_result_encoded_bytes:
@@ -1676,9 +1715,19 @@ class VideoDispatcher:
                 and pool.config.scheduling.early_release_slot
                 and latest.task.status == TaskStatus.IN_PROGRESS
             ):
-                handed_off = await self._commit_result_handoff(
-                    pool, task, binary_artifact, inference_time_s, stage_durations
-                )
+                try:
+                    handed_off = await self._commit_result_handoff(
+                        pool, task, binary_artifact, inference_time_s, stage_durations
+                    )
+                except _TaskOwnershipLost:
+                    raise
+                except Exception:
+                    # A failed reconciliation must never fall through to the
+                    # generic Worker failure/cancel/retry path. Preserve the
+                    # result and let owner-lease recovery reconcile durable state.
+                    logger.exception("result handoff recovery suspended: %s", task.id)
+                    await self._request_fatal_restart("result handoff recovery failed")
+                    return
                 if handed_off is not None:
                     self.running_calls.pop(task.id, None)
                     pool.wakeup.set()
@@ -2003,88 +2052,161 @@ class VideoDispatcher:
     async def _commit_result_handoff(
         self, pool, expected, artifact, inference_time_s, stage_durations
     ):
-        """Retry ambiguous storage responses by reading the durable task first."""
-        reservation_lost = False
+        """Reconcile every uncertain write before publishing or failing a result."""
+        failure_code = None
+        settlement_error = None
+        reference = None
+        retries = 0
+        delay = _HANDOFF_RETRY_INITIAL_S
+        started = time.monotonic()
+
+        def observe(event, before=None, after=None):
+            try:
+                if before is not None and after is not None:
+                    self.telemetry.record_transition(
+                        event,
+                        before.task,
+                        after.task,
+                        gateway_generation=self.generation,
+                        revision=after.revision,
+                    )
+                self.telemetry.increment(
+                    "dingo_video_result_handoff_total",
+                    labels={"pool": expected.pool_id, "outcome": event},
+                )
+                self.telemetry.record_stage_duration(
+                    expected.pool_id, "result_handoff", time.monotonic() - started
+                )
+            except Exception:
+                logger.exception("handoff telemetry failed: %s", expected.id)
+
+        async def backoff(reason):
+            nonlocal retries, delay
+            retries += 1
+            if retries == 1 or retries & (retries - 1) == 0:
+                logger.warning(
+                    "handoff recovery task_id=%s attempt=%s reason=%s retries=%s elapsed_s=%.3f",
+                    expected.id,
+                    expected.attempt,
+                    reason,
+                    retries,
+                    time.monotonic() - started,
+                )
+            try:
+                self.telemetry.increment(
+                    "dingo_video_result_handoff_retries_total",
+                    labels={"pool": expected.pool_id, "reason": reason},
+                )
+            except Exception:
+                logger.exception("handoff retry telemetry failed: %s", expected.id)
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=random.uniform(0.8 * delay, delay)
+                )
+            except TimeoutError:
+                pass
+            delay = min(delay * 2, _HANDOFF_RETRY_MAX_S)
+
         while not self._stop.is_set():
             try:
                 latest = await self.store.get_task(expected.id)
-                if latest is None or latest.task.status in TERMINAL_STATUSES:
-                    return None
-                self._require_execution_owner(latest.task, expected)
-                if (
-                    latest.task.status == TaskStatus.FINALIZING
-                    and read_handoff(latest.task) is not None
-                ):
-                    return latest
-                if reservation_lost:
-                    # A definite fencing failure is not transient CAS contention.
-                    # End only our task, never cancel/release/quarantine the new
-                    # occupant of the historical Worker slot.
-                    await self.store.transition(
-                        expected.id,
-                        expected={TaskStatus.IN_PROGRESS},
-                        expected_revision=latest.revision,
-                        release_lease=False,
-                        patch={
-                            "status": TaskStatus.FAILED,
-                            "error": TaskError(
-                                "result_handoff_lost_reservation",
-                                "execution reservation changed before result handoff",
-                            ),
-                            "completed_at_ms": now_ms(),
-                            "expires_at_ms": now_ms()
-                            + int(self.config.lifecycle.failed_ttl_s * 1000),
-                        },
-                    )
-                    return None
-                if latest.task.cancel_requested_at_ms is not None:
-                    await self._finish_cancelled(pool, latest, quarantine=False)
-                    return None
-                reference = make_handoff(
-                    latest.task,
-                    artifact,
-                    timeout_s=pool.config.scheduling.finalization_timeout_s,
+            except (StoreUnavailable, TimeoutError, ConnectionError):
+                await backoff("store_unavailable")
+                continue
+            if latest is None or latest.task.status in TERMINAL_STATUSES:
+                observe("already_terminal")
+                return None
+            self._require_execution_owner(latest.task, expected)
+            if latest.task.status == TaskStatus.FINALIZING:
+                if read_handoff(latest.task) is None:
+                    raise ValueError("finalizing task is missing its durable handoff")
+                observe("confirmed_after_read")
+                return latest
+            if latest.task.status != TaskStatus.IN_PROGRESS:
+                raise ValueError("handoff requires the current in_progress execution")
+            if settlement_error is not None:
+                # One read-back confirmed the attempted failure/cancellation did
+                # not finish. Do not loop on a broken terminal writer indefinitely.
+                raise RuntimeError(
+                    "handoff terminal reconciliation failed"
+                ) from settlement_error
+
+            lost = failure_code == "result_handoff_lost_reservation"
+            cancelled = latest.task.cancel_requested_at_ms is not None
+            terminal = failure_code is not None or cancelled
+            if terminal:
+                status = TaskStatus.CANCELLED if cancelled else TaskStatus.FAILED
+                code = "cancelled" if cancelled else failure_code
+                message = {
+                    "cancelled": "video task was cancelled",
+                    "result_handoff_lost_reservation": "execution reservation changed before result handoff",
+                    "result_handoff_failed": "result handoff failed before durable publication",
+                }[code]
+                ttl = (
+                    self.config.lifecycle.cancelled_ttl_s
+                    if cancelled
+                    else self.config.lifecycle.failed_ttl_s
                 )
+                patch = {
+                    "status": status,
+                    "error": TaskError(code, message),
+                    "completed_at_ms": now_ms(),
+                    "expires_at_ms": now_ms() + int(ttl * 1000),
+                }
+            else:
+                if reference is None:
+                    try:
+                        reference = make_handoff(
+                            latest.task,
+                            artifact,
+                            timeout_s=pool.config.scheduling.finalization_timeout_s,
+                        )
+                    except Exception:
+                        failure_code = "result_handoff_failed"
+                        logger.exception("handoff construction failed: %s", expected.id)
+                        continue
+                patch = {
+                    "status": TaskStatus.FINALIZING,
+                    "worker_lease_id": None,
+                    "normalized_request": {
+                        **latest.task.normalized_request,
+                        HANDOFF_KEY: reference,
+                    },
+                    "inference_time_s": inference_time_s,
+                    "stage_durations": stage_durations,
+                }
+            try:
                 result = await self.store.transition(
                     expected.id,
                     expected={TaskStatus.IN_PROGRESS},
                     expected_revision=latest.revision,
-                    release_lease=True,
-                    release_execution=True,
-                    patch={
-                        "status": TaskStatus.FINALIZING,
-                        "worker_lease_id": None,
-                        "normalized_request": {
-                            **latest.task.normalized_request,
-                            HANDOFF_KEY: reference,
-                        },
-                        "inference_time_s": inference_time_s,
-                        "stage_durations": stage_durations,
-                    },
+                    patch=patch,
+                    release_lease=not lost,
+                    release_execution=not lost,
                 )
-                self.telemetry.record_transition(
-                    "result_handoff",
-                    latest.task,
-                    result.task,
-                    gateway_generation=self.generation,
-                    revision=result.revision,
-                )
-                return result
             except HandoffReservationLost:
-                reservation_lost = True
-            except (_TaskOwnershipLost, ValueError):
-                raise
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Includes a lost transaction response. Never discard the source
-                # or call the Worker again while the outcome is uncertain.
-                logger.warning(
-                    "result handoff awaiting storage for task %s",
-                    expected.id,
-                    exc_info=True,
-                )
-                await asyncio.sleep(0.2)
+                failure_code = "result_handoff_lost_reservation"
+                continue
+            except StoreConflict:
+                await backoff("cas_conflict")
+                continue
+            except (StoreUnavailable, TimeoutError, ConnectionError):
+                await backoff("store_unavailable")
+                continue
+            except Exception as exc:
+                # Even a local exception may follow a committed txn. Read back
+                # before failing, and reconcile a failed terminal write once too.
+                if terminal:
+                    settlement_error = exc
+                failure_code = failure_code or "result_handoff_failed"
+                logger.exception("handoff write needs reconciliation: %s", expected.id)
+                continue
+            observe(
+                result.task.status.value if terminal else "result_handoff",
+                latest,
+                result,
+            )
+            return None if terminal else result
         raise asyncio.CancelledError
 
     async def _run_result_finalizer(self, pool, stored):
@@ -2175,7 +2297,7 @@ class VideoDispatcher:
         running_call: RunningCall,
         *,
         initial_worker_status: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> float | None:
         task = stored.task
         if (
             task.execution_token is None
@@ -2224,18 +2346,27 @@ class VideoDispatcher:
                 and WAIT_TERMINAL_CAPABILITY in capabilities
             )
 
+        worker_queue_wait_s: float | None = None
+
         async def _consume_status(value: dict[str, Any]) -> bool:
+            nonlocal worker_queue_wait_s
             worker_status = _validate_identity(value)
             state = worker_status.get("state")
             if state == "completed":
                 queue_wait = worker_status.get("worker_queue_wait_s")
-                if (
-                    isinstance(queue_wait, (int, float))
-                    and not isinstance(queue_wait, bool)
-                    and 0 <= queue_wait <= 86400
-                ):
+                if queue_wait is not None:
+                    if (
+                        not isinstance(queue_wait, (int, float))
+                        or isinstance(queue_wait, bool)
+                        or not math.isfinite(float(queue_wait))
+                        or not 0 <= float(queue_wait) <= 86400
+                    ):
+                        raise _DetachedWaitProtocolError(
+                            "detached Worker returned invalid worker_queue_wait_s"
+                        )
+                    worker_queue_wait_s = float(queue_wait)
                     self.telemetry.record_stage_duration(
-                        task.pool_id, "worker_queue", queue_wait
+                        task.pool_id, "worker_queue", worker_queue_wait_s
                     )
                 if "result_format" in worker_status or "inline_result" in worker_status:
                     if worker_status.get(
@@ -2460,7 +2591,7 @@ class VideoDispatcher:
         assert worker_status is not None
         supports_wait = _supports_wait(worker_status)
         if await _consume_status(worker_status):
-            return
+            return worker_queue_wait_s
 
         retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
         next_wait_retry = time.monotonic()
@@ -2476,7 +2607,7 @@ class VideoDispatcher:
                     worker_status = await _wait_once()
                     retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
                     if await _consume_status(worker_status):
-                        return
+                        return worker_queue_wait_s
                     raise _DetachedWaitUnavailable(
                         "detached Worker could not attach a local terminal waiter"
                     )
@@ -2498,7 +2629,7 @@ class VideoDispatcher:
             if worker_status is not None:
                 supports_wait = supports_wait or _supports_wait(worker_status)
                 if await _consume_status(worker_status):
-                    return
+                    return worker_queue_wait_s
             remaining_ms = (task.deadline_at_ms or 0) - now_ms()
             if remaining_ms <= 0:
                 raise asyncio.TimeoutError

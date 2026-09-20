@@ -301,6 +301,38 @@ async def _submit(service, model):
     )
 
 
+async def test_idle_watch_snapshot_refresh_preserves_ready_state(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient()
+    store = WatchMemoryTaskStore()
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="idle-watch-refresh-test",
+    )
+    pool = dispatcher.pools["fl-pool"]
+    dispatcher._task_watch_healthy = True
+    dispatcher._task_watch_ready.set()
+    pool.lease_watch_healthy = True
+
+    await dispatcher._resync_task_watch(preserve_health=True)
+    await dispatcher._resync_lease_cache(pool, preserve_health=True)
+
+    assert dispatcher._task_watch_healthy is True
+    assert dispatcher._task_watch_ready.is_set()
+    assert pool.lease_watch_healthy is True
+    assert dispatcher._task_watch_revision >= 0
+    assert pool.lease_revision > 0
+
+
 async def test_two_pools_with_same_numeric_instance_never_cross_route(
     make_gateway_config,
 ):

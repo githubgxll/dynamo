@@ -86,6 +86,90 @@ async def test_prefetch_admits_one_extra_but_never_executes_above_n(tmp_path, ca
         await manager.shutdown()
 
 
+async def test_prefetch_emits_structured_task_timing_logs(tmp_path, capsys):
+    handler = Handler()
+    manager = DetachedOmniTaskManager(
+        handler,
+        tmp_path,
+        prefetch_capacity=1,
+        cancel_poll_interval_s=0.01,
+    )
+    value = identity(manager, "logged")
+    try:
+        assert (await manager._submit(value, {"name": "logged"}))["accepted"]
+        await until(lambda: handler.running == 1)
+        handler.release.set()
+        await until(lambda: value.key not in manager._running)
+        events = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
+        assert [event["event"] for event in events] == [
+            "accepted",
+            "execution_started",
+            "terminal",
+        ]
+        assert all(event["task_id"] == "logged" for event in events)
+        assert events[-1]["state"] == "completed"
+        assert events[-1]["worker_queue_wait_s"] >= 0
+        assert "execution_token" not in events[-1]
+    finally:
+        handler.release.set()
+        await manager.shutdown()
+
+
+async def test_wait_returns_durable_terminal_when_execution_is_cancelled(tmp_path):
+    handler = Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, binary_results=False, inline_results=False
+    )
+    value = identity(manager, "execution-cancelled")
+    try:
+        assert (await manager._submit(value, {"name": value.task_id}))["accepted"]
+        await until(lambda: handler.running == 1)
+        waiter = manager._wait_terminal(value)
+        assert (await anext(waiter))["state"] == "watching"
+        terminal = asyncio.create_task(anext(waiter))
+
+        manager._running[value.key].execution.cancel()
+
+        assert (await asyncio.wait_for(terminal, 2))["state"] == "cancelled"
+        assert (await manager._status(value))["state"] == "cancelled"
+        await waiter.aclose()
+    finally:
+        handler.release.set()
+        await manager.shutdown()
+
+
+async def test_cancelling_waiter_keeps_detached_execution_running(tmp_path):
+    handler = Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, binary_results=False, inline_results=False
+    )
+    value = identity(manager, "waiter-cancelled")
+    try:
+        assert (await manager._submit(value, {"name": value.task_id}))["accepted"]
+        await until(lambda: handler.running == 1)
+        execution = manager._running[value.key].execution
+        waiter = manager._wait_terminal(value)
+        assert (await anext(waiter))["state"] == "watching"
+        terminal = asyncio.create_task(anext(waiter))
+
+        terminal.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await terminal
+        assert not execution.done()
+
+        handler.release.set()
+        await until(lambda: value.key not in manager._running)
+        assert (await manager._status(value))["state"] == "completed"
+        await waiter.aclose()
+    finally:
+        handler.release.set()
+        await manager.shutdown()
+
+
 @pytest.mark.parametrize("cancel_kind", ["rpc", "file"])
 async def test_queued_cancel_never_enters_model_and_frees_admission(
     tmp_path, cancel_kind

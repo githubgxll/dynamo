@@ -85,6 +85,29 @@ def _clone_task(task: VideoTask) -> VideoTask:
     return VideoTask.from_dict(task.to_dict())
 
 
+def _validate_fenced_release(before: VideoTask, after: VideoTask) -> None:
+    if after.status == TaskStatus.FINALIZING:
+        validate_handoff_transition(before, after)
+        return
+    if before.status != TaskStatus.IN_PROGRESS or after.status not in {
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    }:
+        raise ValueError("fenced terminal release requires an in_progress execution")
+    for name in (
+        "id",
+        "pool_id",
+        "backend_target",
+        "worker_key",
+        "worker_instance_id",
+        "owner_generation",
+        "attempt",
+        "execution_token",
+    ):
+        if getattr(before, name) != getattr(after, name):
+            raise ValueError("fenced terminal release cannot change execution identity")
+
+
 def _apply_patch(task: VideoTask, patch: Mapping[str, Any]) -> VideoTask:
     result = _clone_task(task)
     for key, value in patch.items():
@@ -584,7 +607,7 @@ class MemoryTaskStore(TaskStore):
                 )
             updated = _apply_patch(current[0], patch)
             if release_execution:
-                validate_handoff_transition(current[0], updated)
+                _validate_fenced_release(current[0], updated)
                 lease = self._leases.get((current[0].pool_id, current[0].worker_key))
                 if (
                     not release_lease
@@ -1679,6 +1702,12 @@ class EtcdTaskStore(TaskStore):
                     quarantine_until_ms=quarantine_until_ms,
                     task_hint=stored,
                 )
+            except HandoffReservationLost:
+                # This is a definitive fencing result, not shared-ledger CAS
+                # contention. Retrying cannot restore ownership of a reused
+                # Worker reservation and only delays the caller's safe
+                # task-only failure path.
+                raise
             except StoreConflict:
                 current = await self.get_task(task_id)
                 if (
@@ -1743,9 +1772,11 @@ class EtcdTaskStore(TaskStore):
             raise StoreConflict("task revision changed")
         updated = _apply_patch(stored.task, patch)
         if release_execution:
-            validate_handoff_transition(stored.task, updated)
+            _validate_fenced_release(stored.task, updated)
             if not release_lease or quarantine_until_ms is not None:
-                raise ValueError("handoff must release, never quarantine execution")
+                raise ValueError(
+                    "fenced execution transition must release, never quarantine"
+                )
         task_key = self._task_key(task_id)
         compare: list[dict] = [self.client.compare_mod(task_key, stored.revision)]
         success: list[dict] = [
