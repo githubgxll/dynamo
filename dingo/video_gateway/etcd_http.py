@@ -87,6 +87,10 @@ class EtcdWatchCompacted(StoreUnavailable):
         )
 
 
+class EtcdWatchIdleTimeout(StoreUnavailable):
+    """A healthy watch stream produced no events or progress before its deadline."""
+
+
 class EtcdHttpClient:
     def __init__(
         self,
@@ -271,7 +275,20 @@ class EtcdHttpClient:
                 await self._mark_endpoint(index, succeeded=False)
                 if yielded or position + 1 == len(endpoints):
                     raise
-            except (aiohttp.ClientError, TimeoutError) as exc:
+            except TimeoutError as exc:
+                if yielded:
+                    # An established watch can legitimately be idle. Refresh it
+                    # from a new snapshot without penalizing the etcd endpoint.
+                    raise EtcdWatchIdleTimeout(
+                        f"etcd endpoint {endpoint} {path} watch was idle for "
+                        f"{self.watch_response_timeout_s} seconds"
+                    ) from exc
+                await self._mark_endpoint(index, succeeded=False)
+                if position + 1 == len(endpoints):
+                    raise StoreUnavailable(
+                        f"etcd endpoint {endpoint} {path} stream failed: {exc}"
+                    ) from exc
+            except aiohttp.ClientError as exc:
                 await self._mark_endpoint(index, succeeded=False)
                 if yielded or position + 1 == len(endpoints):
                     raise StoreUnavailable(

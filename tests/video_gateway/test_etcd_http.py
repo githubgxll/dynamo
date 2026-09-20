@@ -15,6 +15,7 @@ from dingo.video_gateway.errors import StoreUnavailable
 from dingo.video_gateway.etcd_http import (
     EtcdHttpClient,
     EtcdWatchCompacted,
+    EtcdWatchIdleTimeout,
 )
 
 
@@ -355,7 +356,7 @@ async def test_watch_prefix_reports_server_cancel():
             pass
 
 
-async def test_watch_response_timeout_marks_silent_endpoint_failed():
+async def test_watch_response_timeout_refreshes_silent_endpoint_without_penalty():
     hold_open = asyncio.Event()
 
     async def stalled_watch(request):
@@ -393,11 +394,72 @@ async def test_watch_response_timeout_marks_silent_endpoint_failed():
         created = await asyncio.wait_for(anext(watch), timeout=1)
         assert created.created is True
 
-        with pytest.raises(StoreUnavailable, match="stream failed"):
+        with pytest.raises(EtcdWatchIdleTimeout, match="watch was idle"):
             await asyncio.wait_for(anext(watch), timeout=1)
 
-        assert (await client._endpoint_order())[0][1] == "http://next-etcd"
+        assert (await client._endpoint_order())[0][1] == str(
+            server.make_url("")
+        ).rstrip("/")
     finally:
+        await watch.aclose()
+        await client.close()
+        hold_open.set()
+        await server.close()
+
+
+async def test_watch_without_response_timeout_remains_pending_while_range_works():
+    hold_open = asyncio.Event()
+
+    async def stalled_watch(request):
+        await request.json()
+        response = web.StreamResponse(
+            status=200, headers={"Content-Type": "application/json"}
+        )
+        await response.prepare(request)
+        await response.write(
+            json.dumps(
+                {
+                    "result": {
+                        "header": {"revision": "20"},
+                        "watch_id": "7",
+                        "created": True,
+                    }
+                }
+            ).encode()
+            + b"\n"
+        )
+        await hold_open.wait()
+        return response
+
+    async def range_request(request):
+        await request.json()
+        return web.json_response(
+            {"header": {"revision": "21"}, "kvs": [], "more": False}
+        )
+
+    app = web.Application()
+    app.router.add_post("/v3/watch", stalled_watch)
+    app.router.add_post("/v3/kv/range", range_request)
+    server = TestServer(app)
+    await server.start_server()
+    client = EtcdHttpClient(
+        str(server.make_url("")).rstrip("/"),
+        timeout_s=1,
+        watch_response_timeout_s=None,
+    )
+    watch = client.watch_prefix("/workers/")
+    pending = None
+    try:
+        created = await asyncio.wait_for(anext(watch), timeout=1)
+        assert created.created is True
+        pending = asyncio.create_task(anext(watch))
+        await asyncio.sleep(0.05)
+        assert not pending.done()
+        assert (await client.range_page("/probe")).revision == 21
+    finally:
+        if pending is not None:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
         await watch.aclose()
         await client.close()
         hold_open.set()

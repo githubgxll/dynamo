@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from dingo.video_gateway.errors import StoreConflict
+from dingo.video_gateway.errors import HandoffReservationLost, StoreConflict
 from dingo.video_gateway.models import TaskStatus, now_ms
 from dingo.video_gateway.result_handoff import HANDOFF_KEY, make_handoff, read_handoff
 from dingo.video_gateway.task_store import EtcdTaskStore, MemoryTaskStore
@@ -161,14 +161,25 @@ async def test_handoff_recovery_does_not_touch_reused_worker_slot():
     assert await client.get(slot_key) == slot_before
 
 
-async def test_conflicting_token_cannot_handoff_someone_elses_reservation():
+async def test_conflicting_token_fails_handoff_without_retrying_fencing(
+    monkeypatch,
+):
     store, client, stored, owner = await setup("etcd")
     key = store._lease_key(stored.task.pool_id, stored.task.worker_key)
     value = await client.get(key)
     data = json.loads(value.value)
     data["execution_token"] = "e" * 32
     client.values[key] = dataclasses.replace(value, value=json.dumps(data).encode())
-    with pytest.raises(StoreConflict):
+    original = store._transition_once
+    calls = 0
+
+    async def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_transition_once", counted)
+    with pytest.raises(HandoffReservationLost):
         await store.transition(
             stored.task.id,
             expected={TaskStatus.IN_PROGRESS},
@@ -177,6 +188,7 @@ async def test_conflicting_token_cannot_handoff_someone_elses_reservation():
             release_lease=True,
             release_execution=True,
         )
+    assert calls == 1
     assert read_handoff((await store.get_task(stored.task.id)).task) is None
     assert await client.get(store._retry_credit_key(stored.task)) is not None
 

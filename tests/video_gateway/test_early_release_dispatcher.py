@@ -75,10 +75,24 @@ async def test_next_task_starts_while_previous_gateway_finalization_is_blocked(
         await asyncio.wait_for(second_started.wait(), 2)
         assert not finish.is_set()
         finish.set()
-        for submitted in [first, second]:
-            assert (
-                await dispatcher.wait_terminal(submitted.stored.task.id, 3)
-            ).task.status == TaskStatus.COMPLETED
+        terminals = [
+            await dispatcher.wait_terminal(submitted.stored.task.id, 3)
+            for submitted in [first, second]
+        ]
+        assert all(item.task.status == TaskStatus.COMPLETED for item in terminals)
+        if prefetch:
+            assert all(
+                item.task.stage_durations is not None
+                and item.task.stage_durations["worker_queue_wait"] >= 0
+                and item.task.public_dict()["metrics"]["worker_queue_wait_s"]
+                == item.task.stage_durations["worker_queue_wait"]
+                for item in terminals
+            )
+        else:
+            assert all(
+                "worker_queue_wait" not in (item.task.stage_durations or {})
+                for item in terminals
+            )
         assert len(calls) == 2
     finally:
         finish.set()
@@ -87,12 +101,21 @@ async def test_next_task_starts_while_previous_gateway_finalization_is_blocked(
 
 
 @pytest.mark.parametrize(
-    "fault", ["lost_handoff_reply", "completion_store_unavailable", "lost_reservation"]
+    "fault",
+    [
+        "lost_handoff_reply",
+        "completion_store_unavailable",
+        "lost_reservation",
+        "store_unavailable_then_recovers",
+        "deterministic_handoff_error",
+        "deterministic_handoff_error_after_slot_reuse",
+        "broken_terminal_writer",
+    ],
 )
 async def test_handoff_storage_faults_do_not_rerun_model(
     make_gateway_config, monkeypatch, fault
 ):
-    from dingo.video_gateway.errors import HandoffReservationLost
+    from dingo.video_gateway.errors import HandoffReservationLost, StoreUnavailable
 
     calls = 0
 
@@ -118,13 +141,42 @@ async def test_handoff_storage_faults_do_not_rerun_model(
     )
     original = store.transition
     injected = False
+    handoff_attempts = 0
 
     async def transition(*args, **kwargs):
-        nonlocal injected
-        handoff = kwargs.get("release_execution", False)
+        nonlocal handoff_attempts, injected
+        handoff = (
+            kwargs.get("release_execution", False)
+            and kwargs["patch"].get("status") == TaskStatus.FINALIZING
+        )
+        if handoff:
+            handoff_attempts += 1
         if not injected and handoff and fault == "lost_reservation":
             injected = True
             raise HandoffReservationLost("injected reservation replacement")
+        if handoff and fault in {
+            "deterministic_handoff_error",
+            "broken_terminal_writer",
+        }:
+            injected = True
+            raise RuntimeError("injected deterministic handoff bug")
+        if (
+            fault == "broken_terminal_writer"
+            and kwargs["patch"].get("status") == TaskStatus.FAILED
+        ):
+            raise RuntimeError("terminal writer is broken too")
+        if handoff and fault == "deterministic_handoff_error_after_slot_reuse":
+            injected = True
+            key = next(iter(store._leases))
+            store._leases[key].execution_token = "e" * 32
+            raise RuntimeError("injected deterministic handoff bug after slot reuse")
+        if (
+            handoff
+            and fault == "store_unavailable_then_recovers"
+            and handoff_attempts <= 3
+        ):
+            injected = True
+            raise StoreUnavailable("injected etcd outage before publication")
         if (
             not injected
             and fault == "completion_store_unavailable"
@@ -142,20 +194,52 @@ async def test_handoff_storage_faults_do_not_rerun_model(
     await dispatcher.start()
     try:
         submitted = await _submit(service, "public-fl")
-        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 4)
+        if fault == "broken_terminal_writer":
+            await asyncio.wait_for(dispatcher._fatal_event.wait(), 3)
+            assert injected and calls == handoff_attempts == 1
+            assert not dispatcher.ready and dispatcher.draining
+            current = await store.get_task(submitted.stored.task.id)
+            assert current.task.status == TaskStatus.IN_PROGRESS
+            for _ in range(100):
+                if (await dispatcher.memory_budget.snapshot()).used_bytes == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert (await dispatcher.memory_budget.snapshot()).used_bytes == 0
+            return
+        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 6)
         assert injected and calls == 1 and terminal.task.attempt == 1
-        if fault == "lost_reservation":
+        if fault in {
+            "lost_reservation",
+            "deterministic_handoff_error",
+            "deterministic_handoff_error_after_slot_reuse",
+        }:
             assert terminal.task.status == TaskStatus.FAILED
-            assert terminal.task.error.code == "result_handoff_lost_reservation"
+            assert terminal.task.error.code == (
+                "result_handoff_failed"
+                if fault == "deterministic_handoff_error"
+                else "result_handoff_lost_reservation"
+            )
         else:
             assert terminal.task.status == TaskStatus.COMPLETED
             assert not await store.list_leases("fl-pool")
+        if fault in {
+            "deterministic_handoff_error",
+            "deterministic_handoff_error_after_slot_reuse",
+        }:
+            assert handoff_attempts == 1
+        elif fault == "store_unavailable_then_recovers":
+            assert handoff_attempts == 4
         for _ in range(100):
             if (await dispatcher.memory_budget.snapshot()).used_bytes == 0:
                 break
             await asyncio.sleep(0.01)
         assert (await dispatcher.memory_budget.snapshot()).used_bytes == 0
         assert not dispatcher._finalizing
+        if fault == "deterministic_handoff_error":
+            assert not await store.list_leases("fl-pool")
+        elif fault == "deterministic_handoff_error_after_slot_reuse":
+            leases = await store.list_leases("fl-pool")
+            assert len(leases) == 1 and leases[0].execution_token == "e" * 32
     finally:
         await dispatcher.stop()
         await manager.shutdown()

@@ -62,6 +62,33 @@ already admitted can still finish. Memory admission remains independently
 bounded. Size queue/retry/memory budgets for N+P admissions and pending results.
 These controls cannot make permanently blocked filesystem calls cancellable.
 
+## Cancellation boundary
+
+Video task cancellation is a logical result and scheduling operation. After a
+DELETE request, Gateway signals the detached Worker and waits up to
+`abort_grace_s` for its durable terminal status. A confirmed `cancelled` status
+releases the task's lease immediately. If the Worker does not confirm, Gateway
+quarantines the old slot through the task deadline plus the abort grace. A
+restarted Worker registers with a new instance ID and is not blocked by the old
+instance's quarantine.
+
+Engine compute interruption is backend-dependent. In particular, a vLLM-Omni
+orchestrator can acknowledge an abort and unwind the outer request while an
+already-running diffusion forward continues to its next interruptible boundary.
+DingoRouter still prevents the cancelled attempt from publishing a result. With
+engine concurrency one, a following task remains serialized inside vLLM-Omni
+until that forward returns, even though its Gateway lifecycle has entered
+`in_progress`.
+
+This behavior is an accepted integration boundary, not a task-state correctness
+failure. `execution_started` means that the detached Worker admitted the task;
+it is not proof that a GPU kernel started. `worker_queue_wait_s` measures the
+detached Worker's admission queue and does not include an opaque queue inside
+the engine. Immediate reclamation of in-flight diffusion compute requires the
+engine to implement interruption within its execution loop. Do not use a
+successful DELETE response or a `cancelled` task status as proof that GPU use
+has already fallen to zero.
+
 ## Disable or roll back
 
 Drain accepted work and durable `finalizing` handoffs before downgrading to code

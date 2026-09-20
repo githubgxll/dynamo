@@ -5,17 +5,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import os
 import resource
 import stat
+import time
 
 import aiohttp
 from aiohttp import web
 
+from dingo.video_gateway.artifact_store import UPLOAD_HEARTBEAT_NAME
 from dingo.video_gateway.errors import GatewayError, StoreUnavailable
-from dingo.video_gateway.file_io import opened_file, run_file_io
+from dingo.video_gateway.file_io import _drain_on_cancel, opened_file, run_file_io
 from dingo.video_gateway.form_parser import parse_multipart
 from dingo.video_gateway.models import TERMINAL_STATUSES, TaskStatus
 from dingo.video_gateway.service import VideoGatewayService
@@ -34,6 +37,20 @@ _HOP_BY_HOP = {
     "transfer-encoding",
     "upgrade",
 }
+_UPLOAD_HEARTBEAT_MAX_INTERVAL_S = 30.0
+
+
+async def _keep_upload_active(marker_fd: int, grace_s: float) -> None:
+    def refresh() -> None:
+        # A delayed request must not revive an already expired upload while
+        # another Gateway is deleting it. The fd survives the commit rename.
+        if time.time() - os.fstat(marker_fd).st_mtime >= grace_s:
+            raise TimeoutError("upload heartbeat expired")
+        os.utime(marker_fd, None)
+
+    while True:
+        await asyncio.sleep(min(_UPLOAD_HEARTBEAT_MAX_INTERVAL_S, grace_s / 3))
+        await run_file_io(refresh)
 
 
 def _service(request: web.Request) -> VideoGatewayService:
@@ -172,8 +189,15 @@ async def _submit(request: web.Request, *, delivery_mode: str):
     await service.ensure_submission_capacity(
         anticipated_input + service.config.media.max_result_bytes
     )
-    parsed = await parse_multipart(request, service.artifacts, service.config.media)
-    try:
+    upload_root = await service.artifacts.create_upload()
+
+    async def submit():
+        parsed = await parse_multipart(
+            request,
+            service.artifacts,
+            service.config.media,
+            upload_root=upload_root,
+        )
         return await service.submit(
             fields=parsed.fields,
             uploads=parsed.uploads,
@@ -181,9 +205,46 @@ async def _submit(request: web.Request, *, delivery_mode: str):
             delivery_mode=delivery_mode,
             idempotency_key=request.headers.get("Idempotency-Key"),
         )
-    except Exception:
-        await service.artifacts.discard(parsed.upload_root)
-        raise
+
+    try:
+        async with opened_file(
+            (upload_root / UPLOAD_HEARTBEAT_NAME).open, "rb"
+        ) as marker:
+            operation = asyncio.create_task(submit(), name="video-upload-submit")
+            heartbeat = asyncio.create_task(
+                _keep_upload_active(
+                    marker.fileno(), service.config.lifecycle.upload_grace_s
+                ),
+                name="video-upload-heartbeat",
+            )
+            try:
+                done, _ = await asyncio.wait(
+                    {operation, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if operation in done:
+                    return await operation
+                # Fail closed if heartbeat I/O fails; do not let an unprotected
+                # upload continue. Drain its file work before closing/unlinking.
+                try:
+                    await heartbeat
+                except Exception as exc:
+                    raise GatewayError(
+                        503,
+                        "upload_heartbeat_failed",
+                        "upload storage heartbeat could not be maintained",
+                        error_type="service_unavailable_error",
+                    ) from exc
+                raise RuntimeError("upload heartbeat stopped unexpectedly")
+            finally:
+                operation.cancel()
+                heartbeat.cancel()
+                await _drain_on_cancel(
+                    asyncio.gather(operation, heartbeat, return_exceptions=True)
+                )
+    finally:
+        # commit_upload moved the directory on success. Cleanup also runs on
+        # disconnect, malformed multipart, and cancellation during validation.
+        await service.artifacts.discard(upload_root)
 
 
 async def create_video(request: web.Request) -> web.Response:

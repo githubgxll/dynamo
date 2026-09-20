@@ -198,16 +198,20 @@ class VideoTask:
                 result["video_duration_s"] = media["video_duration_s"]
             if media.get("audio_duration_s") is not None:
                 result["audio_duration_s"] = media["audio_duration_s"]
+        durations = dict(self.stage_durations or {})
+        worker_queue_wait_s = durations.get("worker_queue_wait")
         if any(
             value is not None
             for value in (
                 self.queue_wait_s,
+                worker_queue_wait_s,
                 self.inference_time_s,
                 self.finalize_time_s,
             )
         ):
             result["metrics"] = {
                 "queue_wait_s": self.queue_wait_s,
+                "worker_queue_wait_s": worker_queue_wait_s,
                 "inference_time_s": self.inference_time_s,
                 "finalize_time_s": self.finalize_time_s,
             }
@@ -218,7 +222,6 @@ class VideoTask:
             result["inference_time_s"] = max(
                 0.0, (self.completed_at_ms - self.created_at_ms) / 1000.0
             )
-        durations = dict(self.stage_durations or {})
         if self.queue_wait_s is not None:
             durations.setdefault("queue_wait", self.queue_wait_s)
         if self.finalize_time_s is not None:
