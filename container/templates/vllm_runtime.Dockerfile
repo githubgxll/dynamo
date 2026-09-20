@@ -245,75 +245,21 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 {% endif %}
 
 {% if device == "cuda" %}
-# The upstream vllm/vllm-openai base image ships a GPL/GPL-3.0 ffmpeg built
-# against libx264/libx265/libmp3lame. Purge ONLY the explicitly-named ffmpeg +
-# codec packages and replace them with the LGPL-only in-tree ffmpeg built in
-# wheel_builder (--disable-gpl --disable-nonfree; H.264 via NVENC, VP9 via
-# libvpx). PyAV, torchaudio, torchvision, soundfile and Pillow all bundle their
-# own libraries and do not link the system ffmpeg/codecs, so removing them is
-# safe. dpkg-query keeps the match robust across base-image/arch version
-# suffixes (e.g. libavcodec58 vs 60).
-#
-# This grep is the COMPLETE, auditable set of what leaves the image: there is
-# deliberately NO apt-get autoremove, so the removal can never cascade into
-# unrelated auto-installed packages. That matters because the base image marks
-# both the gcc/g++/make toolchain (torch.inductor/Triton JIT shell out to it at
-# runtime) and the CUDA math libs (libcublas/libcusolver/libcusparse — the torch
-# wheels here ship no bundled cublas and load the system copies) as
-# auto-installed. A bare `autoremove --purge` sweeps all of those as "orphaned",
-# which broke runtime JIT (missing C compiler) in the 1.3.0 rc image. Any
-# LGPL/BSD media libs left orphaned (libva, libvdpau, ...) are license-clean
-# dead weight, not a compliance issue.
-RUN set -eux; \
-    purge=$(dpkg-query -W -f='${Package}\n' 2>/dev/null \
-        | grep -E '^(ffmpeg|libav[a-z]|libsw[a-z]|libpostproc|libx264|libx265|libmp3lame|libaom|libdav1d|libvpx|libtheora|libvorbis|libopus|libsoxr|libcaca|libcdio|libzvbi|libgme|libvidstab|libdc1394|libraw1394|libiec61883|libtwolame|libshine|libsrt[0-9]|libudfread|libsvtav1|libbs2b|librubberband|libchromaprint|libcodec2|libgsm|libass[0-9]|libbluray|libxvidcore|libflite)' \
-        || true); \
-    if [ -n "$purge" ]; then \
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y $purge; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+# Preserve the upstream vllm/vllm-openai FFmpeg stack.  vLLM-Omni's Ref2VA
+# preprocessing requires its software libx264rgb encoder and rawvideo support;
+# replacing it with the reduced in-tree FFmpeg silently breaks video-reference
+# requests.  The runtime probe below exercises the same lossless RGB path.
 
-# Regression guard for the codec purge above: torch.inductor/Triton JIT shell
-# out to a host C/C++ compiler at runtime, so a missing toolchain only surfaces
-# on the first compile in production. Reproduce that compile path at build time
-# (CPU-only) so a missing compiler aborts the build instead of shipping.
+# TorchInductor/Triton JIT shells out to a host C/C++ compiler at runtime.
+# Reproduce that compile path at build time so a missing compiler aborts the
+# build instead of surfacing on the first production request.
 RUN --mount=type=bind,source=./container/deps/vllm/validate_torch_compile_smoke.py,target=/tmp/validate_torch_compile_smoke.py,readonly \
     python3 /tmp/validate_torch_compile_smoke.py
 
-# Copy the LGPL ffmpeg and ffprobe from wheel_builder: versioned shared libs (libav*.so*,
-# libsw*.so*) + libvpx + the LGPL CLI binary that imageio/diffusers target via
-# IMAGEIO_FFMPEG_EXE. Ungated by enable_media_ffmpeg because the base GPL ffmpeg
-# was just purged, so the LGPL CLI must always be present for the omni
-# video-export path to have something to encode with.
-RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/local/ \
-    mkdir -p /usr/local/lib/pkgconfig && \
-    cp -rnL /tmp/usr/local/include/libav* /tmp/usr/local/include/libsw* /usr/local/include/ && \
-    cp -nL /tmp/usr/local/lib/libav*.so* /tmp/usr/local/lib/libsw*.so* /usr/local/lib/ && \
-    cp -nL /tmp/usr/local/lib/lib*vpx*.so* /usr/local/lib/ 2>/dev/null || true && \
-    cp -nL /tmp/usr/local/lib/pkgconfig/libav*.pc /tmp/usr/local/lib/pkgconfig/libsw*.pc /usr/local/lib/pkgconfig/ && \
-    cp -nL /tmp/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg && \
-    cp -nL /tmp/usr/local/bin/ffprobe /usr/local/bin/ffprobe && \
-    cp -r /tmp/usr/local/src/ffmpeg /usr/local/src/ && \
-    ldconfig
-ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
-
-# H3 reference-media preprocessing invokes ffprobe directly. The upstream
-# package purge removes /usr/bin/ffprobe too; copying only ffmpeg leaves a
-# runtime failure even though the Python imports and output encoding work.
+# Guard the upstream media tools and the exact Ref2VA codec path.
 RUN --mount=type=bind,source=./container/deps/vllm/validate_media_probe.py,target=/tmp/validate_media_probe.py,readonly \
     python3 /tmp/validate_media_probe.py
 {% endif %}
-
-# Replace the upstream vllm/vllm-openai image's imageio-ffmpeg (which ships a
-# GPL-encumbered prebuilt ffmpeg binary in <site-packages>/imageio_ffmpeg/binaries/)
-# with a source install that leaves no binary on disk. On cuda, IMAGEIO_FFMPEG_EXE
-# (set above) points imageio at the LGPL CLI copied from wheel_builder. The
-# --no-binary directive lives in the requirements file itself.
-RUN --mount=type=bind,source=./container/deps/requirements.vllm.txt,target=/tmp/requirements.vllm.txt \
-    --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    export UV_CACHE_DIR=/root/.cache/uv && \
-    uv pip install {{ pip_target }} --reinstall-package imageio-ffmpeg --no-deps \
-        --requirement /tmp/requirements.vllm.txt
 
 # Remove the vLLM source tree shipped in the base image to avoid pytest
 # collection conflicts (duplicate conftest plugin registration) and stale
