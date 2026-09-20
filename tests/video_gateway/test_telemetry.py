@@ -18,6 +18,9 @@ def test_telemetry_renders_bounded_task_and_etcd_metrics(caplog):
     failed = _task("video-observed")
     failed.status = TaskStatus.FAILED
     failed.error = terminal_error("worker_lease_lost", "lease lost")
+    failed.queue_wait_s = 0.1
+    failed.inference_time_s = 1.2
+    failed.stage_durations = {"worker_queue_wait": 0.3}
 
     telemetry.record_submission(task.pool_id, "created", "async")
     telemetry.set_gauge(
@@ -56,4 +59,8 @@ def test_telemetry_renders_bounded_task_and_etcd_metrics(caplog):
     assert event["event"] == "failed"
     assert event["task_id"] == task.id
     assert event["gateway_generation"] == "gateway-a"
+    assert event["gateway_queue_wait_s"] == 0.1
+    assert event["worker_queue_wait_s"] == 0.3
+    assert event["worker_inference_time_s"] == 1.2
+    assert event["stage_durations"] == {"worker_queue_wait": 0.3}
     assert "prompt" not in event

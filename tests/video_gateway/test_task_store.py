@@ -86,6 +86,26 @@ def test_public_task_reports_final_seed_and_validated_media_metadata():
     assert public["audio_duration_s"] == 5.175
 
 
+def test_public_task_reports_persisted_worker_queue_wait():
+    task = _task("video-worker-queue")
+    task.status = TaskStatus.COMPLETED
+    task.completed_at_ms = task.created_at_ms + 2_000
+    task.queue_wait_s = 0.25
+    task.inference_time_s = 1.5
+    task.finalize_time_s = 0.05
+    task.stage_durations = {
+        "worker_queue_wait": 0.75,
+        "output_total_s": 0.2,
+    }
+
+    public = task.public_dict()
+
+    assert public["metrics"]["worker_queue_wait_s"] == 0.75
+    assert public["stage_durations"]["worker_queue_wait"] == 0.75
+    assert public["stage_durations"]["queue_wait"] == 0.25
+    assert public["stage_durations"]["finalize"] == 0.05
+
+
 async def test_idempotency_returns_original_task_and_detects_conflict():
     store = MemoryTaskStore()
     first, created = await store.create_task(

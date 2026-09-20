@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
-import os
 import json
+import os
 
 import pytest
 
-from dingo.video_gateway.artifact_store import FileArtifactStore
+from dingo.video_gateway.api import _keep_upload_active
+from dingo.video_gateway.artifact_store import UPLOAD_HEARTBEAT_NAME, FileArtifactStore
 from dingo.video_gateway.errors import ResultTooLarge
 
 
@@ -43,9 +45,7 @@ async def test_detached_status_and_response_are_identity_and_checksum_checked(tm
     }
     (root / "worker-status.json").write_text(json.dumps(status))
 
-    loaded = await store.read_detached_status(
-        "deployment", "pool", "task", 1, token
-    )
+    loaded = await store.read_detached_status("deployment", "pool", "task", 1, token)
     consumer = _Consumer()
     consumed = await store.consume_detached_response(
         "deployment",
@@ -77,7 +77,9 @@ async def test_detached_status_and_response_are_identity_and_checksum_checked(tm
 async def test_finalize_decodes_validated_mp4_atomically(tmp_path):
     store = FileArtifactStore(tmp_path / "artifacts")
     upload = await store.create_upload()
+    assert (upload / UPLOAD_HEARTBEAT_NAME).is_file()
     task_root = await store.commit_upload(upload, "deployment", "pool", "video-id")
+    assert not (task_root / UPLOAD_HEARTBEAT_NAME).exists()
     payload = b"\x00\x00\x00\x18ftypisomvalidated"
 
     final, size, sha256, media = await store.finalize_b64_mp4(
@@ -181,12 +183,95 @@ async def test_orphan_cleanup_only_removes_stale_staging_directories(tmp_path):
     stale = await store.create_upload()
     current = await store.create_upload()
     os.utime(stale, (0, 0))
+    os.utime(stale / UPLOAD_HEARTBEAT_NAME, (0, 0))
 
     removed = await store.cleanup_orphan_uploads(minimum_age_s=60)
 
     assert removed == 1
     assert not stale.exists()
     assert current.is_dir()
+    await store.discard(current)
+
+
+async def test_orphan_cleanup_never_removes_an_active_upload(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    active = await store.create_upload()
+    os.utime(active, (0, 0))
+
+    # A different Gateway sees the same heartbeat marker on shared storage.
+    other_gateway = FileArtifactStore(store.root)
+    removed = await other_gateway.cleanup_orphan_uploads(minimum_age_s=60)
+
+    assert removed == 0
+    assert active.is_dir()
+    await store.discard(active)
+
+
+async def test_orphan_cleanup_removes_stale_upload_while_gateway_stays_alive(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    abandoned = await store.create_upload()
+    os.utime(abandoned, (0, 0))
+    os.utime(abandoned / UPLOAD_HEARTBEAT_NAME, (0, 0))
+
+    removed = await store.cleanup_orphan_uploads(minimum_age_s=60)
+
+    assert removed == 1
+    assert not abandoned.exists()
+
+
+async def test_orphan_cleanup_keeps_legacy_upload_without_owner(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    legacy = store.upload_root / "legacy-stale"
+    (legacy / "inputs").mkdir(parents=True)
+    os.utime(legacy, (0, 0))
+
+    removed = await store.cleanup_orphan_uploads(minimum_age_s=60)
+
+    assert removed == 0
+    assert legacy.is_dir()
+
+
+async def test_heartbeat_stops_with_request_and_does_not_resurrect_expired_upload(
+    tmp_path,
+):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    active = await store.create_upload()
+    marker = active / UPLOAD_HEARTBEAT_NAME
+    os.utime(active, (0, 0))
+    with marker.open("rb") as stream:
+        before = marker.stat().st_mtime_ns
+        heartbeat = asyncio.create_task(_keep_upload_active(stream.fileno(), 0.3))
+        try:
+            for _ in range(100):
+                if marker.stat().st_mtime_ns > before:
+                    break
+                await asyncio.sleep(0.01)
+            assert marker.stat().st_mtime_ns > before
+            assert await store.cleanup_orphan_uploads(minimum_age_s=0.3) == 0
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+        stopped = marker.stat().st_mtime_ns
+        await asyncio.sleep(0.12)
+        assert marker.stat().st_mtime_ns == stopped
+        os.utime(marker, (0, 0))
+        with pytest.raises(TimeoutError, match="expired"):
+            await _keep_upload_active(stream.fileno(), 0.03)
+        assert await store.cleanup_orphan_uploads(minimum_age_s=0.3) == 1
+
+
+async def test_heartbeat_fd_survives_commit_rename(tmp_path):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    upload = await store.create_upload()
+    with (upload / UPLOAD_HEARTBEAT_NAME).open("rb") as stream:
+        heartbeat = asyncio.create_task(_keep_upload_active(stream.fileno(), 0.3))
+        try:
+            target = await store.commit_upload(upload, "deployment", "pool", "task")
+            await asyncio.sleep(0.15)
+            assert target.is_dir() and not heartbeat.done()
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 async def test_task_orphan_is_manifested_trashed_and_deleted_in_two_steps(tmp_path):

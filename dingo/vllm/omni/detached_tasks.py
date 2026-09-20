@@ -300,6 +300,43 @@ class DetachedOmniTaskManager:
             "capabilities": [WAIT_TERMINAL_CAPABILITY],
         }
 
+    @staticmethod
+    def _log_task_timing(
+        event: str,
+        identity: DetachedTaskIdentity,
+        status: Mapping[str, Any],
+    ) -> None:
+        inline = status.get("inline_result")
+        inline = inline if isinstance(inline, Mapping) else {}
+        stages = inline.get("stage_durations")
+        error = status.get("error")
+        payload = {
+            "log_type": "video_worker_task_timing",
+            "event": event,
+            "timestamp_ms": int(time.time() * 1000),
+            "task_id": identity.task_id,
+            "deployment_id": identity.deployment_id,
+            "pool_id": identity.pool_id,
+            "attempt": identity.attempt,
+            "state": status.get("state"),
+            "queued_at_ms": status.get("queued_at_ms"),
+            "started_at_ms": status.get("started_at_ms"),
+            "completed_at_ms": status.get("completed_at_ms"),
+            "worker_queue_wait_s": status.get("worker_queue_wait_s"),
+            "worker_execution_s": status.get("inference_time_s"),
+            "inference_time_s": inline.get("inference_time_s"),
+            "stage_durations": stages if isinstance(stages, Mapping) else None,
+            "error_code": error.get("code") if isinstance(error, Mapping) else None,
+        }
+        print(
+            json.dumps(
+                {key: value for key, value in payload.items() if value is not None},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+
     async def _submit(
         self,
         identity: DetachedTaskIdentity,
@@ -362,6 +399,7 @@ class DetachedOmniTaskManager:
             if self.prefetch_capacity:
                 initial["queued_at_ms"] = queued_at_ms
             await asyncio.to_thread(self._atomic_json, status_path, initial)
+            self._log_task_timing("accepted", identity, initial)
             request_id = (
                 f"{identity.task_id}-{identity.attempt}-{identity.execution_token[:12]}"
             )
@@ -452,6 +490,7 @@ class DetachedOmniTaskManager:
         running = self._running.get(identity.key)
         if running is not None:
             running.persisted_terminal = copy.deepcopy(status)
+        self._log_task_timing("terminal", identity, status)
 
     async def _execute(
         self,
@@ -559,7 +598,25 @@ class DetachedOmniTaskManager:
         await asyncio.to_thread(
             self._atomic_json,
             status_path,
-            {**self._base_status(identity, "running"), "started_at_ms": started_at_ms},
+            {
+                **self._base_status(identity, "running"),
+                "queued_at_ms": queued_at_ms,
+                "started_at_ms": started_at_ms,
+            },
+        )
+        self._log_task_timing(
+            "execution_started",
+            identity,
+            {
+                "state": "running",
+                "queued_at_ms": queued_at_ms,
+                "started_at_ms": started_at_ms,
+                "worker_queue_wait_s": (
+                    max(0.0, (started_at_ms - queued_at_ms) / 1000)
+                    if queued_at_ms is not None
+                    else None
+                ),
+            },
         )
         result_token = BINARY_RESULT_WRITER.set(
             BinaryResultWriter(attempt_root) if self.binary_results else None
@@ -616,10 +673,15 @@ class DetachedOmniTaskManager:
                 temporary.unlink(missing_ok=True)
                 status_stop.set()
                 await asyncio.gather(status_heartbeat, return_exceptions=True)
-                await asyncio.to_thread(
-                    self._atomic_json,
+                await self._record_terminal(
+                    identity,
                     status_path,
-                    {**self._base_status(identity, "cancelled")},
+                    {
+                        **self._base_status(identity, "cancelled"),
+                        "queued_at_ms": queued_at_ms,
+                        "started_at_ms": started_at_ms,
+                        "completed_at_ms": int(time.time() * 1000),
+                    },
                 )
                 return
             if not self.inline_results:
@@ -630,6 +692,9 @@ class DetachedOmniTaskManager:
                 **self._base_status(identity, "completed"),
                 **response_fields,
                 "inference_time_s": max(0.0, time.monotonic() - started),
+                "queued_at_ms": queued_at_ms,
+                "started_at_ms": started_at_ms,
+                "completed_at_ms": int(time.time() * 1000),
             }
             if queued_at_ms is not None:
                 completed["worker_queue_wait_s"] = max(
@@ -641,10 +706,15 @@ class DetachedOmniTaskManager:
             temporary.unlink(missing_ok=True)
             status_stop.set()
             await asyncio.gather(status_heartbeat, return_exceptions=True)
-            await asyncio.to_thread(
-                self._atomic_json,
+            await self._record_terminal(
+                identity,
                 status_path,
-                {**self._base_status(identity, "cancelled")},
+                {
+                    **self._base_status(identity, "cancelled"),
+                    "queued_at_ms": queued_at_ms,
+                    "started_at_ms": started_at_ms,
+                    "completed_at_ms": int(time.time() * 1000),
+                },
             )
             raise
         except Exception as exc:
@@ -654,6 +724,9 @@ class DetachedOmniTaskManager:
             logger.exception("detached Omni task failed: %s", identity.task_id)
             failed = {
                 **self._base_status(identity, "failed"),
+                "queued_at_ms": queued_at_ms,
+                "started_at_ms": started_at_ms,
+                "completed_at_ms": int(time.time() * 1000),
                 "error": {
                     "code": "worker_failed",
                     "message": str(exc)[:1024] or "detached Omni task failed",
@@ -714,7 +787,17 @@ class DetachedOmniTaskManager:
         try:
             await asyncio.shield(running.execution)
         except asyncio.CancelledError:
-            raise
+            current = asyncio.current_task()
+            if (
+                (current is not None and current.cancelling())
+                or not running.execution.cancelled()
+            ):
+                # The wait request itself was cancelled.  Its lifetime never
+                # owns the detached execution, which remains shielded.
+                raise
+            # The detached execution was cancelled after persisting its
+            # durable terminal state.  Return that state below instead of
+            # presenting a normal task cancellation as a broken wait stream.
         except Exception:
             # _execute records its terminal failure before it returns. Read
             # that durable status below instead of leaking an internal task
