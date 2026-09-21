@@ -753,6 +753,13 @@ class SglangProcessor:
 
                     choice = post.process_output(mapped_response)
 
+                    # OpenAI streaming contract: the terminal finish_reason chunk
+                    # must not carry tool_call (function) content — tool calls
+                    # should have already been emitted in prior chunks.
+                    if choice and choice.get("finish_reason"):
+                        delta = choice.get("delta", {})
+                        if delta.get("tool_calls"):
+                            delta["tool_calls"] = None
                     if self.debug_perf:
                         t_pp1 = time.monotonic()
                         post_proc_total_ms += (t_pp1 - t_pp0) * 1000.0
