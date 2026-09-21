@@ -827,7 +827,27 @@ class SglangProcessor:
                     envelope["event"] = "llm_metrics"
                     envelope["comment"] = [json.dumps(metrics)]
 
-                    yield envelope
+                    if (
+                        choice
+                        and choice.get("finish_reason") is not None
+                        and choice.get("delta", {}).get("tool_calls")
+                    ):
+                        # The parser flushes complete tool calls at finish time.
+                        # Send that payload before the terminal marker so clients
+                        # do not discard arguments when they observe completion.
+                        # Keep token accounting with the payload, even if the
+                        # client cancels before consuming the terminal chunk.
+                        payload = {
+                            key: value
+                            for key, value in dynamo_out.items()
+                            if key not in ("usage", "nvext")
+                        }
+                        payload["choices"] = [{**choice, "finish_reason": None}]
+                        dynamo_out["choices"] = [{**choice, "delta": {}}]
+                        yield {**envelope, "data": payload}
+                        yield {"_dynamo_annotated": True, "data": dynamo_out}
+                    else:
+                        yield envelope
 
                     pending_token_ids = []
                     pending_usage = None
