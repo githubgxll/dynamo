@@ -62,6 +62,17 @@ def _sampling_option_params(values: Dict[str, Any]) -> Dict[str, Any]:
         params["sampling_seed"] = values.get("seed")
     return params
 
+def _max_thinking_tokens_params(max_thinking_tokens: Any) -> Dict[str, Any]:
+    """Map ``max_thinking_tokens`` to the SGLang sampling-param key.
+
+    SGLang >= 0.5.20 exposes ``thinking_token_budget`` on ``SamplingParams``.
+    Older versions silently ignore unknown keys, so passing it unconditionally
+    is safe.
+    """
+    if max_thinking_tokens is None:
+        return {}
+    return {"thinking_token_budget": max_thinking_tokens}
+
 
 def _preprocessed_stop_sampling_params(
     stop_conditions: Dict[str, Any],
@@ -418,6 +429,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")
                 ),
+                **_max_thinking_tokens_params(stop_conditions.get("max_thinking_tokens")),
             }
         else:
             # OpenAI request format
@@ -430,6 +442,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 **_sampling_option_params(request),
                 **_openai_stop_sampling_params(request),
                 **self._get_guided_decoding_params(request.get("guided_decoding")),
+                **_max_thinking_tokens_params(request.get("max_thinking_tokens")),
             }
 
         # Keep max_new_tokens even when None — SGLang treats None as "generate

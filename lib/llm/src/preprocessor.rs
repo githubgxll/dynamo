@@ -954,6 +954,29 @@ impl OpenAIPreprocessor {
             preprocessed.stop_conditions.max_tokens = Some(max_tokens);
         }
 
+        // When reasoning is enabled and the caller specified max_tokens,
+        // ensure reasoning tokens do not eat the content budget.
+        //
+        // Without this, SGLang counts reasoning + content against the same
+        // max_new_tokens limit, so a small max_tokens (e.g. 128) can be
+        // entirely consumed by reasoning, leaving content=null and
+        // finish_reason=length.
+        //
+        // If the caller already set max_thinking_tokens, respect it.
+        // Otherwise, allocate a reasoning budget equal to max_tokens (so
+        // total generation capacity doubles) and pass it via
+        // stop_conditions.max_thinking_tokens → sglang thinking_token_budget.
+        if preprocessed.stop_conditions.max_thinking_tokens.is_none()
+            && let Some(max_tokens) = preprocessed.stop_conditions.max_tokens
+            && prompt_injected_reasoning
+        {
+            // Reasoning budget = max_tokens (content gets its full budget,
+            // reasoning gets an equal separate budget).
+            preprocessed.stop_conditions.max_thinking_tokens = Some(max_tokens);
+            // Expand max_tokens to accommodate both content + reasoning.
+            preprocessed.stop_conditions.max_tokens = Some(max_tokens.saturating_mul(2));
+        }
+
         Ok((preprocessed, annotations, prompt_injected_reasoning))
     }
 

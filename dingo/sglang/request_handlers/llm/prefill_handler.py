@@ -14,6 +14,7 @@ from dingo.sglang.args import Config
 from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.decode_handler import (
+    _max_thinking_tokens_params,
     _preprocessed_stop_sampling_params,
     _sampling_option_params,
 )
@@ -110,6 +111,9 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 **_sampling_option_params(sampling_opts),
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")
+                ),
+                **_max_thinking_tokens_params(
+                    stop_conditions.get("max_thinking_tokens")
                 ),
             }
             sampling_params = {

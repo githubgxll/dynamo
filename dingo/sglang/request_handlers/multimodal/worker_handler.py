@@ -91,7 +91,8 @@ class SglangUtils:
             sampling_params["max_new_tokens"] = stop_conditions.max_tokens
         if stop_conditions.ignore_eos:
             sampling_params["ignore_eos"] = stop_conditions.ignore_eos
-
+        if stop_conditions.max_thinking_tokens is not None:
+            sampling_params["thinking_token_budget"] = stop_conditions.max_thinking_tokens
         logger.debug(f"Sampling params: {sampling_params}")
         return sampling_params
 

@@ -67,6 +67,7 @@ from dingo.sglang._disagg import (
     get_sglang_worker_group_id,
     warmup_prefill_engine,
 )
+from dingo.sglang.request_handlers.llm.decode_handler import _max_thinking_tokens_params
 from dingo.sglang.args import parse_args
 from dingo.sglang.capacity import (
     kv_metrics_block_values,
@@ -991,6 +992,9 @@ class SglangLLMEngine(LLMEngine):
                 **self._get_guided_decoding_params(
                     sampling_opts.get("guided_decoding")
                 ),
+                **_max_thinking_tokens_params(
+                    stop_conditions.get("max_thinking_tokens")
+                ),
             }
         else:
             request_stop = request.get("stop")
@@ -1011,8 +1015,8 @@ class SglangLLMEngine(LLMEngine):
                 "ignore_eos": request.get("ignore_eos"),
                 "stop": request_stop or None,
                 "stop_token_ids": request_stop_token_ids or None,
-                "no_stop_trim": request.get("include_stop_str_in_output"),
                 **self._get_guided_decoding_params(request.get("guided_decoding")),
+                **_max_thinking_tokens_params(request.get("max_thinking_tokens")),
             }
         return {k: v for k, v in param_mapping.items() if v is not None}
 

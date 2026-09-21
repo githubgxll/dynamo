@@ -23,7 +23,7 @@ class StopConditions(BaseModel):
     stop_token_ids_hidden: Optional[List[TokenIdType]] = None
     min_tokens: Optional[int] = None
     ignore_eos: Optional[bool] = None
-
+    max_thinking_tokens: Optional[int] = None
 
 class SamplingOptions(BaseModel):
     n: Optional[int] = None
