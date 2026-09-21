@@ -13,6 +13,10 @@
 # by the CI from the files that define those dependencies, so ordinary Dynamo
 # source changes can start from the published image on any runner.
 FROM {{ builder_image }} AS wheel_builder_base
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 {% else %}
 
 {% if platform == "multi" and device == "cuda" %}
@@ -36,6 +40,10 @@ FROM ${WHEEL_BUILDER_IMAGE} AS wheel_builder_base
 {% endif %}
 
 # Redeclare ARGs for this stage
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 ARG TARGETARCH
 ARG CARGO_BUILD_JOBS
 ARG DEVICE
@@ -602,6 +610,10 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 # Builds ai-dingo, ai-dingo-runtime, and gpu_memory_service wheels, sans nixl.
 
 FROM wheel_builder_base AS runtime_wheel_builder
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 
 {% if target not in ("dev", "local-dev") %}
 # Copy source code (order matters for layer caching)
