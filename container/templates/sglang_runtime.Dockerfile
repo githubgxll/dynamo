@@ -14,6 +14,11 @@ FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
 {% endif %}
 
 ARG MODELEXPRESS_REF
+# Apply the selected index to every pip install in this independent stage.
+# ARG keeps the CI mirror out of the final image environment.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
+ARG MODELEXPRESS_VERSION
 
 WORKDIR /workspace
 

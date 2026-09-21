@@ -139,6 +139,8 @@ jobs:
           push: true
           tags: ${{ matrix.builder_image }}
           build-args: |
+            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
+            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
@@ -210,6 +212,8 @@ jobs:
           push: true
           tags: ${{ matrix.image }}
           build-args: |
+            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
+            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
