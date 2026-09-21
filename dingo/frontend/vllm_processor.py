@@ -405,20 +405,25 @@ class VllmProcessor:
         # EngineInput (TokenInputs or MultiModalInputs) with a "type" key.
         # Pass it directly to process_inputs() — no need to rebuild a
         # TokensPrompt, and this avoids the deprecation warning.
-        prompt_inputs = engine_prompt
+        prompt_inputs = {**engine_prompt, "prompt_token_ids": tokens}
         if request_for_sampling.cache_salt is not None:
             prompt_inputs["cache_salt"] = request_for_sampling.cache_salt
         if request_for_sampling.mm_processor_kwargs is not None:
-            prompt_inputs[
-                "mm_processor_kwargs"
-            ] = request_for_sampling.mm_processor_kwargs
+            prompt_inputs["mm_processor_kwargs"] = (
+                request_for_sampling.mm_processor_kwargs
+            )
 
         with _nvtx.annotate("mm_frontend:process_inputs", color="orange"):
+            engine_inputs = (
+                await self.input_processor.renderer.process_for_engine_async(
+                    prompt_inputs, time.time()
+                )
+            )
             vllm_preproc: EngineCoreRequest = self.input_processor.process_inputs(
                 request_id,
-                prompt_inputs,
+                engine_inputs,
                 sampling_params,
-                GENERATION_TASKS,  # vLLM 0.17.0: required supported_tasks arg
+                GENERATION_TASKS,
             )
 
         InputProcessor.assign_request_id(vllm_preproc)
