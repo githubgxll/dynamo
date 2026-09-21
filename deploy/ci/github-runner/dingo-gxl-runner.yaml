@@ -16,7 +16,7 @@ data:
       "proxies": {
         "http-proxy": "http://10.201.136.68:1080",
         "https-proxy": "http://10.201.136.68:1080",
-        "no-proxy": "127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+        "no-proxy": "127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,pypi.org,.pypi.org,files.pythonhosted.org,.pythonhosted.org,download.pytorch.org,.download.pytorch.org"
       }
     }
   entrypoint.sh: |
@@ -281,13 +281,13 @@ spec:
             - name: HTTPS_PROXY
               value: http://10.201.136.68:1080
             - name: NO_PROXY
-              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,pypi.org,.pypi.org,files.pythonhosted.org,.pythonhosted.org,download.pytorch.org,.download.pytorch.org
             - name: http_proxy
               value: http://10.201.136.68:1080
             - name: https_proxy
               value: http://10.201.136.68:1080
             - name: no_proxy
-              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+              value: 127.0.0.1,localhost,.svc,.cluster.local,.actions.githubusercontent.com,kubernetes.default.svc,registry.hd-04.alayanew.com,registry.hd-04.alayanew.com:8443,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,pypi.org,.pypi.org,files.pythonhosted.org,.pythonhosted.org,download.pytorch.org,.download.pytorch.org
             - name: RUNNER_NAME
               value: dingo-gxl-runner
             - name: RUNNER_URL
