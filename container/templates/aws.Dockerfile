@@ -67,5 +67,5 @@ RUN --mount=from=wheel_builder,source=/usr/local/libfabric,target=/tmp/libfabric
     fi
 
 {% if target == "runtime" %}
-USER dynamo
+USER root
 {% endif %}

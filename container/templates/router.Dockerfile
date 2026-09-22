@@ -99,7 +99,7 @@ ENV HOME=/home/dynamo \
     PATH=/opt/dynamo/venv/bin:/usr/local/bin:${PATH} \
     PYTHONUNBUFFERED=1
 
-USER dynamo
+USER root
 WORKDIR /workspace
 
 # The exact command uses the Rust-native Dynamo chat processor. Its Python

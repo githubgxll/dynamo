@@ -89,7 +89,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # on every process in the image.
 
 # Switch to dynamo user and create virtual environment
-USER dynamo
+USER root
 ENV HOME=/home/dynamo
 
 # Create and activate virtual environment

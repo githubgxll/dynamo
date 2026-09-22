@@ -61,7 +61,7 @@ COPY --from=dynamo_base /usr/local/bin/nats-server /usr/local/bin/nats-server
 COPY --from=dynamo_base /usr/local/bin/etcd /usr/local/bin/etcd
 COPY --chown=dynamo:0 --from=wheel_builder /opt/dynamo/dist/*.whl /opt/dynamo/wheelhouse/
 
-USER dynamo
+USER root
 
 RUN --mount=type=cache,target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
     export UV_CACHE_DIR=/home/dynamo/.cache/uv && \
@@ -112,6 +112,6 @@ ENV DYNAMO_COMMIT_SHA=${DYNAMO_COMMIT_SHA} \
     PYTHONPATH="/workspace"
 
 WORKDIR /workspace
-USER dynamo
+USER root
 
 CMD []

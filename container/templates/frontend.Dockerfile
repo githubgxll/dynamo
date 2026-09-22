@@ -70,7 +70,7 @@ RUN userdel -r ubuntu > /dev/null 2>&1 || true \
 # Set HOME so ModelExpress can find the cache directory
 ENV HOME=/home/dynamo
 # Switch to dynamo user
-USER dynamo
+USER root
 ENV DYNAMO_HOME=/opt/dynamo
 
 WORKDIR /
@@ -152,7 +152,7 @@ RUN chmod 755 /opt/dynamo/.launch_screen && \
     echo 'source /opt/dynamo/venv/bin/activate' >> /etc/bash.bashrc && \
     echo 'cat /opt/dynamo/.launch_screen' >> /etc/bash.bashrc
 
-USER dynamo
+USER root
 
 ENTRYPOINT ["/epp"]
 CMD ["/bin/bash"]

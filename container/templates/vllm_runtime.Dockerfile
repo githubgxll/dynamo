@@ -313,7 +313,7 @@ RUN --mount=type=bind,source=./container/deps/requirements.vllm.txt,target=/tmp/
 # tool scripts referencing files not present in Dynamo's build context.
 RUN rm -rf /workspace/vllm
 
-USER dynamo
+USER root
 
 # Copy the workspace surface needed by the current vLLM pre-merge test image.
 # Keep optional framework trees like planner out of /workspace so the upstream
@@ -333,7 +333,7 @@ RUN --mount=type=bind,source=./container/launch_message/runtime.txt,target=/opt/
     chmod 755 /opt/dynamo/.launch_screen && \
     echo 'cat /opt/dynamo/.launch_screen' >> /etc/bash.bashrc
 
-USER dynamo
+USER root
 
 ARG DYNAMO_COMMIT_SHA
 ENV DYNAMO_COMMIT_SHA=${DYNAMO_COMMIT_SHA}
