@@ -21,9 +21,25 @@ ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16} \
     UV_HTTP_RETRIES=5
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    rm -rf /var/cache/apt/archives/partial/* && \
-    apt-get update -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    set -eux; \
+    rm -rf /var/cache/apt/archives/partial/*; \
+    printf '%s\n' \
+        'deb http://repo.huaweicloud.com/debian bookworm main' \
+        'deb http://repo.huaweicloud.com/debian bookworm-updates main' \
+        'deb http://repo.huaweicloud.com/debian-security bookworm-security main' \
+        > /tmp/router-debian.list; \
+    apt-get \
+        -o Dir::Etc::sourcelist=/tmp/router-debian.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=60 \
+        update; \
+    DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Dir::Etc::sourcelist=/tmp/router-debian.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=60 \
+        install -y --no-install-recommends \
         build-essential \
         ca-certificates \
         clang \
@@ -35,7 +51,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         pkg-config \
         protobuf-compiler \
         python3-dev \
-        python3-venv && \
+        python3-venv; \
+    rm -f /tmp/router-debian.list; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.10.7 /uv /uvx /usr/local/bin/
@@ -74,14 +91,31 @@ ARG PYTHON_VERSION
 USER root
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    rm -rf /var/cache/apt/archives/partial/* && \
-    apt-get update -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    set -eux; \
+    rm -rf /var/cache/apt/archives/partial/*; \
+    printf '%s\n' \
+        'deb http://repo.huaweicloud.com/ubuntu noble main universe' \
+        'deb http://repo.huaweicloud.com/ubuntu noble-updates main universe' \
+        'deb http://repo.huaweicloud.com/ubuntu noble-security main universe' \
+        > /tmp/router-ubuntu.list; \
+    apt-get \
+        -o Dir::Etc::sourcelist=/tmp/router-ubuntu.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=60 \
+        update; \
+    DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Dir::Etc::sourcelist=/tmp/router-ubuntu.list \
+        -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=60 \
+        install -y --no-install-recommends \
         ca-certificates \
         libgcc-s1 \
         libstdc++6 \
-        python${PYTHON_VERSION}-venv && \
-    rm -rf /var/lib/apt/lists/* && \
+        python${PYTHON_VERSION}-venv; \
+    rm -f /tmp/router-ubuntu.list; \
+    rm -rf /var/lib/apt/lists/*; \
     ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3
 
 # UID 1000 and group 0 work with the common Kubernetes/OpenShift security

@@ -166,6 +166,41 @@ jobs:
             --platform "${PLATFORM}" \
             --builder-image "${BUILDER_IMAGE}"
 
+      - name: Pre-pull Router base images
+        if: matrix.docker_target == 'router'
+        shell: bash
+        run: |
+          images=(
+            "docker/dockerfile:1.10.0-labs"
+            "rust:1.93.1-slim-bookworm"
+            "ghcr.io/astral-sh/uv:0.10.7"
+            "nvcr.io/nvidia/base/ubuntu:noble-20250619"
+          )
+
+          for image in "${images[@]}"; do
+            if docker image inspect "${image}" >/dev/null 2>&1; then
+              echo "Using locally cached ${image}"
+              continue
+            fi
+
+            pulled=false
+            for attempt in 1 2 3 4 5; do
+              echo "Pulling ${image} (attempt ${attempt}/5)"
+              if docker pull "${image}"; then
+                pulled=true
+                break
+              fi
+              if [ "${attempt}" -lt 5 ]; then
+                sleep $((attempt * 10))
+              fi
+            done
+
+            if [ "${pulled}" != true ]; then
+              echo "Failed to pull ${image} after 5 attempts" >&2
+              exit 1
+            fi
+          done
+
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:
@@ -173,7 +208,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           target: ${{ matrix.docker_target }}
-          pull: true
+          pull: false
           push: true
           tags: ${{ matrix.image }}
           build-args: |
