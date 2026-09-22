@@ -502,7 +502,8 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
 // containing Anthropic block types, it converts:
 //
 //   {type:"thinking", thinking:"…"}      → reasoning_content (segments form)
-//   {type:"redacted_thinking", …}        → preserved as reasoning segment placeholder
+//   {type:"redacted_thinking", …}        → dropped (lossy: encrypted reasoning
+//                                          has no OpenAI representation)
 //   {type:"tool_use", id,name,input}     → tool_calls[] entry
 //   {type:"text", text:"…"}              → content string
 //   {type:"refusal", refusal:"…"}        → refusal field
@@ -511,6 +512,12 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
 // tool-call position (segments.len() == tool_calls.len() + 1), matching
 // the semantics of `convert_assistant_blocks` in the Anthropic protocol
 // module. This is required for KV-cache correctness in multi-tool turns.
+//
+// Anything that cannot be converted losslessly is rejected with 400 rather
+// than guessed: malformed blocks (missing id/name/input, non-string
+// payloads), unknown block types, and partially-translated messages whose
+// existing OpenAI fields (tool_calls / reasoning_content) cannot be
+// ordered against the residual blocks (see check_mixed_format_conflicts).
 
 /// Anthropic content-block types that trigger conversion.
 const ANTHROPIC_BLOCK_TYPES: &[&str] = &["thinking", "tool_use", "redacted_thinking"];
@@ -542,7 +549,14 @@ fn has_anthropic_content_blocks(content: &serde_json::Value) -> bool {
 ///
 /// Strict validation (rejects instead of guessing):
 /// - tool_use blocks missing `id` or `name` are rejected;
-/// - duplicate tool_use ids within the block list are rejected.
+/// - tool_use blocks missing `input`, or with a non-object `input`, are
+///   rejected (the OpenAI `arguments` field must serialize an object);
+/// - text/thinking/refusal blocks with a missing or non-string payload are
+///   rejected (silently skipping them would convert malformed input into a
+///   valid-looking shape);
+/// - duplicate tool_use ids within the block list are rejected;
+/// - unknown or unsupported block types (e.g. `server_tool_use`) are
+///   rejected rather than silently dropped.
 fn convert_anthropic_blocks(
     blocks: &[serde_json::Value],
 ) -> Result<
@@ -561,20 +575,32 @@ fn convert_anthropic_blocks(
     let mut pending_reasoning = String::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for block in blocks {
+    for (block_idx, block) in blocks.iter().enumerate() {
         let part_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match part_type {
             "text" => {
-                if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                    text_content.push_str(t);
+                match block.get("text").and_then(|t| t.as_str()) {
+                    Some(t) => text_content.push_str(t),
+                    None => {
+                        return Err(format!(
+                            "text block is missing a string 'text' field (block index {block_idx})"
+                        ));
+                    }
                 }
             }
             "thinking" => {
-                if let Some(t) = block.get("thinking").and_then(|t| t.as_str()) {
-                    if !pending_reasoning.is_empty() {
-                        pending_reasoning.push('\n');
+                match block.get("thinking").and_then(|t| t.as_str()) {
+                    Some(t) => {
+                        if !pending_reasoning.is_empty() {
+                            pending_reasoning.push('\n');
+                        }
+                        pending_reasoning.push_str(t);
                     }
-                    pending_reasoning.push_str(t);
+                    None => {
+                        return Err(format!(
+                            "thinking block is missing a string 'thinking' field (block index {block_idx})"
+                        ));
+                    }
                 }
             }
             "redacted_thinking" => {
@@ -614,7 +640,21 @@ fn convert_anthropic_blocks(
                     ));
                 }
 
-                let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                // Require `input` to be present and an object: the OpenAI
+                // `arguments` field is a serialized JSON object, and
+                // fabricating `"null"` for a missing input would silently
+                // convert a malformed block into a valid-looking call.
+                let input = block
+                    .get("input")
+                    .ok_or_else(|| {
+                        format!("tool_use block is missing an 'input' field (block index {block_idx})")
+                    })?
+                    .clone();
+                if !input.is_object() {
+                    return Err(format!(
+                        "tool_use 'input' must be an object (block index {block_idx})"
+                    ));
+                }
                 let arguments = serde_json::to_string(&input).unwrap_or_default();
                 tool_calls.push(serde_json::json!({
                     "id": id,
@@ -626,11 +666,35 @@ fn convert_anthropic_blocks(
                 }));
             }
             "refusal" => {
-                if let Some(r) = block.get("refusal").and_then(|r| r.as_str()) {
-                    refusal_content = Some(r.to_string());
+                match block.get("refusal").and_then(|r| r.as_str()) {
+                    Some(r) => {
+                        // Multiple refusal blocks are merged with a newline
+                        // separator so no earlier block is silently dropped.
+                        match &mut refusal_content {
+                            Some(existing) => {
+                                existing.push('\n');
+                                existing.push_str(r);
+                            }
+                            None => refusal_content = Some(r.to_string()),
+                        }
+                    }
+                    None => {
+                        return Err(format!(
+                            "refusal block is missing a string 'refusal' field (block index {block_idx})"
+                        ));
+                    }
                 }
             }
-            _ => {}
+            // Unknown/unsupported block types (e.g. `server_tool_use`, future
+            // Anthropic types) are rejected explicitly. Silently ignoring
+            // them here would delete data while reporting success, because
+            // the whole content array is replaced below.
+            other => {
+                return Err(format!(
+                    "unsupported content block type '{other}' in Anthropic block array (block index {block_idx}); \
+                     only text/thinking/redacted_thinking/tool_use/refusal can be converted"
+                ));
+            }
         }
     }
 
@@ -678,6 +742,74 @@ fn convert_anthropic_blocks(
     Ok((content, reasoning_segments, tc, refusal_content))
 }
 
+
+/// Mixed-format conflict policy for one assistant message (review F1).
+///
+/// When a gateway has only *partially* translated an Anthropic history
+/// message, the message can carry OpenAI fields (`tool_calls` /
+/// `reasoning_content`) while its content array still holds residual
+/// Anthropic blocks. Some of those combinations cannot be merged without
+/// inventing position information, so all of them are rejected:
+///
+/// - existing `tool_calls` + residual `tool_use` blocks: the relative order
+///   of old and new calls is unknown;
+/// - existing `tool_calls` + residual `thinking` blocks: the position of
+///   the new reasoning relative to the existing calls is unknown (e.g.
+///   history `thinking A → t1 → thinking B → t2` with the tool blocks
+///   stripped by the gateway collapses to `A\nB`, losing that B followed
+///   t1);
+/// - existing `reasoning_content` + residual `thinking` blocks: merging
+///   would lose ordering or overwrite existing reasoning;
+/// - existing `reasoning_content` + residual `tool_use` blocks: the
+///   segment/call length correspondence cannot be validated, and matching
+///   counts alone do not prove matching positions.
+///
+/// Residual `text` blocks (and `refusal`, handled separately below) merge
+/// cleanly and never trigger this policy.
+fn check_mixed_format_conflicts(
+    has_existing_calls: bool,
+    has_existing_reasoning: bool,
+    produced_calls: bool,
+    produced_reasoning: bool,
+) -> Result<(), String> {
+    if has_existing_calls && produced_calls {
+        return Err(
+            "assistant message mixes an existing tool_calls array with \
+             residual Anthropic tool_use blocks; the original call order \
+             cannot be determined, ask the gateway to fully translate \
+             tool calls before forwarding"
+                .to_string(),
+        );
+    }
+    if has_existing_calls && produced_reasoning {
+        return Err(
+            "assistant message has an existing tool_calls array while its \
+             content array still contains thinking blocks; the position of \
+             the new reasoning relative to those calls cannot be determined, \
+             ask the gateway to fully translate the message before forwarding"
+                .to_string(),
+        );
+    }
+    if has_existing_reasoning && produced_reasoning {
+        return Err(
+            "assistant message already has reasoning_content while its \
+             content array still contains thinking blocks; the two cannot \
+             be combined without losing ordering, ask the gateway to avoid \
+             translating reasoning twice"
+                .to_string(),
+        );
+    }
+    if has_existing_reasoning && produced_calls {
+        return Err(
+            "assistant message already has reasoning_content while its \
+             content array still contains tool_use blocks; the new calls \
+             cannot be positioned within the existing reasoning, ask the \
+             gateway to fully translate the message before forwarding"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
 
 /// Build a 400 rejection response from the anthropic compat middleware.
 ///
@@ -752,7 +884,7 @@ pub async fn anthropic_content_compat_middleware(
         .and_then(|m| m.as_array_mut())
     {
         let mut changed = false;
-        for msg in messages.iter_mut() {
+        for (msg_idx, msg) in messages.iter_mut().enumerate() {
             // Only process assistant messages.
             let is_assistant = msg
                 .get("role")
@@ -775,11 +907,16 @@ pub async fn anthropic_content_compat_middleware(
             // Convert the residual blocks; malformed input (missing ids,
             // duplicate ids) is rejected with a clear 400 instead of
             // silently fabricating or merging unprovable history (R3).
+            // Errors are prefixed with the message index so clients can
+            // locate the offending block as messages[i].content[j].
             let (text, reasoning_segments, tool_calls, refusal) =
                 match convert_anthropic_blocks(&blocks) {
                     Ok(v) => v,
                     Err(e) => {
-                        return anthropic_compat_reject(body_bytes.len(), e);
+                        return anthropic_compat_reject(
+                            body_bytes.len(),
+                            format!("messages[{msg_idx}]: {e}"),
+                        );
                     }
                 };
 
@@ -788,45 +925,34 @@ pub async fn anthropic_content_compat_middleware(
                 None => continue,
             };
 
-            // R1: a message that already carries OpenAI tool_calls while
-            // still containing residual Anthropic blocks cannot have its
-            // call ordering proven. Guessing (old-first / new-first)
-            // corrupts reasoning-segment positions, so reject explicitly.
-            if let Some(tc) = &tool_calls {
-                let has_existing_calls = obj
-                    .get("tool_calls")
-                    .map(|v| {
-                        !v.is_null() && v.as_array().map(|a| !a.is_empty()).unwrap_or(false)
-                    })
-                    .unwrap_or(false);
-                if has_existing_calls && !tc.is_empty() {
-                    return anthropic_compat_reject(
-                        body_bytes.len(),
-                        "assistant message mixes an existing tool_calls array with \
-                         residual Anthropic content blocks; the original call order \
-                         cannot be determined, ask the gateway to fully translate \
-                         tool calls before forwarding"
-                            .to_string(),
-                    );
-                }
-            }
-
-            // R2: an existing non-null reasoning_content together with
-            // residual thinking blocks cannot be merged without losing
-            // position semantics; reject instead of overwriting.
-            if reasoning_segments.is_some()
-                && obj
-                    .get("reasoning_content")
-                    .map(|v| !v.is_null())
-                    .unwrap_or(false)
-            {
+            // Mixed-format conflict policy (R1/R2 + review F1): when the
+            // gateway has only partially translated this message, OpenAI
+            // fields coexist with residual Anthropic blocks. Every
+            // combination whose ordering cannot be proven is rejected
+            // instead of guessed — including the two cross combinations:
+            // existing tool_calls with residual thinking, and existing
+            // reasoning_content with residual tool_use.
+            let has_existing_calls = obj
+                .get("tool_calls")
+                .map(|v| {
+                    !v.is_null() && v.as_array().map(|a| !a.is_empty()).unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let has_existing_reasoning = obj
+                .get("reasoning_content")
+                .map(|v| !v.is_null())
+                .unwrap_or(false);
+            // `tool_calls` is None exactly when no calls were produced (see
+            // convert_anthropic_blocks), so is_some() means produced calls.
+            if let Err(e) = check_mixed_format_conflicts(
+                has_existing_calls,
+                has_existing_reasoning,
+                tool_calls.is_some(),
+                reasoning_segments.is_some(),
+            ) {
                 return anthropic_compat_reject(
                     body_bytes.len(),
-                    "assistant message already has reasoning_content while its \
-                     content array still contains thinking blocks; the two cannot \
-                     be combined without losing ordering, ask the gateway to avoid \
-                     translating reasoning twice"
-                        .to_string(),
+                    format!("messages[{msg_idx}]: {e}"),
                 );
             }
 
@@ -6558,6 +6684,402 @@ mod tests {
             ("tool_use", serde_json::json!({"id": "", "name": "fn", "input": {}})),
         ]);
         assert!(convert_anthropic_blocks(&blocks).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Strict-validation tests (review F2/F3/F4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_convert_rejects_tool_use_missing_input() {
+        let blocks = vec![serde_json::json!({"type": "tool_use", "id": "t1", "name": "fn"})];
+        let err = convert_anthropic_blocks(&blocks).unwrap_err();
+        assert!(err.contains("missing an 'input' field"), "got: {err}");
+    }
+
+    #[test]
+    fn test_convert_rejects_tool_use_non_object_input() {
+        for bad in [
+            serde_json::json!("string"),
+            serde_json::json!(123),
+            serde_json::json!(null),
+            serde_json::json!([1, 2]),
+        ] {
+            let blocks =
+                vec![serde_json::json!({"type": "tool_use", "id": "t1", "name": "fn", "input": bad})];
+            let err = convert_anthropic_blocks(&blocks).unwrap_err();
+            assert!(err.contains("'input' must be an object"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn test_convert_rejects_unknown_block_type() {
+        // A future Anthropic block type must be rejected, not silently
+        // deleted when the content array is replaced (review F2).
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "hmm"}),
+            serde_json::json!({"type": "future_block", "data": "keep me"}),
+        ];
+        let err = convert_anthropic_blocks(&blocks).unwrap_err();
+        assert!(
+            err.contains("unsupported content block type 'future_block'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_convert_rejects_server_tool_use_block() {
+        // server_tool_use has no OpenAI representation; it must not fall
+        // into a silent-ignore branch either (review F2).
+        let blocks = vec![
+            serde_json::json!({"type": "server_tool_use", "id": "srv1", "name": "web_search", "input": {}}),
+        ];
+        let err = convert_anthropic_blocks(&blocks).unwrap_err();
+        assert!(
+            err.contains("unsupported content block type 'server_tool_use'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_convert_rejects_text_missing_or_typed_payload() {
+        for bad in [
+            serde_json::json!({"type": "text"}),
+            serde_json::json!({"type": "text", "text": 123}),
+            serde_json::json!({"type": "text", "text": null}),
+        ] {
+            let err = convert_anthropic_blocks(&[bad]).unwrap_err();
+            assert!(err.contains("missing a string 'text' field"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn test_convert_rejects_thinking_missing_payload() {
+        let blocks = vec![serde_json::json!({"type": "thinking", "signature": "sig"})];
+        let err = convert_anthropic_blocks(&blocks).unwrap_err();
+        assert!(
+            err.contains("missing a string 'thinking' field"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_convert_rejects_refusal_missing_payload() {
+        let blocks = vec![serde_json::json!({"type": "refusal"})];
+        let err = convert_anthropic_blocks(&blocks).unwrap_err();
+        assert!(
+            err.contains("missing a string 'refusal' field"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_convert_multiple_refusals_merged() {
+        // Earlier refusal blocks must not be silently dropped (review F4).
+        let blocks = make_blocks(vec![
+            ("thinking", serde_json::json!("should I?")),
+            ("refusal", serde_json::json!("first")),
+            ("refusal", serde_json::json!("last")),
+        ]);
+        let (_, _, _, refusal) = convert_anthropic_blocks(&blocks).unwrap();
+        assert_eq!(refusal.as_deref(), Some("first\nlast"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mixed-format conflict policy tests (review F1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_mixed_policy_rejects_existing_calls_plus_new_calls() {
+        // R1: old tool_calls and residual tool_use cannot be ordered.
+        let err = check_mixed_format_conflicts(true, false, true, false).unwrap_err();
+        assert!(err.contains("tool_calls"), "got: {err}");
+    }
+
+    #[test]
+    fn test_mixed_policy_rejects_existing_calls_plus_residual_thinking() {
+        // F1 case 1: gateway stripped the tool blocks but left thinking;
+        // merging A\nB loses that B followed t1.
+        let err = check_mixed_format_conflicts(true, false, false, true).unwrap_err();
+        assert!(err.contains("tool_calls"), "got: {err}");
+        assert!(err.contains("thinking"), "got: {err}");
+    }
+
+    #[test]
+    fn test_mixed_policy_rejects_existing_reasoning_plus_residual_thinking() {
+        // R2: existing reasoning_content and new thinking cannot be merged.
+        let err = check_mixed_format_conflicts(false, true, false, true).unwrap_err();
+        assert!(err.contains("reasoning_content"), "got: {err}");
+    }
+
+    #[test]
+    fn test_mixed_policy_rejects_existing_reasoning_plus_new_calls() {
+        // F1 case 2: new calls cannot be positioned within existing
+        // reasoning segments; matching counts do not prove positions.
+        let err = check_mixed_format_conflicts(false, true, true, false).unwrap_err();
+        assert!(err.contains("reasoning_content"), "got: {err}");
+        assert!(err.contains("tool_use"), "got: {err}");
+    }
+
+    #[test]
+    fn test_mixed_policy_allows_text_only_residual_with_existing_fields() {
+        // Text (and refusal) merge cleanly; no calls/reasoning produced.
+        assert!(check_mixed_format_conflicts(true, false, false, false).is_ok());
+        assert!(check_mixed_format_conflicts(false, true, false, false).is_ok());
+        assert!(check_mixed_format_conflicts(true, true, false, false).is_ok());
+    }
+
+    #[test]
+    fn test_mixed_policy_allows_pure_blocks_without_existing_fields() {
+        // The normal compat path: no pre-existing OpenAI fields, anything
+        // the converter produced is safe to apply.
+        assert!(check_mixed_format_conflicts(false, false, true, true).is_ok());
+        assert!(check_mixed_format_conflicts(false, false, false, true).is_ok());
+        assert!(check_mixed_format_conflicts(false, false, true, false).is_ok());
+        assert!(check_mixed_format_conflicts(false, false, false, false).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Middleware integration tests: real HTTP server + JSON echo downstream
+    // -----------------------------------------------------------------------
+
+    /// Spin up a throwaway HTTP server running only the compat middleware in
+    /// front of a JSON echo handler, and return its chat-completions URL.
+    /// The echo handler returns the exact body bytes it received, so tests
+    /// observe precisely what the middleware forwarded downstream.
+    async fn spawn_compat_echo_server() -> String {
+        async fn echo(body: Bytes) -> Response {
+            Response::builder()
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("static response builder must succeed")
+        }
+        let app = Router::new()
+            .route("/v1/chat/completions", post(echo))
+            .layer(middleware::from_fn(anthropic_content_compat_middleware));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("echo server");
+        });
+        format!("http://{addr}/v1/chat/completions")
+    }
+
+    async fn post_json(url: &str, payload: &serde_json::Value) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(url)
+            .json(payload)
+            .send()
+            .await
+            .expect("POST to echo server")
+    }
+
+    #[tokio::test]
+    async fn test_middleware_converts_residual_blocks_end_to_end() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "glm-5.3",
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "thinking A"},
+                    {"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "Beijing"}},
+                    {"type": "thinking", "thinking": "thinking B"},
+                    {"type": "text", "text": "done"}
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": "sunny"}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let echoed: serde_json::Value = resp.json().await.expect("echo json");
+        let msg = &echoed["messages"][1];
+        assert_eq!(msg["content"], serde_json::json!("done"));
+        // segments[i] precedes tool_calls[i]; trailing segment is last.
+        assert_eq!(
+            msg["reasoning_content"],
+            serde_json::json!(["thinking A", "thinking B"])
+        );
+        assert_eq!(msg["tool_calls"][0]["id"], serde_json::json!("t1"));
+        assert_eq!(msg["tool_calls"][0]["type"], serde_json::json!("function"));
+        assert_eq!(
+            msg["tool_calls"][0]["function"]["name"],
+            serde_json::json!("get_weather")
+        );
+        assert_eq!(
+            msg["tool_calls"][0]["function"]["arguments"],
+            serde_json::json!("{\"city\":\"Beijing\"}")
+        );
+        // Non-assistant messages must pass through untouched.
+        assert_eq!(echoed["messages"][0], payload["messages"][0]);
+        assert_eq!(echoed["messages"][2], payload["messages"][2]);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_normal_openai_request_untouched() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant", "content": "plain string"},
+                {"role": "assistant", "content": [{"type": "text", "text": "openai part"}]},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let echoed: serde_json::Value = resp.json().await.expect("echo json");
+        assert_eq!(echoed, payload, "pure OpenAI requests must be byte-equivalent");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_invalid_json_passes_through() {
+        // Unparseable bodies are forwarded untouched so the downstream Json
+        // extractor produces the standard parse error; the compat middleware
+        // itself must not reject them.
+        let url = spawn_compat_echo_server().await;
+        let resp = reqwest::Client::new()
+            .post(&url)
+            .header("content-type", "application/json")
+            .body("{not json")
+            .send()
+            .await
+            .expect("POST to echo server");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.text().await.expect("echo body");
+        assert_eq!(body, "{not json");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_mixed_existing_tool_calls_with_thinking() {
+        // Review F1 case 1: gateway translated the tool calls but left the
+        // thinking blocks; the reasoning position cannot be recovered.
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant",
+                 "tool_calls": [{"id": "t1", "type": "function",
+                                 "function": {"name": "fn1", "arguments": "{}"}}],
+                 "content": [
+                    {"type": "thinking", "thinking": "thinking A"},
+                    {"type": "thinking", "thinking": "thinking B"}
+                 ]}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err: serde_json::Value = resp.json().await.expect("error json");
+        let msg = err["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("tool_calls"), "got: {msg}");
+        assert!(msg.contains("thinking"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_mixed_existing_reasoning_with_tool_use() {
+        // Review F1 case 2: existing reasoning_content with residual
+        // tool_use; segment/call correspondence cannot be validated.
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant",
+                 "reasoning_content": ["A", "B", ""],
+                 "content": [
+                    {"type": "tool_use", "id": "t1", "name": "fn1", "input": {}}
+                 ]}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err: serde_json::Value = resp.json().await.expect("error json");
+        let msg = err["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("reasoning_content"), "got: {msg}");
+        assert!(msg.contains("tool_use"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_unknown_block_type_end_to_end() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "hmm"},
+                    {"type": "future_block", "data": "keep me"}
+                ]}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err: serde_json::Value = resp.json().await.expect("error json");
+        let msg = err["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("unsupported content block type"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_tool_use_missing_input_end_to_end() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "fn"},
+                    {"type": "text", "text": 123}
+                ]}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err: serde_json::Value = resp.json().await.expect("error json");
+        let msg = err["message"].as_str().unwrap_or_default();
+        // Errors carry the messages[i].content[j] position: the assistant
+        // message is messages[0] here, the malformed block is content[0].
+        assert!(msg.starts_with("messages[0]:"), "got: {msg}");
+        assert!(msg.contains("missing an 'input' field"), "got: {msg}");
+        assert!(msg.contains("block index 0"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_conversion_output_is_idempotent() {
+        // Feeding an already-converted message back through the middleware
+        // must be a no-op: string content is never re-inspected and the
+        // request is forwarded unchanged.
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant",
+                 "content": "done",
+                 "reasoning_content": ["thinking A", "thinking B"],
+                 "tool_calls": [{"id": "t1", "type": "function",
+                                 "function": {"name": "get_weather",
+                                              "arguments": "{\"city\":\"Beijing\"}"}}]}
+            ]
+        });
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let echoed: serde_json::Value = resp.json().await.expect("echo json");
+        assert_eq!(echoed, payload, "converted output must pass through unchanged");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_middleware_oversized_body_returns_413() {
+        temp_env::async_with_vars(
+            [(env_llm::DYN_HTTP_BODY_LIMIT_MB, Some("1"))],
+            async {
+                let url = spawn_compat_echo_server().await;
+                let big = "x".repeat(1024 * 1024 + 1);
+                let payload =
+                    serde_json::json!({"model": "m", "messages": [{"role": "user", "content": big}]});
+                let resp = post_json(&url, &payload).await;
+                assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            },
+        )
+        .await;
     }
 
 }
