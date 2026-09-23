@@ -1241,18 +1241,21 @@ class SglangStreamingPostProcessor:
 
         # Incremental tool-call streaming state (TTFT fix).  Parsed events
         # are emitted as OpenAI deltas as they arrive instead of being
-        # buffered until finish: the id+name delta goes out with the first
-        # argument fragment, argument fragments stream as they come, and
+        # buffered until finish: confirmed names go out immediately,
+        # argument fragments stream as they come, and
         # the finish-time re-parse only patches what streaming missed.
         # Guards retained from the buffered design:
-        # - names without any argument fragment are never emitted (a
-        #   misidentified prompt word cannot leak as a dangling call);
+        # - without a request tool list, require an argument fragment
+        #   before emitting a name that cannot be independently confirmed;
         # - names not present in the request's tool list are suppressed
         #   entirely and purged at finish, exactly as before.
         self._known_tool_names = (
-            {t.function.name for t in self._sglang_tools} if self._sglang_tools else set()
+            {t.function.name for t in self._sglang_tools}
+            if self._sglang_tools
+            else set()
         )
-        self._emitted_tool_names: set[int] = set()  # indices whose id+name delta was sent
+        # Indices whose id+name delta was sent.
+        self._emitted_tool_names: set[int] = set()
         self._suppressed_tool_indices: set[int] = set()  # unknown-name indices withheld
         self._emitted_args_len: dict[int, int] = {}  # index -> args length already sent
 
@@ -1281,18 +1284,15 @@ class SglangStreamingPostProcessor:
             self.history_tool_calls_count,
         )
 
-    def _streaming_tool_deltas(
-        self, tool_calls: list[Any]
-    ) -> list[dict[str, Any]]:
+    def _streaming_tool_deltas(self, tool_calls: list[Any]) -> list[dict[str, Any]]:
         """Build incremental OpenAI tool_call deltas from parser events.
 
         Emission rules (TTFT fix: stream tool calls instead of buffering
         them until finish):
 
-        - The id+name delta is withheld until the first argument fragment
-          arrives, so a detected-but-never-argued name never reaches the
-          client; the finish-time logic drops such calls exactly as in
-          the old buffered design.
+        - Names confirmed by the request's tool list are emitted immediately,
+          even when the parser needs to buffer arguments (e.g. GLM47 union
+          schemas). Without that confirmation, wait for an argument fragment.
         - Names not present in the request's tool list are suppressed
           entirely (mirrors the finish-time known-name purge).
         - Argument fragments stream as they arrive.  The not-yet-emitted
@@ -1306,7 +1306,11 @@ class SglangStreamingPostProcessor:
             if idx in self._suppressed_tool_indices:
                 continue
             name = tc.name or self._tool_call_names.get(idx)
-            if tc.parameters and name and idx not in self._emitted_tool_names:
+            if (
+                name
+                and (tc.parameters or name in self._known_tool_names)
+                and idx not in self._emitted_tool_names
+            ):
                 if self._known_tool_names and name not in self._known_tool_names:
                     # Unknown tool name: withhold the whole call.  The
                     # accumulated state is purged at finish as before.
@@ -1763,7 +1767,7 @@ class SglangStreamingPostProcessor:
                                 and len(final_args) > len(accumulated)
                                 and final_args.startswith(accumulated)
                             ):
-                                arg_patches[idx] = final_args[len(accumulated):]
+                                arg_patches[idx] = final_args[len(accumulated) :]
                                 self._tool_call_args[idx] = [final_args]
                             elif final_args and final_args != accumulated:
                                 logger.warning(
@@ -1784,16 +1788,16 @@ class SglangStreamingPostProcessor:
                                 self._tool_call_args[next_idx] = [tc.parameters]
                             next_idx += 1
 
-            # Do not emit partial tool calls. A streaming parser can detect a
-            # tool name before the model finishes malformed JSON; if the
-            # finish-time re-parse cannot recover valid arguments, treat the
-            # response as plain text instead of surfacing name + empty args.
-            # (Incrementally streamed names always carried at least one
-            # argument fragment, so this drop only affects calls that were
-            # never emitted to the client.)
+            # Drop incomplete calls only when their identity was never sent.
+            # A confirmed name may already be visible while its arguments are
+            # buffered; it cannot be retracted if final recovery fails. Keep
+            # its identity and tool_calls finish reason, without fabricating
+            # arguments for an incomplete model output.
             dropped_names = []
             for idx in list(self._tool_call_names):
-                if not "".join(self._tool_call_args.get(idx, [])):
+                if idx not in self._emitted_tool_names and not "".join(
+                    self._tool_call_args.get(idx, [])
+                ):
                     dropped_names.append(self._tool_call_names[idx])
                     del self._tool_call_names[idx]
                     self._tool_call_ids.pop(idx, None)
@@ -1843,7 +1847,10 @@ class SglangStreamingPostProcessor:
                     {"index": idx, "function": {"arguments": arg_patches[idx]}}
                 )
             if tool_calls_out:
-                delta["tool_calls"] = tool_calls_out
+                # This terminal batch may already contain argument deltas or
+                # identities. Preserve them before appending recovery output:
+                # _emitted_* tracks constructed deltas, not yet-yielded bytes.
+                delta.setdefault("tool_calls", []).extend(tool_calls_out)
                 has_content = True
 
         # Rewrite finish_reason "stop" → "tool_calls" when tool calls were
