@@ -11,10 +11,12 @@ BaseFormatDetector.parse_streaming_increment.
 """
 
 import json
+from typing import Any
 
 import pytest
 from sglang.srt.entrypoints.openai.protocol import Function as SglangFunction
 from sglang.srt.entrypoints.openai.protocol import Tool as SglangTool
+from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.parser.reasoning_parser import ReasoningParser
@@ -500,9 +502,8 @@ class TestSingleChunkFallback:  # FRONTEND.4 — non-streaming fallback assembly
 class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → graceful degradation
     """Contract under incremental streaming:
 
-    - A name detected without any argument fragment is never emitted
-      (neither mid-stream nor at finish) and does not rewrite the
-      finish_reason.
+    - Without tools-list confirmation, a name detected without any argument
+      fragment is never emitted and does not rewrite the finish_reason.
     - An unknown tool name is suppressed mid-stream and purged at
       finish; nothing reaches the client.
     - A known name with malformed (non-JSON) arguments IS streamed
@@ -704,7 +705,9 @@ class TestJsonArrayParserReparse:  # FRONTEND.4 — JSON-array parser reparse pa
         token_ids = tokenizer.encode("Hello, world!")
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         # No tool calls, plain content preserved, no crash.
-        tc = _merge_tool_call_entries((choice or {}).get("delta", {}).get("tool_calls", []))
+        tc = _merge_tool_call_entries(
+            (choice or {}).get("delta", {}).get("tool_calls", [])
+        )
         assert tc == []
 
 
@@ -732,9 +735,7 @@ class TestIncrementalToolStreaming:  # FRONTEND.4 — tool_call deltas stream be
     @staticmethod
     def _all_entries(results):
         return [
-            e
-            for r in results
-            for e in (r.get("delta", {}).get("tool_calls") or [])
+            e for r in results for e in (r.get("delta", {}).get("tool_calls") or [])
         ]
 
     def test_tool_deltas_arrive_before_finish(self, tokenizer):
@@ -796,3 +797,186 @@ class TestIncrementalToolStreaming:  # FRONTEND.4 — tool_call deltas stream be
         # allow generous slack but require strict precedence over finish.
         assert first_tool_idx <= len(results) // 2
 
+
+class TestToolStreamingRecoveryRegression:
+    """Exercise terminal recovery and early identity without model downloads."""
+
+    class Tokenizer:
+        def decode(self, token_ids: list[int], skip_special_tokens: bool = True) -> str:
+            return "".join(chr(token) for token in token_ids)
+
+    class Parser:
+        def __init__(
+            self, events: list[list[ToolCallItem]], recovered: list[ToolCallItem]
+        ) -> None:
+            self.events = iter(events)
+            self.recovered = recovered
+
+        def parse_stream_chunk(self, text: str) -> tuple[str, list[ToolCallItem]]:
+            return "", next(self.events)
+
+        def has_tool_call(self, text: str) -> bool:
+            return True
+
+        def parse_non_stream(self, text: str) -> tuple[str, list[ToolCallItem]]:
+            return "", self.recovered
+
+    @staticmethod
+    def call(index: int, name: str | None, arguments: str) -> ToolCallItem:
+        return ToolCallItem(tool_index=index, name=name, parameters=arguments)
+
+    def make_post(
+        self,
+        events: list[list[ToolCallItem]],
+        recovered: list[ToolCallItem],
+        *,
+        confirm: bool = True,
+    ) -> SglangStreamingPostProcessor:
+        return SglangStreamingPostProcessor(
+            tokenizer=self.Tokenizer(),
+            tool_call_parser=self.Parser(events, recovered),
+            reasoning_parser=None,
+            sglang_tools=TOOLS if confirm else None,
+        )
+
+    @staticmethod
+    def feed(
+        post: SglangStreamingPostProcessor, text: str = "x", *, finish: bool = False
+    ) -> dict[str, Any] | None:
+        return post.process_output(
+            {
+                "token_ids": [ord(c) for c in text],
+                "finish_reason": "stop" if finish else None,
+            }
+        )
+
+    @pytest.mark.parametrize("confirm", [False, True])
+    @pytest.mark.parametrize("all_at_finish", [False, True])
+    def test_terminal_recovery_preserves_current_deltas(
+        self, confirm: bool, all_at_finish: bool
+    ) -> None:
+        call = self.call
+        final_args = '{"city":"Paris"}'
+        tail = final_args if all_at_finish else '"Paris"}'
+        events = [] if all_at_finish else [[call(0, "get_weather", '{"city":')]]
+        events.append(
+            [
+                call(0, "get_weather" if all_at_finish else None, tail),
+                call(1, "search_gutenberg_books", ""),
+            ]
+        )
+        post = self.make_post(
+            events,
+            [
+                call(0, "get_weather", final_args),
+                call(1, "search_gutenberg_books", '{"search_terms":["Joyce"]}'),
+            ],
+            confirm=confirm,
+        )
+        choices = [] if all_at_finish else [self.feed(post)]
+        choices.append(self.feed(post, finish=True))
+        merged = _extract_tool_calls([c for c in choices if c])
+        assert len(merged) == 2
+        by_name = {c["function"]["name"]: c for c in merged}
+        assert by_name["get_weather"]["function"]["arguments"] == final_args
+        assert json.loads(
+            by_name["search_gutenberg_books"]["function"]["arguments"]
+        ) == {"search_terms": ["Joyce"]}
+        assert len({c["id"] for c in merged}) == 2
+        assert choices[-1]["finish_reason"] == "tool_calls"
+
+    def test_confirmed_name_precedes_arguments_and_keeps_identity(self) -> None:
+        call = self.call
+        post = self.make_post(
+            [[call(0, "get_weather", "")], [], [call(0, None, '{"city":"Paris"}')]],
+            [],
+        )
+        first = self.feed(post)
+        assert first["finish_reason"] is None
+        identity = first["delta"]["tool_calls"][0]
+        assert identity["function"] == {"name": "get_weather", "arguments": ""}
+        assert self.feed(post) is None
+        final = self.feed(post, finish=True)
+        entries = first["delta"]["tool_calls"] + final["delta"]["tool_calls"]
+        assert sum(bool(e.get("id")) for e in entries) == 1
+        merged = _merge_tool_call_entries(entries)
+        assert merged[0]["id"] == identity["id"]
+        assert merged[0]["function"]["arguments"] == '{"city":"Paris"}'
+
+    def test_name_only_call_gets_recovered_arguments_on_same_index(self) -> None:
+        call = self.call
+        post = self.make_post(
+            [[call(0, "get_weather", "")]],
+            [call(0, "get_weather", '{"city":"Paris"}')],
+        )
+        first = self.feed(post)
+        final = self.feed(post, text="", finish=True)
+        merged = _extract_tool_calls([first, final])
+        assert len(merged) == 1
+        assert merged[0]["index"] == 0
+        assert merged[0]["function"]["arguments"] == '{"city":"Paris"}'
+        assert "id" not in final["delta"]["tool_calls"][0]
+
+    def test_unrecoverable_name_is_not_retracted_or_given_fake_arguments(self) -> None:
+        post = self.make_post([[self.call(0, "get_weather", "")]], [])
+        first = self.feed(post)
+        final = self.feed(post, text="", finish=True)
+        assert first["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert final["finish_reason"] == "tool_calls"
+        assert not final["delta"].get("tool_calls")
+        assert _extract_tool_calls([first, final])[0]["function"]["arguments"] == ""
+
+    def test_unknown_name_only_is_suppressed(self) -> None:
+        post = self.make_post([[self.call(0, "unknown_tool", "")]], [])
+        assert self.feed(post) is None
+        final = self.feed(post, text="", finish=True)
+        assert final["finish_reason"] == "stop"
+        assert not final["delta"].get("tool_calls")
+
+    def test_glm47_union_schema_emits_identity_before_tool_closes(self) -> None:
+        tools = [
+            SglangTool(
+                type="function",
+                function=SglangFunction(
+                    name="lookup",
+                    parameters={
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {"value": {"type": "string"}},
+                            },
+                            {
+                                "type": "object",
+                                "properties": {"value": {"type": "integer"}},
+                            },
+                        ]
+                    },
+                ),
+            )
+        ]
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.Tokenizer(),
+            tool_call_parser=FunctionCallParser(tools=tools, tool_call_parser="glm47"),
+            reasoning_parser=None,
+            sglang_tools=tools,
+        )
+        chunks = [
+            "<tool_call>lookup<arg_key>value</arg_key><arg_value>",
+            "long value part 1",
+            "long value part 2",
+            "</arg_value></tool_call>",
+        ]
+        first = self.feed(post, chunks[0])
+        assert first is not None
+        assert first["finish_reason"] is None
+        assert first["delta"]["tool_calls"][0]["function"]["name"] == "lookup"
+        choices = [first]
+        for i, chunk in enumerate(chunks[1:], 1):
+            choice = self.feed(post, chunk, finish=i == len(chunks) - 1)
+            if choice:
+                choices.append(choice)
+        merged = _extract_tool_calls(choices)
+        assert len(merged) == 1
+        assert json.loads(merged[0]["function"]["arguments"]) == {
+            "value": "long value part 1long value part 2"
+        }
