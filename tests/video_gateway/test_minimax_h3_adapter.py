@@ -635,6 +635,23 @@ def test_pool_limits_can_only_tighten_adapter_capability(make_gateway_config):
         MiniMaxH3VideoAdapter(make_gateway_config(pools=[pool]).pools[0])
 
 
+def test_media_validation_is_opt_in(make_gateway_config):
+    pool = {
+        "pool_id": "default-media-policy",
+        "served_models": ["public-fl"],
+        "backend_model": "worker-fl",
+        "backend_target": "dyn://scope.backend.generate",
+        "adapter": {
+            "name": "minimax_h3",
+            "workflow": "fl2va",
+        },
+    }
+
+    adapter = MiniMaxH3VideoAdapter(make_gateway_config(pools=[pool]).pools[0])
+
+    assert adapter.options["validate_media"] is False
+
+
 def test_ref2va_capabilities_only_advertise_verified_media(make_gateway_config):
     capabilities = _adapter(make_gateway_config, "ref2va").capabilities(
         max_result_bytes=128 * 1024 * 1024
