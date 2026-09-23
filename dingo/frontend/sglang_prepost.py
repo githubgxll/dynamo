@@ -1646,9 +1646,8 @@ class SglangStreamingPostProcessor:
             # Discard malformed (non-JSON) argument fragments that the
             # streaming parser accumulated from mixed content.  For calls
             # whose arguments were already streamed the fragments cannot
-            # be retracted; instead flag them so the re-parse below can
+            # be retracted; log them and let the re-parse below attempt to
             # recover the authoritative arguments and patch the suffix.
-            streamed_malformed = False
             for idx in list(self._tool_call_args):
                 combined = "".join(self._tool_call_args[idx])
                 if combined:
@@ -1661,26 +1660,19 @@ class SglangStreamingPostProcessor:
                                 "arguments; attempting finish-time recovery",
                                 self._tool_call_ids.get(idx),
                             )
-                            streamed_malformed = True
                             continue
                         del self._tool_call_args[idx]
 
-            missing_names = not self._tool_call_names
-            missing_args = any(
-                idx not in self._tool_call_args for idx in self._tool_call_names
+            # Complete arguments for observed calls do not prove that every
+            # call was observed: a streaming detector can miss an entire later
+            # call in a token batch. Reconcile all marked tool-call responses
+            # at finish, including when every streamed call is already valid.
+            full_text = "".join(self._tool_text_parts)
+            # Plain text still skips recovery, avoiding unnecessary parsing
+            # and detectors that reject input without tool-call markers.
+            should_reparse = bool(full_text) and self.tool_call_parser.has_tool_call(
+                full_text
             )
-            should_reparse = False
-            full_text = ""
-            if missing_names or missing_args or streamed_malformed:
-                full_text = "".join(self._tool_text_parts)
-                # Skip the re-parse when the accumulated text has no
-                # tool-call markers.  Avoids wasted `parse_non_stream`
-                # work on plain-text responses (common when tools are
-                # offered but the model replies without calling any) and
-                # guards against detectors that raise on arbitrary input.
-                should_reparse = bool(
-                    full_text
-                ) and self.tool_call_parser.has_tool_call(full_text)
 
             if should_reparse:
                 if self._is_json_array_parser:

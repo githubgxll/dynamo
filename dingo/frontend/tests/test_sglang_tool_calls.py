@@ -885,6 +885,54 @@ class TestToolStreamingRecoveryRegression:
         assert len({c["id"] for c in merged}) == 2
         assert choices[-1]["finish_reason"] == "tool_calls"
 
+    @pytest.mark.parametrize("same_name", [False, True])
+    @pytest.mark.parametrize("empty_finish", [False, True])
+    def test_completely_missed_call_is_recovered(
+        self, same_name: bool, empty_finish: bool
+    ) -> None:
+        first_args = '{"city":"Paris"}'
+        second_name = "get_weather" if same_name else "search_gutenberg_books"
+        second_args = '{"city":"Rome"}' if same_name else '{"search_terms":["Joyce"]}'
+        post = self.make_post(
+            [[self.call(0, "get_weather", first_args)], []],
+            [
+                self.call(0, "get_weather", first_args),
+                # Non-stream indices can be tool-definition indices, including
+                # the same index for two calls of the same tool.
+                self.call(0 if same_name else 1, second_name, second_args),
+            ],
+        )
+        first = self.feed(post)
+        assert first is not None
+        assert set(post._tool_call_names.values()) == {"get_weather"}
+        assert post._tool_call_args == {0: [first_args]}
+        final = self.feed(post, text="" if empty_finish else "x", finish=True)
+        assert final is not None
+        entries = first["delta"]["tool_calls"] + final["delta"]["tool_calls"]
+        merged = _merge_tool_call_entries(entries)
+        assert [c["index"] for c in merged] == [0, 1]
+        assert [c["function"]["name"] for c in merged] == ["get_weather", second_name]
+        assert [c["function"]["arguments"] for c in merged] == [first_args, second_args]
+        assert len({c["id"] for c in merged}) == 2
+        assert sum(bool(e.get("id")) for e in entries) == 2
+        assert all(e["index"] == 1 for e in final["delta"]["tool_calls"])
+        assert final["finish_reason"] == "tool_calls"
+
+    def test_plain_text_without_tool_markers_skips_reparse(self) -> None:
+        class PlainTextParser(self.Parser):
+            def has_tool_call(self, text: str) -> bool:
+                return False
+
+            def parse_non_stream(self, text: str) -> tuple[str, list[ToolCallItem]]:
+                pytest.fail("Plain text should not require tool-call recovery")
+
+        post = self.make_post([], [])
+        post.tool_call_parser = PlainTextParser([[]], [])
+        final = self.feed(post, "hello", finish=True)
+        assert final is not None
+        assert final["finish_reason"] == "stop"
+        assert not final["delta"].get("tool_calls")
+
     def test_confirmed_name_precedes_arguments_and_keeps_identity(self) -> None:
         call = self.call
         post = self.make_post(
