@@ -9,9 +9,11 @@ import base64
 import hashlib
 import importlib.util
 import json
+import logging
 import math
 import os
 import secrets
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -45,10 +47,21 @@ _AUDIO_TYPE_ALIASES = {
     "audio/vnd.wave": "audio/wav",
 }
 _GENERIC_BINARY_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
+_MEDIA_TIMING_ENABLED = os.environ.get("DINGO_VIDEO_MEDIA_TIMING") == "1"
+_LOGGER = logging.getLogger(__name__)
+
+
+def _record_media_timing(
+    timings: dict[str, Any] | None, stage: str, started: float
+) -> None:
+    if timings is not None:
+        timings[f"{stage}_s"] = round(time.perf_counter() - started, 6)
 
 
 @contextmanager
-def _open_artifact_metadata(path: Path):
+def _open_artifact_metadata(
+    path: Path, timings: dict[str, Any] | None = None
+):
     """Avoid pixel reconstruction while probing indexed H.264/AAC results.
 
     This is metadata validation, not a full bitstream/decode integrity scan.
@@ -60,7 +73,12 @@ def _open_artifact_metadata(path: Path):
     container = None
     try:
         try:
-            container = av.open(str(path), options={"skip_frame": "all"})
+            started = time.perf_counter()
+            try:
+                container = av.open(str(path), options={"skip_frame": "all"})
+            finally:
+                _record_media_timing(timings, "indexed_open", started)
+            started = time.perf_counter()
             videos = list(container.streams.video)
             audios = list(container.streams.audio)
             complete = (
@@ -80,20 +98,33 @@ def _open_artifact_metadata(path: Path):
                     for a in audios
                 )
             )
+            _record_media_timing(timings, "indexed_metadata", started)
         except av.error.FFmpegError:
             complete = False
+        if timings is not None:
+            timings["indexed_fast_path"] = complete
         if not complete:
             if container is not None:
+                started = time.perf_counter()
                 container.close()
-            container = av.open(str(path))
+                _record_media_timing(timings, "indexed_close", started)
+            started = time.perf_counter()
+            try:
+                container = av.open(str(path))
+            finally:
+                _record_media_timing(timings, "fallback_open", started)
         else:
+            started = time.perf_counter()
             for stream in container.streams:
                 stream.codec_context.options.pop("skip_frame", None)
                 stream.codec_context.skip_frame = "DEFAULT"
+            _record_media_timing(timings, "decode_flags_reset", started)
         yield container
     finally:
         if container is not None:
+            started = time.perf_counter()
             container.close()
+            _record_media_timing(timings, "container_close", started)
 
 
 _HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
@@ -717,7 +748,10 @@ class MiniMaxH3VideoAdapter:
             raise ValueError(
                 "unknown MiniMax-H3 adapter options: " + ", ".join(unknown_options)
             )
-        if not isinstance(self.options.get("validate_media", True), bool):
+        # Media-content reads can exhibit large shared-filesystem tails. Keep
+        # them opt-in; descriptor/path/stat/size publication checks remain in
+        # the artifact store when this is disabled.
+        if not isinstance(self.options.setdefault("validate_media", False), bool):
             raise TypeError("MiniMax-H3 validate_media must be a boolean")
         raw_limits = self.options.get("limits", {})
         if not isinstance(raw_limits, Mapping):
@@ -1328,25 +1362,75 @@ class MiniMaxH3VideoAdapter:
         The caller may reuse this media result only when publishing the same
         checked inode. Copies and transformed outputs must be validated anew.
         """
-        if bool(normalized.get("generate_sound", True)):
-            return False, self.validate_artifact(path, normalized)
+        timings: dict[str, Any] | None = {} if _MEDIA_TIMING_ENABLED else None
+        started_total = time.perf_counter()
+        generate_sound = bool(normalized.get("generate_sound", True))
+        needs_processing: bool | None = None
+        outcome = "completed"
         try:
-            import av  # noqa: F401 - fail early with the optional-extra diagnostic
-        except ImportError as exc:
-            raise RuntimeError(
-                "MiniMax-H3 media inspection requires the video-gateway optional extra"
-            ) from exc
-        with path.open("rb") as stream:
-            header = stream.read(32)
-        with _open_artifact_metadata(path) as container:
-            if not (
-                len(container.streams) == 1
-                and len(container.streams.video) == 1
-                and len(header) >= 12
-                and header[4:8] == b"ftyp"
-            ):
-                return True, None
-            return False, self._validate_open_artifact(container, normalized)
+            if generate_sound:
+                needs_processing = False
+                if not bool(self.options.get("validate_media", False)):
+                    return False, {"container": "mp4"}
+                return False, self.validate_artifact(
+                    path, normalized, diagnostic_timings=timings
+                )
+            started = time.perf_counter()
+            try:
+                import av  # noqa: F401 - fail early with the optional-extra diagnostic
+            except ImportError as exc:
+                raise RuntimeError(
+                    "MiniMax-H3 media inspection requires the video-gateway optional extra"
+                ) from exc
+            _record_media_timing(timings, "av_import", started)
+            started = time.perf_counter()
+            with path.open("rb") as stream:
+                header = stream.read(32)
+            _record_media_timing(timings, "header_read", started)
+            with _open_artifact_metadata(path, timings) as container:
+                started = time.perf_counter()
+                needs_processing = not (
+                    len(container.streams) == 1
+                    and len(container.streams.video) == 1
+                    and len(header) >= 12
+                    and header[4:8] == b"ftyp"
+                )
+                _record_media_timing(timings, "stream_topology", started)
+                if needs_processing:
+                    return True, None
+                return False, self._validate_open_artifact(
+                    container, normalized, diagnostic_timings=timings
+                )
+        except BaseException as exc:
+            outcome = type(exc).__name__
+            raise
+        finally:
+            if timings is not None:
+                try:
+                    timings.update(
+                        task_id=next(
+                            (
+                                part
+                                for part in path.parts
+                                if part.startswith("video-") and len(part) == 32
+                            ),
+                            None,
+                        ),
+                        generate_sound=generate_sound,
+                        validate_media=bool(
+                            self.options.get("validate_media", False)
+                        ),
+                        needs_processing=needs_processing,
+                        outcome=outcome,
+                        total_s=round(time.perf_counter() - started_total, 6),
+                    )
+                    _LOGGER.info(
+                        "video_media_inspection_timing %s",
+                        json.dumps(timings, sort_keys=True, separators=(",", ":")),
+                    )
+                except Exception:
+                    # Even a broken diagnostic must not change result publication.
+                    pass
 
     def artifact_requires_processing(
         self, path: Path, normalized: Mapping[str, Any]
@@ -1413,32 +1497,47 @@ class MiniMaxH3VideoAdapter:
                 remuxed.unlink()
 
     def validate_artifact(
-        self, path: Path, normalized: Mapping[str, Any]
+        self,
+        path: Path,
+        normalized: Mapping[str, Any],
+        diagnostic_timings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if not bool(self.options.get("validate_media", False)):
+            return {"container": "mp4"}
+        started = time.perf_counter()
         with path.open("rb") as stream:
             header = stream.read(32)
+        _record_media_timing(diagnostic_timings, "header_read", started)
         if len(header) < 12 or header[4:8] != b"ftyp":
             raise RuntimeError("Worker result is not an ISO BMFF/MP4 file")
-        if not bool(self.options.get("validate_media", True)):
-            return {"container": "mp4"}
+        started = time.perf_counter()
         try:
             import av  # noqa: F401 - fail early with the optional-extra diagnostic
         except ImportError as exc:
             raise RuntimeError(
                 "MiniMax-H3 media validation requires the video-gateway optional extra"
             ) from exc
-        with _open_artifact_metadata(path) as container:
-            return self._validate_open_artifact(container, normalized)
+        _record_media_timing(diagnostic_timings, "av_import", started)
+        with _open_artifact_metadata(path, diagnostic_timings) as container:
+            return self._validate_open_artifact(
+                container, normalized, diagnostic_timings=diagnostic_timings
+            )
 
     def _validate_open_artifact(
-        self, container, normalized: Mapping[str, Any]
+        self,
+        container,
+        normalized: Mapping[str, Any],
+        diagnostic_timings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not bool(self.options.get("validate_media", True)):
+        if not bool(self.options.get("validate_media", False)):
             return {"container": "mp4"}
         import av
 
+        started_validation = time.perf_counter()
+        started = time.perf_counter()
         video_streams = list(container.streams.video)
         audio_streams = list(container.streams.audio)
+        _record_media_timing(diagnostic_timings, "validation_streams", started)
         if not video_streams or video_streams[0].codec_context.name != "h264":
             raise RuntimeError("MP4 must contain an H.264 video stream")
         generate_sound = bool(normalized.get("generate_sound", True))
@@ -1457,7 +1556,9 @@ class MiniMaxH3VideoAdapter:
             raise RuntimeError(f"MP4 frame rate {average_rate} does not match 24 fps")
         frame_count = int(video.frames or 0)
         if frame_count <= 0:
+            started = time.perf_counter()
             frame_count = sum(1 for _frame in container.decode(video=0))
+            _record_media_timing(diagnostic_timings, "frame_count_decode", started)
         expected_frames = align_frame_count(int(normalized["num_frames"]))
         if frame_count != expected_frames:
             raise RuntimeError(
@@ -1473,14 +1574,16 @@ class MiniMaxH3VideoAdapter:
         audio_duration: float | None = None
         if generate_sound:
             audio = audio_streams[0]
+            started = time.perf_counter()
             audio_duration = _stream_duration(container, audio)
+            _record_media_timing(diagnostic_timings, "audio_duration", started)
             if audio_duration <= 0:
                 raise RuntimeError("MP4 AAC stream has no measurable duration")
             if abs(video_duration - audio_duration) > 0.1:
                 raise RuntimeError(
                     "MP4 audio/video duration difference exceeds 100 milliseconds"
                 )
-        return {
+        result = {
             "container": "mp4",
             "video_codec": "h264",
             "audio_codec": "aac" if generate_sound else None,
@@ -1494,3 +1597,7 @@ class MiniMaxH3VideoAdapter:
             "video_duration_s": video_duration,
             "audio_duration_s": audio_duration,
         }
+        _record_media_timing(
+            diagnostic_timings, "validation_total", started_validation
+        )
+        return result
