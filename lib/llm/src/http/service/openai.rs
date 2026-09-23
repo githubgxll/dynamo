@@ -932,12 +932,22 @@ pub async fn anthropic_content_compat_middleware(
             // instead of guessed — including the two cross combinations:
             // existing tool_calls with residual thinking, and existing
             // reasoning_content with residual tool_use.
-            let has_existing_calls = obj
-                .get("tool_calls")
-                .map(|v| {
-                    !v.is_null() && v.as_array().map(|a| !a.is_empty()).unwrap_or(false)
-                })
-                .unwrap_or(false);
+            //
+            // Structural validation comes first (review v4 R1): a
+            // non-null, non-array `tool_calls` is a gateway format error.
+            // Treating it as "no existing calls" would let the insert
+            // below silently overwrite (delete) the original field and
+            // normalize the malformed request into a valid-looking one.
+            let has_existing_calls = match obj.get("tool_calls") {
+                None | Some(serde_json::Value::Null) => false,
+                Some(serde_json::Value::Array(calls)) => !calls.is_empty(),
+                Some(_) => {
+                    return anthropic_compat_reject(
+                        body_bytes.len(),
+                        format!("messages[{msg_idx}].tool_calls must be an array or null"),
+                    );
+                }
+            };
             let has_existing_reasoning = obj
                 .get("reasoning_content")
                 .map(|v| !v.is_null())
@@ -7080,6 +7090,70 @@ mod tests {
             },
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_non_array_tool_calls() {
+        // Review v4 R1: a non-null, non-array `tool_calls` is a gateway
+        // format error and must be rejected — never silently overwritten
+        // by the converted calls.
+        let url = spawn_compat_echo_server().await;
+        for bad in [
+            serde_json::json!({"id": "old", "function": {"name": "old_fn", "arguments": "{}"}}),
+            serde_json::json!("not-an-array"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+        ] {
+            let payload = serde_json::json!({
+                "model": "m",
+                "messages": [
+                    {"role": "assistant",
+                     "tool_calls": bad,
+                     "content": [
+                        {"type": "tool_use", "id": "t1", "name": "f", "input": {}}
+                     ]}
+                ]
+            });
+            let resp = post_json(&url, &payload).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "tool_calls={bad} must be rejected"
+            );
+            let err: serde_json::Value = resp.json().await.expect("error json");
+            let msg = err["message"].as_str().unwrap_or_default();
+            assert!(msg.starts_with("messages[0].tool_calls"), "got: {msg}");
+            assert!(msg.contains("must be an array or null"), "got: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_middleware_allows_null_and_empty_tool_calls() {
+        // Missing/null/empty-array tool_calls means "no existing calls":
+        // the residual tool_use must convert normally.
+        let url = spawn_compat_echo_server().await;
+        for existing in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+        ] {
+            let payload = serde_json::json!({
+                "model": "m",
+                "messages": [
+                    {"role": "assistant",
+                     "tool_calls": existing,
+                     "content": [
+                        {"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "Beijing"}}
+                     ]}
+                ]
+            });
+            let resp = post_json(&url, &payload).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let echoed: serde_json::Value = resp.json().await.expect("echo json");
+            assert_eq!(
+                echoed["messages"][0]["tool_calls"][0]["id"],
+                serde_json::json!("t1")
+            );
+        }
     }
 
 }
