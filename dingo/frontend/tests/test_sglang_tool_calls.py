@@ -4,8 +4,9 @@
 """Tests for tool call parsing in SglangStreamingPostProcessor.
 
 Covers the interaction between SGLang's FunctionCallParser, ReasoningParser,
-and our post-processor's accumulate-and-emit-on-finish logic, including the
-parse_non_stream fallback for the chunking-sensitivity issue in
+and our post-processor's incremental tool-call streaming (id+name first,
+then argument fragments), including the finish-time parse_non_stream
+fallback/merge for the chunking-sensitivity issue in
 BaseFormatDetector.parse_streaming_increment.
 """
 
@@ -100,13 +101,41 @@ def _run_postprocessor(tokenizer, full_text, batch_size, *, use_reasoning=True):
     return results
 
 
+def _merge_tool_call_entries(entries):
+    """Merge OpenAI streaming tool_call delta entries into complete calls.
+
+    Mirrors the client-side reassembly contract: an entry carrying ``id``
+    starts the call (name + empty arguments), entries without ``id``
+    append argument fragments, and a finish-time recovered call arrives
+    as a single complete entry.
+    """
+    calls: dict[int, dict] = {}
+    order: list[int] = []
+    for e in entries:
+        idx = e["index"]
+        if idx not in calls:
+            calls[idx] = {
+                "index": idx,
+                "id": None,
+                "type": "function",
+                "function": {"name": None, "arguments": ""},
+            }
+            order.append(idx)
+        fn = e.get("function", {})
+        if e.get("id"):
+            calls[idx]["id"] = e["id"]
+        if fn.get("name"):
+            calls[idx]["function"]["name"] = fn["name"]
+        calls[idx]["function"]["arguments"] += fn.get("arguments", "")
+    return [calls[i] for i in order]
+
+
 def _extract_tool_calls(results):
-    """Extract tool_calls from the list of choices."""
+    """Reassemble complete tool calls from incremental deltas across choices."""
+    entries = []
     for r in results:
-        tc = r.get("delta", {}).get("tool_calls")
-        if tc:
-            return tc
-    return []
+        entries.extend(r.get("delta", {}).get("tool_calls") or [])
+    return _merge_tool_call_entries(entries)
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +223,7 @@ class TestKimiToolCallIds:  # FRONTEND.4 — Kimi-specific tool-call ID format o
             }
         )
 
-        tc = choice["delta"]["tool_calls"]
+        tc = _merge_tool_call_entries(choice["delta"]["tool_calls"])
         assert [item["id"] for item in tc] == [
             "functions.get_weather:3",
             "functions.search_gutenberg_books:4",
@@ -254,7 +283,7 @@ class TestKimiToolCallIds:  # FRONTEND.4 — Kimi-specific tool-call ID format o
             }
         )
 
-        tc = choice["delta"]["tool_calls"]
+        tc = _merge_tool_call_entries(choice["delta"]["tool_calls"])
         # IDs must use seq_idx (0, 1) + history (3), not tool_index (5, 2).
         assert [item["id"] for item in tc] == [
             "functions.get_weather:3",
@@ -417,7 +446,7 @@ class TestSingleChunkFallback:  # FRONTEND.4 — non-streaming fallback assembly
         # Feed ALL tokens at once with finish_reason
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         assert choice is not None
-        tc = choice.get("delta", {}).get("tool_calls", [])
+        tc = _merge_tool_call_entries(choice.get("delta", {}).get("tool_calls", []))
         assert len(tc) == 1, f"Expected 1 tool call, got {len(tc)}"
         assert tc[0]["function"]["name"] == "search_gutenberg_books"
         args = json.loads(tc[0]["function"]["arguments"])
@@ -442,7 +471,7 @@ class TestSingleChunkFallback:  # FRONTEND.4 — non-streaming fallback assembly
         token_ids = tokenizer.encode(text)
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         assert choice is not None
-        tc = choice.get("delta", {}).get("tool_calls", [])
+        tc = _merge_tool_call_entries(choice.get("delta", {}).get("tool_calls", []))
         assert len(tc) == 2, f"Expected 2 tool calls, got {len(tc)}"
         names = {t["function"]["name"] for t in tc}
         assert names == {"search_gutenberg_books", "get_weather"}
@@ -469,20 +498,36 @@ class TestSingleChunkFallback:  # FRONTEND.4 — non-streaming fallback assembly
 
 
 class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → graceful degradation
-    def test_incomplete_arguments_are_not_emitted(self):
-        class DummyTokenizer:
-            def decode(self, token_ids, skip_special_tokens=True):
-                return "".join(chr(x) for x in token_ids)
+    """Contract under incremental streaming:
 
-        class DummyToolCall:
-            def __init__(self, tool_index, name, parameters):
-                self.tool_index = tool_index
-                self.name = name
-                self.parameters = parameters
+    - A name detected without any argument fragment is never emitted
+      (neither mid-stream nor at finish) and does not rewrite the
+      finish_reason.
+    - An unknown tool name is suppressed mid-stream and purged at
+      finish; nothing reaches the client.
+    - A known name with malformed (non-JSON) arguments IS streamed
+      optimistically — matching native SGLang behaviour — and the
+      finish-time re-parse attempts authoritative recovery.
+    """
+
+    class DummyTokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            return "".join(chr(x) for x in token_ids)
+
+    class DummyToolCall:
+        def __init__(self, tool_index, name, parameters):
+            self.tool_index = tool_index
+            self.name = name
+            self.parameters = parameters
+
+    def test_name_without_arguments_is_never_emitted(self):
+        dummy_tokenizer = self.DummyTokenizer()
+        dummy_tc = self.DummyToolCall
 
         class DummyParser:
             def parse_stream_chunk(self, text):
-                return "", [DummyToolCall(0, "get_weather", '{"city": "Paris"')]
+                # Name event only — no argument fragment ever arrives.
+                return "", [dummy_tc(0, "get_weather", None)]
 
             def has_tool_call(self, text):
                 return "<tool_call>" in text
@@ -491,7 +536,7 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
                 return "", []
 
         post = SglangStreamingPostProcessor(
-            tokenizer=DummyTokenizer(),
+            tokenizer=dummy_tokenizer,
             tool_call_parser=DummyParser(),
             reasoning_parser=None,
         )
@@ -510,6 +555,81 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
         assert choice is not None
         assert choice["finish_reason"] == "stop"
         assert choice.get("delta", {}).get("tool_calls", []) == []
+
+    def test_unknown_tool_name_is_never_streamed(self):
+        dummy_tokenizer = self.DummyTokenizer()
+        dummy_tc = self.DummyToolCall
+
+        class DummyParser:
+            def parse_stream_chunk(self, text):
+                return "", [dummy_tc(0, "evil_tool", '{"x": 1}')]
+
+            def has_tool_call(self, text):
+                return True
+
+            def parse_non_stream(self, text):
+                return "", []
+
+        post = SglangStreamingPostProcessor(
+            tokenizer=dummy_tokenizer,
+            tool_call_parser=DummyParser(),
+            reasoning_parser=None,
+            sglang_tools=TOOLS,
+        )
+
+        text = '<tool_call>\n{"name": "evil_tool", "arguments": {"x": 1}}\n</tool_call>'
+        choice = post.process_output(
+            {
+                "token_ids": [ord(c) for c in text],
+                "finish_reason": "stop",
+            }
+        )
+
+        assert choice is not None
+        assert choice["finish_reason"] == "stop"
+        assert choice.get("delta", {}).get("tool_calls", []) == []
+
+    def test_malformed_arguments_stream_optimistically(self):
+        dummy_tokenizer = self.DummyTokenizer()
+        dummy_tc = self.DummyToolCall
+
+        class DummyParser:
+            def parse_stream_chunk(self, text):
+                # Known name with malformed (unrecoverable) arguments.
+                return "", [dummy_tc(0, "get_weather", '{"city": "Paris"')]
+
+            def has_tool_call(self, text):
+                return True
+
+            def parse_non_stream(self, text):
+                return "", []
+
+        post = SglangStreamingPostProcessor(
+            tokenizer=dummy_tokenizer,
+            tool_call_parser=DummyParser(),
+            reasoning_parser=None,
+            sglang_tools=TOOLS,
+        )
+
+        malformed = (
+            '<tool_call>\n{"name": "get_weather", '
+            '"arguments": {"city": "Paris"}\n</tool_call>'
+        )
+        choice = post.process_output(
+            {
+                "token_ids": [ord(c) for c in malformed],
+                "finish_reason": "stop",
+            }
+        )
+
+        # Native-compatible tradeoff: the fragments went out before the
+        # JSON could be validated; the call counts as emitted, so the
+        # finish_reason is rewritten to tool_calls.
+        assert choice is not None
+        assert choice["finish_reason"] == "tool_calls"
+        tc = _merge_tool_call_entries(choice.get("delta", {}).get("tool_calls", []))
+        assert tc[0]["function"]["name"] == "get_weather"
+        assert tc[0]["function"]["arguments"] == '{"city": "Paris"'
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +661,7 @@ class TestJsonArrayParserReparse:  # FRONTEND.4 — JSON-array parser reparse pa
         token_ids = tokenizer.encode(text)
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         assert choice is not None
-        tc = choice.get("delta", {}).get("tool_calls", [])
+        tc = _merge_tool_call_entries(choice.get("delta", {}).get("tool_calls", []))
         assert len(tc) == 1
         assert tc[0]["function"]["name"] == "get_weather"
         assert json.loads(tc[0]["function"]["arguments"]) == {"city": "NYC"}
@@ -563,7 +683,7 @@ class TestJsonArrayParserReparse:  # FRONTEND.4 — JSON-array parser reparse pa
         token_ids = tokenizer.encode(text)
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         assert choice is not None
-        tc = choice.get("delta", {}).get("tool_calls", [])
+        tc = _merge_tool_call_entries(choice.get("delta", {}).get("tool_calls", []))
         assert len(tc) == 2
         names = {t["function"]["name"] for t in tc}
         assert names == {"search_gutenberg_books", "get_weather"}
@@ -584,5 +704,95 @@ class TestJsonArrayParserReparse:  # FRONTEND.4 — JSON-array parser reparse pa
         token_ids = tokenizer.encode("Hello, world!")
         choice = post.process_output({"token_ids": token_ids, "finish_reason": "stop"})
         # No tool calls, plain content preserved, no crash.
-        tc = (choice or {}).get("delta", {}).get("tool_calls", [])
+        tc = _merge_tool_call_entries((choice or {}).get("delta", {}).get("tool_calls", []))
         assert tc == []
+
+
+# ---------------------------------------------------------------------------
+# Incremental tool-call streaming (TTFT)
+# ---------------------------------------------------------------------------
+
+
+class TestIncrementalToolStreaming:  # FRONTEND.4 — tool_call deltas stream before finish
+    """TTFT contract: clients must see tool_call deltas as the parser
+    detects them instead of everything arriving with the finish chunk."""
+
+    TEXT = (
+        '<tool_call>\n{"name": "get_weather", '
+        '"arguments": {"city": "Paris"}}\n</tool_call>'
+    )
+
+    MULTI_TEXT = (
+        '<tool_call>\n{"name": "search_gutenberg_books", '
+        '"arguments": {"search_terms": ["Joyce"]}}\n</tool_call>\n'
+        '<tool_call>\n{"name": "get_weather", '
+        '"arguments": {"city": "London"}}\n</tool_call>'
+    )
+
+    @staticmethod
+    def _all_entries(results):
+        return [
+            e
+            for r in results
+            for e in (r.get("delta", {}).get("tool_calls") or [])
+        ]
+
+    def test_tool_deltas_arrive_before_finish(self, tokenizer):
+        results = _run_postprocessor(tokenizer, self.TEXT, 3, use_reasoning=False)
+        assert results[-1]["finish_reason"] is not None
+        first_tool_idx = next(
+            i for i, r in enumerate(results) if r.get("delta", {}).get("tool_calls")
+        )
+        assert first_tool_idx < len(results) - 1, (
+            "tool_call deltas must stream before the finish chunk "
+            "(buffering them is what inflated client-side TTFT)"
+        )
+
+    def test_first_entry_carries_id_and_name(self, tokenizer):
+        results = _run_postprocessor(tokenizer, self.TEXT, 3, use_reasoning=False)
+        entries = self._all_entries(results)
+        assert entries, "expected streamed tool_call entries"
+        first = entries[0]
+        assert first["id"].startswith("call_")
+        assert first["type"] == "function"
+        assert first["function"]["name"] == "get_weather"
+        assert first["function"]["arguments"] == ""
+
+    def test_reassembled_arguments_complete(self, tokenizer):
+        tc = _extract_tool_calls(
+            _run_postprocessor(tokenizer, self.TEXT, 3, use_reasoning=False)
+        )
+        assert len(tc) == 1
+        assert tc[0]["function"]["name"] == "get_weather"
+        assert json.loads(tc[0]["function"]["arguments"]) == {"city": "Paris"}
+
+    def test_multiple_calls_stream_with_distinct_indices(self, tokenizer):
+        results = _run_postprocessor(tokenizer, self.MULTI_TEXT, 5, use_reasoning=False)
+        entries = self._all_entries(results)
+        assert entries, "expected streamed tool_call entries"
+        tc = _merge_tool_call_entries(entries)
+        assert {t["function"]["name"] for t in tc} == {
+            "search_gutenberg_books",
+            "get_weather",
+        }
+        assert len({t["index"] for t in tc}) == 2
+        ids = [t["id"] for t in tc]
+        assert len(set(ids)) == len(ids), "tool call ids must be unique"
+
+    def test_finish_reason_rewritten_to_tool_calls(self, tokenizer):
+        results = _run_postprocessor(tokenizer, self.TEXT, 3, use_reasoning=False)
+        assert results[-1]["finish_reason"] == "tool_calls"
+
+    def test_pure_tool_call_first_choice_is_not_delayed(self, tokenizer):
+        """Pure tool-call responses (no reasoning preface) must produce a
+        tool_call-bearing choice well before the final one — this is the
+        scenario where buffered emission made TTFT equal to the whole
+        generation time."""
+        results = _run_postprocessor(tokenizer, self.TEXT, 3, use_reasoning=False)
+        first_tool_idx = next(
+            i for i, r in enumerate(results) if r.get("delta", {}).get("tool_calls")
+        )
+        # The name completes after roughly the first third of the tokens;
+        # allow generous slack but require strict precedence over finish.
+        assert first_tool_idx <= len(results) // 2
+

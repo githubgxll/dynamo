@@ -1147,6 +1147,14 @@ class SglangStreamingPostProcessor:
     - Incremental detokenization via sliding-window decode (6-token lookback)
     - Reasoning content extraction via SGLang ReasoningParser
     - Tool call parsing via SGLang FunctionCallParser or JsonArrayParser
+
+    Tool calls are streamed incrementally (id+name first, then argument
+    fragments) so clients see the first tool_call delta as soon as the
+    parser detects it — buffering the whole call until finish would make
+    the client-side TTFT of pure tool-call responses equal to the full
+    generation time.  The finish-time full-text re-parse remains as the
+    authoritative safety net for calls or argument suffixes the
+    streaming parser missed.
     """
 
     # Lookback window size for incremental detokenization.  UTF-8 characters
@@ -1231,6 +1239,23 @@ class SglangStreamingPostProcessor:
         self._kimi_k3_raw_text_parts: list[str] = []
         self._saw_normal_output = False
 
+        # Incremental tool-call streaming state (TTFT fix).  Parsed events
+        # are emitted as OpenAI deltas as they arrive instead of being
+        # buffered until finish: the id+name delta goes out with the first
+        # argument fragment, argument fragments stream as they come, and
+        # the finish-time re-parse only patches what streaming missed.
+        # Guards retained from the buffered design:
+        # - names without any argument fragment are never emitted (a
+        #   misidentified prompt word cannot leak as a dangling call);
+        # - names not present in the request's tool list are suppressed
+        #   entirely and purged at finish, exactly as before.
+        self._known_tool_names = (
+            {t.function.name for t in self._sglang_tools} if self._sglang_tools else set()
+        )
+        self._emitted_tool_names: set[int] = set()  # indices whose id+name delta was sent
+        self._suppressed_tool_indices: set[int] = set()  # unknown-name indices withheld
+        self._emitted_args_len: dict[int, int] = {}  # index -> args length already sent
+
     def _strip_trailing_eos_token_ids(self, token_ids: list[int]) -> list[int]:
         if not self._eos_token_ids:
             return token_ids
@@ -1255,6 +1280,59 @@ class SglangStreamingPostProcessor:
             index,
             self.history_tool_calls_count,
         )
+
+    def _streaming_tool_deltas(
+        self, tool_calls: list[Any]
+    ) -> list[dict[str, Any]]:
+        """Build incremental OpenAI tool_call deltas from parser events.
+
+        Emission rules (TTFT fix: stream tool calls instead of buffering
+        them until finish):
+
+        - The id+name delta is withheld until the first argument fragment
+          arrives, so a detected-but-never-argued name never reaches the
+          client; the finish-time logic drops such calls exactly as in
+          the old buffered design.
+        - Names not present in the request's tool list are suppressed
+          entirely (mirrors the finish-time known-name purge).
+        - Argument fragments stream as they arrive.  The not-yet-emitted
+          tail of the accumulated arguments is the source of truth, so
+          event granularity (name and args in one event vs. split across
+          invocations) cannot produce duplicates.
+        """
+        deltas: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            idx = tc.tool_index
+            if idx in self._suppressed_tool_indices:
+                continue
+            name = tc.name or self._tool_call_names.get(idx)
+            if tc.parameters and name and idx not in self._emitted_tool_names:
+                if self._known_tool_names and name not in self._known_tool_names:
+                    # Unknown tool name: withhold the whole call.  The
+                    # accumulated state is purged at finish as before.
+                    self._suppressed_tool_indices.add(idx)
+                    continue
+                deltas.append(
+                    {
+                        "index": idx,
+                        "id": self._tool_call_ids[idx],
+                        "type": "function",
+                        "function": {"name": name, "arguments": ""},
+                    }
+                )
+                self._emitted_tool_names.add(idx)
+            if tc.parameters and idx in self._emitted_tool_names:
+                accumulated = "".join(self._tool_call_args.get(idx, []))
+                sent = self._emitted_args_len.get(idx, 0)
+                if len(accumulated) > sent:
+                    deltas.append(
+                        {
+                            "index": idx,
+                            "function": {"arguments": accumulated[sent:]},
+                        }
+                    )
+                    self._emitted_args_len[idx] = len(accumulated)
+        return deltas
 
     def _incremental_decode(
         self,
@@ -1474,6 +1552,7 @@ class SglangStreamingPostProcessor:
 
         # -- Tool call parsing (accumulate deltas) --
         content_text = normal_text
+        incremental_tool_deltas: list[dict[str, Any]] = []
 
         if self.tool_call_parser and normal_text:
             # Accumulate raw text for finish-time re-parse.
@@ -1499,6 +1578,8 @@ class SglangStreamingPostProcessor:
                 if tc.parameters:
                     self._tool_call_args.setdefault(idx, []).append(tc.parameters)
 
+            incremental_tool_deltas = self._streaming_tool_deltas(tool_calls)
+
         if self._is_kimi_k3:
             content_text = _strip_kimi_k3_control_markers(content_text)
         if content_text:
@@ -1514,6 +1595,13 @@ class SglangStreamingPostProcessor:
         if reasoning_text:
             delta["reasoning_content"] = reasoning_text
             has_content = True
+        if incremental_tool_deltas:
+            delta["tool_calls"] = incremental_tool_deltas
+            has_content = True
+
+        # Argument suffixes recovered by the finish-time re-parse for calls
+        # whose identity was already streamed (patch-only emissions).
+        arg_patches: dict[int, str] = {}
 
         # On finish, re-parse the full accumulated text to recover tool
         # calls or arguments that the streaming parser missed.
@@ -1527,7 +1615,11 @@ class SglangStreamingPostProcessor:
         #
         # The re-parse uses the accumulated text (not the parser's internal
         # _buffer, which is consumed during streaming) and assigns
-        # sequential indices to match the OpenAI API convention.
+        # sequential indices to match the OpenAI API convention.  When
+        # incremental deltas were already streamed, the re-parse runs in
+        # merge mode: it patches argument suffixes for streamed calls and
+        # appends calls the streaming parser missed under fresh indices,
+        # keeping the streamed indices stable.
         if (
             finish_reason
             and self.tool_call_parser is not None
@@ -1536,12 +1628,10 @@ class SglangStreamingPostProcessor:
             # Purge streaming results that don't match any known tool.
             # When guided decoding is not enforced the streaming parser
             # can misidentify words in the prompt (e.g. a person's name)
-            # as function names.
-            known_names = (
-                {t.function.name for t in self._sglang_tools}
-                if self._sglang_tools
-                else set()
-            )
+            # as function names.  Unknown names were already withheld
+            # from the incremental stream, so purging them here can never
+            # retract anything the client saw.
+            known_names = self._known_tool_names
             if known_names:
                 for idx in list(self._tool_call_names):
                     if self._tool_call_names[idx] not in known_names:
@@ -1550,13 +1640,25 @@ class SglangStreamingPostProcessor:
                         self._tool_call_args.pop(idx, None)
 
             # Discard malformed (non-JSON) argument fragments that the
-            # streaming parser accumulated from mixed content.
+            # streaming parser accumulated from mixed content.  For calls
+            # whose arguments were already streamed the fragments cannot
+            # be retracted; instead flag them so the re-parse below can
+            # recover the authoritative arguments and patch the suffix.
+            streamed_malformed = False
             for idx in list(self._tool_call_args):
                 combined = "".join(self._tool_call_args[idx])
                 if combined:
                     try:
                         json.loads(combined)
                     except (json.JSONDecodeError, ValueError):
+                        if idx in self._emitted_tool_names:
+                            logger.warning(
+                                "Tool call %s was streamed with malformed "
+                                "arguments; attempting finish-time recovery",
+                                self._tool_call_ids.get(idx),
+                            )
+                            streamed_malformed = True
+                            continue
                         del self._tool_call_args[idx]
 
             missing_names = not self._tool_call_names
@@ -1565,7 +1667,7 @@ class SglangStreamingPostProcessor:
             )
             should_reparse = False
             full_text = ""
-            if missing_names or missing_args:
+            if missing_names or missing_args or streamed_malformed:
                 full_text = "".join(self._tool_text_parts)
                 # Skip the re-parse when the accumulated text has no
                 # tool-call markers.  Avoids wasted `parse_non_stream`
@@ -1620,10 +1722,12 @@ class SglangStreamingPostProcessor:
                 # Re-index sequentially so repeated calls to the same
                 # tool get distinct indices (parse_non_stream may assign
                 # indices based on the tool-definition position instead).
-                # When the re-parse returns results, it is authoritative:
-                # clear streaming state first so we don't mix a name from
-                # the re-parse with args from streaming at the same index.
-                if final_calls:
+                if final_calls and not self._emitted_tool_names:
+                    # Nothing was streamed (e.g. all tokens arrived in one
+                    # batch): the re-parse is authoritative.  Clear
+                    # streaming state first so we don't mix a name from
+                    # the re-parse with args from streaming at the same
+                    # index.
                     self._tool_call_ids.clear()
                     self._tool_call_names.clear()
                     self._tool_call_args.clear()
@@ -1635,11 +1739,58 @@ class SglangStreamingPostProcessor:
                             self._tool_call_names[seq_idx] = tc.name
                         if tc.parameters:
                             self._tool_call_args[seq_idx] = [tc.parameters]
+                elif final_calls:
+                    # Merge mode: incremental deltas already went out, so
+                    # streamed indices must stay stable.  Match recovered
+                    # calls to streamed ones by name (in order) and emit
+                    # only the missing argument suffix; calls the
+                    # streaming parser missed entirely are appended under
+                    # fresh indices.
+                    streamed_by_name: dict[str, list[int]] = {}
+                    for idx in sorted(self._emitted_tool_names):
+                        nm = self._tool_call_names.get(idx)
+                        if nm:
+                            streamed_by_name.setdefault(nm, []).append(idx)
+                    next_idx = max(self._emitted_tool_names) + 1
+                    for tc in final_calls:
+                        candidates = streamed_by_name.get(tc.name or "")
+                        if candidates:
+                            idx = candidates.pop(0)
+                            final_args = tc.parameters or ""
+                            accumulated = "".join(self._tool_call_args.get(idx, []))
+                            if (
+                                final_args
+                                and len(final_args) > len(accumulated)
+                                and final_args.startswith(accumulated)
+                            ):
+                                arg_patches[idx] = final_args[len(accumulated):]
+                                self._tool_call_args[idx] = [final_args]
+                            elif final_args and final_args != accumulated:
+                                logger.warning(
+                                    "Re-parsed arguments for tool call %s do "
+                                    "not extend the streamed fragments; "
+                                    "keeping the streamed version",
+                                    self._tool_call_ids.get(idx),
+                                )
+                        else:
+                            while next_idx in self._tool_call_names:
+                                next_idx += 1
+                            self._tool_call_ids[next_idx] = self._tool_call_id(
+                                tc.name or "", next_idx
+                            )
+                            if tc.name:
+                                self._tool_call_names[next_idx] = tc.name
+                            if tc.parameters:
+                                self._tool_call_args[next_idx] = [tc.parameters]
+                            next_idx += 1
 
             # Do not emit partial tool calls. A streaming parser can detect a
             # tool name before the model finishes malformed JSON; if the
             # finish-time re-parse cannot recover valid arguments, treat the
             # response as plain text instead of surfacing name + empty args.
+            # (Incrementally streamed names always carried at least one
+            # argument fragment, so this drop only affects calls that were
+            # never emitted to the client.)
             dropped_names = []
             for idx in list(self._tool_call_names):
                 if not "".join(self._tool_call_args.get(idx, [])):
@@ -1667,9 +1818,15 @@ class SglangStreamingPostProcessor:
                 has_content = True
                 self._saw_normal_output = True
 
-        if finish_reason and self._tool_call_names:
+        # On finish, emit only what the incremental stream has not sent:
+        # complete calls recovered by the re-parse (never streamed) and
+        # argument suffix patches for streamed calls whose arguments the
+        # streaming parser only partially detected.
+        if finish_reason and (self._tool_call_names or arg_patches):
             tool_calls_out: list[dict[str, Any]] = []
             for idx in sorted(self._tool_call_names):
+                if idx in self._emitted_tool_names:
+                    continue  # identity and arguments already streamed
                 tool_calls_out.append(
                     {
                         "index": idx,
@@ -1681,8 +1838,13 @@ class SglangStreamingPostProcessor:
                         },
                     }
                 )
-            delta["tool_calls"] = tool_calls_out
-            has_content = True
+            for idx in sorted(arg_patches):
+                tool_calls_out.append(
+                    {"index": idx, "function": {"arguments": arg_patches[idx]}}
+                )
+            if tool_calls_out:
+                delta["tool_calls"] = tool_calls_out
+                has_content = True
 
         # Rewrite finish_reason "stop" → "tool_calls" when tool calls were
         # detected, matching the OpenAI API spec and official SGLang behaviour.
