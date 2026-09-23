@@ -9,6 +9,7 @@ from typing import Awaitable, Callable, Optional
 
 import sglang as sgl
 from sglang.srt.observability.trace import set_global_trace_level
+from sglang.srt.entrypoints.warmup import execute_warmups
 
 from dingo.common.constants import DisaggregationMode
 from dingo.common.utils.endpoint_types import parse_endpoint_types
@@ -110,6 +111,9 @@ async def init_decode(
         return
 
     ready_event = asyncio.Event()
+    
+    # Execute warmups
+    await warmup(config, engine)
 
     handler = DecodeWorkerHandler(
         engine,
@@ -345,3 +349,39 @@ async def init_prefill(
         if run_deferred_handlers is not None:
             logging.info("Running deferred handlers")
             await run_deferred_handlers()
+
+
+async def warmup(
+    config: Config,
+    engine: Optional[sgl.Engine],
+):
+    """Execute SGLang warmups. Only workers that run in aggregate mode."""
+    server_args = config.server_args
+    if (
+        config.serving_mode == DisaggregationMode.AGGREGATED
+        and server_args.warmups
+    ):
+        warmup_names = [
+            name.strip()
+            for name in server_args.warmups.split(",")
+            if name.strip()
+        ]
+        logging.info("Starting SGLang custom warmups: %s", warmup_names)
+        start_time = time.monotonic()
+
+        try:
+            await execute_warmups(
+                disaggregation_mode="null",
+                warmup_names=warmup_names,
+                tokenizer_manager=engine.tokenizer_manager,
+            )
+        except Exception:
+            logging.exception(
+                "SGLang custom warmup failed; aborting worker registration"
+            )
+            raise
+
+        logging.info(
+            "SGLang custom warmups completed in %.2f seconds",
+            time.monotonic() - start_time,
+        )
