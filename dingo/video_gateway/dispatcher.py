@@ -82,6 +82,14 @@ _WORKER_LIVENESS_CHECK_CONCURRENCY = 4
 _DISCOVERY_MISMATCH_MIN_CHECKS = 3
 _DISCOVERY_RECOVERY_LOCK_TTL_S = 15
 _DISCOVERY_RESTART_DRAIN_S = 5.0
+_ARTIFACT_VISIBILITY_RETRY_DELAYS_S = (
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+) + (5.0,) * 10
 
 
 class _DetachedWorkerCancelled(RuntimeError):
@@ -108,6 +116,14 @@ class _DetachedWaitUnavailable(RuntimeError):
 
 
 class _DetachedWaitProtocolError(RuntimeError):
+    pass
+
+
+class _ArtifactUnavailable(RuntimeError):
+    pass
+
+
+class _DispatchCancelledDuringArtifactWait(RuntimeError):
     pass
 
 
@@ -1503,6 +1519,63 @@ class VideoDispatcher:
             return None
         return current
 
+    async def _read_dispatch_artifact_json(
+        self, expected: Any, path: str, artifact: str
+    ) -> Any:
+        """Tolerate bounded shared-filesystem visibility lag before dispatch."""
+
+        started = time.monotonic()
+        misses = 0
+        while True:
+            try:
+                value = await self.artifacts.read_json(path)
+            except FileNotFoundError as exc:
+                current = await self.store.get_task(expected.id)
+                if (
+                    current is None
+                    or current.task.status in TERMINAL_STATUSES
+                    or not self._same_execution_owner(current.task, expected)
+                ):
+                    raise _TaskOwnershipLost(
+                        "video task ownership changed while waiting for input artifacts"
+                    ) from exc
+                if current.task.cancel_requested_at_ms is not None:
+                    raise _DispatchCancelledDuringArtifactWait(expected.id) from exc
+                if misses >= len(_ARTIFACT_VISIBILITY_RETRY_DELAYS_S):
+                    waited = time.monotonic() - started
+                    self.telemetry.increment(
+                        "dingo_video_artifact_visibility_failures_total",
+                        labels={"pool": expected.pool_id, "artifact": artifact},
+                    )
+                    raise _ArtifactUnavailable(
+                        f"{artifact} remained unavailable for {waited:.3f}s"
+                    ) from exc
+                delay = _ARTIFACT_VISIBILITY_RETRY_DELAYS_S[misses]
+                misses += 1
+                self.telemetry.increment(
+                    "dingo_video_artifact_visibility_retries_total",
+                    labels={"pool": expected.pool_id, "artifact": artifact},
+                )
+                await asyncio.sleep(delay)
+                continue
+            if misses:
+                waited = time.monotonic() - started
+                self.telemetry.increment(
+                    "dingo_video_artifact_visibility_recoveries_total",
+                    labels={"pool": expected.pool_id, "artifact": artifact},
+                )
+                self.telemetry.record_stage_duration(
+                    expected.pool_id, "artifact_visibility", waited
+                )
+                logger.warning(
+                    "task %s %s became visible after %s retries and %.3fs",
+                    expected.id,
+                    artifact,
+                    misses,
+                    waited,
+                )
+            return value
+
     async def _run_reserved(self, pool: PoolRuntime, stored: StoredTask) -> None:
         context: Any | None = None
         heartbeat: asyncio.Task | None = None
@@ -1525,7 +1598,9 @@ class VideoDispatcher:
             )
             await asyncio.sleep(0)
             self._raise_if_heartbeat_stopped(heartbeat)
-            normalized = await self.artifacts.read_json(task.request_path)
+            normalized = await self._read_dispatch_artifact_json(
+                task, task.request_path, "request"
+            )
             if detached:
                 if task.execution_token is None or task.attempt < 1:
                     raise RuntimeError(
@@ -1539,7 +1614,9 @@ class VideoDispatcher:
                     task.execution_token,
                 )
             if initial_worker_status is None:
-                manifest = await self.artifacts.read_json(task.input_manifest_path)
+                manifest = await self._read_dispatch_artifact_json(
+                    task, task.input_manifest_path, "input_manifest"
+                )
                 payload_build_started = time.monotonic()
                 payload = await run_file_io(
                     pool.adapter.build_worker_payload,
@@ -1946,6 +2023,22 @@ class VideoDispatcher:
             latest = await self._current_owned_execution(task)
             if latest is not None and latest.task.cancel_requested_at_ms is not None:
                 await self._finish_cancelled(pool, latest, quarantine=True)
+        except _DispatchCancelledDuringArtifactWait:
+            latest = await self._current_owned_execution(task)
+            if latest is not None:
+                await self._finish_cancelled(pool, latest, quarantine=False)
+        except _ArtifactUnavailable as exc:
+            if await self._current_owned_execution(task) is None:
+                return
+            logger.error("video task input artifacts unavailable: %s", task.id)
+            await self._finish_failed(
+                pool,
+                task.id,
+                "artifact_unavailable",
+                str(exc),
+                quarantine=False,
+                expected_execution=task,
+            )
         except ResultTooLarge as exc:
             if final_path is not None:
                 await run_file_io(final_path.unlink, True)
