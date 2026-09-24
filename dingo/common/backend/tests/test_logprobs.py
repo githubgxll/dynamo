@@ -301,13 +301,13 @@ def test_sglang_kwargs_empty_when_no_options():
 
 
 def test_sglang_kwargs_logprobs_zero_allowed_without_gate():
-    # The default gate forbids logprobs >= 1; logprobs=0 always works.
+    # Chosen-token-only logprobs are available even when top-k is disabled.
     kwargs = build_sglang_logprob_kwargs({"logprobs": 0}, allow_top_logprobs=False)
     assert kwargs == {"return_logprob": True, "top_logprobs_num": 0}
 
 
 def test_sglang_kwargs_top_logprobs_rejected_without_gate():
-    with pytest.raises(ValueError, match="does not currently support logprobs >= 1"):
+    with pytest.raises(ValueError, match="disabled by DYN_SGL_ALLOW_TOP_LOGPROBS=0"):
         build_sglang_logprob_kwargs({"logprobs": 2}, allow_top_logprobs=False)
 
 
@@ -336,12 +336,16 @@ def test_sglang_kwargs_both_set_picks_max():
 
 
 def test_sglang_gate_reads_env(monkeypatch):
+    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    assert sglang_top_logprobs_allowed() is True
     monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "1")
     assert sglang_top_logprobs_allowed() is True
     monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "0")
     assert sglang_top_logprobs_allowed() is False
-    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "false")
     assert sglang_top_logprobs_allowed() is False
+    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    assert sglang_top_logprobs_allowed() is True
 
 
 # ---------------------------------------------------------------------------

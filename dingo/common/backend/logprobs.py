@@ -227,22 +227,28 @@ def extract_prompt_logprobs_from_sglang_meta(
 
 
 _SGLANG_TOP_LOGPROBS_UNSUPPORTED_MSG = (
-    "Dynamo's SGLang backend does not currently support logprobs >= 1 due to "
-    "an O(N) per-position detokenization in the upstream sglang tokenizer "
-    "manager. Use logprobs=0 for chosen-token logprobs, or set "
-    "DYN_SGL_ALLOW_TOP_LOGPROBS=1 to override at your own risk. "
-    "Track the upstream fix at https://github.com/sgl-project/sglang/pull/24447."
+    "SGLang top-k logprobs are disabled by DYN_SGL_ALLOW_TOP_LOGPROBS=0. "
+    "Set DYN_SGL_ALLOW_TOP_LOGPROBS=1 to enable them. SGLang versions without "
+    "batched top-token detokenization may incur extra latency for long outputs. "
+    "See the upstream optimization proposal at "
+    "https://github.com/sgl-project/sglang/pull/24447."
 )
 
 DYN_SGL_ALLOW_TOP_LOGPROBS_ENV = "DYN_SGL_ALLOW_TOP_LOGPROBS"
 
 
 def sglang_top_logprobs_allowed() -> bool:
-    """Read the ``DYN_SGL_ALLOW_TOP_LOGPROBS`` env-var gate."""
-    return os.environ.get(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "").lower() not in (
-        "",
+    """Return whether SGLang top-k logprobs are enabled.
+
+    They are enabled by default so valid OpenAI ``logprobs`` requests work.
+    Set ``DYN_SGL_ALLOW_TOP_LOGPROBS=0`` to restore the opt-out guard on
+    deployments where SGLang's per-position detokenization cost is a concern.
+    """
+    return os.environ.get(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "1").lower() not in (
         "0",
         "false",
+        "no",
+        "off",
     )
 
 
@@ -255,10 +261,8 @@ def build_sglang_logprob_kwargs(
     ``return_logprob`` / ``top_logprobs_num`` / ``logprob_start_len`` kwargs.
 
     Raises ``ValueError`` for ``logprobs >= 1`` when
-    ``allow_top_logprobs`` is ``False``. SGLang's tokenizer manager
-    detokenizes top-k tokens serially (O(N) per generated token), so
-    enabling it without a batched detokenize path degrades latency
-    badly.
+    ``allow_top_logprobs`` is ``False``. This is an opt-out guard for
+    deployments concerned about per-position top-token detokenization cost.
     """
     if not output_options:
         return {}
