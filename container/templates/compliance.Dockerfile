@@ -98,6 +98,7 @@ RUN {% if framework == "sglang" %}PKG_ARG="--site-packages $(python3 -c 'import 
 # row), replacing the per-ecosystem loop. Non-zero exit fails the build.
 RUN python3 -m compliance.policy.validate \
         --policy /opt/compliance/policy/licenses.toml \
+        --image {{ framework }}-{{ target }}{% if make_efa %}-efa{% endif %} \
         --input /legal/osrb-deps.csv
 
 
@@ -139,6 +140,8 @@ RUN if [ "$ENABLE_SOURCE_ARCHIVAL" = "true" ]; then \
         {% if framework == "sglang" %}RUST_PKG_ARG="--rust-site-packages $(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"{% else %}if [ -n "${VIRTUAL_ENV:-}" ]; then RUST_PKG_ARG="--rust-venv ${VIRTUAL_ENV}"; else RUST_PKG_ARG="--rust-site-packages $(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; fi{% endif %} && \
         python3 -m compliance.collect_sources \
             --ecosystem dpkg --ecosystem rust --ecosystem native \
+            --policy /opt/compliance/policy/licenses.toml \
+            --image {{ framework }}-{{ target }}{% if make_efa %}-efa{% endif %} \
             --output-zip /sources.zip \
             --sources-root /sources \
             --native-source-dir /opt/native-sources \

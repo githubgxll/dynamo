@@ -12,6 +12,10 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from compliance.collect_sources import (
+    _parse_installed_dpkg_sources,
+    _required_dpkg_source_packages,
+)
 from compliance.generators import go as go_gen
 from compliance.generators import rust as rust_gen
 from compliance.generators.common import (
@@ -22,6 +26,7 @@ from compliance.generators.common import (
     write_cyclonedx,
     write_merged_csv,
 )
+from compliance.policy.validate import Policy, load_policy, validate_row
 
 _REPO = Path(__file__).resolve().parents[3]
 _POLICY = _REPO / "container/compliance/policy/licenses.toml"
@@ -55,6 +60,69 @@ def test_spdx_lookup_behaviour():
     assert "--- MIT ---" in both and "--- Apache-2.0 ---" in both
     assert spdx_license_text("UNKNOWN") is None
     assert spdx_license_text("LicenseRef-Proprietary") is None
+
+
+def test_image_scoped_exception_is_fail_closed():
+    policy = Policy(
+        allow=frozenset({"MIT"}),
+        deny=frozenset({"GPL-2.0-or-later"}),
+        unknown_action="deny",
+        copyleft_action="deny",
+        exceptions=(
+            {
+                "type": "dpkg",
+                "name": "ffmpeg",
+                "images": ["vllm-runtime"],
+                "allow": ["GPL-2.0-or-later"],
+                "reason": "test-only scoped exception",
+            },
+        ),
+    )
+    spdx = "GPL-2.0-or-later AND MIT"
+    assert (
+        validate_row(policy, "dpkg", "ffmpeg", "1.0", spdx, "vllm-runtime")
+        is None
+    )
+    assert validate_row(policy, "dpkg", "ffmpeg", "1.0", spdx, "sglang-runtime")
+    assert validate_row(policy, "dpkg", "ffmpeg", "1.0", spdx)  # no image
+    assert (
+        validate_row(policy, "dpkg", "ffmpeg", "2.0", spdx, "vllm-runtime")
+        is None
+    )
+
+
+def test_vllm_ffmpeg_exceptions_are_image_scoped():
+    policy = load_policy(_POLICY)
+    scoped = [
+        exc
+        for exc in policy.exceptions
+        if "vllm-runtime" in (exc.get("images") or [])
+    ]
+    assert scoped
+    for exc in scoped:
+        assert exc["type"] == "dpkg"
+        assert "version" not in exc
+        assert exc["images"] == ["vllm-runtime", "vllm-runtime-efa"]
+        assert exc.get("allow")
+        assert exc.get("reason")
+
+
+def test_vllm_scoped_dpkg_sources_are_required():
+    required = _required_dpkg_source_packages(_POLICY, "vllm-runtime")
+    assert "ffmpeg" in required
+    assert "libx264-164" in required
+    assert _required_dpkg_source_packages(_POLICY, "sglang-runtime") == set()
+
+
+def test_dpkg_binary_to_source_mapping():
+    parsed = _parse_installed_dpkg_sources(
+        "libx264-164\tx264\nffmpeg\tffmpeg\nstandalone\t\n"
+    )
+    assert parsed == {
+        "libx264-164": "x264",
+        "ffmpeg": "ffmpeg",
+        "standalone": "standalone",
+    }
 
 
 def test_canonical_text_carries_disclaimer():

@@ -78,15 +78,14 @@ packages:
   # generator), so it is intentionally NOT duplicated here.
 
   # LGPL media stack — built --disable-gpl in wheel_builder (h264_nvenc + libvpx)
-  # and copied into vllm/sglang runtime (container/templates/vllm_runtime.Dockerfile
-  # + sglang_runtime.Dockerfile). Replaces the purged GPL apt ffmpeg.
+  # and copied into the SGLang runtime by sglang_runtime.Dockerfile. The vLLM
+  # runtime deliberately preserves its upstream distro FFmpeg instead; that
+  # installation is attributed by the dpkg generator and OSRB source archive.
   - name: ffmpeg
     version: "8.1"
     license: LGPL-2.1-or-later
     source: https://ffmpeg.org/
     images:
-      - vllm-runtime
-      - vllm-runtime-efa
       - sglang-runtime
       - sglang-runtime-efa
 
@@ -96,8 +95,6 @@ packages:
     license: BSD-3-Clause
     source: https://chromium.googlesource.com/webm/libvpx
     images:
-      - vllm-runtime
-      - vllm-runtime-efa
       - sglang-runtime
       - sglang-runtime-efa
 
