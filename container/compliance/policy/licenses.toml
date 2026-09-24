@@ -54,6 +54,7 @@ allow = [
   "OpenSSL",
   "PSF-2.0",
   "Python-2.0",
+  "TU-Berlin-2.0",
   "Unicode-3.0",
   "Unicode-DFS-2016",
   "Unlicense",
@@ -285,6 +286,8 @@ copyleft = "deny"
 #   type: ecosystem ("python" | "dpkg" | "go" | "native")
 #   name: package name
 #   version: optional; omit to apply to all versions
+#   images: optional list of compliance image names; scoped exceptions fail
+#           closed unless validate.py receives a matching --image
 #   allow: SPDX IDs that are additionally permitted FOR THIS PACKAGE
 #   reason: required, short prose explaining why
 #
@@ -292,8 +295,323 @@ copyleft = "deny"
 # type = "python"
 # name = "example-pkg"
 # version = "1.2.3"
+# images = ["vllm-runtime"]
 # allow = ["GPL-2.0-only"]
 # reason = "Pure-Python library, isolated import surface; legal-approved 2026-XX-XX"
+
+# --- vLLM video runtime FFmpeg/codec exceptions ------------------------------
+# Package names and reviewed license sets from the upstream vLLM Ubuntu FFmpeg
+# stack. These approvals apply only to vllm-runtime images; new packages or
+# license identifiers fail closed while ordinary package version updates pass.
+
+[[exceptions]]
+type = "dpkg"
+name = "ffmpeg"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libass9"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavc1394-0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavcodec60"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavdevice60"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavfilter9"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavformat60"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libavutil58"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libbluray2"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libbs2b0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libcaca0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libcdio-cdda2t64"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-3.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libcdio-paranoia2t64"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-3.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libcdio19t64"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-3.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libchromaprint1"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libcodec2-1.2"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libdc1394-25"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libflite1"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libgme0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libiec61883-0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libjack-jackd2-0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libmp3lame0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libpocketsphinx3"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libpostproc57"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libpulse0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libraw1394-11"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "librubberband2"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsdl2-2.0-0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libshine3"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsndfile1"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsoxr0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsphinxbase3t64"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsrt1.5-gnutls"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libsvtav1enc1d1"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libswresample4"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libswscale7"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "GPL-3.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libtwolame0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libudfread0"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libvidstab1.1"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-only"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libx264-164"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libx265-199"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libxvidcore4"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-or-later", "LGPL-2.0-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libzvbi-common"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-only", "GPL-2.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
+[[exceptions]]
+type = "dpkg"
+name = "libzvbi0t64"
+images = ["vllm-runtime", "vllm-runtime-efa"]
+allow = ["GPL-2.0-only", "GPL-2.0-or-later", "LGPL-2.0-or-later", "LGPL-2.1-or-later"]
+reason = "Upstream vLLM Ubuntu FFmpeg/codec runtime component; distributed separately from Dynamo Apache-2.0 code with NOTICE, SBOM, and corresponding Ubuntu source archive."
+
 # --- Auto-generated dpkg [[exceptions]] for Ubuntu base packages -------------
 # Each entry: version omitted -> applies to all versions of that package.
 # allow list: the GPL/LGPL token(s) that package's audited license expression
@@ -2572,7 +2890,7 @@ reason = "Transitive dev-only dependency via criterion (benchmark framework). cr
 type = "native"
 name = "ffmpeg"
 allow = ["LGPL-2.1-or-later"]
-reason = "FFmpeg built with --disable-gpl (LGPL-2.1-or-later, no GPL components); the shared libs are dynamically linked and the ffmpeg CLI is invoked as a separate process, not statically linked into Dynamo's Apache-2.0 code. Replaces the purged GPL apt ffmpeg from the upstream framework base."
+reason = "SGLang FFmpeg is built with --disable-gpl (LGPL-2.1-or-later, no GPL components); the shared libs are dynamically linked and the CLI is invoked as a separate process, not statically linked into Dynamo's Apache-2.0 code. It replaces the purged GPL apt/imageio FFmpeg from the upstream SGLang base."
 
 [[exceptions]]
 type = "dpkg"
