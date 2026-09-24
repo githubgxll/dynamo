@@ -170,9 +170,22 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # libao*, libmad0, libid3tag0, libltdl7) we'd then be redistributing. SoX is
 # inherently GPL (no LGPL replacement), so the compliant fix is to not ship it.
 # (sglang_runtime.Dockerfile is the reference codec-compliance pattern.)
+# Use HTTPS for Ubuntu repositories because some CI HTTP proxies intermittently
+# return 502 for archive.ubuntu.com. Apt retries cover transient mirror errors.
 RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    for source_file in \
+        /etc/apt/sources.list \
+        /etc/apt/sources.list.d/ubuntu.sources; do \
+        if [ -f "${source_file}" ]; then \
+            sed -i \
+                -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+                "${source_file}"; \
+        fi; \
+    done; \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Acquire::Retries=5 install -y --no-install-recommends \
         jq; \
     rm -rf /var/lib/apt/lists/*
 
