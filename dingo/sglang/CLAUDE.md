@@ -249,11 +249,10 @@ absolute sequence position where logprob computation starts: `-1` (default) = ou
 only (`len(prompt) - 1`), `0` = from prompt start. We set it to 0 when `prompt_logprobs`
 is requested.
 
-**Top-logprobs gate**: `logprobs >= 1` (or `prompt_logprobs >= 1`) raises `ValueError`
-by default. SGLang's tokenizer manager detokenizes top-k tokens per-position serially,
-causing severe latency degradation (O(N) per generated token). Callers must use
-`logprobs=0` for chosen-token-only logprobs. Set `DYN_SGL_ALLOW_TOP_LOGPROBS=1` to
-override once upstream batches `detokenize_top_logprobs_tokens`.
+**Top-logprobs**: `logprobs >= 1` (or `prompt_logprobs >= 1`) is enabled by default.
+SGLang versions without batched top-token detokenization may incur extra latency
+for long outputs. Set `DYN_SGL_ALLOW_TOP_LOGPROBS=0` to disable top-k logprobs
+on deployments where that cost is a concern.
 
 **Streaming behavior** (`_extract_logprobs`):
 

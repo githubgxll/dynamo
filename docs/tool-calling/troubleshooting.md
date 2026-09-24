@@ -25,11 +25,10 @@ diagnostic info.
 > the assistant-content channel; the reasoning channel is not surfaced in
 > `logprobs.content`.
 >
-> If the worker is the SGLang backend, `logprobs: true` is rejected by
-> default because SGLang's tokenizer manager detokenizes top-k tokens
-> serially, causing latency degradation. Launch the worker with
-> `DYN_SGL_ALLOW_TOP_LOGPROBS=1` set in the environment to opt in for the
-> duration of the repro request, then unset it afterward. Tracked at
+> SGLang top-k logprobs are enabled by default. SGLang versions without
+> batched top-token detokenization may incur extra latency for long outputs.
+> Set `DYN_SGL_ALLOW_TOP_LOGPROBS=0` on the worker to disable them if needed.
+> The upstream optimization proposal is described at
 > [sgl-project/sglang#24447](https://github.com/sgl-project/sglang/pull/24447).
 
 ## The request
