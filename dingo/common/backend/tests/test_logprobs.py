@@ -660,7 +660,9 @@ def test_parity_sglang_kwargs_rejects_top_logprobs_consistently():
         {"prompt_logprobs": 2},
         {"logprobs": 0, "prompt_logprobs": 3},
     ):
-        with pytest.raises(ValueError, match="does not currently support"):
+        with pytest.raises(
+            ValueError, match="SGLang top-k logprobs are disabled"
+        ):
             build_sglang_logprob_kwargs(opts, allow_top_logprobs=False)
 
 

@@ -735,6 +735,212 @@ def _call_with_optional_parallel_tool_calls(
     return func(*args)
 
 
+def _escape_pointer_token(token: str) -> str:
+    return token.replace("~", "~0").replace("/", "~1")
+
+
+def _unescape_pointer_token(token: str) -> str:
+    return token.replace("~1", "/").replace("~0", "~")
+
+
+# Keywords whose values are literal instance data, not subschemas (JSON
+# Schema spec: const/enum hold instance values, default/examples are
+# annotations carrying instance values).  Reference rewriting must skip
+# them; see _rewrite_def_refs.
+_LITERAL_VALUE_KEYWORDS = frozenset({"const", "enum", "default", "examples"})
+
+
+def _rewrite_def_refs(value: Any, names: dict[str, str]) -> None:
+    """Rewrite ``#/$defs/...`` references in-place according to ``names``.
+
+    Only the leading definition token is remapped; any JSON-pointer suffix
+    below the definition is preserved.
+    """
+    if isinstance(value, dict):
+        ref = value.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            pointer = ref[len("#/$defs/") :]
+            old_token, separator, suffix = pointer.partition("/")
+            old_name = _unescape_pointer_token(old_token)
+            new_name = names.get(old_name)
+            if new_name is not None and new_name != old_name:
+                value["$ref"] = f"#/$defs/{_escape_pointer_token(new_name)}" + (
+                    f"/{suffix}" if separator else ""
+                )
+        for key, child in value.items():
+            if key in _LITERAL_VALUE_KEYWORDS:
+                # Literal instance data (const/enum/default/examples), not
+                # a subschema: a {"$ref": ...} object here is data the
+                # model must produce and must never be rewritten (review
+                # 20260924 v2).
+                continue
+            _rewrite_def_refs(child, names)
+    elif isinstance(value, list):
+        for child in value:
+            _rewrite_def_refs(child, names)
+
+
+def _namespace_tool_parameter_defs(tools: list[Any]) -> list[Any]:
+    """Isolate each tool's parameter ``$defs`` into a unique namespace.
+
+    SGLang's constraint builders collect all tools' ``$defs`` up front and
+    raise ``ValueError`` when two tools define the same name with different
+    schemas — before any post-builder processing can run.  When two or more
+    tools carry ``$defs``, deep-copy the tools and rename every definition
+    to ``{tool_name}__{def_name}``, rewriting that tool's internal
+    ``#/$defs/...`` references to match.  Generated names are reserved
+    globally up front so they cannot collide with each other (e.g. tool
+    ``a`` defining ``b__X`` vs tool ``a__b`` defining ``X``).  Requests
+    where at most one tool carries ``$defs`` are returned unchanged: no
+    cross-tool conflict is possible and original definition names (and
+    their established behaviour) are preserved.
+    """
+
+    def _params_of(tool: Any) -> Any:
+        fn = getattr(tool, "function", None)
+        return getattr(fn, "parameters", None) if fn is not None else None
+
+    tools_with_defs = [
+        t
+        for t in tools
+        if isinstance(_params_of(t), dict)
+        and isinstance(_params_of(t).get("$defs"), dict)
+    ]
+    if len(tools_with_defs) < 2:
+        return tools
+
+    new_tools = copy.deepcopy(tools)
+
+    # Pass 1: reserve every generated name up front.
+    taken: set[str] = set()
+    plans: list[tuple[dict[str, Any], dict[str, str]]] = []
+    for tool in new_tools:
+        params = _params_of(tool)
+        if not (isinstance(params, dict) and isinstance(params.get("$defs"), dict)):
+            continue
+        tool_name = getattr(tool.function, "name", "") or ""
+        names: dict[str, str] = {}
+        for old_name in params["$defs"]:
+            base = f"{tool_name}__{old_name}"
+            new_name = base
+            suffix = 2
+            while new_name in taken:
+                new_name = f"{base}_{suffix}"
+                suffix += 1
+            taken.add(new_name)
+            names[old_name] = new_name
+        plans.append((params, names))
+
+    # Pass 2: rewrite references and rename the definition keys.
+    for params, names in plans:
+        nested_defs = params.pop("$defs")
+        _rewrite_def_refs(params, names)
+        for definition in nested_defs.values():
+            _rewrite_def_refs(definition, names)
+        params["$defs"] = {names[old]: d for old, d in nested_defs.items()}
+    return new_tools
+
+
+def _hoist_tool_parameter_defs(schema: Any) -> Any:
+    """Hoist tool parameter ``$defs`` to the guided schema's document root.
+
+    SGLang wraps named/required tool parameters in an outer tool-call schema.
+    A parameter schema's local ``#/$defs/...`` references then point at the
+    outer document root, while its ``$defs`` would otherwise remain nested
+    below ``items.properties.parameters``. Move those definitions to the
+    outer root and rename on collision.
+
+    Allocation is done in two passes: every final name is reserved up front
+    — against the existing root ``$defs``, against names allocated earlier
+    in this pass, and against original names not yet processed — and all
+    references are rewritten only after every name is known.  Definitions
+    are never deduplicated by dict equality: two definitions with identical
+    literals can still differ semantically once their own ``$ref``
+    dependencies are resolved (review 20260924 finding 3).
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    schema = copy.deepcopy(schema)
+    had_root_defs = "$defs" in schema
+    root_defs = schema.get("$defs")
+    if root_defs is None:
+        root_defs = {}
+        schema["$defs"] = root_defs
+    elif not isinstance(root_defs, dict):
+        return schema
+
+    # Pass 1: collect every parameters node carrying $defs, in visit order.
+    entries: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+
+    def collect_entries(node: Any) -> None:
+        if isinstance(node, list):
+            for child in node:
+                collect_entries(child)
+            return
+        if not isinstance(node, dict):
+            return
+
+        properties = node.get("properties")
+        if isinstance(properties, dict) and "name" in properties:
+            parameters = properties.get("parameters")
+            if isinstance(parameters, dict):
+                name_schema = properties["name"]
+                names = (
+                    name_schema.get("enum", [])
+                    if isinstance(name_schema, dict)
+                    else []
+                )
+                tool_name = names[0] if isinstance(names, list) and names else ""
+                nested_defs = parameters.get("$defs")
+                if isinstance(nested_defs, dict):
+                    entries.append((parameters, tool_name, nested_defs))
+
+        for keyword in ("items", "anyOf", "oneOf", "allOf", "prefixItems"):
+            if keyword in node:
+                collect_entries(node[keyword])
+
+    collect_entries(schema)
+
+    # Pass 2: allocate a unique final name per definition.  A definition
+    # keeps its original name only when no root definition and no earlier
+    # allocation already holds it; otherwise it is renamed with a
+    # ``{tool_name}__`` prefix and a numeric suffix until free.  Because
+    # allocations are sequential and never deduplicated, a renamed
+    # definition can shadow a not-yet-processed original name only by
+    # taking it first — the later original is then renamed instead, and
+    # both keep their own rewritten references.
+    used: set[str] = set(root_defs)
+    allocations: list[tuple[dict[str, Any], dict[str, Any], dict[str, str]]] = []
+    for parameters, tool_name, nested_defs in entries:
+        names: dict[str, str] = {}
+        for old_name in nested_defs:
+            new_name = old_name
+            if new_name in used:
+                base_name = f"{tool_name}__{old_name}" if tool_name else old_name
+                new_name = base_name
+                suffix = 2
+                while new_name in used:
+                    new_name = f"{base_name}_{suffix}"
+                    suffix += 1
+            used.add(new_name)
+            names[old_name] = new_name
+        allocations.append((parameters, nested_defs, names))
+
+    # Pass 3: detach $defs, rewrite references, and write to the root.
+    for parameters, nested_defs, names in allocations:
+        parameters.pop("$defs", None)
+        _rewrite_def_refs(parameters, names)
+        for definition in nested_defs.values():
+            _rewrite_def_refs(definition, names)
+        for old_name, definition in nested_defs.items():
+            root_defs[names[old_name]] = definition
+
+    if not had_root_defs and not root_defs:
+        schema.pop("$defs", None)
+    return schema
+
+
 def build_tool_call_guided_decoding(
     request: dict[str, Any],
     *,
@@ -748,6 +954,13 @@ def build_tool_call_guided_decoding(
     tool_choice = request.get("tool_choice", "auto")
     if tool_choice == "none":
         return None
+
+    # Isolate per-tool parameter $defs BEFORE handing tools to SGLang's
+    # constraint builders: their _get_tool_schema_defs() raises ValueError
+    # on same-name/different-schema definitions, which would otherwise
+    # fire before the post-builder hoisting below can run (review 20260924
+    # finding 2).  At most one tool with $defs passes through unchanged.
+    sglang_tools = _namespace_tool_parameter_defs(sglang_tools)
 
     parallel_tool_calls = request.get("parallel_tool_calls")
     constraint: Any = None
@@ -788,7 +1001,7 @@ def build_tool_call_guided_decoding(
 
     if isinstance(constraint, tuple) and len(constraint) == 2:
         if constraint[0] == "json_schema":
-            return {"json": constraint[1]}
+            return {"json": _hoist_tool_parameter_defs(constraint[1])}
         if constraint[0] == "structural_tag":
             tag_value = constraint[1]
             # SGLang returns a Pydantic model (LegacyStructuralTagResponseFormat)
