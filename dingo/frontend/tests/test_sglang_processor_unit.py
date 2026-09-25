@@ -1480,6 +1480,37 @@ class TestHoistToolParameterDefs:  # FRONTEND.3 — $defs hoisting collision saf
             "#/$defs/submit__City"
         )
 
+    def test_pointer_suffix_preserved_on_rename(self):
+        """A $ref below the definition (#/$defs/City/properties/name) must
+        keep its JSON-pointer suffix when the leading definition token is
+        renamed; only the definition name is remapped."""
+        params = {
+            "type": "object",
+            "$defs": {
+                "City": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                }
+            },
+            "properties": {
+                "city_name": {"$ref": "#/$defs/City/properties/name"},
+            },
+        }
+        schema = _outer_tool_schema(("submit", params))
+        # Root already holds a builder-merged City → nested copy is renamed.
+        schema["$defs"] = {
+            "City": {"type": "object", "properties": {"name": {"type": "string"}}}
+        }
+        result = _hoist_tool_parameter_defs(schema)
+        params_out = _branch_params(result, "submit")
+        assert params_out["properties"]["city_name"]["$ref"] == (
+            "#/$defs/submit__City/properties/name"
+        )
+        # The renamed definition itself is intact for the suffix to resolve.
+        assert result["$defs"]["submit__City"]["properties"]["name"] == {
+            "type": "string"
+        }
+
 
 class TestNamespaceToolParameterDefs:  # FRONTEND.3 — pre-builder $defs isolation
     @staticmethod
