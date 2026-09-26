@@ -28,6 +28,8 @@ from dingo.frontend.sglang_prepost import (
     _flatten_message_content,
     _guided_json_start_chars,
     _guided_output_requires_reasoning,
+    _hoist_tool_parameter_defs,
+    _namespace_tool_parameter_defs,
     _normalize_assistant_tool_call_arguments,
     _normalize_prompt_token_ids,
     _normalize_sglang_parser_name,
@@ -1284,6 +1286,403 @@ class TestBuildToolCallGuidedDecoding:  # FRONTEND.3 — guided-decoding setup f
             request, tool_call_parser_name=None, reasoning_parser_name=None
         )
         assert isinstance(tcp, JsonArrayParser)
+
+
+# ---------------------------------------------------------------------------
+# _hoist_tool_parameter_defs / _namespace_tool_parameter_defs
+# ---------------------------------------------------------------------------
+
+
+def _outer_tool_schema(*tool_params: tuple[str, dict]) -> dict:
+    """Build an outer tool-call schema shaped like SGLang's named/required
+    wrapper: each tool appears as an anyOf branch whose properties carry a
+    ``name`` enum and a ``parameters`` subschema."""
+    return {
+        "type": "array",
+        "items": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "name": {"enum": [tool_name]},
+                        "parameters": params,
+                    },
+                }
+                for tool_name, params in tool_params
+            ]
+        },
+    }
+
+
+def _branch_params(schema: dict, tool_name: str) -> dict:
+    for branch in schema["items"]["anyOf"]:
+        if branch["properties"]["name"]["enum"] == [tool_name]:
+            return branch["properties"]["parameters"]
+    raise KeyError(tool_name)
+
+
+class TestHoistToolParameterDefs:  # FRONTEND.3 — $defs hoisting collision safety
+    def test_single_tool_keeps_original_names(self):
+        schema = _outer_tool_schema(
+            (
+                "get_weather",
+                {
+                    "type": "object",
+                    "$defs": {"City": {"type": "string"}},
+                    "properties": {"city": {"$ref": "#/$defs/City"}},
+                },
+            )
+        )
+        result = _hoist_tool_parameter_defs(schema)
+        assert result["$defs"]["City"] == {"type": "string"}
+        params = _branch_params(result, "get_weather")
+        assert "$defs" not in params
+        assert params["properties"]["city"]["$ref"] == "#/$defs/City"
+
+    def test_shared_literal_defs_with_different_dependencies(self):
+        """Defect repro (review 20260924 f3-1): two tools hold literally
+        identical ``Payload`` definitions that reference *different* Leaf
+        schemas.  Dict-equality dedup would keep the shared name and let the
+        later tool's rewritten Payload overwrite the earlier one; every
+        definition must instead get its own name."""
+        a_params = {
+            "type": "object",
+            "$defs": {
+                "Payload": {"$ref": "#/$defs/Leaf"},
+                "Leaf": {"type": "string"},
+            },
+            "properties": {"data": {"$ref": "#/$defs/Payload"}},
+        }
+        b_params = {
+            "type": "object",
+            "$defs": {
+                "Payload": {"$ref": "#/$defs/Leaf"},
+                "Leaf": {"type": "integer"},
+            },
+            "properties": {"data": {"$ref": "#/$defs/Payload"}},
+        }
+        result = _hoist_tool_parameter_defs(
+            _outer_tool_schema(("a", a_params), ("b", b_params))
+        )
+        root = result["$defs"]
+        # a keeps its original names; b is fully renamed.
+        assert root["Leaf"] == {"type": "string"}
+        assert root["b__Leaf"] == {"type": "integer"}
+        assert root["Payload"]["$ref"] == "#/$defs/Leaf"
+        assert root["b__Payload"]["$ref"] == "#/$defs/b__Leaf"
+        # References in each tool's parameters follow their own definitions.
+        assert _branch_params(result, "a")["properties"]["data"]["$ref"] == (
+            "#/$defs/Payload"
+        )
+        assert _branch_params(result, "b")["properties"]["data"]["$ref"] == (
+            "#/$defs/b__Payload"
+        )
+
+    def test_generated_name_does_not_shadow_pending_definition(self):
+        """Defect repro (review 20260924 f3-2): b defines an integer
+        ``Payload`` and a boolean ``b__Payload``.  Renaming b's ``Payload``
+        to ``b__Payload`` must not collide with b's own boolean definition;
+        whichever is allocated later must move aside."""
+        a_params = {
+            "type": "object",
+            "$defs": {"Payload": {"type": "string"}},
+            "properties": {"data": {"$ref": "#/$defs/Payload"}},
+        }
+        b_params = {
+            "type": "object",
+            "$defs": {
+                "Payload": {"type": "integer"},
+                "b__Payload": {"type": "boolean"},
+            },
+            "properties": {
+                "num": {"$ref": "#/$defs/Payload"},
+                "flag": {"$ref": "#/$defs/b__Payload"},
+            },
+        }
+        result = _hoist_tool_parameter_defs(
+            _outer_tool_schema(("a", a_params), ("b", b_params))
+        )
+        root = result["$defs"]
+        assert root["Payload"] == {"type": "string"}
+        # The integer and the boolean must survive under distinct names.
+        types = sorted(
+            d["type"] for name, d in root.items() if name.startswith("b__")
+        )
+        assert types == ["boolean", "integer"]
+        b = _branch_params(result, "b")
+        integer_name = b["properties"]["num"]["$ref"].rsplit("/", 1)[-1]
+        boolean_name = b["properties"]["flag"]["$ref"].rsplit("/", 1)[-1]
+        assert root[integer_name] == {"type": "integer"}
+        assert root[boolean_name] == {"type": "boolean"}
+        assert integer_name != boolean_name
+
+    def test_input_schema_is_not_mutated(self):
+        params = {
+            "type": "object",
+            "$defs": {"City": {"type": "string"}},
+            "properties": {"city": {"$ref": "#/$defs/City"}},
+        }
+        schema = _outer_tool_schema(("get_weather", params))
+        _hoist_tool_parameter_defs(schema)
+        assert "$defs" in params  # original parameters untouched
+
+    def test_const_literal_with_ref_is_not_rewritten(self):
+        """Review 20260924 v2: a {"$ref": ...} object inside const/enum is
+        instance data the model must output, not a schema reference.  When
+        a rename happens (here: the root already holds a builder-merged
+        City, so the nested copy is renamed), literal values must stay
+        byte-identical while schema-position refs are rewritten."""
+        params = {
+            "type": "object",
+            "$defs": {"City": {"type": "string"}},
+            "properties": {
+                "city": {"$ref": "#/$defs/City"},
+                "document": {"const": {"$ref": "#/$defs/City"}},
+            },
+            "required": ["city", "document"],
+        }
+        schema = _outer_tool_schema(("submit", params))
+        schema["$defs"] = {"City": {"type": "string"}}  # builder-merged root
+        result = _hoist_tool_parameter_defs(schema)
+        params_out = _branch_params(result, "submit")
+        # Schema-position ref follows the renamed definition...
+        assert params_out["properties"]["city"]["$ref"] == (
+            "#/$defs/submit__City"
+        )
+        assert result["$defs"]["submit__City"] == {"type": "string"}
+        # ...but the const literal is instance data and must not change.
+        assert params_out["properties"]["document"]["const"] == {
+            "$ref": "#/$defs/City"
+        }
+
+    def test_enum_literals_preserved_but_anyof_refs_rewritten(self):
+        """Guard both directions: enum object literals are instance data
+        (skip), while anyOf arrays hold real subschemas (must rewrite)."""
+        params = {
+            "type": "object",
+            "$defs": {"City": {"type": "string"}},
+            "properties": {
+                "kind": {
+                    "enum": [{"$ref": "#/$defs/City"}, "plain"],
+                },
+                "city": {"anyOf": [{"$ref": "#/$defs/City"}, {"type": "null"}]},
+            },
+        }
+        schema = _outer_tool_schema(("submit", params))
+        schema["$defs"] = {"City": {"type": "string"}}
+        result = _hoist_tool_parameter_defs(schema)
+        params_out = _branch_params(result, "submit")
+        assert params_out["properties"]["kind"]["enum"] == [
+            {"$ref": "#/$defs/City"},
+            "plain",
+        ]
+        assert params_out["properties"]["city"]["anyOf"][0]["$ref"] == (
+            "#/$defs/submit__City"
+        )
+
+    def test_pointer_suffix_preserved_on_rename(self):
+        """A $ref below the definition (#/$defs/City/properties/name) must
+        keep its JSON-pointer suffix when the leading definition token is
+        renamed; only the definition name is remapped."""
+        params = {
+            "type": "object",
+            "$defs": {
+                "City": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                }
+            },
+            "properties": {
+                "city_name": {"$ref": "#/$defs/City/properties/name"},
+            },
+        }
+        schema = _outer_tool_schema(("submit", params))
+        # Root already holds a builder-merged City → nested copy is renamed.
+        schema["$defs"] = {
+            "City": {"type": "object", "properties": {"name": {"type": "string"}}}
+        }
+        result = _hoist_tool_parameter_defs(schema)
+        params_out = _branch_params(result, "submit")
+        assert params_out["properties"]["city_name"]["$ref"] == (
+            "#/$defs/submit__City/properties/name"
+        )
+        # The renamed definition itself is intact for the suffix to resolve.
+        assert result["$defs"]["submit__City"]["properties"]["name"] == {
+            "type": "string"
+        }
+
+
+class TestNamespaceToolParameterDefs:  # FRONTEND.3 — pre-builder $defs isolation
+    @staticmethod
+    def _make_tools(*specs: tuple[str, dict]):
+        return convert_tools(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": name,
+                        "parameters": params,
+                    },
+                }
+                for name, params in specs
+            ]
+        )
+
+    def test_single_tool_with_defs_passes_through(self):
+        tools = self._make_tools(
+            (
+                "get_weather",
+                {
+                    "type": "object",
+                    "$defs": {"City": {"type": "string"}},
+                    "properties": {"city": {"$ref": "#/$defs/City"}},
+                },
+            )
+        )
+        result = _namespace_tool_parameter_defs(tools)
+        assert result is tools  # untouched: no cross-tool conflict possible
+
+    def test_conflicting_names_are_isolated(self):
+        tools = self._make_tools(
+            (
+                "a",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "string"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+            (
+                "b",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "integer"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+        )
+        result = _namespace_tool_parameter_defs(tools)
+        a, b = result
+        assert set(a.function.parameters["$defs"]) == {"a__Payload"}
+        assert set(b.function.parameters["$defs"]) == {"b__Payload"}
+        assert a.function.parameters["properties"]["data"]["$ref"] == (
+            "#/$defs/a__Payload"
+        )
+        assert b.function.parameters["properties"]["data"]["$ref"] == (
+            "#/$defs/b__Payload"
+        )
+        # Input tools are not mutated (the copy is deep).
+        assert set(tools[0].function.parameters["$defs"]) == {"Payload"}
+        assert tools[0].function.parameters["properties"]["data"]["$ref"] == (
+            "#/$defs/Payload"
+        )
+
+    def test_generated_names_cannot_collide(self):
+        """tool ``a`` defining ``b__X`` and tool ``a__b`` defining ``X``
+        both map to ``a__b__X``; the later one must get a suffix."""
+        tools = self._make_tools(
+            (
+                "a",
+                {
+                    "type": "object",
+                    "$defs": {"b__X": {"type": "string"}},
+                    "properties": {"v": {"$ref": "#/$defs/b__X"}},
+                },
+            ),
+            (
+                "a__b",
+                {
+                    "type": "object",
+                    "$defs": {"X": {"type": "integer"}},
+                    "properties": {"v": {"$ref": "#/$defs/X"}},
+                },
+            ),
+        )
+        result = _namespace_tool_parameter_defs(tools)
+        names_a = set(result[0].function.parameters["$defs"])
+        names_b = set(result[1].function.parameters["$defs"])
+        assert names_a != names_b
+        assert not (names_a & names_b)
+        # References follow each tool's own final name.
+        for tool in result:
+            params = tool.function.parameters
+            final = next(iter(params["$defs"]))
+            assert params["properties"]["v"]["$ref"] == f"#/$defs/{final}"
+
+    def test_default_and_examples_literals_are_preserved(self):
+        """Review 20260924 v2: the namespace stage shares the same rewrite
+        helper, so literal {"$ref": ...} objects in default/examples must
+        also survive namespacing while schema refs are renamed."""
+        tools = self._make_tools(
+            (
+                "a",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "string"}},
+                    "properties": {
+                        "data": {"$ref": "#/$defs/Payload"},
+                        "meta": {
+                            "type": "string",
+                            "default": {"$ref": "#/$defs/Payload"},
+                            "examples": [{"$ref": "#/$defs/Payload"}],
+                        },
+                    },
+                },
+            ),
+            (
+                "b",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "integer"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+        )
+        result = _namespace_tool_parameter_defs(tools)
+        meta = result[0].function.parameters["properties"]["meta"]
+        assert meta["default"] == {"$ref": "#/$defs/Payload"}
+        assert meta["examples"] == [{"$ref": "#/$defs/Payload"}]
+        assert result[0].function.parameters["properties"]["data"]["$ref"] == (
+            "#/$defs/a__Payload"
+        )
+
+    def test_required_multi_tool_conflicting_defs_real_builder(self):
+        """Integration through SGLang's real builder (review 20260924 f2):
+        two tools with same-named, different-content ``$defs`` and
+        tool_choice='required' previously raised ``ValueError: Tool
+        definition 'Payload' has multiple schemas`` before any post-
+        processing could run."""
+        tools = self._make_tools(
+            (
+                "a",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "string"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+            (
+                "b",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "integer"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+        )
+        guided = build_tool_call_guided_decoding(
+            {"tool_choice": "required"},
+            tool_call_parser_name=None,
+            sglang_tools=tools,
+        )
+        assert isinstance(guided, dict) and "json" in guided
+        schema_text = json.dumps(guided["json"])
+        # Both tools' definitions survive under isolated names, and no
+        # reference still points at the un-namespaced original.
+        assert "a__Payload" in schema_text
+        assert "b__Payload" in schema_text
+        assert '"$ref": "#/$defs/Payload"' not in schema_text
 
 
 # ---------------------------------------------------------------------------
