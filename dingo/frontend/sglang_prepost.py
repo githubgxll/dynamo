@@ -1392,6 +1392,8 @@ class SglangStreamingPostProcessor:
         guided_decoding: dict[str, Any] | None = None,
         response_format_guided_active: bool = False,
         tool_guided_active: bool = False,
+        logprobs_enabled: bool = False,
+        return_tokens_as_token_ids: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1418,6 +1420,8 @@ class SglangStreamingPostProcessor:
             response_format_guided_active=response_format_guided_active,
             tool_guided_active=tool_guided_active,
         )
+        self._logprobs_enabled = logprobs_enabled
+        self._return_tokens_as_token_ids = return_tokens_as_token_ids
         self._pending_guided_reasoning_prefix: str | None = (
             ""
             if reasoning_parser is not None and self._guided_json_start_chars
@@ -1710,6 +1714,70 @@ class SglangStreamingPostProcessor:
         )
         return reasoning_text, normal_text, reasoning_tokens
 
+
+    def _build_logprobs(
+        self,
+        token_ids: list[int],
+        log_probs: list[float] | None,
+        top_logprobs: list[list[dict[str, Any]]] | None,
+    ) -> dict[str, Any] | None:
+        """Build OpenAI-format ``logprobs`` from raw SGLang logprob arrays.
+
+        Returns ``{"content": [...]}`` or ``None`` when no logprobs are
+        available for this chunk.
+        """
+        if not self._logprobs_enabled or log_probs is None:
+            return None
+
+        content: list[dict[str, Any]] = []
+        for i, lp in enumerate(log_probs):
+            tid = token_ids[i] if i < len(token_ids) else 0
+            if self._return_tokens_as_token_ids:
+                token_str = f"token_id:{tid}"
+            else:
+                try:
+                    token_str = self.tokenizer.decode(
+                        [tid], skip_special_tokens=False
+                    )
+                except Exception:
+                    token_str = ""
+            token_bytes = list(token_str.encode("utf-8")) if token_str else None
+
+            top_list: list[dict[str, Any]] = []
+            if top_logprobs and i < len(top_logprobs):
+                for entry in top_logprobs[i]:
+                    top_tid = entry.get("token_id", 0)
+                    if self._return_tokens_as_token_ids:
+                        top_str = f"token_id:{top_tid}"
+                    else:
+                        top_str = entry.get("token", "")
+                        if not top_str:
+                            try:
+                                top_str = self.tokenizer.decode(
+                                    [top_tid], skip_special_tokens=False
+                                )
+                            except Exception:
+                                top_str = ""
+                    top_bytes = list(top_str.encode("utf-8")) if top_str else None
+                    top_list.append(
+                        {
+                            "token": top_str,
+                            "bytes": top_bytes,
+                            "logprob": entry.get("logprob", 0.0),
+                        }
+                    )
+
+            content.append(
+                {
+                    "token": token_str,
+                    "bytes": token_bytes,
+                    "logprob": lp,
+                    "top_logprobs": top_list,
+                }
+            )
+
+        return {"content": content}
+
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
 
@@ -1725,6 +1793,23 @@ class SglangStreamingPostProcessor:
         finished = finish_reason is not None
         if finished:
             token_ids = self._strip_trailing_eos_token_ids(list(token_ids))
+
+        # Extract raw logprobs from the engine response.  The backend
+        # (decode_handler / llm_engine) already sliced SGLang's cumulative
+        # arrays to the new tokens in this chunk, so log_probs and
+        # top_logprobs align 1:1 with the pre-eos-trim token_ids.
+        raw_log_probs = engine_response.get("log_probs")
+        raw_top_logprobs = engine_response.get("top_logprobs")
+
+        # Trim logprobs to match eos-stripped token_ids.
+        if raw_log_probs and len(raw_log_probs) > len(token_ids):
+            raw_log_probs = raw_log_probs[: len(token_ids)]
+        if raw_top_logprobs and len(raw_top_logprobs) > len(token_ids):
+            raw_top_logprobs = raw_top_logprobs[: len(token_ids)]
+
+        logprobs_payload = self._build_logprobs(
+            token_ids, raw_log_probs, raw_top_logprobs
+        )
 
         # A terminal engine chunk commonly contains no token_ids. Still run
         # detokenization so a previously withheld suffix can be flushed.
@@ -1743,14 +1828,14 @@ class SglangStreamingPostProcessor:
                     "index": 0,
                     "delta": {"role": "assistant", "content": delta_text},
                     "finish_reason": finish_reason,
-                    "logprobs": None,
+                    "logprobs": logprobs_payload,
                 }
             elif finish_reason:
                 return {
                     "index": 0,
                     "delta": {},
                     "finish_reason": finish_reason,
-                    "logprobs": None,
+                    "logprobs": logprobs_payload,
                 }
             return None
 
@@ -2069,7 +2154,7 @@ class SglangStreamingPostProcessor:
                 "index": 0,
                 "delta": delta if has_content else {},
                 "finish_reason": effective_finish,
-                "logprobs": None,
+                "logprobs": logprobs_payload,
             }
 
         return None

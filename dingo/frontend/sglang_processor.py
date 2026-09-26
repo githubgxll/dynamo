@@ -590,6 +590,15 @@ class SglangProcessor:
             guided_decoding=pre.guided_decoding,
             response_format_guided_active=pre.response_format_guided_active,
             tool_guided_active=pre.tool_guided_active,
+            logprobs_enabled=(
+                (dynamo_preproc.get("output_options") or {}).get("logprobs")
+                is not None
+            ),
+            return_tokens_as_token_ids=bool(
+                (dynamo_preproc.get("output_options") or {}).get(
+                    "return_tokens_as_token_ids"
+                )
+            ),
         )
 
         async for item in self._generate_and_stream(
@@ -659,6 +668,17 @@ class SglangProcessor:
                 preproc_result.response_format_guided_active
             ),
             tool_guided_active=preproc_result.tool_guided_active,
+            logprobs_enabled=bool(
+                (preproc_result.dynamo_preproc.get("output_options") or {}).get(
+                    "logprobs"
+                )
+                is not None
+            ),
+            return_tokens_as_token_ids=bool(
+                (preproc_result.dynamo_preproc.get("output_options") or {}).get(
+                    "return_tokens_as_token_ids"
+                )
+            ),
         )
 
         async for item in self._generate_and_stream(
@@ -697,6 +717,8 @@ class SglangProcessor:
             # TTFT, then switch to the configured interval.
             pending_token_ids: list[int] = []
             pending_usage: dict[str, Any] | None = None
+            pending_log_probs: list[float] | None = None
+            pending_top_logprobs: list[list[dict[str, Any]]] | None = None
             first_chunk = True
             input_tokens = len(tokens)
             cumulative_output_tokens = 0
@@ -735,8 +757,16 @@ class SglangProcessor:
 
                 if usage := engine_response.get("completion_usage"):
                     pending_usage = usage
-                engine_data = engine_response.get("engine_data")
                 pending_token_ids.extend(new_ids)
+                engine_data = engine_response.get("engine_data")
+                if chunk_log_probs := engine_response.get("log_probs"):
+                    if pending_log_probs is None:
+                        pending_log_probs = []
+                    pending_log_probs.extend(chunk_log_probs)
+                if chunk_top_logprobs := engine_response.get("top_logprobs"):
+                    if pending_top_logprobs is None:
+                        pending_top_logprobs = []
+                    pending_top_logprobs.extend(chunk_top_logprobs)
 
                 # Flush on finish or when we've accumulated enough tokens.
                 # First chunk flushes immediately (si=1) to minimize TTFT.
@@ -746,6 +776,8 @@ class SglangProcessor:
                     mapped_response = {
                         "token_ids": pending_token_ids,
                         "finish_reason": finish_reason,
+                        "log_probs": pending_log_probs,
+                        "top_logprobs": pending_top_logprobs,
                     }
 
                     if self.debug_perf:
@@ -850,6 +882,8 @@ class SglangProcessor:
                         yield envelope
 
                     pending_token_ids = []
+                    pending_log_probs = None
+                    pending_top_logprobs = None
                     pending_usage = None
                     first_chunk = False
         except Unknown:
