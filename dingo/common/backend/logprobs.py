@@ -302,28 +302,44 @@ def extract_from_sglang_meta(
     num_output_logprobs_so_far: int,
     *,
     return_tokens_as_token_ids: bool = False,
+    incremental: bool = False,
 ) -> tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]], int]:
     """Extract logprobs from SGLang's ``meta_info`` dict.
 
-    SGLang's ``output_token_logprobs`` / ``output_top_logprobs`` are
-    cumulative across stream chunks even though ``output_ids`` is
-    disjoint — the caller passes the running count to slice the new
-    entries, and the returned third element is the updated count.
+    When ``incremental_streaming_output`` is False (the SGLang default),
+    ``output_token_logprobs`` / ``output_top_logprobs`` are cumulative
+    across stream chunks even though ``output_ids`` is disjoint — the
+    caller passes the running count to slice the new entries, and the
+    returned third element is the updated count.
+
+    When ``incremental_streaming_output`` is True (Dynamo forces this on),
+    SGLang sends only the new token's logprobs in each chunk — the arrays
+    are already disjoint, so no slicing is needed.  The returned third
+    element is ``num_output_logprobs_so_far + len(new_entries)``.
     """
     output_token_logprobs = meta_info.get("output_token_logprobs")
     if not output_token_logprobs:
         return None, None, num_output_logprobs_so_far
 
-    new_logprobs = output_token_logprobs[num_output_logprobs_so_far:]
+    if incremental:
+        new_logprobs = output_token_logprobs
+        new_total = num_output_logprobs_so_far + len(output_token_logprobs)
+    else:
+        new_logprobs = output_token_logprobs[num_output_logprobs_so_far:]
+        new_total = len(output_token_logprobs)
+
     if not new_logprobs:
-        return None, None, num_output_logprobs_so_far
+        return None, None, new_total
 
     log_probs = [float(entry[0]) for entry in new_logprobs]
 
     top_logprobs: Optional[list[list[dict[str, Any]]]] = None
     output_top = meta_info.get("output_top_logprobs")
     if output_top:
-        new_top = output_top[num_output_logprobs_so_far:]
+        if incremental:
+            new_top = output_top
+        else:
+            new_top = output_top[num_output_logprobs_so_far:]
         if new_top:
             top_logprobs = []
             for position_entries in new_top:
@@ -334,7 +350,9 @@ def extract_from_sglang_meta(
                 for rank_idx, entry in enumerate(position_entries):
                     tok_id = entry[1]
                     token_str = (
-                        f"token_id:{tok_id}" if return_tokens_as_token_ids else entry[2]
+                        f"token_id:{tok_id}"
+                        if return_tokens_as_token_ids
+                        else entry[2]
                     )
                     position_list.append(
                         {
@@ -346,4 +364,4 @@ def extract_from_sglang_meta(
                     )
                 top_logprobs.append(position_list)
 
-    return log_probs, top_logprobs, len(output_token_logprobs)
+    return log_probs, top_logprobs, new_total

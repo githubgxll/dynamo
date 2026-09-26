@@ -456,6 +456,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             meta_info,
             num_output_logprobs_so_far,
             return_tokens_as_token_ids=return_tokens_as_token_ids,
+            incremental=True,
         )
 
     async def generate(

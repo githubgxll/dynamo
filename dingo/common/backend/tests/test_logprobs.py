@@ -414,6 +414,43 @@ def test_sglang_extract_returns_offset_unchanged_when_no_new_entries():
     assert new_total == 1
 
 
+def test_sglang_extract_incremental_no_slice():
+    """incremental=True: arrays are already disjoint, no slicing."""
+    meta = {
+        "output_token_logprobs": [(-0.5, 10, "x")],
+        "output_top_logprobs": [[(-0.5, 10, "x"), (-0.8, 11, "y")]],
+    }
+    log_probs, top_logprobs, new_total = extract_from_sglang_meta(
+        meta, 5, incremental=True
+    )
+    assert log_probs == [-0.5]
+    assert top_logprobs == [
+        [
+            {"rank": 1, "token_id": 10, "token": "x", "logprob": -0.5},
+            {"rank": 2, "token_id": 11, "token": "y", "logprob": -0.8},
+        ]
+    ]
+    assert new_total == 6
+
+
+def test_sglang_extract_incremental_empty_array():
+    """incremental=True: empty output_token_logprobs returns None."""
+    meta = {"output_token_logprobs": []}
+    log_probs, _, new_total = extract_from_sglang_meta(meta, 3, incremental=True)
+    assert log_probs is None
+    assert new_total == 3
+
+
+def test_sglang_extract_incremental_no_top_logprobs():
+    """incremental=True: log_probs without top_logprobs."""
+    meta = {"output_token_logprobs": [(-0.1, 1, "a")]}
+    log_probs, top_logprobs, new_total = extract_from_sglang_meta(
+        meta, 0, incremental=True
+    )
+    assert log_probs == [-0.1]
+    assert top_logprobs is None
+    assert new_total == 1
+
 # ---------------------------------------------------------------------------
 # Legacy ↔ unified behavioural parity corner cases.
 #
