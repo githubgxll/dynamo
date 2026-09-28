@@ -101,9 +101,10 @@ def test_public_task_reports_persisted_worker_queue_wait():
     public = task.public_dict()
 
     assert public["metrics"]["worker_queue_wait_s"] == 0.75
-    assert public["stage_durations"]["worker_queue_wait"] == 0.75
-    assert public["stage_durations"]["queue_wait"] == 0.25
-    assert public["stage_durations"]["finalize"] == 0.05
+    assert "stage_durations" not in public
+    diagnostics = task.diagnostics_dict()
+    assert {k: v for k, v in diagnostics.items() if k != "diagnostics"} == public
+    assert diagnostics["diagnostics"]["stage_durations"] == task.stage_durations
 
 
 async def test_idempotency_returns_original_task_and_detects_conflict():

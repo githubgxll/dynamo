@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dingo.common.video_result_file import INLINE_RESULT_FORMAT, normalize_inline_result
+from dingo.common.video_timing_schemas import with_model_execution
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
     EXECUTION_CAPACITY_CAPABILITY,
@@ -136,6 +137,12 @@ class RunningCall:
     detached: bool = False
     worker_accepted: bool = False
     task_changed: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedWorkerTiming:
+    worker_queue_wait_s: float | None = None
+    worker_execution_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1715,6 +1722,7 @@ class VideoDispatcher:
                 worker_stream_finished = True
 
             worker_queue_wait_s: float | None = None
+            worker_execution_s: float | None = None
             if detached:
                 detached_consumer = self._consume_detached_worker(
                     pool,
@@ -1728,7 +1736,7 @@ class VideoDispatcher:
                 # Ownership has moved into the detached consumer coroutine.
                 # Do not keep a second reference in this long-lived frame.
                 payload = None
-                worker_queue_wait_s = await self._run_with_lease_monitor(
+                detached_timing = await self._run_with_lease_monitor(
                     detached_consumer,
                     heartbeat,
                     self._monitor_cancellation(
@@ -1736,8 +1744,11 @@ class VideoDispatcher:
                     ),
                     self._monitor_worker_liveness(pool, stored.task, running_call),
                 )
+                worker_queue_wait_s = detached_timing.worker_queue_wait_s
+                worker_execution_s = detached_timing.worker_execution_s
                 worker_stream_finished = True
             else:
+                worker_call_started = time.monotonic()
                 await asyncio.wait_for(
                     self._run_with_lease_monitor(
                         _consume_worker_stream(),
@@ -1747,6 +1758,12 @@ class VideoDispatcher:
                         ),
                     ),
                     timeout=pool.config.scheduling.execution_timeout_s,
+                )
+                # Legacy non-detached Workers do not publish an outer execution
+                # duration. Measure the complete direct call instead of treating
+                # the formatter's output-only duration as model execution.
+                worker_execution_s = max(
+                    0.0, time.monotonic() - worker_call_started
                 )
 
             # The Worker response stream is terminal. It is now safe for a new
@@ -1773,7 +1790,8 @@ class VideoDispatcher:
                 raise RuntimeError(
                     "binary artifact references require detached execution"
                 )
-            inference_time_s = result.inference_time_s
+            inference_time_s = worker_execution_s
+            model_execution = result.model_execution
             stage_durations = dict(result.stage_durations or {})
             if worker_queue_wait_s is not None:
                 stage_durations["worker_queue_wait"] = worker_queue_wait_s
@@ -1794,7 +1812,12 @@ class VideoDispatcher:
             ):
                 try:
                     handed_off = await self._commit_result_handoff(
-                        pool, task, binary_artifact, inference_time_s, stage_durations
+                        pool,
+                        task,
+                        binary_artifact,
+                        inference_time_s,
+                        stage_durations,
+                        model_execution=model_execution,
                     )
                 except _TaskOwnershipLost:
                     raise
@@ -1819,6 +1842,9 @@ class VideoDispatcher:
                         "status": TaskStatus.FINALIZING,
                         "inference_time_s": inference_time_s,
                         "stage_durations": stage_durations,
+                        "normalized_request": with_model_execution(
+                            latest.task.normalized_request, model_execution
+                        ),
                     },
                 )
                 self.telemetry.record_transition(
@@ -2143,7 +2169,14 @@ class VideoDispatcher:
         )
 
     async def _commit_result_handoff(
-        self, pool, expected, artifact, inference_time_s, stage_durations
+        self,
+        pool,
+        expected,
+        artifact,
+        inference_time_s,
+        stage_durations,
+        *,
+        model_execution=None,
     ):
         """Reconcile every uncertain write before publishing or failing a result."""
         failure_code = None
@@ -2262,7 +2295,9 @@ class VideoDispatcher:
                     "status": TaskStatus.FINALIZING,
                     "worker_lease_id": None,
                     "normalized_request": {
-                        **latest.task.normalized_request,
+                        **with_model_execution(
+                            latest.task.normalized_request, model_execution
+                        ),
                         HANDOFF_KEY: reference,
                     },
                     "inference_time_s": inference_time_s,
@@ -2390,7 +2425,7 @@ class VideoDispatcher:
         running_call: RunningCall,
         *,
         initial_worker_status: dict[str, Any] | None = None,
-    ) -> float | None:
+    ) -> DetachedWorkerTiming:
         task = stored.task
         if (
             task.execution_token is None
@@ -2440,9 +2475,10 @@ class VideoDispatcher:
             )
 
         worker_queue_wait_s: float | None = None
+        worker_execution_s: float | None = None
 
         async def _consume_status(value: dict[str, Any]) -> bool:
-            nonlocal worker_queue_wait_s
+            nonlocal worker_queue_wait_s, worker_execution_s
             worker_status = _validate_identity(value)
             state = worker_status.get("state")
             if state == "completed":
@@ -2461,6 +2497,18 @@ class VideoDispatcher:
                     self.telemetry.record_stage_duration(
                         task.pool_id, "worker_queue", worker_queue_wait_s
                     )
+                execution = worker_status.get("inference_time_s")
+                if execution is not None:
+                    if (
+                        not isinstance(execution, (int, float))
+                        or isinstance(execution, bool)
+                        or not math.isfinite(float(execution))
+                        or float(execution) < 0
+                    ):
+                        raise _DetachedWaitProtocolError(
+                            "detached Worker returned invalid inference_time_s"
+                        )
+                    worker_execution_s = float(execution)
                 if "result_format" in worker_status or "inline_result" in worker_status:
                     if worker_status.get(
                         "result_format"
@@ -2684,7 +2732,10 @@ class VideoDispatcher:
         assert worker_status is not None
         supports_wait = _supports_wait(worker_status)
         if await _consume_status(worker_status):
-            return worker_queue_wait_s
+            return DetachedWorkerTiming(
+                worker_queue_wait_s=worker_queue_wait_s,
+                worker_execution_s=worker_execution_s,
+            )
 
         retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
         next_wait_retry = time.monotonic()
@@ -2700,7 +2751,10 @@ class VideoDispatcher:
                     worker_status = await _wait_once()
                     retry_delay_s = _DETACHED_WAIT_RETRY_INITIAL_S
                     if await _consume_status(worker_status):
-                        return worker_queue_wait_s
+                        return DetachedWorkerTiming(
+                            worker_queue_wait_s=worker_queue_wait_s,
+                            worker_execution_s=worker_execution_s,
+                        )
                     raise _DetachedWaitUnavailable(
                         "detached Worker could not attach a local terminal waiter"
                     )
@@ -2722,7 +2776,10 @@ class VideoDispatcher:
             if worker_status is not None:
                 supports_wait = supports_wait or _supports_wait(worker_status)
                 if await _consume_status(worker_status):
-                    return worker_queue_wait_s
+                    return DetachedWorkerTiming(
+                        worker_queue_wait_s=worker_queue_wait_s,
+                        worker_execution_s=worker_execution_s,
+                    )
             remaining_ms = (task.deadline_at_ms or 0) - now_ms()
             if remaining_ms <= 0:
                 raise asyncio.TimeoutError

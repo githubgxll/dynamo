@@ -11,6 +11,11 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
+from dingo.common.video_timing_schemas import (
+    MODEL_EXECUTION_KEY,
+    normalize_model_execution,
+)
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -217,19 +222,32 @@ class VideoTask:
             }
         if self.completed_at_ms is not None:
             # vLLM-Omni defines inference_time_s as end-to-end server time,
-            # including time spent queued. Keep the Worker-reported formatter
-            # time in metrics while exposing the native-compatible value here.
+            # including time spent queued. Keep Worker execution time in metrics
+            # while exposing the native-compatible task total here.
             result["inference_time_s"] = max(
                 0.0, (self.completed_at_ms - self.created_at_ms) / 1000.0
             )
-        if self.queue_wait_s is not None:
-            durations.setdefault("queue_wait", self.queue_wait_s)
-        if self.finalize_time_s is not None:
-            durations.setdefault("finalize", self.finalize_time_s)
-        if durations:
-            result["stage_durations"] = durations
+        model_execution = normalize_model_execution(
+            self.normalized_request.get(MODEL_EXECUTION_KEY)
+        )
+        if model_execution is not None:
+            result.setdefault("metrics", {})["model_execution"] = model_execution
         if self.error is not None:
             result["error"] = asdict(self.error)
+        return result
+
+    def diagnostics_dict(self) -> dict[str, Any]:
+        """Public task fields plus bounded persisted diagnostics for this attempt."""
+        result = self.public_dict()
+        result["diagnostics"] = {
+            "schema_version": 1,
+            "internal_status": self.status.value,
+            "attempt": self.attempt,
+            "pool_id": self.pool_id,
+            "worker_instance_id": self.worker_instance_id,
+            "scope": "current_attempt",
+            "stage_durations": dict(self.stage_durations or {}),
+        }
         return result
 
 

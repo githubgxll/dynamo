@@ -298,6 +298,13 @@ async def get_video(request: web.Request) -> web.Response:
     return web.json_response(stored.task.public_dict())
 
 
+async def get_video_diagnostics(request: web.Request) -> web.Response:
+    stored = await _service(request).store.get_task(request.match_info["task_id"])
+    if stored is None:
+        raise GatewayError(404, "video_not_found", "video task was not found")
+    return web.json_response(stored.task.diagnostics_dict())
+
+
 async def list_videos(request: web.Request) -> web.Response:
     service = _service(request)
     try:
@@ -734,6 +741,7 @@ def register_routes(app: web.Application) -> None:
         "/v1/videos/{task_id}/content", get_video_content, allow_head=True
     )
     app.router.add_get("/v1/videos/{task_id}", get_video)
+    app.router.add_get("/v1/videos/{task_id}/diagnostics", get_video_diagnostics)
     app.router.add_delete("/v1/videos/{task_id}", delete_video)
     app.router.add_route("*", "/{tail:.*}", proxy)
 

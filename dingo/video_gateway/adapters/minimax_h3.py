@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dingo.common.video_result_file import validate_descriptor
+from dingo.common.video_timing_schemas import normalize_model_execution
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
@@ -714,6 +715,7 @@ class _MiniMaxH3WorkerStreamConsumer:
             output_format=output_format,
             inference_time_s=inference_time,
             stage_durations=stage_durations,
+            model_execution=normalize_model_execution(terminal.get("model_execution")),
         )
 
 
