@@ -1,87 +1,105 @@
-# Dingo Runner 每日回收
+# Dingo Runner 持久化回收
 
-目标：5 区 elm-test 的 dingo-gxl-runner，Docker data-root=/runner-data/docker。
+代码、镜像配置和部署来源均为 **DingoRouter-base**。每日调度运行在 Runner Pod 内，不依赖 GitHub 默认分支或 Actions schedule。合并 PR 只更新代码；必须应用生成的配置并重建 Runner Pod 才生效。此方案仅适用于一个 Runner、一个 Docker daemon、一个 PVC 的部署。
 
-## 策略
+## 策略和边界
 
-- 每天北京时间 05:00（UTC 21:00，cron `0 21 * * *`）。GitHub 调度可能延迟，Runner 忙时排队。
-- `.github/dingo-images.json` 中所有配置仓库（包括 enabled=false 的历史系列）的本地 Dingo 产物，合计保留创建时间最新的 5 个不同镜像 ID。
-- 按 Docker inspect 的 Created 排序，不按拉取时间、tag 字典序或最后使用时间；同一时间按 ID 稳定排序。
-- 只处理以 Git SHA 结尾的产物 tag。builder-*、buildcache-*、未知标签、外部基础镜像、无标签镜像不参与计数和删除。一个 ID 只要带有受保护标签，整个 ID 都保留。
-- 候选的每个 tag 都需要验证远端 manifest 的 config digest 与本地 image ID 相同；支持单镜像 manifest 和明确匹配本地平台的索引。远端不可访问、tag 已漂移、平台不明确等情况跳过并使任务失败，不强制删除。
-- 删除前输出完整 inventory、计划及恢复用的 digest/tag 映射。不修改远端仓库。
-- 身份校验成功且镜像步骤已启动后，独立清理 7 天未使用的构建缓存；部分镜像无法校验时仍会回收缓存，工作流保留失败状态。缓存回收可能降低保留镜像后续构建的缓存命中率，但不删除这些镜像的标签。
-- 不保证 Docker 总共只剩 5 个镜像，保护项和无法验证的候选会额外保留；也不保证释放 100GiB。最终可用空间低于 100GiB 时任务失败告警。
+- 每天北京时间 05:00 触发；每分钟检查一次。遇到构建则等待空闲，Pod 停机错过时间后补跑最近一次，不补跑所有历史日期。首次启动没有成功记录也会补跑。
+- `.github/dingo-images.json` 中所有配置仓库（含 enabled=false），合计保留 Created 最新的 5 个不同产物镜像 ID；不是每个仓库 5 个。纳秒时间排序，同时间按 ID 排序。
+- 只删除识别出的 Git SHA 产物标签。builder-*、buildcache-*、基础镜像、未知标签、无标签镜像均保护；一个 ID 有受保护标签则整个 ID 保护。因此 Docker 镜像总数可以超过 5。
+- 删除前验证远端 manifest 的 config digest 与本地 ID 一致，保存 inventory、计划、digest/tag 恢复映射。远端不可访问、标签漂移或平台不明确时保留镜像并产生告警；缓存清理继续。删除不用 force，不修改远端仓库。
+- 每日清理 7 天未使用的构建缓存。空闲空间低于 150GiB 时逐级尝试旧缓存回收、缓存保留预算 30GB、全部未使用缓存回收，每阶段重新检查磁盘，达到目标即停止。
+- Docker daemon 自身启用 BuildKit GC，defaultKeepStorage=80GB。这是缓存策略预算，不是整个 PVC 的硬配额，也不限制受保护镜像和工作目录。
+- job started hook 在步骤执行前检查磁盘，低于 150GiB 先回收缓存，仍不足 100GiB 则拒绝执行；job completed hook 在低水位时回收。单次构建仍可能消耗超过剩余空间，需根据最大构建峰值调整阈值，不能承诺永不满盘。
+- job hook、每日清理及手工入口共享 flock 和 Worker PID/启动时间标记。GC 超时、进程被杀或异常时保留 maintenance.json，阻止新任务，避免 Docker 后台操作未结束就开始构建。调度进程退出会终止 Runner，交由 Kubernetes 重启。
+- 手工 exec 的构建必须经过下述 run 包装入口；绕过包装的命令不受互斥保护。Docker 内置 GC 遵循 BuildKit 自身的缓存引用保护机制。
 
-## 上线与互斥
+## 生成与上线
 
-1. 将脚本、配置和工作流合入 `DingoRouter-base`。本仓库默认分支目前是 `main`：还需要将 `.github/workflows/runner-gc.yml` 同步到 `main`，GitHub 才会注册每日 schedule 和 workflow_dispatch。仅合入 DingoRouter-base 不会启动定时任务。工作流会明确 checkout DingoRouter-base 获取脚本及配置，不需要将整个业务分支合入 main，也不要更改仓库默认分支。
-   确认目标 Runner 标签包含 self-hosted/linux/x64/dingo/gxl，以及 REGISTRY_USERNAME、REGISTRY_PASSWORD 可用。
-2. 单个 Runner 进程一次只接一个 job，因此清理 job 与该进程的构建 job 串行。GC concurrency 仅约束 GC 自身；禁止在 GC 期间手工 exec 构建。若存在共享同一 Docker daemon 的多个 Runner，必须先统一互斥，不能直接启用此方案。
-3. 首次 workflow_dispatch 保持 apply=false，source_ref 默认为 DingoRouter-base（预览 PR 时可填可信的 PR 分支），检查 artifact 中 plan.json 的 keep/candidates/protected，以及 recovery.jsonl。预览只读；空间不足仍会报告失败。
-4. 确认计划后手动 apply=true 验证实际清理。定时触发自动 apply。
-5. 检查清理前后 df、docker system df，运行一次正常构建及推送，随后观察每日磁盘水位。
-
-日志、清单和 Markdown 摘要上传为 Actions artifact，保留 14 天。不要把 registry 密码写入脚本或日志。
-
-## 风险与回滚
-
-- 删除缓存后构建可能变慢，重新拉取历史镜像会增加网络和磁盘 I/O。时间新旧不代表业务重要性，特殊保留需求应通过受保护标签表达。
-- 禁用工作流可立即停止后续定时任务；撤销本次新增文件即可回滚配置，无需重启 Runner。
-- 删除数据本身不可撤销。使用 recovery.jsonl 中的 digest_reference 执行 `docker pull <digest_reference>`，然后 `docker tag <digest_reference> <tag>` 恢复本地标签；缓存由后续构建重建。远端保留策略必须覆盖所需恢复周期。
-- 本次方案不修改 Docker daemon、PVC，也不会自动清理工作目录、基础镜像或远端镜像。
-
-## 本地验证
+在 DingoRouter-base 合并后的 checkout 中执行。生产应用应安排 Runner 无运行中任务的维护窗口，暂停任务提交，确认没有手工构建。
 
 ```bash
 set -euxo pipefail
-uv --cache-dir /tmp/dingo-gc-uv-cache run --no-project --with pytest \
-  python -m pytest --noconftest -c /dev/null -p no:cacheprovider \
-  .github/scripts/test_runner_gc.py -q
+uv run --no-project --with pyyaml python deploy/ci/github-runner/render_gc.py \
+  --output /tmp/dingo-gxl-runner-gc.yaml
 ```
 
-测试模拟 Docker/registry，不连接生产，也不删除本机镜像。
+私有仓库建议使用独立、仅有拉取权限的 `kubernetes.io/dockerconfigjson` Secret，生成时增加 `--registry-secret <已有Secret名称>`。该 Secret 的 `.dockerconfigjson` 会只读挂载到独立目录，仅镜像远端验证使用，不受 Actions login/logout 影响。不要将凭据写入 Git 或日志。未指定时使用 Runner 现有 Docker 客户端凭据；若其失效，只会跳过无法验证的镜像并告警，不能视作镜像回收已经有效。
 
-## 当前线上 Pod 一次性执行
-
-无需重启 Pod，也无需修改 Deployment/PVC。以下命令在本地仓库根目录执行，经 5 区 master 中转；临时脚本和日志放在容器 `/tmp`，避免向已满的 `/runner-data` 写入文件。Pod 重建后应重新确认名称。
-
-先暂存本地修复并预览，不删除镜像：
-
-```bash
-set -euxo pipefail
-tar -cf - .github/scripts/runner_gc.py .github/dingo-images.json |
-  tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
-    'kubectl exec -i -n elm-test dingo-gxl-runner-864f8d989b-9tblf -c runner -- bash -c "set -euxo pipefail; mkdir -p /tmp/dingo-runner-gc; tar -xf - -C /tmp/dingo-runner-gc; python3 /tmp/dingo-runner-gc/.github/scripts/runner_gc.py --config /tmp/dingo-runner-gc/.github/dingo-images.json --keep 5 --output /tmp/dingo-runner-gc/preview"'
-```
-
-检查 `/tmp/dingo-runner-gc/preview/plan.json` 和 `recovery.jsonl`，先导出留档。首次清理需要维护窗口：暂停新任务进入此 Runner，并确认没有 Runner.Worker、docker build/buildx、cargo/rustc 等构建进程。一次 pgrep 只表示瞬时状态，不能代替任务隔离。不要仅凭 docker ps 为空判断没有构建。
-
-在确认维护窗口及删除范围后，执行应用并回收旧缓存：
+通过 5 区 master 备份现有 Deployment 和启动 ConfigMap；如已安装，还需备份 dingo-gxl-runner-gc ConfigMap。备份应妥善保存。以下命令是上线步骤，不由测试自动执行：
 
 ```bash
 set -euxo pipefail
 tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
-  'kubectl exec -n elm-test dingo-gxl-runner-864f8d989b-9tblf -c runner -- bash -c '\''
-    set -euxo pipefail
-    test "$(docker info --format={{.DockerRootDir}})" = /runner-data/docker
-    gc_run_dir="$(mktemp -d /tmp/dingo-runner-gc-apply.XXXXXX)"
-    {
-      date -Is
-      df -h /runner-data
-      gc_status=0
-      python3 /tmp/dingo-runner-gc/.github/scripts/runner_gc.py \
-        --config /tmp/dingo-runner-gc/.github/dingo-images.json \
-        --keep 5 --output "${gc_run_dir}" --apply || gc_status=$?
-      docker builder prune --all --force --filter until=168h
-      docker system df
-      df -h /runner-data
-      date -Is
-      exit "${gc_status}"
-    } 2>&1 | tee "${gc_run_dir}/apply.log"
-  '\'''
+  'kubectl -n elm-test get deployment/dingo-gxl-runner configmap/dingo-gxl-runner -o yaml' \
+  > /tmp/dingo-runner-before-gc.yaml
+
+tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
+  'kubectl apply --dry-run=server -f -' < /tmp/dingo-gxl-runner-gc.yaml
+
+tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
+  'kubectl diff -f -' < /tmp/dingo-gxl-runner-gc.yaml
 ```
 
-每次 apply 都重新取镜像清单并校验远端，可能与此前预览略有变化，因此维护窗口内不要运行其他构建。若 Docker 因卷完全满而无法完成元数据写入，或清理后仍不足 100GiB，停止恢复构建；单独评估扩大缓存回收范围或扩容 PVC，不直接删除 overlay2 文件。
+`kubectl diff` 有差异返回 1，检查差异后再单独执行应用。确认 Deployment/PVC 名称、卷容量、节点约束、代理与当前线上一致；不能用仓库旧配置覆盖线上无关变更。
 
-执行完将 gc_run_dir 的日志和恢复映射导出保存，并检查最新 5 个产物、本地基础镜像、Docker 健康和正常构建/推送。之后恢复 Runner 接单。临时复制脚本只支持本次执行；每日自动回收仍依赖 main 上的定时工作流注册。
+```bash
+set -euxo pipefail
+tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
+  'kubectl apply -f -' < /tmp/dingo-gxl-runner-gc.yaml
+tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
+  'kubectl -n elm-test rollout status deployment/dingo-gxl-runner --timeout=600s'
+```
+
+生成包包含启动配置、GC 脚本 ConfigMap、Deployment 与 PVC；校验和触发配置更新后的 Pod 重建。后续更新继续使用 renderer，不直接应用未包含 GC 挂载的基础 YAML。无需修改或同步 main。可选手工 Actions 工作流的 UI 注册仍受 GitHub 默认分支规则约束，下述 kubectl 入口完全不依赖该 UI。
+
+## 验证和日常操作
+
+以下 `kubectl` 命令在 5 区 master 上执行；本地通过上述 tsh ssh 访问。先检查 Pod Running、Runner 在线、启动日志无异常，再验证：
+
+```bash
+set -euxo pipefail
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- df -h /runner-data
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- \
+  python3 /etc/dingo-gc/manager.py manual
+# 检查预览计划后执行一次实际清理
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- \
+  python3 /etc/dingo-gc/manager.py manual --apply
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- \
+  cat /runner-data/gc/status.json
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- \
+  curl --fail http://127.0.0.1:9105/metrics
+```
+
+预览目录位于 `/run/dingo-runner-gc/preview-*`；退出码 2 表示存在无法验证而保留的候选。实际回收日志和恢复映射在 `/runner-data/gc/run-*`，保留 14 天；PVC 写入失败时临时保存在 `/run/dingo-runner-gc/run-*`，重建 Pod 前先导出。预览目录需按需导出、删除。
+
+运行一次正常构建和推送，确认 started/completed hook 执行；在构建期间调用清理应提示 busy。次日 05:00 后检查 last_daily_date、last_daily_success、free_bytes 与日志。验证最新 5 个产物及受保护基础镜像仍在。
+
+手工构建用统一入口，例如：
+
+```bash
+set -euxo pipefail
+kubectl -n elm-test exec deployment/dingo-gxl-runner -c runner -- \
+  python3 /etc/dingo-gc/manager.py run -- docker build -t example:local /runner-data/example
+```
+
+`deploy/ci/github-runner/gc/alerts.yaml` 提供可选 PrometheusRule：PVC 可用空间低于 100/50GiB、Deployment 不可用、每日 GC 超过 36 小时未成功、GC 中断/失败和镜像验证警告。PVC/Deployment 告警由集群指标提供，Pod 崩溃时仍能检测。安装前必须确认 Prometheus Operator、kube-state-metrics、kubelet 卷指标、规则选择标签、Pod 9105 抓取和告警路由；仅有文件或 scrape annotation 不代表监控已生效。规则需单独应用并在 Prometheus 中验证查询及告警送达。
+
+## 风险、异常和回滚
+
+- 应用部署会重建 Pod，运行中的构建会中断；必须在空闲窗口操作。缓存回收增加后续构建时间及网络/磁盘 I/O；只读仓库凭据故障会导致历史镜像累积。
+- 出现 maintenance.json 时先查看其引用的日志与 Docker 状态，导出临时报告，确认无构建后重建整个 Pod，让客户端和 Docker daemon 一起停止。不要直接删除标记后接单；daemon 可能仍在处理超时命令。重启只是解除异常运行状态，不会清空 PVC，也不能代替回收。
+- 如果不足 100GiB 且缓存已无可回收内容，应分析受保护镜像、工作目录和日志或扩容 PVC；不要直接删除 overlay2 文件。
+- 配置回滚：在维护窗口通过 master 对备份的 Deployment/启动 ConfigMap 执行 `kubectl apply -f -`，恢复已备份的 GC ConfigMap（若有），再 `kubectl rollout restart deployment/dingo-gxl-runner -n elm-test` 并检查 rollout。首次安装回滚后可删除不再挂载的 GC ConfigMap。仅 rollout undo 不能恢复 ConfigMap 内容；PVC 不删除。可选告警规则单独恢复或删除。
+- 删除的数据不能通过配置回滚恢复。按 recovery.jsonl 的 digest_reference 执行 docker pull，再 docker tag 恢复标签；前提是远端对应 digest 仍保留。缓存由后续构建重建。
+
+## 本地测试
+
+```bash
+set -euxo pipefail
+uv --cache-dir /tmp/dingo-gc-uv-cache run --no-project --with pytest --with pyyaml \
+  python -m pytest --noconftest -c /dev/null -p no:cacheprovider \
+  .github/scripts/test_runner_gc.py .github/scripts/test_runner_gc_manager.py -q
+```
+
+测试使用模拟 Docker/registry，不连接生产，不删除本机镜像；包含跨进程文件锁、中断保护、水位、时区、渲染配置及 Bash 语法验证。

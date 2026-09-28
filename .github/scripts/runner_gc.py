@@ -141,8 +141,10 @@ def main() -> None:
     (args.output / "inventory.json").write_text(json.dumps(images, indent=2) + "\n")
     (args.output / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
     failures = []
+    deletion_failed = False
     with (args.output / "recovery.jsonl").open("a") as recovery:
         for image in plan["candidates"]:
+            verified = False
             print(
                 f"CANDIDATE {image['Created']} {image['Id']} {image['RepoTags']}",
                 flush=True,
@@ -153,16 +155,21 @@ def main() -> None:
                     json.dumps({"id": image["Id"], "references": references}) + "\n"
                 )
                 recovery.flush()
+                verified = True
                 if args.apply:
                     for reference in references:
                         tag = reference["tag"]
                         current = json.loads(run("docker", "image", "inspect", tag))[0]
                         if current["Id"] != image["Id"]:
                             raise ValueError("local tag changed during GC")
-                        print(run("docker", "image", "rm", "--no-prune", tag), flush=True)
+                        print(
+                            run("docker", "image", "rm", "--no-prune", tag), flush=True
+                        )
                 else:
                     print("DRY RUN: verified; no deletion", flush=True)
             except (subprocess.SubprocessError, ValueError, KeyError) as error:
+                if args.apply and verified:
+                    deletion_failed = True
                 failures.append(image["Id"])
                 print(f"SKIP/FAILED {image['Id']}: {error}", flush=True)
     summary = (
@@ -176,9 +183,8 @@ def main() -> None:
     (args.output / "summary.md").write_text(summary)
     print(summary)
     if failures:
-        raise SystemExit(
-            "Some images could not be safely removed; inspect GC artifacts"
-        )
+        print("Some images could not be safely removed; inspect GC artifacts")
+        raise SystemExit(1 if deletion_failed else 2)
 
 
 if __name__ == "__main__":

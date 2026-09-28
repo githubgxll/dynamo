@@ -163,8 +163,9 @@ def test_main_dry_run_and_apply(
     if verified:
         gc.main()
     else:
-        with pytest.raises(SystemExit, match="could not be safely removed"):
+        with pytest.raises(SystemExit) as failure:
             gc.main()
+        assert failure.value.code == 2
     deletions = [cmd for cmd in commands if cmd[1:3] == ("image", "rm")]
     assert deletions == (
         [("docker", "image", "rm", "--no-prune", images[0]["RepoTags"][0])]
