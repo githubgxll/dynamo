@@ -40,6 +40,7 @@ class WorkerVideoResult:
     inference_time_s: float | None = None
     stage_durations: Mapping[str, float] | None = None
     artifact: Mapping[str, Any] | None = None
+    model_execution: Mapping[str, Any] | None = None
 
 
 class WorkerStreamConsumer(Protocol):
