@@ -875,7 +875,15 @@ class SglangProcessor:
                             if key not in ("usage", "nvext")
                         }
                         payload["choices"] = [{**choice, "finish_reason": None}]
-                        dynamo_out["choices"] = [{**choice, "delta": {}}]
+                        # The logprobs payload rides with the tool-call
+                        # payload only; duplicating it onto the pure finish
+                        # marker would double-count the terminal tokens when
+                        # a client (or the non-stream DeltaAggregator)
+                        # concatenates logprobs across chunks (review
+                        # 20260928 finding 3).
+                        dynamo_out["choices"] = [
+                            {**choice, "delta": {}, "logprobs": None}
+                        ]
                         yield {**envelope, "data": payload}
                         yield {"_dynamo_annotated": True, "data": dynamo_out}
                     else:

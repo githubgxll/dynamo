@@ -749,32 +749,58 @@ def _unescape_pointer_token(token: str) -> str:
 # them; see _rewrite_def_refs.
 _LITERAL_VALUE_KEYWORDS = frozenset({"const", "enum", "default", "examples"})
 
+# Keywords whose values are maps from an arbitrary, user-defined name to a
+# subschema.  The map keys are names, not schema keywords, so the
+# literal-value skip must not apply while iterating them: a property named
+# "default" still holds a subschema that may contain a ``$ref`` (review
+# 20260928 finding 1).
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "dependencies",
+    }
+)
 
-def _rewrite_def_refs(value: Any, names: dict[str, str]) -> None:
+
+def _rewrite_def_refs(
+    value: Any, names: dict[str, str], *, _inside_schema_map: bool = False
+) -> None:
     """Rewrite ``#/$defs/...`` references in-place according to ``names``.
 
     Only the leading definition token is remapped; any JSON-pointer suffix
     below the definition is preserved.
     """
     if isinstance(value, dict):
-        ref = value.get("$ref")
-        if isinstance(ref, str) and ref.startswith("#/$defs/"):
-            pointer = ref[len("#/$defs/") :]
-            old_token, separator, suffix = pointer.partition("/")
-            old_name = _unescape_pointer_token(old_token)
-            new_name = names.get(old_name)
-            if new_name is not None and new_name != old_name:
-                value["$ref"] = f"#/$defs/{_escape_pointer_token(new_name)}" + (
-                    f"/{suffix}" if separator else ""
-                )
+        if not _inside_schema_map:
+            ref = value.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                pointer = ref[len("#/$defs/") :]
+                old_token, separator, suffix = pointer.partition("/")
+                old_name = _unescape_pointer_token(old_token)
+                new_name = names.get(old_name)
+                if new_name is not None and new_name != old_name:
+                    value["$ref"] = f"#/$defs/{_escape_pointer_token(new_name)}" + (
+                        f"/{suffix}" if separator else ""
+                    )
         for key, child in value.items():
-            if key in _LITERAL_VALUE_KEYWORDS:
+            if _inside_schema_map:
+                # Map keys are user-defined names; every value is a
+                # subschema and must be traversed whatever it is called.
+                _rewrite_def_refs(child, names)
+            elif key in _LITERAL_VALUE_KEYWORDS:
                 # Literal instance data (const/enum/default/examples), not
                 # a subschema: a {"$ref": ...} object here is data the
                 # model must produce and must never be rewritten (review
                 # 20260924 v2).
                 continue
-            _rewrite_def_refs(child, names)
+            elif key in _SCHEMA_MAP_KEYWORDS:
+                _rewrite_def_refs(child, names, _inside_schema_map=True)
+            else:
+                _rewrite_def_refs(child, names)
     elif isinstance(value, list):
         for child in value:
             _rewrite_def_refs(child, names)
@@ -1434,6 +1460,11 @@ class SglangStreamingPostProcessor:
         self._pending_stop_text = ""
 
         self._all_token_ids: list[int] = []
+        # Logprob records built for chunks that emit no visible delta (e.g.
+        # a withheld partial UTF-8 character).  They are prepended to the
+        # next emitted choice so probabilities are never dropped with the
+        # suppressed text (review 20260928 finding 2).
+        self._withheld_logprobs: list[dict[str, Any]] = []
         # Tool call accumulation.  SGLang's streaming parser returns
         # deltas (name in one chunk, argument fragments across subsequent
         # chunks).  However, the base detector processes at most one event
@@ -1778,6 +1809,28 @@ class SglangStreamingPostProcessor:
 
         return {"content": content}
 
+    def _withhold_logprobs_payload(self, payload: dict[str, Any] | None) -> None:
+        """Stash logprob entries when this chunk emits no visible delta.
+
+        A chunk whose text is withheld (unfinished UTF-8 character, stop
+        string prefix, parser buffering) returns ``None``; without stashing,
+        its probabilities would be dropped and the stream would end up with
+        fewer logprob records than completion tokens.
+        """
+        if payload and payload.get("content"):
+            self._withheld_logprobs.extend(payload["content"])
+
+    def _release_logprobs_payload(
+        self, payload: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Prepend withheld entries so emitted records stay in token order."""
+        if not self._withheld_logprobs:
+            return payload
+        content = self._withheld_logprobs
+        self._withheld_logprobs = []
+        content.extend((payload or {}).get("content") or [])
+        return {"content": content}
+
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
 
@@ -1828,15 +1881,16 @@ class SglangStreamingPostProcessor:
                     "index": 0,
                     "delta": {"role": "assistant", "content": delta_text},
                     "finish_reason": finish_reason,
-                    "logprobs": logprobs_payload,
+                    "logprobs": self._release_logprobs_payload(logprobs_payload),
                 }
             elif finish_reason:
                 return {
                     "index": 0,
                     "delta": {},
                     "finish_reason": finish_reason,
-                    "logprobs": logprobs_payload,
+                    "logprobs": self._release_logprobs_payload(logprobs_payload),
                 }
+            self._withhold_logprobs_payload(logprobs_payload)
             return None
 
         # -- Reasoning parsing --
@@ -2154,7 +2208,8 @@ class SglangStreamingPostProcessor:
                 "index": 0,
                 "delta": delta if has_content else {},
                 "finish_reason": effective_finish,
-                "logprobs": logprobs_payload,
+                "logprobs": self._release_logprobs_payload(logprobs_payload),
             }
 
+        self._withhold_logprobs_payload(logprobs_payload)
         return None

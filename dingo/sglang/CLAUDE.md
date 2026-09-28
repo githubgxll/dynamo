@@ -256,10 +256,14 @@ on deployments where that cost is a concern.
 
 **Streaming behavior** (`_extract_logprobs`):
 
-Dynamo forces `stream_output=True` (args.py:374), making `output_ids` disjoint per chunk.
-However, SGLang's `meta_info["output_token_logprobs"]` and `meta_info["output_top_logprobs"]`
-are always **cumulative** — they grow with each chunk. The handler tracks
-`num_output_logprobs_so_far` to slice out only new entries per chunk.
+Dynamo forces `stream_output=True` (args.py:374) and
+`incremental_streaming_output=True` (args.py:512). In incremental streaming
+mode, SGLang's `meta_info["output_token_logprobs"]` and `meta_info["output_top_logprobs"]`
+arrive already sliced to the chunk's new tokens (the upstream tokenizer
+manager splits them by output offset), so the handler passes
+`incremental=True` to `extract_from_sglang_meta()` and forwards them
+directly. Only SGLang's default non-incremental mode sends cumulative
+arrays that must be sliced by `num_output_logprobs_so_far`.
 
 SGLang logprob format: `(logprob, token_id, text_or_None)` tuples.
 Dynamo output format: `log_probs` = list of floats, `top_logprobs` = list of lists of
@@ -307,9 +311,11 @@ text-to-video-diffusion.sh  # 1-2 GPUs - Text-to-video (Wan2.1)
 - **output_modalities default**: Global default is `["text"]`. Image/video diffusion
   workers must override to `["image"]`/`["video"]` or the Rust registration path tries
   to load `config.json` (which doesn't exist for diffusers models).
-- **Cumulative logprobs in streaming**: SGLang's `output_token_logprobs`/`output_top_logprobs`
-  in `meta_info` are cumulative even though `output_ids` are disjoint (stream_output=True).
-  Always slice with an offset, don't assume per-chunk logprobs.
+- **Per-chunk logprobs in incremental streaming**: with Dynamo's forced
+  `incremental_streaming_output=True`, `output_token_logprobs`/`output_top_logprobs`
+  in `meta_info` are already disjoint per chunk — forward them directly.
+  Treating them as cumulative and slicing with `num_output_logprobs_so_far`
+  returns nothing for every chunk after the first.
 - **Zombie GPU processes**: `sgl_diffusion::scheduler` spawns a child process that
   survives parent kill. Always check `nvidia-smi` after teardown.
 - **Session radix cache**: SGLang 0.5.14+ provides session-aware radix ownership
