@@ -1647,6 +1647,70 @@ class TestNamespaceToolParameterDefs:  # FRONTEND.3 — pre-builder $defs isolat
             "#/$defs/a__Payload"
         )
 
+    def test_property_named_like_literal_keyword_is_rewritten(self):
+        """Review 20260928 f1: inside a ``properties`` map the keys are
+        user-defined names, so a property literally named
+        const/enum/default/examples still holds a subschema whose ``$ref``
+        must be rewritten alongside every other reference."""
+        for keyword in ("const", "enum", "default", "examples"):
+            tools = self._make_tools(
+                (
+                    "a",
+                    {
+                        "type": "object",
+                        "$defs": {"Payload": {"type": "string"}},
+                        "properties": {keyword: {"$ref": "#/$defs/Payload"}},
+                    },
+                ),
+                (
+                    "b",
+                    {
+                        "type": "object",
+                        "$defs": {"Payload": {"type": "string"}},
+                        "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                    },
+                ),
+            )
+            result = _namespace_tool_parameter_defs(tools)
+            assert set(result[0].function.parameters["$defs"]) == {"a__Payload"}
+            assert result[0].function.parameters["properties"][keyword][
+                "$ref"
+            ] == "#/$defs/a__Payload", keyword
+
+    def test_keyword_named_property_resolves_through_real_builder(self):
+        """Review 20260928 f1 end-to-end: identical-content ``$defs`` keep
+        SGLang's builder from rejecting early, and the final guided schema
+        must not retain a dangling pointer to the pre-namespace name."""
+        tools = self._make_tools(
+            (
+                "a",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "string"}},
+                    "properties": {"default": {"$ref": "#/$defs/Payload"}},
+                    "required": ["default"],
+                },
+            ),
+            (
+                "b",
+                {
+                    "type": "object",
+                    "$defs": {"Payload": {"type": "string"}},
+                    "properties": {"data": {"$ref": "#/$defs/Payload"}},
+                },
+            ),
+        )
+        guided = build_tool_call_guided_decoding(
+            {"tool_choice": "required"},
+            tool_call_parser_name=None,
+            sglang_tools=tools,
+        )
+        assert isinstance(guided, dict) and "json" in guided
+        schema_text = json.dumps(guided["json"])
+        assert "a__Payload" in schema_text
+        assert "b__Payload" in schema_text
+        assert '"$ref": "#/$defs/Payload"' not in schema_text
+
     def test_required_multi_tool_conflicting_defs_real_builder(self):
         """Integration through SGLang's real builder (review 20260924 f2):
         two tools with same-named, different-content ``$defs`` and
@@ -3080,6 +3144,133 @@ class TestFastPlainTextPath:  # FRONTEND.6 — fast path that skips parser when 
         assert "content" in choice["delta"]
         assert choice["index"] == 0
         assert choice["logprobs"] is None
+
+
+class TestLogprobsStreaming:  # FRONTEND.6 — logprobs passthrough integrity
+    """Logprob records must survive chunks that emit no visible text, and
+    must not be duplicated when the terminal choice is split in two."""
+
+    class _ByteTokenizer:
+        """One token id per raw byte; an incomplete trailing UTF-8
+        sequence surfaces as a single held-back U+FFFD, like HF byte-level
+        decoders feeding the incremental detokenizer."""
+
+        def decode(
+            self, token_ids: list[int], *, skip_special_tokens: bool
+        ) -> str:
+            text = bytes(token_ids).decode("utf-8", errors="replace")
+            stripped = text.rstrip("�")
+            if len(stripped) != len(text):
+                return stripped + "�"
+            return text
+
+    def test_logprobs_survive_withheld_text(self):
+        """Review 20260928 f2: the bytes of one multi-byte character
+        arriving as separate chunks used to strand every logprob record
+        except the last byte's."""
+        post = SglangStreamingPostProcessor(
+            tokenizer=self._ByteTokenizer(),
+            tool_call_parser=None,
+            reasoning_parser=None,
+            logprobs_enabled=True,
+        )
+        zhong = list("中".encode("utf-8"))
+        assert len(zhong) == 3  # the scenario is one character, three bytes
+
+        text = ""
+        collected: list[float] = []
+        for tid, lp in zip(zhong, (-0.1, -0.2, -0.3)):
+            choice = post.process_output(
+                {"token_ids": [tid], "log_probs": [lp], "finish_reason": None}
+            )
+            if choice is None:
+                continue
+            text += choice["delta"].get("content", "")
+            collected.extend(e["logprob"] for e in choice["logprobs"]["content"])
+
+        assert text == "中"
+        assert collected == [-0.1, -0.2, -0.3]
+
+        # The finish chunk must not re-send already released records.
+        final = post.process_output({"token_ids": [], "finish_reason": "stop"})
+        assert final is not None
+        if final["logprobs"]:
+            collected.extend(e["logprob"] for e in final["logprobs"]["content"])
+        assert collected == [-0.1, -0.2, -0.3]
+
+    def test_terminal_tool_chunk_sends_logprobs_once(self, tokenizer):
+        """Review 20260928 f3: the finish/tool-call split attaches
+        logprobs to the payload choice only, so a client (or the
+        non-stream DeltaAggregator) concatenating records across chunks
+        counts the terminal tokens exactly once."""
+
+        class _TerminalToolCallPost:
+            """Post-processor double: every chunk looks like the terminal
+            tool-call flush carrying one logprob record."""
+
+            def process_output(self, mapped):
+                return {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "f", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "}",
+                                "bytes": [125],
+                                "logprob": -0.25,
+                                "top_logprobs": [],
+                            }
+                        ]
+                    },
+                }
+
+        processor = SglangProcessor(
+            tokenizer=tokenizer,
+            routed_engine=FakeRoutedEngine(
+                items=[{"token_ids": [1], "finish_reason": "stop"}]
+            ),
+            tool_call_parser_name=None,
+            reasoning_parser_name=None,
+            eos_token_ids=None,
+        )
+        post = _TerminalToolCallPost()
+
+        async def collect():
+            return [
+                item
+                async for item in processor._generate_and_stream(
+                    "req-logprobs", {"model": "test-model"}, {}, [], post
+                )
+            ]
+
+        envelopes = asyncio.run(collect())
+        data = [e["data"] for e in envelopes if "data" in e]
+        assert len(data) == 2
+
+        payload_choice = data[0]["choices"][0]
+        finish_choice = data[1]["choices"][0]
+        assert payload_choice["delta"].get("tool_calls")
+        assert payload_choice["finish_reason"] is None
+        assert finish_choice["finish_reason"] == "tool_calls"
+        assert finish_choice["delta"] == {}
+
+        collected = []
+        for chunk in data:
+            lp = chunk["choices"][0].get("logprobs")
+            if lp:
+                collected.extend(e["logprob"] for e in lp["content"])
+        assert collected == [-0.25]
 
 
 # ---------------------------------------------------------------------------
