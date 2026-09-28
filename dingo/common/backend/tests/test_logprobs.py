@@ -301,13 +301,13 @@ def test_sglang_kwargs_empty_when_no_options():
 
 
 def test_sglang_kwargs_logprobs_zero_allowed_without_gate():
-    # The default gate forbids logprobs >= 1; logprobs=0 always works.
+    # Chosen-token-only logprobs are available even when top-k is disabled.
     kwargs = build_sglang_logprob_kwargs({"logprobs": 0}, allow_top_logprobs=False)
     assert kwargs == {"return_logprob": True, "top_logprobs_num": 0}
 
 
 def test_sglang_kwargs_top_logprobs_rejected_without_gate():
-    with pytest.raises(ValueError, match="does not currently support logprobs >= 1"):
+    with pytest.raises(ValueError, match="disabled by DYN_SGL_ALLOW_TOP_LOGPROBS=0"):
         build_sglang_logprob_kwargs({"logprobs": 2}, allow_top_logprobs=False)
 
 
@@ -336,12 +336,16 @@ def test_sglang_kwargs_both_set_picks_max():
 
 
 def test_sglang_gate_reads_env(monkeypatch):
+    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    assert sglang_top_logprobs_allowed() is True
     monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "1")
     assert sglang_top_logprobs_allowed() is True
     monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "0")
     assert sglang_top_logprobs_allowed() is False
-    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    monkeypatch.setenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, "false")
     assert sglang_top_logprobs_allowed() is False
+    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    assert sglang_top_logprobs_allowed() is True
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +413,43 @@ def test_sglang_extract_returns_offset_unchanged_when_no_new_entries():
     _, _, new_total = extract_from_sglang_meta(meta, 1)
     assert new_total == 1
 
+
+def test_sglang_extract_incremental_no_slice():
+    """incremental=True: arrays are already disjoint, no slicing."""
+    meta = {
+        "output_token_logprobs": [(-0.5, 10, "x")],
+        "output_top_logprobs": [[(-0.5, 10, "x"), (-0.8, 11, "y")]],
+    }
+    log_probs, top_logprobs, new_total = extract_from_sglang_meta(
+        meta, 5, incremental=True
+    )
+    assert log_probs == [-0.5]
+    assert top_logprobs == [
+        [
+            {"rank": 1, "token_id": 10, "token": "x", "logprob": -0.5},
+            {"rank": 2, "token_id": 11, "token": "y", "logprob": -0.8},
+        ]
+    ]
+    assert new_total == 6
+
+
+def test_sglang_extract_incremental_empty_array():
+    """incremental=True: empty output_token_logprobs returns None."""
+    meta = {"output_token_logprobs": []}
+    log_probs, _, new_total = extract_from_sglang_meta(meta, 3, incremental=True)
+    assert log_probs is None
+    assert new_total == 3
+
+
+def test_sglang_extract_incremental_no_top_logprobs():
+    """incremental=True: log_probs without top_logprobs."""
+    meta = {"output_token_logprobs": [(-0.1, 1, "a")]}
+    log_probs, top_logprobs, new_total = extract_from_sglang_meta(
+        meta, 0, incremental=True
+    )
+    assert log_probs == [-0.1]
+    assert top_logprobs is None
+    assert new_total == 1
 
 # ---------------------------------------------------------------------------
 # Legacy ↔ unified behavioural parity corner cases.
@@ -656,7 +697,9 @@ def test_parity_sglang_kwargs_rejects_top_logprobs_consistently():
         {"prompt_logprobs": 2},
         {"logprobs": 0, "prompt_logprobs": 3},
     ):
-        with pytest.raises(ValueError, match="does not currently support"):
+        with pytest.raises(
+            ValueError, match="SGLang top-k logprobs are disabled"
+        ):
             build_sglang_logprob_kwargs(opts, allow_top_logprobs=False)
 
 

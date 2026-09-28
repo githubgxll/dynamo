@@ -481,6 +481,7 @@ class SglangLLMEngine(LLMEngine):
                     meta_info,
                     num_logprobs_per_choice.get(output_idx, 0),
                     return_tokens_as_token_ids=return_tokens_as_token_ids,
+                    incremental=True,
                 )
                 num_logprobs_per_choice[output_idx] = next_total
                 if log_probs is not None:
