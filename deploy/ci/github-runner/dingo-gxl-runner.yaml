@@ -25,11 +25,16 @@ data:
 
     runner_pid=""
     dockerd_pid=""
+    gc_pid=""
 
     cleanup() {
       if [[ -n "${runner_pid}" ]]; then
         kill -TERM "${runner_pid}" 2>/dev/null || true
         wait "${runner_pid}" 2>/dev/null || true
+      fi
+      if [[ -n "${gc_pid}" ]]; then
+        kill -TERM "${gc_pid}" 2>/dev/null || true
+        wait "${gc_pid}" 2>/dev/null || true
       fi
       if [[ -n "${dockerd_pid}" ]]; then
         kill -TERM "${dockerd_pid}" 2>/dev/null || true
@@ -88,33 +93,6 @@ data:
       /runner-data/tools \
       /usr/local/lib/docker/cli-plugins
 
-    docker_config="${HOME}/.docker/config.json"
-    docker_config_tmp="$(mktemp "${HOME}/.docker/config.json.XXXXXX")"
-    if [[ -s "${docker_config}" ]] && jq empty "${docker_config}" 2>/dev/null; then
-      jq \
-        --arg http_proxy "${HTTP_PROXY}" \
-        --arg https_proxy "${HTTPS_PROXY}" \
-        --arg no_proxy "${NO_PROXY}" \
-        '.proxies.default = {
-          httpProxy: $http_proxy,
-          httpsProxy: $https_proxy,
-          noProxy: $no_proxy
-        }' \
-        "${docker_config}" > "${docker_config_tmp}"
-    else
-      jq -n \
-        --arg http_proxy "${HTTP_PROXY}" \
-        --arg https_proxy "${HTTPS_PROXY}" \
-        --arg no_proxy "${NO_PROXY}" \
-        '{proxies: {default: {
-          httpProxy: $http_proxy,
-          httpsProxy: $https_proxy,
-          noProxy: $no_proxy
-        }}}' > "${docker_config_tmp}"
-    fi
-    chmod 0600 "${docker_config_tmp}"
-    mv "${docker_config_tmp}" "${docker_config}"
-
     if [[ ! -x "${install_dir}/bin/Runner.Listener" ]]; then
       if ! echo "${RUNNER_SHA256}  ${archive}" | \
            sha256sum --check --status 2>/dev/null; then
@@ -157,7 +135,7 @@ data:
       --data-root=/runner-data/docker \
       --storage-driver=overlay2 \
       --log-level=warn \
-      >/runner-data/dockerd.log 2>&1 &
+      >/tmp/dingo-dockerd.log 2>&1 &
     dockerd_pid=$!
 
     docker_ready=false
@@ -172,9 +150,41 @@ data:
       sleep 1
     done
     if [[ "${docker_ready}" != true ]]; then
-      tail -n 200 /runner-data/dockerd.log || true
+      tail -n 200 /tmp/dingo-dockerd.log || true
       exit 1
     fi
+
+    # Bootstrap cache recovery before writing client configuration to the PVC.
+    if [[ -f /etc/dingo-gc/manager.py ]]; then
+      python3 /etc/dingo-gc/manager.py bootstrap
+    fi
+
+    docker_config="${HOME}/.docker/config.json"
+    docker_config_tmp="$(mktemp "${HOME}/.docker/config.json.XXXXXX")"
+    if [[ -s "${docker_config}" ]] && jq empty "${docker_config}" 2>/dev/null; then
+      jq \
+        --arg http_proxy "${HTTP_PROXY}" \
+        --arg https_proxy "${HTTPS_PROXY}" \
+        --arg no_proxy "${NO_PROXY}" \
+        '.proxies.default = {
+          httpProxy: $http_proxy,
+          httpsProxy: $https_proxy,
+          noProxy: $no_proxy
+        }' \
+        "${docker_config}" > "${docker_config_tmp}"
+    else
+      jq -n \
+        --arg http_proxy "${HTTP_PROXY}" \
+        --arg https_proxy "${HTTPS_PROXY}" \
+        --arg no_proxy "${NO_PROXY}" \
+        '{proxies: {default: {
+          httpProxy: $http_proxy,
+          httpsProxy: $https_proxy,
+          noProxy: $no_proxy
+        }}}' > "${docker_config_tmp}"
+    fi
+    chmod 0600 "${docker_config_tmp}"
+    mv "${docker_config_tmp}" "${docker_config}"
 
     cd "${install_dir}"
     export RUNNER_ALLOW_RUNASROOT=1
@@ -194,9 +204,20 @@ data:
         --work "${RUNNER_WORKDIR}"
     fi
 
+    if [[ -f /etc/dingo-gc/manager.py ]]; then
+      export ACTIONS_RUNNER_HOOK_JOB_STARTED=/etc/dingo-gc/job-started.sh
+      export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/etc/dingo-gc/job-completed.sh
+      python3 -u /etc/dingo-gc/manager.py serve &
+      gc_pid=$!
+    fi
     ./run.sh &
     runner_pid=$!
-    wait "${runner_pid}"
+    if [[ -n "${gc_pid}" ]]; then
+      # A dead scheduler must not leave an unprotected runner accepting jobs.
+      wait -n "${runner_pid}" "${gc_pid}"
+    else
+      wait "${runner_pid}"
+    fi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

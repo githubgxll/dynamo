@@ -105,3 +105,12 @@ the persistent volume. Normal Pod restarts reuse the saved registration.
 If the runner is removed in GitHub or the PVC is replaced, create a fresh
 registration token, update the Secret, remove the stale runner configuration
 from the PVC, and restart the Deployment.
+
+## DingoRouter-base runner garbage collection
+
+For `dingo-gxl-runner`, use `render_gc.py` to deploy the runner with local daily
+05:00 Asia/Shanghai GC, job hooks, disk admission checks and optional registry
+credentials. See the [GC deployment and rollback runbook](../../../.github/scripts/runner-gc.md).
+The generated bundle is required to enable GC; applying the base YAML alone does
+not install the GC scripts or hooks. The daily scheduler does not depend on the
+GitHub default branch. Optional monitoring rules are in `gc/alerts.yaml`.
