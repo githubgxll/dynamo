@@ -1,0 +1,60 @@
+# Optional: requires Prometheus Operator, kube-state-metrics, kubelet volume
+# metrics and scraping Pod :9105/metrics. Match labels to your rule selector.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dingo-gxl-runner-gc
+  namespace: elm-test
+spec:
+  groups:
+    - name: dingo-gxl-runner
+      rules:
+        - alert: DingoRunnerVolumeLow
+          expr: kubelet_volume_stats_available_bytes{namespace="elm-test",persistentvolumeclaim="dingo-gxl-runner-data"} < 100 * 1024 * 1024 * 1024
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Dingo Runner PVC has less than 100GiB available
+        - alert: DingoRunnerVolumeCritical
+          expr: kubelet_volume_stats_available_bytes{namespace="elm-test",persistentvolumeclaim="dingo-gxl-runner-data"} < 50 * 1024 * 1024 * 1024
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Dingo Runner PVC has less than 50GiB available
+        - alert: DingoRunnerUnavailable
+          expr: kube_deployment_status_replicas_available{namespace="elm-test",deployment="dingo-gxl-runner"} < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Dingo Runner is unavailable; its local GC cannot be relied on
+        - alert: DingoRunnerGCStale
+          expr: time() - dingo_runner_gc_last_daily_success_timestamp_seconds{runner="dingo-gxl-runner"} > 36 * 3600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Dingo Runner has no successful GC in 36 hours
+        - alert: DingoRunnerGCBlocked
+          expr: dingo_runner_gc_maintenance_blocked{runner="dingo-gxl-runner"} == 1
+          for: 40m
+          labels:
+            severity: critical
+          annotations:
+            summary: Dingo Runner cleanup is interrupted or stuck; new jobs are blocked
+        - alert: DingoRunnerGCFailed
+          expr: dingo_runner_gc_last_run_failed{runner="dingo-gxl-runner"} == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Dingo Runner GC failed; inspect status.json and GC reports
+        - alert: DingoRunnerImageVerificationWarning
+          expr: dingo_runner_gc_image_verification_warning{runner="dingo-gxl-runner"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: Some old images were retained because registry verification failed
