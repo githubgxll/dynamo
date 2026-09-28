@@ -500,6 +500,7 @@ class TestOutputFormatter:
             output_format="mp4",
             audio=None,
             audio_sample_rate=None,
+            model_execution=None,
         )
 
     @pytest.mark.asyncio

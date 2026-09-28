@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from dingo.common.video_timing_schemas import MODEL_EXECUTION_KEY
 from dingo.video_gateway.errors import (
     GatewayError,
     HandoffReservationLost,
@@ -1285,6 +1286,8 @@ class EtcdTaskStore(TaskStore):
         updated.inference_time_s = None
         updated.finalize_time_s = None
         updated.stage_durations = None
+        updated.normalized_request = dict(updated.normalized_request)
+        updated.normalized_request.pop(MODEL_EXECUTION_KEY, None)
         updated.error = None
         counter_key = self._counter_key(task.pool_id)
         queue_key = self._queue_key(task.pool_id, task.id)

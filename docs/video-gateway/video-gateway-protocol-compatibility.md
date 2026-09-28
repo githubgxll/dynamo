@@ -1,6 +1,11 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Dingo Video Gateway API 协议与兼容性
 
-本文描述当前 DingoRouter Video Gateway 对外提供的视频 API，以及它与 OpenAI Videos API、vLLM-Omni Videos API 的关系。以 2026-09-23 的 DingoRouter 实现为准；实际模型名、可用状态和媒体限制应查询目标部署的 `GET /v1/models`。
+本文描述 DingoRouter Video Gateway 的视频 API，以及它与 OpenAI Videos API、vLLM-Omni Videos API 的关系。以 2026-09-28 的本仓库源码为准；新诊断端点和模型计时需要部署对应版本，不能据此假定旧部署已具备这些字段。实际模型名、可用状态和媒体限制应查询目标部署的 `GET /v1/models`。
 
 ## 一句话说明
 
@@ -77,7 +82,7 @@ Gateway 将公开请求规范化为 Worker 请求。Worker 执行仍依赖 vLLM-
 | `expires_at` | 同名 Unix 秒时间戳；我们按本地任务保留策略设置，不能假定与 OpenAI 保留期限一致 |
 | `error` | 官方视频错误对象可含 `headers`、`misalignment`；我们失败时仅返回本地 `code`、`message`、`retryable`，且正常状态通常不返回 `error` 键 |
 | `prompt`、`remixed_from_video_id` | 官方视频对象定义了这些字段；当前任务 JSON 不提供 |
-| `metrics`、`stage_durations`、`inference_time_s`、`num_frames`、`fps`、`seed`、`bytes`、`sha256` 等 | 我们的附加字段，不是 OpenAI Videos 对象的必备/标准字段 |
+| `metrics`、`inference_time_s`、`num_frames`、`fps`、`seed`、`bytes`、`sha256` 等 | 我们的附加字段，不是 OpenAI Videos 对象的必备/标准字段；详细阶段在 `/diagnostics` 返回 |
 
 ### 我们新增、但不是 OpenAI Videos API 的能力
 
@@ -86,7 +91,7 @@ Gateway 将公开请求规范化为 Worker 请求。Worker 执行仍依赖 vLLM-
 | 同步返回 MP4 | `POST /v1/videos/sync`；沿用持久化任务流程，超时后还可凭 `X-Video-Id` 查询 |
 | 幂等提交 | 请求头 `Idempotency-Key`；任务与幂等记录保留、pool 配置及适配器兼容版本不变时，相同请求复用任务；同 key 的请求摘要不一致返回 409；记录清理后同 key 可能创建新任务 |
 | 多参考与 MiniMax-H3 生成控制 | 重复的文件 part `input_references`，以及 `width`、`height`、`num_frames`、`fps`、`num_inference_steps`、`seed`、`generate_sound`、`frame_indices` 等；按模型/pool 校验，不是任意透传 |
-| 更多任务状态和观测字段 | `cancelled`、`expired`；`metrics`、`stage_durations`、`num_frames`、`fps`、`seed`、`bytes`、`sha256`、`duration_s` 等；`inference_time_s` 也不是 OpenAI Videos 标准字段 |
+| 更多任务状态和观测字段 | `cancelled`、`expired`；`metrics`、`num_frames`、`fps`、`seed`、`bytes`、`sha256`、`duration_s` 等；`inference_time_s` 也不是 OpenAI Videos 标准字段 |
 | 下载与运维 | `HEAD`、Range/ETag/条件下载；`/live`、`/ready`、`/health`、`/metrics` |
 
 `user` 虽可作为我们请求中的标签，但不是上述 OpenAI **Videos Create** 参考列出的参数，不负责认证或租户隔离。`response_format`、`output_format` 等字段源于 vLLM-Omni/内部适配，也不属于 OpenAI Videos Create 的公开参数。
@@ -161,7 +166,19 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" -o "$TASK_ID.mp4"
 
 异步提交先返回任务 ID 与 `object: "video"`。公开状态为 `queued`、`in_progress`、`completed`、`failed`、`cancelled`、`expired`。内部 `dispatching` 和 `finalizing` 都映射为 `in_progress`；`in_progress` 也可能表示 Worker 内预取等待。当前 `progress` 只有完成时 100、其他状态 0，不提供逐去噪步进度。
 
-完成后，`GET /v1/videos/{id}` 提供结果字节数、SHA256、实际视频时长以及 `metrics` / `stage_durations`。其中 `queue_wait_s`、`worker_queue_wait_s`、`inference_time_s`、`finalize_time_s` 用于区分 Gateway 排队、Worker 预取、推理与 Gateway 结果处理。已受理任务失败时查看任务的 `error.code`，例如 `worker_failed` 或 `finalization_timeout`；没有可用 Worker 时，提交请求可直接收到 HTTP 503 `no_worker_available`。
+完成后，`GET /v1/videos/{id}` 提供结果字节数、SHA256、实际视频时长以及 `metrics`。
+`metrics` 是逐任务计时元数据，与 Prometheus `/metrics` 无关。它包含排队、Worker执行、
+Gateway结果处理，以及带版本标识的 `model_execution` 模型阶段对象；当前 H3 schema
+为 `minimax_h3.v1`。原生 Omni 的 `metrics` 内部结构不同，不能按同一类型直接解析。
+发生重试时分项只描述当前/最终 attempt，顶层总时间仍覆盖整个任务。
+
+Worker 输出编码、制品写入等细项改由 `GET /v1/videos/{id}/diagnostics` 的
+`diagnostics.stage_durations` 返回；模型阶段仍位于 `metrics.model_execution`。
+该响应包含普通查询的全部字段；旧客户端需要从普通查询迁移到此接口获取细节。
+当前诊断接口不包含 Gateway 媒体处理细项、历史 attempt 列表或完整链路时间线。
+vLLM-Omni 自身也提供原生 `stage_durations`，但 Gateway 普通任务对象不直接透传该字典。
+父子阶段不可无条件求和。具体计时边界见[接口文档](video-gateway-api.md)。
+已受理任务失败时查看 `error.code`；无可用 Worker 时提交可返回 HTTP 503 `no_worker_available`。
 
 这里也有类型和语义差异：OpenAI 视频对象的 `seconds` 是字符串，当前 Gateway 返回数值型时长；OpenAI 文档中的 `progress` 表示近似完成百分比，而当前 Gateway 仅使用 0/100。客户端不应依赖官方 SDK 对视频对象的全部类型约束与可选字段都完全一致。
 

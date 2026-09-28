@@ -1,4 +1,11 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Video Gateway
+
+模型阶段的版本契约和客户端对接方式见[模型计时 Schema](model-timing-schemas.md)。
 
 Dingo Video Gateway 是面向视频生成业务的持久化任务入口。它位于客户端与
 vLLM-Omni Worker 之间，为耗时较长、结果文件较大的视频任务提供统一的提交、排队、
@@ -51,7 +58,12 @@ queued -> in_progress -> completed
 
 公开 API 将内部的 `dispatching` 和 `finalizing` 都显示为 `in_progress`。因此
 `in_progress` 可能表示正在下发、位于 Worker 预取队列、正在推理，或者 Gateway 正在发布
-最终制品。具体阶段耗时可从单任务响应的 `metrics` 和 `stage_durations` 查看。
+最终制品。高层阶段耗时见单任务响应的 `metrics`；细节见
+`GET /v1/videos/{task_id}/diagnostics` 的 `diagnostics.stage_durations`。
+该明细当前主要覆盖 Worker 输出编码和制品写入；Gateway 只有高层排队/结果处理耗时，
+媒体检查细项仍按诊断开关写入日志。诊断接口当前不提供完整链路时间线或历史重试记录。
+这里的 `metrics` 是逐任务计时元数据，与 Prometheus `/metrics` 端点无关；重试任务只返回
+最终 attempt 的分项耗时，而顶层 `inference_time_s` 是从任务首次创建到终态的服务端总时间。
 
 任务完成后结果不会永久保留。生命周期清理会把到期任务转为 `expired` 并释放制品空间；
 对终态任务执行 DELETE 也会触发结果清理。

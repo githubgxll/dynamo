@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Video Gateway 接口使用说明
 
 本文说明 Dingo Video Gateway 当前提供的视频生成接口。示例使用 MiniMax-H3
@@ -53,6 +58,7 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `POST` | `/v1/videos` | 异步提交任务，返回任务 JSON |
 | `POST` | `/v1/videos/sync` | 同步提交任务，成功时直接返回 MP4 |
 | `GET` | `/v1/videos/{task_id}` | 查询单个任务状态和阶段耗时 |
+| `GET` | `/v1/videos/{task_id}/diagnostics` | 查询相同任务信息及当前 attempt 的诊断明细 |
 | `GET` | `/v1/videos` | 分页查询任务列表 |
 | `GET`/`HEAD` | `/v1/videos/{task_id}/content` | 下载或检查生成结果 |
 | `DELETE` | `/v1/videos/{task_id}` | 取消活跃任务，或删除终态任务制品 |
@@ -265,28 +271,145 @@ Gateway 始终检查上传参考文件的签名、声明的 MIME 类型以及媒
     "queue_wait_s": 0.12,
     "worker_queue_wait_s": 0.35,
     "inference_time_s": 5.0,
-    "finalize_time_s": 0.28
+    "finalize_time_s": 0.28,
+    "model_execution": {
+      "schema": "minimax_h3.v1",
+      "unit": "seconds",
+      "stages": {"encode_prompt": 0.1, "diffuse": 3.5, "decode": 0.8}
+    }
   },
-  "inference_time_s": 5.86,
-  "stage_durations": {
-    "queue_wait": 0.12,
-    "worker_queue_wait": 0.35,
-    "finalize": 0.28
-  }
+  "inference_time_s": 5.86
 }
 ```
 
 耗时字段含义：
 
-- 顶层 `inference_time_s`：从 Gateway 创建任务到任务完成的端到端时间。
+- 响应中的 `metrics` 是当前任务的逐任务计时元数据，与 Prometheus `/metrics` 端点无关；
+  内部结构是 Gateway 定义的扩展。原生 vLLM-Omni 也有 `metrics`，但结构与口径不同。
+- 顶层 `inference_time_s`：从 Gateway 创建任务到写入终态前取值时刻的服务端任务总时间，
+  包含排队和重试；不包含创建任务前的上传、最终终态写入 RPC 和客户端结果下载。
 - `metrics.queue_wait_s`：任务在 Gateway 队列等待的时间。
 - `metrics.worker_queue_wait_s`：任务已交给 Worker 后，在 Worker 预取队列等待执行的时间。
-- `metrics.inference_time_s`：Worker/vLLM-Omni 报告的推理时间；其具体起止点由 Worker
-  版本定义，可能包含 Worker 内部排队，因此分析时应结合 `worker_queue_wait_s`。
+- `metrics.inference_time_s`：Worker 执行时间。detached Worker 在取得执行 slot 后、写入
+  `running` 状态之前开始计时；结果生成、输出处理及心跳协程收尾完成后，在构造
+  `completed` 状态时取值。该计时不包含随后 `_record_terminal()` 的终态状态写入，
+  也不包含 `worker_queue_wait_s`；旧的 non-detached Worker 由 Gateway
+  记录完整 direct call 耗时。Worker 输出格式化、MP4 编码及制品写入的细分时间另见
+  诊断接口的 `diagnostics.stage_durations.output_total_s`。旧 detached Worker 未提供外层计时
+  时返回 null，不用输出编码时间替代。历史任务不回填修复后的计时。
 - `metrics.finalize_time_s`：Gateway 校验、处理并发布结果制品的耗时；计时在读取最新任务及
   向 etcd 写入 `completed` 终态之前结束，**不包含最终任务状态写回耗时**。
-- `stage_durations`：以上持久化阶段以及 Worker 返回的细分阶段；新增阶段名属于兼容性扩展，
-  调用方不应要求固定键集合。
+  可恢复 finalizer 当前只保存最后成功处理那一轮的耗时，不包含等待执行名额、先前失败
+  尝试、重试退避及接管恢复等待；因此不能视为整个 `finalizing` 状态的驻留时间。
+- 普通任务响应不再返回 `stage_durations`；需要详细阶段信息的调用方应改用诊断接口。
+
+发生 Worker 故障重试时，`metrics` 和诊断阶段明细只描述当前/最终 attempt；顶层
+`inference_time_s` 仍从任务最初创建开始计算，因此包含此前失败 attempt、重新排队和重试等待。
+这些分项不能假定相加后等于顶层总时间。
+
+模型专用阶段放在 `metrics.model_execution`，其 `schema` 标识版本，`unit` 为 `seconds`，
+`stages` 保存该 schema 下的阶段值。通用任务序列化不依赖具体模型阶段名称。
+当前 `minimax_h3.v1` 从原生 Omni profiler 提取以下键，仅有有效数据时返回，缺失不代表零：
+
+| 键 | 含义与关系 |
+|---|---|
+| `encode_prompt` | 提示词/条件编码；Ref2VA 可包含图片和视频的视觉条件处理，不是纯文本时间 |
+| `diffuse` | 原生 profiler 的去噪计时 |
+| `decode` | 输出解码总阶段，包含下列视频/音频解码 |
+| `video_decode` | Video VAE 解码，是 `decode` 的子阶段 |
+| `audio_decode` | Audio VAE 解码，是 `decode` 的子阶段 |
+| `reference_video_prepare` | 参考视频准备方法的计时；不承诺涵盖所有前置上传/解码操作 |
+| `reference_visual_encode` | 参考图片和视频的视觉条件/VAE 编码合计；当前原生计时不拆图片与视频 |
+| `reference_audio_encode` | 参考视频内音轨及独立音频的条件编码合计 |
+
+完整源码契约、JSON Schema 导出命令及客户端兼容规则见[模型计时 Schema](model-timing-schemas.md)。
+
+模型阶段来自 `MiniMaxH3Pipeline` 的原生 profiler，需要 Worker 开启
+`--enable-diffusion-pipeline-profiler`。该 profiler 会同步 GPU，可能影响性能；Gateway 不额外
+加入 GPU 同步。这里透传原生返回值，不聚合各 rank，也不将父子阶段求和。
+当前已核对 request 模式；step 模式多请求交错时，原生实例级 profiler 的逐请求隔离仍需
+单独验证，不能仅凭这些字段宣称获得准确的多请求阶段归因。
+
+### 任务诊断
+
+`GET /v1/videos/{task_id}/diagnostics` 返回普通查询的全部字段，再增加 `diagnostics`：
+
+```bash
+curl -sS "$GATEWAY_URL/v1/videos/$TASK_ID/diagnostics" | jq
+```
+
+```json
+{
+  "id": "video-...",
+  "object": "video",
+  "status": "completed",
+  "metrics": {
+    "inference_time_s": 125.4,
+    "model_execution": {
+      "schema": "minimax_h3.v1", "unit": "seconds", "stages": {"diffuse": 120.0}
+    }
+  },
+  "diagnostics": {
+    "schema_version": 1,
+    "internal_status": "completed",
+    "attempt": 1,
+    "pool_id": "fl-pool",
+    "worker_instance_id": 7,
+    "scope": "current_attempt",
+    "stage_durations": {"output_total_s": 0.58}
+  }
+}
+```
+
+示例省略了其他普通查询字段。诊断读取相同任务记录，不调用 Worker、不扫描日志、
+不读取 MP4；不存在的任务返回 404。只展示已持久化的数据，不重建历史 attempt。
+模型阶段在 `metrics.model_execution` 中；原生 orchestration 的毫秒字段不会混入。
+
+| 诊断字段 | 含义 |
+|---|---|
+| `schema_version` | 诊断对象的结构版本，当前为 1；与模型计时的 `model_execution.schema` 独立 |
+| `internal_status` | 内部状态，可区分普通查询统一显示为 `in_progress` 的 `dispatching` 和 `finalizing` |
+| `attempt` | 当前执行次数，首次执行为 1，重试一次为 2；尚未分配执行的任务可以为 0 |
+| `pool_id` | 任务所属 Worker 池 |
+| `worker_instance_id` | 当前或最后分配的 Worker 实例标识，未分配时可以为 null |
+| `scope` | 当前为 `current_attempt`，不表示全部历史 attempt 的累计数据 |
+| `stage_durations` | 已保存的阶段明细，当前主要为 Worker 输出处理细项；没有数据时为 `{}` |
+
+当前耗时信息的覆盖范围：
+
+| 位置 | 覆盖内容 |
+|---|---|
+| `metrics.queue_wait_s`、`metrics.finalize_time_s` | Gateway 排队和结果处理的高层耗时 |
+| `metrics.worker_queue_wait_s`、`metrics.inference_time_s` | Worker 预取等待和完整执行耗时 |
+| `metrics.model_execution.stages` | 按模型 schema 定义的模型阶段，例如条件编码、去噪、解码 |
+| `diagnostics.stage_durations` | 主要是 Worker 输出归一化、MP4 编码、制品写入的细分耗时 |
+
+诊断明细还可能包含 `worker_queue_wait`，与 `metrics.worker_queue_wait_s` 重复，这是
+现有内部存储字段。构造诊断响应时不再额外复制 `queue_wait` 和 `finalize`；历史任务或
+其他适配器保存的键可能不同。客户端不应要求这份字典具有固定键集合。
+
+**当前未提供 Gateway 处理细项的 API 计时**，例如媒体打开/检查、finalizer 等待、
+结果发布子步骤及终态写入 RPC。Gateway 媒体检查的细分日志按下面的日志开关读取。
+诊断接口也不提供完整阶段时间线、历史 attempt 列表、各 GPU rank 计时或下载耗时。
+
+新诊断端点需要更新 Gateway；模型计时还需要更新 Worker 并开启相应 profiler。
+旧任务不会自动补采数据，单独更新 Gateway 也不能恢复旧 Worker 未上报的模型阶段。
+
+当前使用 detached binary result 的 Omni Worker 还会附带以下**可选诊断键**。这些键用于
+性能定位，属于 Worker 实现细节，不是固定 API 契约；旧 Worker、其他适配器或后续实现均可
+缺失、增加或调整它们：
+
+| 键 | 含义与关系 |
+|---|---|
+| `output_total_s` | Worker 整个输出处理范围，是下面输出子阶段的父级总时间 |
+| `output_normalize_s` | 输出帧归一化 |
+| `encode_queue_s`、`encode_work_s`、`encode_resume_s` | 编码线程池等待、实际 MP4 编码/混音、协程恢复，均包含在 `output_total_s` 中 |
+| `artifact_queue_s`、`artifact_work_s`、`artifact_resume_s` | Worker 制品写入线程等待、实际工作和协程恢复，均包含在 `output_total_s` 中 |
+| `artifact_hash_s`、`artifact_open_s`、`artifact_write_s`、`artifact_file_fsync_s`、`artifact_close_s`、`artifact_rename_s`、`artifact_dir_fsync_s` | `artifact_work_s` 内部的文件处理子阶段 |
+
+因此不能把 `output_total_s`、`encode_*` 和 `artifact_*` 全部相加；这会重复计算父子阶段。
+`DINGO_VIDEO_MEDIA_TIMING=1` 控制 Gateway 媒体检查详细日志，默认关闭；其
+`header_read_s`、`indexed_open_s` 等不会自动进入该诊断对象，与原生模型 profiler 是两个开关。
 
 ### 同步任务
 

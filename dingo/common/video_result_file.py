@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_timing_schemas import normalize_model_execution
+
 BINARY_RESULT_WRITER: contextvars.ContextVar[BinaryResultWriter | None] = (
     contextvars.ContextVar("dingo_binary_result_writer", default=None)
 )
@@ -83,6 +85,9 @@ def normalize_inline_result(value: Any) -> dict[str, Any]:
         ):
             raise ValueError("invalid inline stage durations")
         result["stage_durations"] = dict(stages)
+    model_execution = normalize_model_execution(value.get("model_execution"))
+    if model_execution is not None:
+        result["model_execution"] = model_execution
     if len(json.dumps(result, ensure_ascii=False).encode()) > 8192:
         raise ValueError("inline Worker result exceeds metadata limit")
     return result

@@ -30,6 +30,7 @@ from dingo.common.utils.output_modalities import RequestType
 from dingo.common.utils.video_utils import normalize_video_frames
 from dingo.common.video_encoding import VideoEncoder, frame_conversion_workers
 from dingo.common.video_result_file import BINARY_RESULT_WRITER
+from dingo.vllm.omni.minimax_h3_timings import extract_model_execution
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,9 @@ class DiffusionFormatter:
                 output_format=ctx.get("output_format"),
                 audio=audio,
                 audio_sample_rate=audio_sample_rate,
+                model_execution=extract_model_execution(
+                    getattr(stage_output, "stage_durations", None)
+                ),
             )
         return await self._encode_image(
             images,
@@ -181,6 +185,7 @@ class DiffusionFormatter:
         output_format: Optional[str] = None,
         audio: Any = None,
         audio_sample_rate: Optional[int] = None,
+        model_execution: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any] | None:
         output_format = output_format or "mp4"
         response_format = response_format or "url"
@@ -267,6 +272,7 @@ class DiffusionFormatter:
                     "data": [{"output_format": "mp4", "artifact": artifact}],
                     "inference_time_s": time.time() - start_time,
                     "stage_durations": stages,
+                    **({"model_execution": model_execution} if model_execution else {}),
                 }
             if response_format == "b64_json":
                 video_data = VideoData(
@@ -282,7 +288,7 @@ class DiffusionFormatter:
                 )
                 video_data = VideoData(output_format=output_format, url=video_url)
 
-            return NvVideosResponse(
+            response = NvVideosResponse(
                 id=request_id,
                 object="video",
                 model=self._model_name,
@@ -292,6 +298,9 @@ class DiffusionFormatter:
                 data=[video_data],
                 inference_time_s=time.time() - start_time,
             ).model_dump()
+            if model_execution:
+                response["model_execution"] = model_execution
+            return response
         except Exception as e:
             logger.error("Failed to encode video for request %s: %s", request_id, e)
             return NvVideosResponse(
