@@ -1,0 +1,108 @@
+name: Dingo runner garbage collection
+
+on:
+  schedule:
+    - cron: '0 21 * * *' # UTC 21:00 = Asia/Shanghai 05:00 next day
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Trusted repository ref containing the GC script and configuration
+        type: string
+        default: DingoRouter-base
+      apply:
+        description: Delete verified old images and unused build cache
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dingo-gxl-runner-gc
+  cancel-in-progress: false
+
+jobs:
+  gc:
+    # A single runner process serializes this job with its build jobs.
+    # Manual kubectl-exec builds must not run while GC is executing.
+    runs-on: [self-hosted, linux, x64, dingo, gxl]
+    timeout-minutes: 45
+    env:
+      GC_APPLY: ${{ github.event_name == 'schedule' || inputs.apply == true }}
+      GC_DIR: ${{ runner.temp }}/runner-gc-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || 'DingoRouter-base' }}
+
+      - name: Check runner identity
+        id: identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "${RUNNER_NAME}" = "dingo-gxl-runner"
+          test "$(docker info --format '{{.DockerRootDir}}')" = /runner-data/docker
+
+      - name: Log in for recovery verification
+        uses: docker/login-action@v4
+        with:
+          registry: registry.hd-04.alayanew.com:8443
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Retain newest five Dingo runtime images
+        id: images
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GC_DIR}"
+          {
+            date -Is
+            df -h /runner-data
+            docker system df
+            args=()
+            if [[ "${GC_APPLY}" == true ]]; then args+=(--apply); fi
+            python3 .github/scripts/runner_gc.py \
+              --config .github/dingo-images.json --keep 5 \
+              --output "${GC_DIR}" "${args[@]}"
+          } 2>&1 | tee "${GC_DIR}/images.log"
+
+      - name: Reclaim unused build cache
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.images.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Registry mismatches keep images and fail their step, but do not
+          # prevent independent GC of old, unused build cache.
+          if [[ "${GC_APPLY}" == true ]]; then
+            docker builder prune --all --force --filter 'until=168h' \
+              2>&1 | tee "${GC_DIR}/cache.log"
+          fi
+
+      - name: Record final disk usage
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${GC_DIR}"
+          {
+            date -Is
+            df -h /runner-data
+            docker system df
+          } 2>&1 | tee "${GC_DIR}/after.log"
+          if [[ -f "${GC_DIR}/summary.md" ]]; then
+            cat "${GC_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          available_bytes="$(df -B1 --output=avail /runner-data | tail -n 1)"
+          if (( available_bytes < 100 * 1024 * 1024 * 1024 )); then
+            echo '::error::Runner free space remains below 100 GiB'
+            exit 1
+          fi
+
+      - name: Save inventory, recovery references and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-gc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.GC_DIR }}/
+          retention-days: 14
