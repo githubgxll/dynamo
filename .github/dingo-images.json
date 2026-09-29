@@ -8,7 +8,7 @@
   "images": [
     {
       "framework": "dynamo",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo",
       "tag_prefix": "router-noble",
       "docker_target": "router"

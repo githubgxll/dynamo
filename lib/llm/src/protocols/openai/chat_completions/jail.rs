@@ -1555,7 +1555,16 @@ impl JailedStream {
                     }
                 }
 
-                yield response;
+                // Split tool-call payload from the terminal finish_reason chunk.
+                // OpenAI clients discard `delta` once they observe finish_reason;
+                // the parser flushes complete tool arguments on the terminating
+                // chunk, so emit them as a separate non-terminal chunk first.
+                if let Some(payload) =
+                    super::split_tool_payload_from_finish(&mut response)
+                {
+                    yield payload;
+                }
+                 yield response;
             }
 
             // Backstop: the stream ended without a finish_reason AND without an

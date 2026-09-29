@@ -514,6 +514,80 @@ pub(super) fn stream_choice_chunk_from_template(
     }
 }
 
+/// Split a streaming chunk that carries both tool-call deltas and a finish
+/// reason into two separate chunks: a payload chunk (tool_calls, no
+/// finish_reason, no usage/nvext) followed by a terminal chunk (empty delta,
+/// finish_reason, usage/nvext).
+///
+/// OpenAI streaming clients commonly discard the `delta` of a chunk once they
+/// observe a non-null `finish_reason`. When a tool-call parser flushes its
+/// complete arguments on the terminating chunk, emitting them together with
+/// `finish_reason` causes the arguments to be silently dropped. This mirrors
+/// the sglang_processor fix (commit 1082b3d) on the Rust dynamo processor path.
+///
+/// On success, `response` is mutated in-place to become the terminal chunk
+/// (empty delta, finish_reason retained, usage/nvext retained) and the
+/// payload chunk is returned for the caller to yield first. Returns `None`
+/// when no choice needs splitting.
+pub(super) fn split_tool_payload_from_finish(
+    response: &mut Annotated<NvCreateChatCompletionStreamResponse>,
+) -> Option<Annotated<NvCreateChatCompletionStreamResponse>> {
+    let data = response.data.as_mut()?;
+
+    // Check whether any choice carries both tool_calls and a finish_reason.
+    let needs_split = data.inner.choices.iter().any(|choice| {
+        choice.finish_reason.is_some()
+            && choice
+                .delta
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty())
+    });
+    if !needs_split {
+        return None;
+    }
+
+    // Build the payload chunk: clone the response, strip usage/nvext/llm_metrics,
+    // and clear finish_reason on every choice that has tool_calls.
+    let mut payload = response.clone();
+    let payload_data = payload.data.as_mut()?;
+    payload_data.inner.usage = None;
+    payload_data.nvext = None;
+    payload_data.llm_metrics = None;
+    for choice in &mut payload_data.inner.choices {
+        if choice
+            .delta
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+        {
+            choice.finish_reason = None;
+        }
+    }
+
+    // Mutate the original response into the terminal chunk: clear the delta
+    // (content, tool_calls, reasoning_content, role) on choices that had
+    // tool_calls, but retain finish_reason, usage, and nvext.
+    for choice in &mut data.inner.choices {
+        if choice
+            .delta
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+        {
+            choice.delta.content = None;
+            choice.delta.tool_calls = None;
+            choice.delta.reasoning_content = None;
+            // Keep role on the first chunk only; the terminal chunk has no
+            // role. This matches the OpenAI streaming contract where role
+            // appears once and is absent thereafter.
+            choice.delta.role = None;
+        }
+    }
+
+    Some(payload)
+}
+
 /// Implements `NvExtProvider` for `NvCreateChatCompletionRequest`,
 /// providing access to NVIDIA-specific extensions.
 impl NvExtProvider for NvCreateChatCompletionRequest {
