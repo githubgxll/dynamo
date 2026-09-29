@@ -138,17 +138,26 @@ RUN apt-get update -y \
 # --setopt=tsflags=nocontexts: skip SELinux file-context labeling. The manylinux
 # image lacks the SELinux policy store that some compute nodes expect; without
 # this flag, dnf fails with "ValueError: SELinux policy is not managed".
-# The Dingo runner can fail TLS negotiation with mirrors.almalinux.org for
-# Extras. Use the official HTTPS baseurl from AlmaLinux's own repo definition
-# for this repo only. Keep DNF variables literal and retain TLS/RPM verification.
+# Use official HTTPS baseurls for the AlmaLinux repos needed by this stage:
+# the Dingo runner can fail TLS to mirrors.almalinux.org.
+# Directory names are case-sensitive. Leave third-party repos and GPG keys
+# unchanged, preserve DNF variables, and keep TLS/RPM verification enabled.
+# Synergy's repo ID is almalinux-synergy; its release RPM creates the repo.
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
-    dnf config-manager --save \
-        --setopt=extras.mirrorlist= \
-        --setopt=extras.metalink= \
-        --setopt='extras.baseurl=https://repo.almalinux.org/almalinux/$releasever/extras/$basearch/os/' \
-        --setopt=extras.sslverify=1 \
-        --setopt=extras.gpgcheck=1 extras && \
+    configure_alma_repo() { \
+        dnf config-manager --save \
+            --setopt="$1.mirrorlist=" \
+            --setopt="$1.metalink=" \
+            --setopt="$1.baseurl=https://repo.almalinux.org/almalinux/\$releasever/$2/\$basearch/os/" \
+            --setopt="$1.sslverify=1" \
+            --setopt="$1.gpgcheck=1" "$1"; \
+    } && \
+    configure_alma_repo baseos BaseOS && \
+    configure_alma_repo appstream AppStream && \
+    configure_alma_repo extras extras && \
+    configure_alma_repo powertools PowerTools && \
     dnf install -y --setopt=tsflags=nocontexts almalinux-release-synergy && \
+    configure_alma_repo almalinux-synergy synergy && \
     dnf config-manager --set-enabled powertools && \
     dnf install -y --setopt=tsflags=nocontexts \
         # Autotools (required for UCX, libfabric ./autogen.sh and ./configure)
