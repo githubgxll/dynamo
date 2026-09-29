@@ -254,9 +254,11 @@ def test_rendered_bundle_contains_hooks_gc_and_no_github_schedule(
         "job-completed.sh",
         "dingo-images.json",
     }
-    assert json.loads(cm["data"]["dingo-images.json"]) == json.loads(
-        (ROOT / ".github/dingo-images.json").read_text()
-    )
+    resolved = json.loads(cm["data"]["dingo-images.json"])
+    rules = resolved.pop("gc_managed_tags")
+    assert len(rules) == 4
+    assert all("prefix" in rule and "repository" in rule for rule in rules)
+    assert resolved == json.loads((ROOT / ".github/dingo-images.json").read_text())
     base = next(
         d
         for d in documents
@@ -328,3 +330,29 @@ def test_image_command_uses_dedicated_auth(
     assert calls[0]["env"]["DOCKER_CONFIG"] == "/readonly-auth"
     manager.collect("pre-job", images=False)
     assert manager.status()["last_image_status"] == 2
+
+
+def test_manual_recovery_bypasses_admission_but_not_lock(
+    manager: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "Manager", lambda: manager)
+    monkeypatch.setattr(module, "worker", lambda: None)
+    monkeypatch.setattr(manager, "free", lambda: 90 * module.GIB)
+
+    def forbidden() -> None:
+        raise AssertionError("manual recovery must not call job admission")
+
+    monkeypatch.setattr(manager, "admit", forbidden)
+    calls = []
+
+    def collect(reason: str) -> dict[str, str]:
+        with pytest.raises(module.Busy):
+            with manager.lock():
+                pass
+        calls.append(reason)
+        return {}
+
+    monkeypatch.setattr(manager, "collect", collect)
+    monkeypatch.setattr(sys, "argv", ["manager.py", "manual", "--apply"])
+    module.main()
+    assert calls == ["manual"]

@@ -14,6 +14,7 @@ assert SPEC is not None and SPEC.loader is not None
 gc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gc)
 REPO = "registry.example:8443/team/runtime"
+RULES = {REPO: {r"runtime-[0-9a-f]{12}"}}
 
 
 def image(number: int, tags: list[str] | None = None) -> dict[str, Any]:
@@ -31,7 +32,7 @@ def test_keep_newest_five_unique_ids_across_repositories() -> None:
     images = [image(n) for n in [2, 7, 1, 4, 6, 3, 5]]
     images[1]["RepoTags"] = [f"{other}:runtime-abcdef123456"]
     images[4]["RepoTags"].append(f"{REPO}:runtime-aaaaaaaaaaaa")
-    plan = gc.plan_images(images + [images[1]], {REPO, other}, 5)
+    plan = gc.plan_images(images + [images[1]], {**RULES, other: RULES[REPO]}, 5)
     assert [item["Id"] for item in plan["keep"]] == [
         image(n)["Id"] for n in [7, 6, 5, 4, 3]
     ]
@@ -48,15 +49,15 @@ def test_protect_builder_unknown_alias_and_untagged() -> None:
         image(3, []),
         image(4, ["ubuntu:22.04"]),
     ]
-    plan = gc.plan_images(images, {REPO}, 5)
+    plan = gc.plan_images(images, RULES, 5)
     assert plan["protected"] == images
     assert plan["candidates"] == []
 
 
 def test_keep_fewer_than_five_and_reject_zero() -> None:
-    assert gc.plan_images([image(1)], {REPO}, 5)["candidates"] == []
+    assert gc.plan_images([image(1)], RULES, 5)["candidates"] == []
     with pytest.raises(ValueError):
-        gc.plan_images([image(1)], {REPO}, 0)
+        gc.plan_images([image(1)], RULES, 0)
 
 
 def test_nanosecond_creation_order_and_timezones() -> None:
@@ -64,7 +65,7 @@ def test_nanosecond_creation_order_and_timezones() -> None:
     images[0]["Created"] = "2026-09-28T08:00:00.000000002Z"
     images[1]["Created"] = "2026-09-28T08:00:00.000000001Z"
     images[2]["Created"] = "2026-09-28T15:59:59.999999999+08:00"
-    plan = gc.plan_images(images, {REPO}, 1)
+    plan = gc.plan_images(images, RULES, 1)
     assert plan["keep"] == images[:1]
     assert plan["candidates"] == images[1:]
 
@@ -131,6 +132,8 @@ def test_main_dry_run_and_apply(
                 "registry": "registry.example:8443",
                 "namespace": "team",
                 "images": [{"repository": "runtime"}],
+                "commit_sha_length": 12,
+                "gc_managed_tags": [{"repository": REPO, "prefix": "runtime"}],
             }
         )
     )
@@ -172,3 +175,43 @@ def test_main_dry_run_and_apply(
         if apply and verified
         else []
     )
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "experimental-deadbeef",
+        "experimental-abcdef123456",
+        "runtime-deadbeef",
+        "runtime-" + "a" * 40,
+        "runtime-extra-abcdef123456",
+        "builder-abcdef123456",
+    ],
+)
+def test_unknown_prefix_and_wrong_sha_length_are_protected(tag: str) -> None:
+    old = image(1, [f"{REPO}:{tag}"])
+    plan = gc.plan_images([old] + [image(n) for n in range(2, 8)], RULES, 5)
+    assert old in plan["protected"]
+    assert old not in plan["candidates"]
+
+
+def test_unknown_alias_protects_entire_image() -> None:
+    old = image(
+        1, [f"{REPO}:runtime-abcdef123456", f"{REPO}:experimental-abcdef123456"]
+    )
+    assert gc.plan_images([old, image(2)], RULES, 1)["protected"] == [old]
+
+
+def test_allowlist_requires_generation_and_escapes_prefix() -> None:
+    config = {
+        "registry": "registry.example:8443",
+        "namespace": "team",
+        "images": [{"repository": "runtime"}],
+        "commit_sha_length": 12,
+    }
+    with pytest.raises(ValueError, match="missing GC allowlist"):
+        gc.tag_rules(config)
+    config["gc_managed_tags"] = [{"repository": REPO, "prefix": "v0.27.1-ubuntu2404"}]
+    rules = gc.tag_rules(config)
+    assert gc.managed_tag(f"{REPO}:v0.27.1-ubuntu2404-abcdef123456", rules)
+    assert not gc.managed_tag(f"{REPO}:v0x27x1-ubuntu2404-abcdef123456", rules)
