@@ -2,11 +2,13 @@ name: Dingo runner garbage collection (manual)
 
 # The daily 05:00 Asia/Shanghai schedule is deployed with the runner from
 # DingoRouter-base. This optional UI entry point is not needed for scheduling.
+# Normal job admission applies: below 100GiB after cache GC, this job is rejected
+# before its steps. Use the documented kubectl exec manual entry for recovery.
 on:
   workflow_dispatch:
     inputs:
       apply:
-        description: Apply cleanup (otherwise preview only)
+        description: Apply image/cache cleanup (job hook may reclaim cache even in preview; requires 100GiB after admission GC)
         type: boolean
         default: false
 
