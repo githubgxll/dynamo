@@ -167,6 +167,7 @@ jobs:
             --builder-image "${BUILDER_IMAGE}"
 
       - name: Build and push ${{ matrix.image }}
+        id: runtime_image
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -179,6 +180,7 @@ jobs:
           build-args: |
             PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
@@ -195,11 +197,43 @@ jobs:
         env:
           BUILDER_IMAGE: ${{ matrix.builder_image }}
           IMAGE: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.runtime_image.outputs.digest }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
+          test -n "${IMAGE_DIGEST}"
+          mkdir -p .dingo-build-evidence
+          cp "${DOCKERFILE}" container/context.yaml .github/dingo-images.json pyproject.toml .dingo-build-evidence/
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          image = os.environ["IMAGE"]
+          digest = os.environ["IMAGE_DIGEST"]
+          manifest = {
+              "source_commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "image": image,
+              "digest": digest,
+              "deployment_image": image.rsplit(":", 1)[0] + "@" + digest,
+              "builder_image": os.environ["BUILDER_IMAGE"],
+              "validation_scope": "Image published; GPU and model E2E not yet validated",
+          }
+          Path(".dingo-build-evidence/image.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
           echo "### Published image" >> "${GITHUB_STEP_SUMMARY}"
           echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Digest: \`${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Source commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
           if [ -n "${BUILDER_IMAGE}" ]; then
             echo "" >> "${GITHUB_STEP_SUMMARY}"
             echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
             echo "\`${BUILDER_IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
           fi
+
+      - name: Upload image evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-${{ matrix.framework }}-${{ matrix.docker_target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: .dingo-build-evidence/
+          include-hidden-files: true
+          if-no-files-found: error

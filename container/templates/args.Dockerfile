@@ -30,7 +30,7 @@ ARG BASE_IMAGE={{ context[framework][device_key].base_image }}
 ARG BASE_IMAGE_TAG={{ context[framework][device_key].base_image_tag }}
 {% if framework in ["sglang", "vllm"] -%}
 ARG RUNTIME_IMAGE={{ context[framework][device_key].runtime_image }}
-ARG RUNTIME_IMAGE_TAG={{ context[framework][device_key].runtime_image_tag }}
+ARG RUNTIME_IMAGE_TAG={{ context[framework][device_key].runtime_image_tag }}{{ '@' + context[framework][device_key].runtime_image_digest if context[framework][device_key].get('runtime_image_digest') else '' }}
 {%- endif %}
 
 # wheel builder image selection
