@@ -138,7 +138,16 @@ RUN apt-get update -y \
 # --setopt=tsflags=nocontexts: skip SELinux file-context labeling. The manylinux
 # image lacks the SELinux policy store that some compute nodes expect; without
 # this flag, dnf fails with "ValueError: SELinux policy is not managed".
+# The Dingo runner can fail TLS negotiation with mirrors.almalinux.org for
+# Extras. Use the official HTTPS baseurl from AlmaLinux's own repo definition
+# for this repo only. Keep DNF variables literal and retain TLS/RPM verification.
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    dnf config-manager --save \
+        --setopt=extras.mirrorlist= \
+        --setopt=extras.metalink= \
+        --setopt='extras.baseurl=https://repo.almalinux.org/almalinux/$releasever/extras/$basearch/os/' \
+        --setopt=extras.sslverify=1 \
+        --setopt=extras.gpgcheck=1 extras && \
     dnf install -y --setopt=tsflags=nocontexts almalinux-release-synergy && \
     dnf config-manager --set-enabled powertools && \
     dnf install -y --setopt=tsflags=nocontexts \
