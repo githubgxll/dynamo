@@ -542,7 +542,8 @@ fn has_anthropic_content_blocks(content: &serde_json::Value) -> bool {
 /// Convert an Anthropic content-block array into OpenAI fields.
 ///
 /// Returns `(content, reasoning_segments, tool_calls, refusal)` or an error
-/// message when the input cannot be converted losslessly.
+/// message when the input cannot be converted without reordering or silently
+/// dropping data. `redacted_thinking` is the explicit lossy exception.
 ///
 /// `reasoning_segments` has one entry per tool-call position:
 /// `segments[i]` is the thinking that preceded `tool_calls[i]`,
@@ -6935,9 +6936,9 @@ mod tests {
                 {"role": "user", "content": "weather?"},
                 {"role": "assistant", "content": [
                     {"type": "thinking", "thinking": "thinking A"},
+                    {"type": "text", "text": "checking the weather"},
                     {"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "Beijing"}},
-                    {"type": "thinking", "thinking": "thinking B"},
-                    {"type": "text", "text": "done"}
+                    {"type": "thinking", "thinking": "thinking B"}
                 ]},
                 {"role": "tool", "tool_call_id": "t1", "content": "sunny"}
             ]
@@ -6946,7 +6947,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let echoed: serde_json::Value = resp.json().await.expect("echo json");
         let msg = &echoed["messages"][1];
-        assert_eq!(msg["content"], serde_json::json!("done"));
+        assert_eq!(msg["content"], serde_json::json!("checking the weather"));
         // segments[i] precedes tool_calls[i]; trailing segment is last.
         assert_eq!(
             msg["reasoning_content"],
@@ -6965,6 +6966,39 @@ mod tests {
         // Non-assistant messages must pass through untouched.
         assert_eq!(echoed["messages"][0], payload["messages"][0]);
         assert_eq!(echoed["messages"][2], payload["messages"][2]);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_unrepresentable_block_order_end_to_end() {
+        let url = spawn_compat_echo_server().await;
+        let cases = [
+            (
+                serde_json::json!([
+                    {"type": "tool_use", "id": "t1", "name": "fn", "input": {}},
+                    {"type": "text", "text": "after the call"}
+                ]),
+                "text after tool_use",
+            ),
+            (
+                serde_json::json!([
+                    {"type": "text", "text": "before reasoning"},
+                    {"type": "thinking", "thinking": "late thought"}
+                ]),
+                "thinking after text before the first tool_use",
+            ),
+        ];
+        for (blocks, expected_error) in cases {
+            let payload = serde_json::json!({
+                "model": "m",
+                "messages": [{"role": "assistant", "content": blocks}]
+            });
+            let resp = post_json(&url, &payload).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let err: serde_json::Value = resp.json().await.expect("error json");
+            let message = err["message"].as_str().unwrap_or_default();
+            assert!(message.contains(expected_error), "got: {message}");
+            assert!(message.contains("block index 1"), "got: {message}");
+        }
     }
 
     #[tokio::test]
