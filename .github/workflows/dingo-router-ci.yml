@@ -58,6 +58,10 @@ jobs:
     if: needs.prepare.outputs.has_images == 'true'
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 240
+    env:
+      # Override only Dockerfile RUN downloads for the hd04 proxy trial.
+      # The shared Runner/daemon proxy and inherited NO_PROXY stay unchanged.
+      BUILD_DOWNLOAD_PROXY: http://10.201.136.61:8080
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -139,6 +143,10 @@ jobs:
           push: true
           tags: ${{ matrix.builder_image }}
           build-args: |
+            HTTP_PROXY=${{ env.BUILD_DOWNLOAD_PROXY }}
+            HTTPS_PROXY=${{ env.BUILD_DOWNLOAD_PROXY }}
+            http_proxy=${{ env.BUILD_DOWNLOAD_PROXY }}
+            https_proxy=${{ env.BUILD_DOWNLOAD_PROXY }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
@@ -176,6 +184,10 @@ jobs:
           push: true
           tags: ${{ matrix.image }}
           build-args: |
+            HTTP_PROXY=${{ env.BUILD_DOWNLOAD_PROXY }}
+            HTTPS_PROXY=${{ env.BUILD_DOWNLOAD_PROXY }}
+            http_proxy=${{ env.BUILD_DOWNLOAD_PROXY }}
+            https_proxy=${{ env.BUILD_DOWNLOAD_PROXY }}
             DYNAMO_COMMIT_SHA=${{ github.sha }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
@@ -212,6 +224,7 @@ jobs:
               "digest": digest,
               "deployment_image": image.rsplit(":", 1)[0] + "@" + digest,
               "builder_image": os.environ["BUILDER_IMAGE"],
+              "build_download_proxy": os.environ["BUILD_DOWNLOAD_PROXY"],
               "validation_scope": "Image published; GPU and model E2E not yet validated",
           }
           Path(".dingo-build-evidence/image.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -220,6 +233,7 @@ jobs:
           echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "Digest: \`${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "Source commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Dockerfile RUN proxy: \`${BUILD_DOWNLOAD_PROXY}\`" >> "${GITHUB_STEP_SUMMARY}"
           if [ -n "${BUILDER_IMAGE}" ]; then
             echo "" >> "${GITHUB_STEP_SUMMARY}"
             echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
