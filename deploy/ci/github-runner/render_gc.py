@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,23 @@ def render(registry_secret: str | None = None) -> list[dict[str, Any]]:
         for name in ("manager.py", "job-started.sh", "job-completed.sh")
     }
     data["runner_gc.py"] = (ROOT / ".github/scripts/runner_gc.py").read_text()
-    data["dingo-images.json"] = (ROOT / ".github/dingo-images.json").read_text()
+    config = json.loads((ROOT / ".github/dingo-images.json").read_text())
+    # Reuse the build pipeline's tag generation, including disabled image families.
+    module_spec = importlib.util.spec_from_file_location(
+        "dingo_matrix", ROOT / ".github/scripts/prepare_dingo_image_matrix.py"
+    )
+    assert module_spec and module_spec.loader
+    matrix_module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(matrix_module)
+    matrix = matrix_module.build_matrix(config, "0" * 40, "all")
+    config["gc_managed_tags"] = [
+        {
+            "repository": item["image"].rpartition(":")[0],
+            "prefix": item["image"].rpartition(":")[2].rsplit("-", 1)[0],
+        }
+        for item in matrix
+    ]
+    data["dingo-images.json"] = json.dumps(config, indent=2) + "\n"
     fingerprint = hashlib.sha256(
         json.dumps([data, documents], sort_keys=True).encode()
     ).hexdigest()

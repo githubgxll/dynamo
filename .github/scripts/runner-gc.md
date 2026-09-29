@@ -6,7 +6,8 @@
 
 - 每天北京时间 05:00 触发；每分钟检查一次。遇到构建则等待空闲，Pod 停机错过时间后补跑最近一次，不补跑所有历史日期。首次启动没有成功记录也会补跑。
 - `.github/dingo-images.json` 中所有配置仓库（含 enabled=false），合计保留 Created 最新的 5 个不同产物镜像 ID；不是每个仓库 5 个。纳秒时间排序，同时间按 ID 排序。
-- 只删除识别出的 Git SHA 产物标签。builder-*、buildcache-*、基础镜像、未知标签、无标签镜像均保护；一个 ID 有受保护标签则整个 ID 保护。因此 Docker 镜像总数可以超过 5。
+- 仅匹配生成白名单中的精确仓库、完整标签前缀和 commit_sha_length 指定的 SHA 长度（目前 12 位）。renderer 复用构建流水线的标签生成函数：Dynamo 前缀来自镜像配置，vLLM/SGLang 前缀来自 container/context.yaml 对应 CUDA 的 runtime_image_tag，包含 disabled 系列。前缀按字面量匹配，不当作正则表达式。experimental-deadbeef 等未知前缀一律保护；历史前缀在配置变更后默认保护，不自动扩大匹配范围。缺少生成白名单时拒绝镜像清理，不能直接把原始 .github/dingo-images.json 当作部署后的 GC 配置。
+- 只删除上述白名单识别出的 Git SHA 产物标签。builder-*、buildcache-*、基础镜像、未知标签、无标签镜像均保护；一个 ID 有受保护标签则整个 ID 保护。因此 Docker 镜像总数可以超过 5。
 - 删除前验证远端 manifest 的 config digest 与本地 ID 一致，保存 inventory、计划、digest/tag 恢复映射。远端不可访问、标签漂移或平台不明确时保留镜像并产生告警；缓存清理继续。删除不用 force，不修改远端仓库。
 - 每日清理 7 天未使用的构建缓存。空闲空间低于 150GiB 时逐级尝试旧缓存回收、缓存保留预算 30GB、全部未使用缓存回收，每阶段重新检查磁盘，达到目标即停止。
 - Docker daemon 自身启用 BuildKit GC，defaultKeepStorage=80GB。这是缓存策略预算，不是整个 PVC 的硬配额，也不限制受保护镜像和工作目录。
@@ -54,6 +55,10 @@ tsh ssh --cluster=server.teleport.hd-04.zetyun.cn root@hd04-cci-k8s-master-1 \
 生成包包含启动配置、GC 脚本 ConfigMap、Deployment 与 PVC；校验和触发配置更新后的 Pod 重建。后续更新继续使用 renderer，不直接应用未包含 GC 挂载的基础 YAML。无需修改或同步 main。可选手工 Actions 工作流的 UI 注册仍受 GitHub 默认分支规则约束，下述 kubectl 入口完全不依赖该 UI。
 
 ## 验证和日常操作
+
+**Actions UI 不是低水位应急入口。** 手动 GC workflow 同样执行 job-started hook；如果缓存回收后仍不足 100GiB，该作业在镜像清理步骤之前就会失败。即使 apply=false，前置 hook 也可能回收缓存。此限制有意保留，不按工作流名称或 job 环境变量豁免准入，避免普通构建绕过保护。
+
+如果空间主要被旧镜像占用，应在 Runner 已启动且无运行中任务时，使用下文 `kubectl exec ... manager.py manual --apply`。该入口不执行 job-started/磁盘准入，仍检查 Docker root、构建互斥锁及中断标记，允许低于 100GiB 时尝试镜像回收。若 Pod 启动阶段已经因低水位失败，则不能依赖 exec；需按异常恢复流程建立维护窗口处理卷或扩容。清理后达到准入水位才恢复构建。
 
 以下 `kubectl` 命令在 5 区 master 上执行；本地通过上述 tsh ssh 访问。先检查 Pod Running、Runner 在线、启动日志无异常，再验证：
 
