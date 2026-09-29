@@ -508,16 +508,19 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
 //   {type:"text", text:"…"}              → content string
 //   {type:"refusal", refusal:"…"}        → refusal field
 //
-// Interleaving order is preserved: reasoning segments are emitted one per
-// tool-call position (segments.len() == tool_calls.len() + 1), matching
-// the semantics of `convert_assistant_blocks` in the Anthropic protocol
-// module. This is required for KV-cache correctness in multi-tool turns.
+// Thinking/tool interleaving is preserved: reasoning segments are emitted one
+// per tool-call position (segments.len() == tool_calls.len() + 1), matching
+// `convert_assistant_blocks` in the Anthropic protocol module. Text after a
+// tool call, or thinking after text before the first call, cannot be placed
+// faithfully in OpenAI's separate content/reasoning/tool_calls fields and is
+// rejected rather than reordered.
 //
-// Anything that cannot be converted losslessly is rejected with 400 rather
-// than guessed: malformed blocks (missing id/name/input, non-string
-// payloads), unknown block types, and partially-translated messages whose
-// existing OpenAI fields (tool_calls / reasoning_content) cannot be
-// ordered against the residual blocks (see check_mixed_format_conflicts).
+// Other unsupported or ambiguous input is rejected with 400: malformed
+// blocks (missing id/name/input, non-string payloads), unknown block types,
+// and partially-translated messages whose existing OpenAI fields
+// (tool_calls / reasoning_content) cannot be ordered against the residual
+// blocks (see check_mixed_format_conflicts). Redacted thinking remains an
+// explicit lossy exception because its encrypted payload has no OpenAI form.
 
 /// Anthropic content-block types that trigger conversion.
 const ANTHROPIC_BLOCK_TYPES: &[&str] = &["thinking", "tool_use", "redacted_thinking"];
@@ -557,6 +560,8 @@ fn has_anthropic_content_blocks(content: &serde_json::Value) -> bool {
 /// - duplicate tool_use ids within the block list are rejected;
 /// - unknown or unsupported block types (e.g. `server_tool_use`) are
 ///   rejected rather than silently dropped.
+/// - text after a tool_use, or thinking after text before the first tool_use,
+///   is rejected because separate OpenAI fields cannot preserve that order.
 fn convert_anthropic_blocks(
     blocks: &[serde_json::Value],
 ) -> Result<
@@ -574,35 +579,46 @@ fn convert_anthropic_blocks(
     let mut segments: Vec<String> = Vec::new();
     let mut pending_reasoning = String::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_text = false;
+    let mut seen_tool_use = false;
 
     for (block_idx, block) in blocks.iter().enumerate() {
         let part_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match part_type {
-            "text" => {
-                match block.get("text").and_then(|t| t.as_str()) {
-                    Some(t) => text_content.push_str(t),
-                    None => {
+            "text" => match block.get("text").and_then(|t| t.as_str()) {
+                Some(t) => {
+                    if seen_tool_use && !t.is_empty() {
                         return Err(format!(
-                            "text block is missing a string 'text' field (block index {block_idx})"
+                            "text after tool_use cannot be represented without changing block order (block index {block_idx})"
                         ));
                     }
+                    text_content.push_str(t);
+                    seen_text |= !t.is_empty();
                 }
-            }
-            "thinking" => {
-                match block.get("thinking").and_then(|t| t.as_str()) {
-                    Some(t) => {
-                        if !pending_reasoning.is_empty() {
-                            pending_reasoning.push('\n');
-                        }
-                        pending_reasoning.push_str(t);
-                    }
-                    None => {
+                None => {
+                    return Err(format!(
+                        "text block is missing a string 'text' field (block index {block_idx})"
+                    ));
+                }
+            },
+            "thinking" => match block.get("thinking").and_then(|t| t.as_str()) {
+                Some(t) => {
+                    if seen_text && !seen_tool_use && !t.is_empty() {
                         return Err(format!(
-                            "thinking block is missing a string 'thinking' field (block index {block_idx})"
+                            "thinking after text before the first tool_use cannot be represented without changing block order (block index {block_idx})"
                         ));
                     }
+                    if !pending_reasoning.is_empty() {
+                        pending_reasoning.push('\n');
+                    }
+                    pending_reasoning.push_str(t);
                 }
-            }
+                None => {
+                    return Err(format!(
+                        "thinking block is missing a string 'thinking' field (block index {block_idx})"
+                    ));
+                }
+            },
             "redacted_thinking" => {
                 // Redacted thinking is encrypted model reasoning that cannot
                 // be read or represented in OpenAI format. Its data is
@@ -610,6 +626,7 @@ fn convert_anthropic_blocks(
                 // itself does not add reasoning text.
             }
             "tool_use" => {
+                seen_tool_use = true;
                 // Snapshot the reasoning that preceded this tool call.
                 segments.push(std::mem::take(&mut pending_reasoning));
 
@@ -620,9 +637,7 @@ fn convert_anthropic_blocks(
                     .get("id")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        "tool_use block is missing a non-empty 'id' field".to_string()
-                    })?
+                    .ok_or_else(|| "tool_use block is missing a non-empty 'id' field".to_string())?
                     .to_string();
                 let name = block
                     .get("name")
@@ -636,7 +651,7 @@ fn convert_anthropic_blocks(
                 // Reject duplicate ids among the new blocks themselves (R3).
                 if !seen_ids.insert(id.clone()) {
                     return Err(format!(
-                        "duplicate tool_use id '{id}' within assistant content blocks"
+                        "duplicate tool_use id within assistant content blocks (block index {block_idx})"
                     ));
                 }
 
@@ -647,7 +662,9 @@ fn convert_anthropic_blocks(
                 let input = block
                     .get("input")
                     .ok_or_else(|| {
-                        format!("tool_use block is missing an 'input' field (block index {block_idx})")
+                        format!(
+                            "tool_use block is missing an 'input' field (block index {block_idx})"
+                        )
                     })?
                     .clone();
                 if !input.is_object() {
@@ -655,7 +672,9 @@ fn convert_anthropic_blocks(
                         "tool_use 'input' must be an object (block index {block_idx})"
                     ));
                 }
-                let arguments = serde_json::to_string(&input).unwrap_or_default();
+                let arguments = serde_json::to_string(&input).map_err(|e| {
+                    format!("failed to serialize tool_use input (block index {block_idx}): {e}")
+                })?;
                 tool_calls.push(serde_json::json!({
                     "id": id,
                     "type": "function",
@@ -689,9 +708,9 @@ fn convert_anthropic_blocks(
             // Anthropic types) are rejected explicitly. Silently ignoring
             // them here would delete data while reporting success, because
             // the whole content array is replaced below.
-            other => {
+            _ => {
                 return Err(format!(
-                    "unsupported content block type '{other}' in Anthropic block array (block index {block_idx}); \
+                    "unsupported content block type in Anthropic block array (block index {block_idx}); \
                      only text/thinking/redacted_thinking/tool_use/refusal can be converted"
                 ));
             }
@@ -715,23 +734,22 @@ fn convert_anthropic_blocks(
     // `ReasoningContent` is `#[serde(untagged)]`:
     //   Text(String)    deserializes from a JSON string
     //   Segments(Vec)   deserializes from a JSON array of strings
-    let reasoning_segments: Option<(bool, Vec<String>)> = if !tool_calls.is_empty()
-        && segments.iter().any(|s| !s.is_empty())
-    {
-        Some((true, segments))
-    } else {
-        let flat: String = segments
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        if flat.is_empty() {
-            None
+    let reasoning_segments: Option<(bool, Vec<String>)> =
+        if !tool_calls.is_empty() && segments.iter().any(|s| !s.is_empty()) {
+            Some((true, segments))
         } else {
-            Some((false, vec![flat]))
-        }
-    };
+            let flat: String = segments
+                .iter()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if flat.is_empty() {
+                None
+            } else {
+                Some((false, vec![flat]))
+            }
+        };
 
     let tc = if tool_calls.is_empty() {
         None
@@ -741,7 +759,6 @@ fn convert_anthropic_blocks(
 
     Ok((content, reasoning_segments, tc, refusal_content))
 }
-
 
 /// Mixed-format conflict policy for one assistant message (review F1).
 ///
@@ -773,13 +790,11 @@ fn check_mixed_format_conflicts(
     produced_reasoning: bool,
 ) -> Result<(), String> {
     if has_existing_calls && produced_calls {
-        return Err(
-            "assistant message mixes an existing tool_calls array with \
+        return Err("assistant message mixes an existing tool_calls array with \
              residual Anthropic tool_use blocks; the original call order \
              cannot be determined, ask the gateway to fully translate \
              tool calls before forwarding"
-                .to_string(),
-        );
+            .to_string());
     }
     if has_existing_calls && produced_reasoning {
         return Err(
@@ -791,22 +806,18 @@ fn check_mixed_format_conflicts(
         );
     }
     if has_existing_reasoning && produced_reasoning {
-        return Err(
-            "assistant message already has reasoning_content while its \
+        return Err("assistant message already has reasoning_content while its \
              content array still contains thinking blocks; the two cannot \
              be combined without losing ordering, ask the gateway to avoid \
              translating reasoning twice"
-                .to_string(),
-        );
+            .to_string());
     }
     if has_existing_reasoning && produced_calls {
-        return Err(
-            "assistant message already has reasoning_content while its \
+        return Err("assistant message already has reasoning_content while its \
              content array still contains tool_use blocks; the new calls \
              cannot be positioned within the existing reasoning, ask the \
              gateway to fully translate the message before forwarding"
-                .to_string(),
-        );
+            .to_string());
     }
     Ok(())
 }
@@ -837,10 +848,7 @@ fn anthropic_compat_reject(byte_len: usize, message: String) -> Response {
 
 /// Middleware that normalizes Anthropic content blocks in OpenAI chat
 /// completion requests before deserialization.
-pub async fn anthropic_content_compat_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
 
     let body_bytes = match axum::body::to_bytes(body, get_body_limit()).await {
@@ -879,10 +887,7 @@ pub async fn anthropic_content_compat_middleware(
     };
 
     // Walk messages, convert assistant messages with Anthropic content blocks.
-    let modified = if let Some(messages) = json
-        .get_mut("messages")
-        .and_then(|m| m.as_array_mut())
-    {
+    let modified = if let Some(messages) = json.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut changed = false;
         for (msg_idx, msg) in messages.iter_mut().enumerate() {
             // Only process assistant messages.
@@ -6493,8 +6498,11 @@ mod tests {
     #[test]
     fn test_convert_tool_use_basic() {
         let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"id": "t1", "name": "get_weather", "input": {"city": "Beijing"}})),
             ("text", serde_json::json!("It's sunny.")),
+            (
+                "tool_use",
+                serde_json::json!({"id": "t1", "name": "get_weather", "input": {"city": "Beijing"}}),
+            ),
         ]);
         let (content, reasoning, tool_calls, refusal) = convert_anthropic_blocks(&blocks).unwrap();
         assert_eq!(content.as_deref(), Some("It's sunny."));
@@ -6504,28 +6512,44 @@ mod tests {
         assert_eq!(tc[0]["id"], "t1");
         assert_eq!(tc[0]["type"], "function");
         assert_eq!(tc[0]["function"]["name"], "get_weather");
-        assert_eq!(tc[0]["function"]["arguments"], serde_json::json!({"city":"Beijing"}).to_string());
+        assert_eq!(
+            tc[0]["function"]["arguments"],
+            serde_json::json!({"city":"Beijing"}).to_string()
+        );
         assert!(refusal.is_none());
     }
 
     #[test]
     fn test_convert_interleaved_thinking_tool_use_preserves_order() {
-        // thinking A → tool_use 1 → thinking B → tool_use 2 → text
+        // thinking A → text → tool_use 1 → thinking B → tool_use 2
         let blocks = make_blocks(vec![
             ("thinking", serde_json::json!("thinking A")),
-            ("tool_use", serde_json::json!({"id": "t1", "name": "fn1", "input": {}})),
-            ("thinking", serde_json::json!("thinking B")),
-            ("tool_use", serde_json::json!({"id": "t2", "name": "fn2", "input": {}})),
             ("text", serde_json::json!("done")),
+            (
+                "tool_use",
+                serde_json::json!({"id": "t1", "name": "fn1", "input": {}}),
+            ),
+            ("thinking", serde_json::json!("thinking B")),
+            (
+                "tool_use",
+                serde_json::json!({"id": "t2", "name": "fn2", "input": {}}),
+            ),
         ]);
         let (content, reasoning, tool_calls, refusal) = convert_anthropic_blocks(&blocks).unwrap();
         assert_eq!(content.as_deref(), Some("done"));
 
         let (is_segments, segs) = reasoning.expect("should have reasoning");
-        assert!(is_segments, "interleaved reasoning should be Segments variant");
+        assert!(
+            is_segments,
+            "interleaved reasoning should be Segments variant"
+        );
         // segments[0] precedes tool_calls[0], segments[1] precedes tool_calls[1],
         // segments[2] is trailing. segments.len() == tool_calls.len() + 1
-        assert_eq!(segs.len(), 3, "segments should have tool_calls.len()+1 entries");
+        assert_eq!(
+            segs.len(),
+            3,
+            "segments should have tool_calls.len()+1 entries"
+        );
         assert_eq!(segs[0], "thinking A");
         assert_eq!(segs[1], "thinking B");
         assert_eq!(segs[2], "", "trailing segment should be empty");
@@ -6545,22 +6569,28 @@ mod tests {
         ]);
         let (content, reasoning, tool_calls, refusal) = convert_anthropic_blocks(&blocks).unwrap();
         assert_eq!(content.as_deref(), Some("hello"));
-        assert!(reasoning.is_none(), "redacted_thinking has no readable text");
+        assert!(
+            reasoning.is_none(),
+            "redacted_thinking has no readable text"
+        );
         assert!(tool_calls.is_none());
         assert!(refusal.is_none());
     }
 
     #[test]
     fn test_convert_redacted_thinking_with_tool_use_unreadable_position() {
-        // redacted_thinking → tool_use → text
+        // redacted_thinking → text → tool_use
         // Redacted (encrypted) thinking carries no readable text, so it
         // cannot contribute reasoning segments. This is an explicit lossy
         // degradation: the call is converted, but the encrypted reasoning
         // itself is not representable in OpenAI format (review §4.3).
         let blocks = make_blocks(vec![
             ("redacted_thinking", serde_json::json!("encrypted")),
-            ("tool_use", serde_json::json!({"id": "t1", "name": "fn", "input": {}})),
             ("text", serde_json::json!("result")),
+            (
+                "tool_use",
+                serde_json::json!({"id": "t1", "name": "fn", "input": {}}),
+            ),
         ]);
         let (content, reasoning, tool_calls, _) = convert_anthropic_blocks(&blocks).unwrap();
         assert_eq!(content.as_deref(), Some("result"));
@@ -6592,8 +6622,8 @@ mod tests {
     #[test]
     fn test_convert_multiple_text_blocks_concatenated() {
         let blocks = make_blocks(vec![
-            ("text", serde_json::json!("part1 ")),
             ("thinking", serde_json::json!("hmm")),
+            ("text", serde_json::json!("part1 ")),
             ("text", serde_json::json!("part2")),
         ]);
         let (content, _, _, _) = convert_anthropic_blocks(&blocks).unwrap();
@@ -6610,7 +6640,11 @@ mod tests {
         let (content, reasoning, _, _) = convert_anthropic_blocks(&blocks).unwrap();
         assert_eq!(content.as_deref(), Some("answer"));
         let (_, segs) = reasoning.expect("should have reasoning");
-        assert_eq!(segs, vec!["think A\nthink B"], "multiple thinking blocks should be joined with newline");
+        assert_eq!(
+            segs,
+            vec!["think A\nthink B"],
+            "multiple thinking blocks should be joined with newline"
+        );
     }
 
     #[test]
@@ -6625,18 +6659,18 @@ mod tests {
 
     #[test]
     fn test_convert_tool_use_arguments_serialized() {
-        let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({
+        let blocks = make_blocks(vec![(
+            "tool_use",
+            serde_json::json!({
                 "id": "call_abc",
                 "name": "search",
                 "input": {"query": "hello world", "limit": 10}
-            })),
-        ]);
+            }),
+        )]);
         let (_, _, tool_calls, _) = convert_anthropic_blocks(&blocks).unwrap();
         let tc = tool_calls.expect("should have tool_calls");
-        let args: serde_json::Value = serde_json::from_str(
-            tc[0]["function"]["arguments"].as_str().unwrap()
-        ).unwrap();
+        let args: serde_json::Value =
+            serde_json::from_str(tc[0]["function"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(args["query"], "hello world");
         assert_eq!(args["limit"], 10);
     }
@@ -6645,12 +6679,14 @@ mod tests {
     fn test_convert_trailing_thinking_after_last_tool_use() {
         // tool_use → thinking (trailing, no more tool calls)
         let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"id": "t1", "name": "fn", "input": {}})),
+            (
+                "tool_use",
+                serde_json::json!({"id": "t1", "name": "fn", "input": {}}),
+            ),
             ("thinking", serde_json::json!("trailing thought")),
-            ("text", serde_json::json!("final answer")),
         ]);
         let (content, reasoning, tool_calls, _) = convert_anthropic_blocks(&blocks).unwrap();
-        assert_eq!(content.as_deref(), Some("final answer"));
+        assert!(content.is_none());
         let (is_segments, segs) = reasoning.expect("should have reasoning");
         assert!(is_segments);
         // segments[0] = "" (before tool_use), segments[1] = "trailing thought"
@@ -6662,18 +6698,20 @@ mod tests {
 
     #[test]
     fn test_convert_rejects_tool_use_missing_id() {
-        let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"name": "fn", "input": {}})),
-        ]);
+        let blocks = make_blocks(vec![(
+            "tool_use",
+            serde_json::json!({"name": "fn", "input": {}}),
+        )]);
         let err = convert_anthropic_blocks(&blocks).unwrap_err();
         assert!(err.contains("missing a non-empty 'id'"), "got: {err}");
     }
 
     #[test]
     fn test_convert_rejects_tool_use_missing_name() {
-        let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"id": "t1", "input": {}})),
-        ]);
+        let blocks = make_blocks(vec![(
+            "tool_use",
+            serde_json::json!({"id": "t1", "input": {}}),
+        )]);
         let err = convert_anthropic_blocks(&blocks).unwrap_err();
         assert!(err.contains("missing a non-empty 'name'"), "got: {err}");
     }
@@ -6681,18 +6719,25 @@ mod tests {
     #[test]
     fn test_convert_rejects_duplicate_tool_use_ids() {
         let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"id": "same", "name": "a", "input": {}})),
-            ("tool_use", serde_json::json!({"id": "same", "name": "b", "input": {}})),
+            (
+                "tool_use",
+                serde_json::json!({"id": "same", "name": "a", "input": {}}),
+            ),
+            (
+                "tool_use",
+                serde_json::json!({"id": "same", "name": "b", "input": {}}),
+            ),
         ]);
         let err = convert_anthropic_blocks(&blocks).unwrap_err();
-        assert!(err.contains("duplicate tool_use id 'same'"), "got: {err}");
+        assert!(err.contains("duplicate tool_use id"), "got: {err}");
     }
 
     #[test]
     fn test_convert_rejects_empty_tool_use_id() {
-        let blocks = make_blocks(vec![
-            ("tool_use", serde_json::json!({"id": "", "name": "fn", "input": {}})),
-        ]);
+        let blocks = make_blocks(vec![(
+            "tool_use",
+            serde_json::json!({"id": "", "name": "fn", "input": {}}),
+        )]);
         assert!(convert_anthropic_blocks(&blocks).is_err());
     }
 
@@ -6715,8 +6760,9 @@ mod tests {
             serde_json::json!(null),
             serde_json::json!([1, 2]),
         ] {
-            let blocks =
-                vec![serde_json::json!({"type": "tool_use", "id": "t1", "name": "fn", "input": bad})];
+            let blocks = vec![
+                serde_json::json!({"type": "tool_use", "id": "t1", "name": "fn", "input": bad}),
+            ];
             let err = convert_anthropic_blocks(&blocks).unwrap_err();
             assert!(err.contains("'input' must be an object"), "got: {err}");
         }
@@ -6731,10 +6777,7 @@ mod tests {
             serde_json::json!({"type": "future_block", "data": "keep me"}),
         ];
         let err = convert_anthropic_blocks(&blocks).unwrap_err();
-        assert!(
-            err.contains("unsupported content block type 'future_block'"),
-            "got: {err}"
-        );
+        assert!(err.contains("unsupported content block type"), "got: {err}");
     }
 
     #[test]
@@ -6745,10 +6788,7 @@ mod tests {
             serde_json::json!({"type": "server_tool_use", "id": "srv1", "name": "web_search", "input": {}}),
         ];
         let err = convert_anthropic_blocks(&blocks).unwrap_err();
-        assert!(
-            err.contains("unsupported content block type 'server_tool_use'"),
-            "got: {err}"
-        );
+        assert!(err.contains("unsupported content block type"), "got: {err}");
     }
 
     #[test]
@@ -6941,7 +6981,10 @@ mod tests {
         let resp = post_json(&url, &payload).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let echoed: serde_json::Value = resp.json().await.expect("echo json");
-        assert_eq!(echoed, payload, "pure OpenAI requests must be byte-equivalent");
+        assert_eq!(
+            echoed, payload,
+            "pure OpenAI requests must be byte-equivalent"
+        );
     }
 
     #[tokio::test]
@@ -7072,23 +7115,23 @@ mod tests {
         let resp = post_json(&url, &payload).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let echoed: serde_json::Value = resp.json().await.expect("echo json");
-        assert_eq!(echoed, payload, "converted output must pass through unchanged");
+        assert_eq!(
+            echoed, payload,
+            "converted output must pass through unchanged"
+        );
     }
 
     #[tokio::test]
     #[serial_test::serial]
     async fn test_middleware_oversized_body_returns_413() {
-        temp_env::async_with_vars(
-            [(env_llm::DYN_HTTP_BODY_LIMIT_MB, Some("1"))],
-            async {
-                let url = spawn_compat_echo_server().await;
-                let big = "x".repeat(1024 * 1024 + 1);
-                let payload =
-                    serde_json::json!({"model": "m", "messages": [{"role": "user", "content": big}]});
-                let resp = post_json(&url, &payload).await;
-                assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-            },
-        )
+        temp_env::async_with_vars([(env_llm::DYN_HTTP_BODY_LIMIT_MB, Some("1"))], async {
+            let url = spawn_compat_echo_server().await;
+            let big = "x".repeat(1024 * 1024 + 1);
+            let payload =
+                serde_json::json!({"model": "m", "messages": [{"role": "user", "content": big}]});
+            let resp = post_json(&url, &payload).await;
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        })
         .await;
     }
 
@@ -7132,10 +7175,7 @@ mod tests {
         // Missing/null/empty-array tool_calls means "no existing calls":
         // the residual tool_use must convert normally.
         let url = spawn_compat_echo_server().await;
-        for existing in [
-            serde_json::Value::Null,
-            serde_json::json!([]),
-        ] {
+        for existing in [serde_json::Value::Null, serde_json::json!([])] {
             let payload = serde_json::json!({
                 "model": "m",
                 "messages": [
@@ -7155,5 +7195,4 @@ mod tests {
             );
         }
     }
-
 }
