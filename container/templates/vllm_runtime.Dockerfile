@@ -265,6 +265,21 @@ RUN --mount=type=bind,source=./container/deps/vllm/validate_media_probe.py,targe
 # tool scripts referencing files not present in Dynamo's build context.
 RUN rm -rf /workspace/vllm
 
+{% if target not in ("dev", "local-dev") and device == "cuda" %}
+# Keep the complete uv result and independently audit every installed package,
+# Python requirement and recursively referenced extra. Only the exact reviewed
+# KVBM 1.3.0 -> nixl[cu13]==1.0.1 / installed NIXL 1.3.1 metadata mismatch is
+# permitted; every other conflict and uv tool failure aborts the build.
+RUN --mount=type=bind,source=./container/deps/vllm/collect_runtime_manifest.py,target=/tmp/collect_runtime_manifest.py,readonly \
+    set -eu; \
+    mkdir -p /opt/dynamo/build-info; \
+    check_status=0; \
+    NO_COLOR=1 uv pip check --system > /opt/dynamo/build-info/uv-pip-check.txt 2>&1 || check_status=$?; \
+    cat /opt/dynamo/build-info/uv-pip-check.txt; \
+    printf '%s\n' "${check_status}" > /opt/dynamo/build-info/uv-pip-check.exit-code; \
+    python3 /tmp/collect_runtime_manifest.py
+{% endif %}
+
 USER dynamo
 
 # Copy the workspace surface needed by the current vLLM pre-merge test image.
