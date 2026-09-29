@@ -9,12 +9,18 @@ import asyncio
 import copy
 import hashlib
 import json
+import random
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from dingo.video_gateway.errors import GatewayError, StoreConflict
+from dingo.common.video_timing_schemas import MODEL_EXECUTION_KEY
+from dingo.video_gateway.errors import (
+    GatewayError,
+    HandoffReservationLost,
+    StoreConflict,
+)
 from dingo.video_gateway.etcd_http import EtcdHttpClient, EtcdValue
 from dingo.video_gateway.models import (
     ACTIVE_STATUSES,
@@ -27,6 +33,7 @@ from dingo.video_gateway.models import (
     WorkerLease,
     now_ms,
 )
+from dingo.video_gateway.result_handoff import read_handoff, validate_handoff_transition
 
 _INDEX_SCHEMA_VERSION = 3
 _SEQUENCE_WIDTH = 20
@@ -48,14 +55,58 @@ class TaskWatchEvent:
     created: bool = False
 
 
-def worker_key(backend_target: str, instance_id: int | str) -> str:
-    return hashlib.sha256(
+def worker_key(backend_target: str, instance_id: int | str, slot_id: int = 0) -> str:
+    """Opaque lease identity; slot zero preserves every existing persisted key."""
+    if isinstance(slot_id, bool) or not isinstance(slot_id, int) or slot_id < 0:
+        raise ValueError("slot_id must be a non-negative integer")
+    physical = hashlib.sha256(
         backend_target.encode() + b"\0" + str(instance_id).encode()
     ).hexdigest()
+    if slot_id == 0:
+        return physical
+    return hashlib.sha256(f"{physical}\0slot\0{slot_id}".encode()).hexdigest()
+
+
+def retry_excludes_worker(
+    task: VideoTask, backend_target: str, instance_id: int | str
+) -> bool:
+    """A retry must leave the entire failed instance, not merely its busy slot."""
+    if task.attempt == 0:
+        return False
+    if task.worker_instance_id is None:
+        # Missing physical identity is not permission to reuse an unknown
+        # failed process. Well-formed historical records include this field.
+        return True
+    return worker_key(task.backend_target, task.worker_instance_id) == worker_key(
+        backend_target, instance_id
+    )
 
 
 def _clone_task(task: VideoTask) -> VideoTask:
     return VideoTask.from_dict(task.to_dict())
+
+
+def _validate_fenced_release(before: VideoTask, after: VideoTask) -> None:
+    if after.status == TaskStatus.FINALIZING:
+        validate_handoff_transition(before, after)
+        return
+    if before.status != TaskStatus.IN_PROGRESS or after.status not in {
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    }:
+        raise ValueError("fenced terminal release requires an in_progress execution")
+    for name in (
+        "id",
+        "pool_id",
+        "backend_target",
+        "worker_key",
+        "worker_instance_id",
+        "owner_generation",
+        "attempt",
+        "execution_token",
+    ):
+        if getattr(before, name) != getattr(after, name):
+            raise ValueError("fenced terminal release cannot change execution identity")
 
 
 def _apply_patch(task: VideoTask, patch: Mapping[str, Any]) -> VideoTask:
@@ -79,6 +130,12 @@ def _apply_patch(task: VideoTask, patch: Mapping[str, Any]) -> VideoTask:
 
 
 class TaskStore(ABC):
+    async def claim_finalizing(
+        self, stored: StoredTask, *, new_owner_generation: str
+    ) -> StoredTask | None:
+        """Take over durable postprocessing without acquiring any Worker slot."""
+        raise NotImplementedError("this TaskStore cannot take over finalization")
+
     @abstractmethod
     async def health(self) -> None: ...
 
@@ -102,9 +159,27 @@ class TaskStore(ABC):
     def gateway_owner_supported(self) -> bool:
         return False
 
-    async def lease_snapshot(
-        self, pool_id: str
-    ) -> tuple[dict[str, WorkerLease], int]:
+    @property
+    def discovery_truth_supported(self) -> bool:
+        return False
+
+    async def discovery_instance_snapshot(
+        self, backend_targets: Iterable[str]
+    ) -> dict[str, set[int]]:
+        del backend_targets
+        raise NotImplementedError(
+            "this TaskStore cannot read Dynamo discovery instance truth"
+        )
+
+    async def try_acquire_discovery_recovery(
+        self, gateway_id: str, *, ttl_s: int
+    ) -> bool:
+        del gateway_id, ttl_s
+        raise NotImplementedError(
+            "this TaskStore does not support discovery recovery fencing"
+        )
+
+    async def lease_snapshot(self, pool_id: str) -> tuple[dict[str, WorkerLease], int]:
         leases = await self.list_leases(pool_id)
         return {lease.worker_key: lease for lease in leases}, 0
 
@@ -210,6 +285,7 @@ class TaskStore(ABC):
         patch: Mapping[str, Any],
         expected_revision: int | None = None,
         release_lease: bool = False,
+        release_execution: bool = False,
         quarantine_until_ms: int | None = None,
     ) -> StoredTask: ...
 
@@ -515,6 +591,7 @@ class MemoryTaskStore(TaskStore):
         patch: Mapping[str, Any],
         expected_revision: int | None = None,
         release_lease: bool = False,
+        release_execution: bool = False,
         quarantine_until_ms: int | None = None,
     ) -> StoredTask:
         expected_set = set(expected)
@@ -530,6 +607,23 @@ class MemoryTaskStore(TaskStore):
                     + ", ".join(sorted(status.value for status in expected_set))
                 )
             updated = _apply_patch(current[0], patch)
+            if release_execution:
+                _validate_fenced_release(current[0], updated)
+                lease = self._leases.get((current[0].pool_id, current[0].worker_key))
+                if (
+                    not release_lease
+                    or quarantine_until_ms is not None
+                    or lease is None
+                    or (lease.task_id, lease.owner_generation, lease.execution_token)
+                    != (
+                        task_id,
+                        current[0].owner_generation,
+                        current[0].execution_token,
+                    )
+                ):
+                    raise HandoffReservationLost(
+                        "result handoff lost its Worker reservation"
+                    )
             if (
                 current[0].status == TaskStatus.QUEUED
                 and updated.status != TaskStatus.QUEUED
@@ -680,6 +774,9 @@ class EtcdTaskStore(TaskStore):
         self.client = client
         self.root = f"{prefix.rstrip('/')}/deployments/{deployment_id}"
         self.execution_lease_ttl_s = execution_lease_ttl_s
+        # All pools share the sequence counter; serialize only admission here.
+        # Other Gateways still synchronize through the existing etcd transaction.
+        self._create_task_lock = asyncio.Lock()
 
     @property
     def lease_watch_supported(self) -> bool:
@@ -691,6 +788,10 @@ class EtcdTaskStore(TaskStore):
 
     @property
     def gateway_owner_supported(self) -> bool:
+        return True
+
+    @property
+    def discovery_truth_supported(self) -> bool:
         return True
 
     def _task_key(self, task_id: str) -> str:
@@ -714,6 +815,45 @@ class EtcdTaskStore(TaskStore):
     def _counter_key(self, pool_id: str) -> str:
         return f"{self.root}/pools/{pool_id}/counters/queued"
 
+    def _retry_counter_key(self, pool_id: str, kind: str) -> str:
+        return f"{self.root}/pools/{pool_id}/counters/retry-{kind}"
+
+    def _retry_credit_key(self, task: VideoTask) -> str:
+        return f"{self.root}/pools/{task.pool_id}/retry-credits/{task.id}"
+
+    @staticmethod
+    def _is_retry_waiting(task: VideoTask) -> bool:
+        return (
+            task.status == TaskStatus.QUEUED
+            and task.attempt == 1
+            and task.worker_key is not None
+        )
+
+    async def _retry_counter(
+        self, pool_id: str, kind: str
+    ) -> tuple[int, EtcdValue | None]:
+        value = await self.client.get(self._retry_counter_key(pool_id, kind))
+        count = int(value.value) if value is not None else 0
+        if count < 0:
+            raise RuntimeError(f"negative retry {kind} counter")
+        return count, value
+
+    async def retry_queue_depth(self, pool_id: str) -> int:
+        return (await self._retry_counter(pool_id, "waiting"))[0]
+
+    async def retry_budget_used(self, pool_id: str) -> int:
+        return (await self._retry_counter(pool_id, "credits"))[0]
+
+    async def _require_retry_counter(
+        self, stored: StoredTask, count: int, kind: str
+    ) -> None:
+        if count > 0:
+            return
+        current = await self.get_task(stored.task.id)
+        if current is None or current.revision != stored.revision:
+            raise StoreConflict("task changed while reading retry accounting")
+        raise RuntimeError(f"retry {kind} counter is inconsistent")
+
     def _lease_key(self, pool_id: str, worker_key_value: str) -> str:
         return f"{self.root}/pools/{pool_id}/worker-leases/{worker_key_value}"
 
@@ -725,6 +865,12 @@ class EtcdTaskStore(TaskStore):
 
     def _gateway_key(self, gateway_id: str) -> str:
         return f"{self.root}/gateways/{gateway_id}"
+
+    def _gateway_prefix(self) -> str:
+        return f"{self.root}/gateways/"
+
+    def _discovery_recovery_lock_key(self) -> str:
+        return self._meta_key("discovery-recovery-lock")
 
     def _owner_task_key(self, gateway_id: str, task_id: str) -> str:
         return f"{self.root}/gateway-owners/{gateway_id}/tasks/{task_id}"
@@ -842,9 +988,7 @@ class EtcdTaskStore(TaskStore):
             tasks = [self._task(value) for value in values]
             tasks.sort(key=lambda item: (item.task.created_at_ms, item.task.id))
             sequence, sequence_value = await self._sequence()
-            next_sequence = max(
-                [sequence, *(item.task.created_seq for item in tasks)]
-            )
+            next_sequence = max([sequence, *(item.task.created_seq for item in tasks)])
             conflicted = False
             for stored in tasks:
                 task = stored.task
@@ -879,11 +1023,7 @@ class EtcdTaskStore(TaskStore):
                         )
                     )
                 succeeded, _revision = await self.client.txn(
-                    [
-                        self.client.compare_mod(
-                            self._task_key(task.id), stored.revision
-                        )
-                    ],
+                    [self.client.compare_mod(self._task_key(task.id), stored.revision)],
                     success,
                 )
                 if not succeeded:
@@ -897,9 +1037,7 @@ class EtcdTaskStore(TaskStore):
             compare = self._counter_compare(
                 self._sequence_key(), current_sequence_value
             )
-            success = [
-                self.client.put(self._sequence_key(), str(target_sequence))
-            ]
+            success = [self.client.put(self._sequence_key(), str(target_sequence))]
             if (
                 current_sequence == target_sequence
                 and current_sequence_value is not None
@@ -922,9 +1060,10 @@ class EtcdTaskStore(TaskStore):
             if succeeded:
                 return
             marker = await self.client.get(marker_key)
-            if marker is not None and marker.value == str(
-                _INDEX_SCHEMA_VERSION
-            ).encode():
+            if (
+                marker is not None
+                and marker.value == str(_INDEX_SCHEMA_VERSION).encode()
+            ):
                 return
         raise StoreConflict("unable to prepare task indexes after repeated races")
 
@@ -969,6 +1108,38 @@ class EtcdTaskStore(TaskStore):
         idempotency_hash: str | None,
         queue_limit: int,
     ) -> tuple[StoredTask, bool]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        try:
+            await asyncio.wait_for(self._create_task_lock.acquire(), timeout=5.0)
+        except asyncio.TimeoutError as exc:
+            raise GatewayError(
+                503,
+                "store_busy",
+                "task admission is busy; retry with the same Idempotency-Key",
+                error_type="service_unavailable_error",
+                headers={"Retry-After": "1"},
+            ) from exc
+        try:
+            return await self._create_task_serialized(
+                task,
+                principal_hash=principal_hash,
+                idempotency_hash=idempotency_hash,
+                queue_limit=queue_limit,
+                deadline=deadline,
+            )
+        finally:
+            self._create_task_lock.release()
+
+    async def _create_task_serialized(
+        self,
+        task: VideoTask,
+        *,
+        principal_hash: str,
+        idempotency_hash: str | None,
+        queue_limit: int,
+        deadline: float,
+    ) -> tuple[StoredTask, bool]:
         task = _apply_patch(
             task,
             {
@@ -984,7 +1155,8 @@ class EtcdTaskStore(TaskStore):
             if idempotency_hash is not None
             else None
         )
-        for _ in range(8):
+        attempt = 0
+        while asyncio.get_running_loop().time() < deadline:
             if idem_key is not None:
                 existing = await self.client.get(idem_key)
                 if existing is not None:
@@ -1001,14 +1173,20 @@ class EtcdTaskStore(TaskStore):
                     return stored, False
 
             count, counter = await self._counter(task.pool_id)
+            retry_count, retry_counter = await self._retry_counter(
+                task.pool_id, "waiting"
+            )
             sequence, sequence_value = await self._sequence()
-            if count >= queue_limit:
+            if count - retry_count >= queue_limit:
                 raise GatewayError(429, "queue_full", "video queue is full")
             assigned = _apply_patch(task, {"created_seq": sequence + 1})
             compare = [
                 self.client.compare_version(task_key, 0),
                 self.client.compare_version(queue_key, 0),
                 *self._counter_compare(counter_key, counter),
+                *self._counter_compare(
+                    self._retry_counter_key(task.pool_id, "waiting"), retry_counter
+                ),
                 *self._counter_compare(self._sequence_key(), sequence_value),
             ]
             success = [
@@ -1036,7 +1214,130 @@ class EtcdTaskStore(TaskStore):
             succeeded, revision = await self.client.txn(compare, success)
             if succeeded:
                 return StoredTask(assigned, revision), True
-        raise StoreConflict("unable to create task after repeated etcd CAS conflicts")
+            # Do not cancel an in-flight txn: its commit result may be ambiguous.
+            # The existing client bounds each RPC; this deadline bounds retries.
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            delay = random.uniform(0.001, min(0.05, 0.002 * (2 ** min(attempt, 5))))
+            await asyncio.sleep(min(delay, remaining))
+            attempt += 1
+        raise GatewayError(
+            503,
+            "store_busy",
+            "task admission contention timed out; retry with the same Idempotency-Key",
+            error_type="service_unavailable_error",
+            headers={"Retry-After": "1"},
+        )
+
+    async def requeue_failed_attempt(
+        self,
+        stored: StoredTask,
+        *,
+        queue_limit: int,
+        quarantine_until_ms: int | None = None,
+        retry_wait_timeout_s: float = 600,
+    ) -> StoredTask | None:
+        """Atomically admit one retry without reopening a terminal task.
+
+        Preserve the original FIFO sequence and idempotency identity. The old
+        worker key is retained only to exclude that instance on the retry.
+        This dedicated transition intentionally does not broaden the generic
+        state machine's allowed transitions.
+        """
+        task = stored.task
+        if (
+            task.status not in {TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS}
+            or task.attempt != 1
+            or task.cancel_requested_at_ms is not None
+            or not task.owner_generation
+            or not task.worker_key
+            or not task.execution_token
+        ):
+            return None
+        count, counter = await self._counter(task.pool_id)
+        credit = await self.client.get(self._retry_credit_key(task))
+        if credit is None:
+            return None
+        waiting, waiting_value = await self._retry_counter(task.pool_id, "waiting")
+        lease_key = self._lease_key(task.pool_id, task.worker_key)
+        lease_value = await self.client.get(lease_key)
+        if lease_value is None:
+            return None
+        lease = WorkerLease.from_dict(json.loads(lease_value.value))
+        if (
+            lease.task_id != task.id
+            or lease.owner_generation != task.owner_generation
+            or lease.execution_token != task.execution_token
+        ):
+            return None
+        updated = _clone_task(task)
+        updated.status = TaskStatus.QUEUED
+        updated.queued_at_ms = now_ms()
+        updated.owner_generation = None
+        updated.execution_token = None
+        updated.worker_lease_id = None
+        updated.assigned_at_ms = None
+        updated.started_at_ms = None
+        updated.deadline_at_ms = now_ms() + int(retry_wait_timeout_s * 1000)
+        updated.expires_at_ms = min(task.expires_at_ms, updated.deadline_at_ms)
+        updated.completed_at_ms = None
+        updated.queue_wait_s = None
+        updated.inference_time_s = None
+        updated.finalize_time_s = None
+        updated.stage_durations = None
+        updated.normalized_request = dict(updated.normalized_request)
+        updated.normalized_request.pop(MODEL_EXECUTION_KEY, None)
+        updated.error = None
+        counter_key = self._counter_key(task.pool_id)
+        queue_key = self._queue_key(task.pool_id, task.id)
+        compare = [
+            self.client.compare_mod(self._task_key(task.id), stored.revision),
+            self.client.compare_mod(lease_key, lease_value.mod_revision),
+            self.client.compare_mod(self._retry_credit_key(task), credit.mod_revision),
+            self.client.compare_version(queue_key, 0),
+            self.client.compare_version(
+                self._gateway_key(task.owner_generation), 0, result="GREATER"
+            ),
+            *self._counter_compare(counter_key, counter),
+            *self._counter_compare(
+                self._retry_counter_key(task.pool_id, "waiting"), waiting_value
+            ),
+        ]
+        success = [
+            self.client.put(self._task_key(task.id), self._encode(updated.to_dict())),
+            self.client.put(queue_key, str(updated.queued_at_ms)),
+            self.client.put(self._ordered_queue_key(updated), task.id),
+            self.client.put(counter_key, str(count + 1)),
+            self.client.put(
+                self._retry_counter_key(task.pool_id, "waiting"), str(waiting + 1)
+            ),
+            self.client.delete(self._expiry_index_key(task)),
+            self.client.put(self._expiry_index_key(updated), task.id),
+            self.client.delete(self._owner_task_key(task.owner_generation, task.id)),
+            self.client.delete(
+                self._lease_heartbeat_key(task.pool_id, task.worker_key)
+            ),
+            *[
+                self.client.delete(key)
+                for key in self._status_task_index_keys(task, task.status)
+            ],
+            *[
+                self.client.put(key, task.id)
+                for key in self._status_task_index_keys(updated, updated.status)
+            ],
+        ]
+        if quarantine_until_ms is None:
+            success.append(self.client.delete(lease_key))
+        else:
+            lease.state = "quarantined"
+            lease.reuse_after_ms = quarantine_until_ms
+            lease.heartbeat_at_ms = now_ms()
+            success.append(self.client.put(lease_key, self._encode(lease.to_dict())))
+        succeeded, revision = await self.client.txn(compare, success)
+        if not succeeded:
+            raise StoreConflict("retry admission lost an etcd CAS race")
+        return StoredTask(updated, revision) if succeeded else None
 
     async def get_task(self, task_id: str) -> StoredTask | None:
         value = await self.client.get(self._task_key(task_id))
@@ -1225,6 +1526,8 @@ class EtcdTaskStore(TaskStore):
         lease: WorkerLease,
         *,
         deadline_at_ms: int,
+        reserve_retry: bool = False,
+        retry_limit: int = 32,
     ) -> StoredTask | None:
         task_key = self._task_key(stored.task.id)
         queue_key = self._queue_key(stored.task.pool_id, stored.task.id)
@@ -1234,6 +1537,58 @@ class EtcdTaskStore(TaskStore):
         count, counter = await self._counter(stored.task.pool_id)
         if count <= 0:
             return None
+        retry_waiting = self._is_retry_waiting(stored.task)
+        if retry_waiting and (
+            stored.task.expires_at_ms <= now_ms()
+            or retry_excludes_worker(
+                stored.task, lease.backend_target, lease.worker_instance_id
+            )
+        ):
+            return None
+        accounting_compare, accounting_success = [], []
+        credit_key = self._retry_credit_key(stored.task)
+        if retry_waiting or (reserve_retry and stored.task.attempt == 0):
+            used, used_value = await self._retry_counter(stored.task.pool_id, "credits")
+            used_key = self._retry_counter_key(stored.task.pool_id, "credits")
+            accounting_compare.extend(self._counter_compare(used_key, used_value))
+            if retry_waiting:
+                waiting, waiting_value = await self._retry_counter(
+                    stored.task.pool_id, "waiting"
+                )
+                await self._require_retry_counter(stored, waiting, "waiting")
+                await self._require_retry_counter(stored, used, "credits")
+                credit = await self.client.get(credit_key)
+                if credit is None:
+                    return None
+                accounting_compare.extend(
+                    [
+                        self.client.compare_mod(credit_key, credit.mod_revision),
+                        *self._counter_compare(
+                            self._retry_counter_key(stored.task.pool_id, "waiting"),
+                            waiting_value,
+                        ),
+                    ]
+                )
+                accounting_success.extend(
+                    [
+                        self.client.delete(credit_key),
+                        self.client.put(used_key, str(used - 1)),
+                        self.client.put(
+                            self._retry_counter_key(stored.task.pool_id, "waiting"),
+                            str(waiting - 1),
+                        ),
+                    ]
+                )
+            else:
+                if used >= retry_limit:
+                    return None
+                accounting_compare.append(self.client.compare_version(credit_key, 0))
+                accounting_success.extend(
+                    [
+                        self.client.put(credit_key, stored.task.id),
+                        self.client.put(used_key, str(used + 1)),
+                    ]
+                )
         native_lease = await self.client.lease_grant(self.execution_lease_ttl_s)
         lease = copy.deepcopy(lease)
         lease.etcd_lease_id = native_lease.lease_id
@@ -1249,9 +1604,13 @@ class EtcdTaskStore(TaskStore):
                 "execution_token": lease.execution_token,
                 "assigned_at_ms": now_ms(),
                 "deadline_at_ms": deadline_at_ms,
+                "expires_at_ms": max(stored.task.expires_at_ms, deadline_at_ms)
+                if retry_waiting
+                else stored.task.expires_at_ms,
             },
         )
         compare = [
+            *accounting_compare,
             self.client.compare_mod(task_key, stored.revision),
             self.client.compare_version(queue_key, 0, result="GREATER"),
             self.client.compare_version(lease_key, 0),
@@ -1262,6 +1621,7 @@ class EtcdTaskStore(TaskStore):
             *self._counter_compare(counter_key, counter),
         ]
         success = [
+            *accounting_success,
             self.client.put(task_key, self._encode(updated.to_dict())),
             self.client.put(
                 lease_key,
@@ -1285,15 +1645,20 @@ class EtcdTaskStore(TaskStore):
             ),
             *[
                 self.client.delete(key)
-                for key in self._status_task_index_keys(
-                    stored.task, stored.task.status
-                )
+                for key in self._status_task_index_keys(stored.task, stored.task.status)
             ],
             *[
                 self.client.put(key, updated.id)
                 for key in self._status_task_index_keys(updated, updated.status)
             ],
         ]
+        if updated.expires_at_ms != stored.task.expires_at_ms:
+            success.extend(
+                [
+                    self.client.delete(self._expiry_index_key(stored.task)),
+                    self.client.put(self._expiry_index_key(updated), updated.id),
+                ]
+            )
         try:
             succeeded, revision = await self.client.txn(compare, success)
         except Exception:
@@ -1317,9 +1682,87 @@ class EtcdTaskStore(TaskStore):
         patch: Mapping[str, Any],
         expected_revision: int | None = None,
         release_lease: bool = False,
+        release_execution: bool = False,
         quarantine_until_ms: int | None = None,
     ) -> StoredTask:
+        # A transition also compares shared queue/retry counters and the Worker
+        # lease. Losing one of those comparisons does not mean this task changed.
+        # Pin its original revision: never retry across cancellation or takeover.
         stored = await self.get_task(task_id)
+        if stored is None:
+            raise KeyError(task_id)
+        revision = stored.revision if expected_revision is None else expected_revision
+        expected = tuple(expected)
+        for attempt in range(32):
+            try:
+                return await self._transition_once(
+                    task_id,
+                    expected=expected,
+                    patch=patch,
+                    expected_revision=revision,
+                    release_lease=release_lease,
+                    release_execution=release_execution,
+                    quarantine_until_ms=quarantine_until_ms,
+                    task_hint=stored,
+                )
+            except HandoffReservationLost:
+                # This is a definitive fencing result, not shared-ledger CAS
+                # contention. Retrying cannot restore ownership of a reused
+                # Worker reservation and only delays the caller's safe
+                # task-only failure path.
+                raise
+            except StoreConflict:
+                current = await self.get_task(task_id)
+                if (
+                    current is None
+                    or current.revision != revision
+                    or current.task.status not in expected
+                    or attempt == 31
+                ):
+                    raise
+                await asyncio.sleep(
+                    random.uniform(0.001, min(0.05, 0.002 * 2 ** min(attempt, 5)))
+                )
+        raise AssertionError("unreachable")
+
+    async def _transition_once(
+        self,
+        task_id: str,
+        *,
+        expected: Iterable[TaskStatus],
+        patch: Mapping[str, Any],
+        expected_revision: int | None = None,
+        release_lease: bool = False,
+        release_execution: bool = False,
+        quarantine_until_ms: int | None = None,
+        task_hint: StoredTask | None = None,
+    ) -> StoredTask:
+        ledger_snapshot: dict[str, EtcdValue | None] | None = None
+        # The hint only identifies keys. Re-read the task and its dependent
+        # ledger/lease records in one MVCC snapshot, then validate its pinned
+        # revision before using any of them. Never authorize a write from a
+        # caller's possibly stale task object.
+        if (
+            task_hint is not None
+            and task_hint.task.id == task_id
+            and expected_revision is not None
+            and task_hint.task.status in ACTIVE_STATUSES
+            and patch.get("status") in TERMINAL_STATUSES
+        ):
+            hint = task_hint.task
+            keys = [
+                self._task_key(task_id),
+                self._retry_credit_key(hint),
+                self._retry_counter_key(hint.pool_id, "credits"),
+            ]
+            if release_lease and hint.worker_key is not None:
+                keys.append(self._lease_key(hint.pool_id, hint.worker_key))
+            values, _snapshot_revision = await self.client.get_many(keys)
+            ledger_snapshot = dict(zip(keys, values, strict=True))
+            task_value = values[0]
+            stored = None if task_value is None else self._task(task_value)
+        else:
+            stored = await self.get_task(task_id)
         if stored is None:
             raise KeyError(task_id)
         expected_set = set(expected)
@@ -1331,6 +1774,12 @@ class EtcdTaskStore(TaskStore):
         if expected_revision is not None and stored.revision != expected_revision:
             raise StoreConflict("task revision changed")
         updated = _apply_patch(stored.task, patch)
+        if release_execution:
+            _validate_fenced_release(stored.task, updated)
+            if not release_lease or quarantine_until_ms is not None:
+                raise ValueError(
+                    "fenced execution transition must release, never quarantine"
+                )
         task_key = self._task_key(task_id)
         compare: list[dict] = [self.client.compare_mod(task_key, stored.revision)]
         success: list[dict] = [
@@ -1340,9 +1789,7 @@ class EtcdTaskStore(TaskStore):
         if stored.task.status != updated.status:
             success.extend(
                 self.client.delete(key)
-                for key in self._status_task_index_keys(
-                    stored.task, stored.task.status
-                )
+                for key in self._status_task_index_keys(stored.task, stored.task.status)
             )
             success.extend(
                 self.client.put(key, updated.id)
@@ -1374,6 +1821,13 @@ class EtcdTaskStore(TaskStore):
             counter_key = self._counter_key(stored.task.pool_id)
             count, counter = await self._counter(stored.task.pool_id)
             if count <= 0:
+                # Task and counter are separate reads. A concurrent reservation
+                # or cancellation may have dequeued this task between them.
+                # Let callers retry that race, but keep detecting a genuinely
+                # inconsistent counter when the queued task is unchanged.
+                current = await self.get_task(task_id)
+                if current is None or current.revision != stored.revision:
+                    raise StoreConflict("task changed while reading queue counter")
                 raise RuntimeError("queue counter is inconsistent")
             compare.extend(
                 [
@@ -1389,12 +1843,72 @@ class EtcdTaskStore(TaskStore):
                 ]
             )
 
+        if self._is_retry_waiting(stored.task) and updated.status != TaskStatus.QUEUED:
+            waiting, waiting_value = await self._retry_counter(
+                stored.task.pool_id, "waiting"
+            )
+            await self._require_retry_counter(stored, waiting, "waiting")
+            key = self._retry_counter_key(stored.task.pool_id, "waiting")
+            compare.extend(self._counter_compare(key, waiting_value))
+            success.append(self.client.put(key, str(waiting - 1)))
+        if (
+            updated.status in TERMINAL_STATUSES or release_execution
+        ) and stored.task.status not in TERMINAL_STATUSES:
+            credit_key = self._retry_credit_key(stored.task)
+            credit = (
+                ledger_snapshot[credit_key]
+                if ledger_snapshot is not None
+                else await self.client.get(credit_key)
+            )
+            if credit is not None:
+                key = self._retry_counter_key(stored.task.pool_id, "credits")
+                if ledger_snapshot is None:
+                    used, used_value = await self._retry_counter(
+                        stored.task.pool_id, "credits"
+                    )
+                else:
+                    used_value = ledger_snapshot[key]
+                    used = int(used_value.value) if used_value is not None else 0
+                    if used < 0:
+                        raise RuntimeError("negative retry credits counter")
+                await self._require_retry_counter(stored, used, "credits")
+                compare.extend(
+                    [
+                        self.client.compare_mod(credit_key, credit.mod_revision),
+                        *self._counter_compare(key, used_value),
+                    ]
+                )
+                success.extend(
+                    [
+                        self.client.delete(credit_key),
+                        self.client.put(key, str(used - 1)),
+                    ]
+                )
+
         if release_lease and stored.task.worker_key is not None:
             lease_key = self._lease_key(stored.task.pool_id, stored.task.worker_key)
             heartbeat_key = self._lease_heartbeat_key(
                 stored.task.pool_id, stored.task.worker_key
             )
-            lease_value = await self.client.get(lease_key)
+            lease_value = (
+                ledger_snapshot[lease_key]
+                if ledger_snapshot is not None
+                else await self.client.get(lease_key)
+            )
+            if release_execution:
+                if lease_value is None:
+                    raise HandoffReservationLost(
+                        "result handoff lost its Worker reservation"
+                    )
+                held = WorkerLease.from_dict(json.loads(lease_value.value))
+                if (held.task_id, held.owner_generation, held.execution_token) != (
+                    task_id,
+                    stored.task.owner_generation,
+                    stored.task.execution_token,
+                ):
+                    raise HandoffReservationLost(
+                        "result handoff lost its Worker reservation"
+                    )
             if lease_value is not None:
                 lease = WorkerLease.from_dict(json.loads(lease_value.value))
                 if lease.task_id == task_id:
@@ -1436,9 +1950,7 @@ class EtcdTaskStore(TaskStore):
                 compare.append(self.client.compare_version(lease_key, 0))
                 success.extend(
                     [
-                        self.client.put(
-                            lease_key, self._encode(quarantine.to_dict())
-                        ),
+                        self.client.put(lease_key, self._encode(quarantine.to_dict())),
                         self.client.delete(heartbeat_key),
                     ]
                 )
@@ -1489,9 +2001,7 @@ class EtcdTaskStore(TaskStore):
         values = await self.client.range(self._lease_prefix(pool_id), prefix=True)
         return [WorkerLease.from_dict(json.loads(value.value)) for value in values]
 
-    async def lease_snapshot(
-        self, pool_id: str
-    ) -> tuple[dict[str, WorkerLease], int]:
+    async def lease_snapshot(self, pool_id: str) -> tuple[dict[str, WorkerLease], int]:
         values, revision = await self.client.range_all(
             self._lease_prefix(pool_id),
             prefix=True,
@@ -1593,6 +2103,75 @@ class EtcdTaskStore(TaskStore):
     async def unregister_gateway(self, lease_id: int) -> None:
         await self.client.lease_revoke(lease_id)
 
+    async def discovery_instance_snapshot(
+        self, backend_targets: Iterable[str]
+    ) -> dict[str, set[int]]:
+        snapshots: dict[str, set[int]] = {}
+        for target in dict.fromkeys(backend_targets):
+            endpoint_path = target.removeprefix("dyn://")
+            parts = endpoint_path.split(".")
+            if len(parts) != 3 or any(not part for part in parts):
+                raise ValueError(f"invalid Dynamo backend target: {target!r}")
+            namespace, component, endpoint = parts
+            prefix = f"v1/instances/{namespace}/{component}/{endpoint}/"
+            values, _revision = await self.client.range_all(prefix, prefix=True)
+            instances: set[int] = set()
+            for value in values:
+                try:
+                    payload = json.loads(value.value)
+                    if not isinstance(payload, Mapping):
+                        raise TypeError("discovery value must be an object")
+                    instance_id = int(payload["instance_id"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"invalid Dynamo discovery value at {value.key!r}"
+                    ) from exc
+                if (
+                    payload.get("namespace") != namespace
+                    or payload.get("component") != component
+                    or payload.get("endpoint") != endpoint
+                ):
+                    raise RuntimeError(
+                        f"Dynamo discovery value does not match key {value.key!r}"
+                    )
+                instances.add(instance_id)
+            snapshots[target] = instances
+        return snapshots
+
+    async def try_acquire_discovery_recovery(
+        self, gateway_id: str, *, ttl_s: int
+    ) -> bool:
+        if ttl_s <= 0:
+            raise ValueError("discovery recovery lock ttl must be positive")
+        gateways, _revision = await self.client.range_all(
+            self._gateway_prefix(), prefix=True, keys_only=True
+        )
+        # A single live Gateway must stay available and surface the mismatch;
+        # only an HA deployment can repair replicas one at a time.
+        if len(gateways) < 2:
+            return False
+        native_lease = await self.client.lease_grant(ttl_s)
+        lock_key = self._discovery_recovery_lock_key()
+        succeeded, _revision = await self.client.txn(
+            [self.client.compare_version(lock_key, 0)],
+            [
+                self.client.put(
+                    lock_key,
+                    self._encode(
+                        {
+                            "gateway_id": gateway_id,
+                            "acquired_at_ms": now_ms(),
+                            "lease_id": native_lease.lease_id,
+                        }
+                    ),
+                    lease_id=native_lease.lease_id,
+                )
+            ],
+        )
+        if not succeeded:
+            await self.client.lease_revoke(native_lease.lease_id)
+        return succeeded
+
     async def iter_orphaned_active_tasks(self) -> AsyncIterator[StoredTask]:
         prefix = self._owner_task_prefix()
         cursor = prefix.encode()
@@ -1656,6 +2235,10 @@ class EtcdTaskStore(TaskStore):
         self, stored: StoredTask, *, new_owner_generation: str
     ) -> StoredTask | None:
         task = stored.task
+        if task.status == TaskStatus.FINALIZING and read_handoff(task) is not None:
+            return await self.claim_finalizing(
+                stored, new_owner_generation=new_owner_generation
+            )
         if (
             task.status not in ACTIVE_STATUSES
             or not task.owner_generation
@@ -1709,9 +2292,7 @@ class EtcdTaskStore(TaskStore):
             )
         compare = [
             self.client.compare_mod(task_key, stored.revision),
-            self.client.compare_version(
-                self._gateway_key(task.owner_generation), 0
-            ),
+            self.client.compare_version(self._gateway_key(task.owner_generation), 0),
             self.client.compare_version(
                 self._gateway_key(new_owner_generation), 0, result="GREATER"
             ),
@@ -1734,9 +2315,7 @@ class EtcdTaskStore(TaskStore):
                 ),
                 lease_id=native_lease.lease_id,
             ),
-            self.client.delete(
-                self._owner_task_key(task.owner_generation, task.id)
-            ),
+            self.client.delete(self._owner_task_key(task.owner_generation, task.id)),
             self.client.put(
                 self._owner_task_key(new_owner_generation, task.id), task.id
             ),
@@ -1756,6 +2335,34 @@ class EtcdTaskStore(TaskStore):
                 pass
             return None
         return StoredTask(updated, revision)
+
+    async def claim_finalizing(
+        self, stored: StoredTask, *, new_owner_generation: str
+    ) -> StoredTask | None:
+        task = stored.task
+        if task.status != TaskStatus.FINALIZING or read_handoff(task) is None:
+            return None
+        if not task.owner_generation or task.owner_generation == new_owner_generation:
+            return None
+        updated = _apply_patch(
+            task, {"owner_generation": new_owner_generation, "worker_lease_id": None}
+        )
+        comparisons = [
+            self.client.compare_mod(self._task_key(task.id), stored.revision),
+            self.client.compare_version(self._gateway_key(task.owner_generation), 0),
+            self.client.compare_version(
+                self._gateway_key(new_owner_generation), 0, result="GREATER"
+            ),
+        ]
+        success = [
+            self.client.put(self._task_key(task.id), self._encode(updated.to_dict())),
+            self.client.delete(self._owner_task_key(task.owner_generation, task.id)),
+            self.client.put(
+                self._owner_task_key(new_owner_generation, task.id), task.id
+            ),
+        ]
+        succeeded, revision = await self.client.txn(comparisons, success)
+        return StoredTask(updated, revision) if succeeded else None
 
     async def release_lease(self, pool_id: str, worker_key_value: str) -> None:
         key = self._lease_key(pool_id, worker_key_value)
@@ -1834,9 +2441,7 @@ class EtcdTaskStore(TaskStore):
         if stored.task.owner_generation:
             success.append(
                 self.client.delete(
-                    self._owner_task_key(
-                        stored.task.owner_generation, stored.task.id
-                    )
+                    self._owner_task_key(stored.task.owner_generation, stored.task.id)
                 )
             )
         if stored.task.principal_hash and stored.task.idempotency_hash:
@@ -1868,9 +2473,7 @@ class EtcdTaskStore(TaskStore):
         await self.prepare()
         for _ in range(8):
             index_values, snapshot_revision = await self.client.range_all(
-                self._task_index_prefix(
-                    pool_id=pool_id, status=TaskStatus.QUEUED
-                ),
+                self._task_index_prefix(pool_id=pool_id, status=TaskStatus.QUEUED),
                 prefix=True,
             )
             task_ids = [value.value.decode() for value in index_values]
@@ -2039,9 +2642,7 @@ class EtcdTaskStore(TaskStore):
                 ordered_key = self._ordered_queue_key(task.task)
                 succeeded, _ = await self.client.txn(
                     [
-                        self.client.compare_mod(
-                            self._task_key(task_id), task.revision
-                        ),
+                        self.client.compare_mod(self._task_key(task_id), task.revision),
                         self.client.compare_version(ordered_key, 0),
                     ],
                     [self.client.put(ordered_key, task_id)],

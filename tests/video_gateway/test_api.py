@@ -136,6 +136,16 @@ async def test_async_submit_poll_head_range_and_delete(make_gateway_config):
         assert completed["media_type"] == "video/mp4"
         assert completed["size"] == "1344x768"
         assert completed["metrics"]["queue_wait_s"] is not None
+        assert "stage_durations" not in completed
+        diagnostic_response = await client.get(
+            f"/v1/videos/{submitted['id']}/diagnostics"
+        )
+        assert diagnostic_response.status == 200
+        diagnostic = await diagnostic_response.json()
+        assert {k: v for k, v in diagnostic.items() if k != "diagnostics"} == completed
+        assert diagnostic["diagnostics"]["internal_status"] == "completed"
+        missing = await client.get("/v1/videos/video-missing/diagnostics")
+        assert missing.status == 404
 
         head = await client.head(f"/v1/videos/{submitted['id']}/content")
         ranged = await client.get(
@@ -316,8 +326,9 @@ async def test_vllm_omni_health_default_model_and_submit_status(make_gateway_con
 
         _status_response, completed = await _wait_completed(client, submitted["id"])
         assert completed["inference_time_s"] >= 0
-        assert completed["stage_durations"]["queue_wait"] >= 0
-        assert completed["stage_durations"]["finalize"] >= 0
+        assert "stage_durations" not in completed
+        assert completed["metrics"]["queue_wait_s"] >= 0
+        assert completed["metrics"]["finalize_time_s"] >= 0
     finally:
         await client.close()
 

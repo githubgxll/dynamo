@@ -65,12 +65,24 @@ def load_policy(policy_path: Path) -> Policy:
                 f"invalid licenses.{field} action {value!r} in {policy_path}; "
                 f"must be one of {sorted(_VALID_ACTIONS)}"
             )
+    exceptions = tuple(raw.get("exceptions", []))
+    for exc in exceptions:
+        images = exc.get("images")
+        if images is not None and (
+            not isinstance(images, list)
+            or not images
+            or not all(isinstance(image, str) and image for image in images)
+        ):
+            raise ValueError(
+                f"invalid exception images for {exc.get('type')}/{exc.get('name')}: "
+                "expected a non-empty list of image names"
+            )
     return Policy(
         allow=frozenset(section.get("allow", [])),
         deny=frozenset(section.get("deny", [])),
         unknown_action=unknown_action,
         copyleft_action=copyleft_action,
-        exceptions=tuple(raw.get("exceptions", [])),
+        exceptions=exceptions,
     )
 
 
@@ -219,17 +231,26 @@ def _node_is_allowed(node, allow_set: frozenset[str], deny_set: frozenset[str]) 
 
 
 def _exception_allow_set(
-    policy: Policy, ecosystem: str, name: str, version: str
+    policy: Policy,
+    ecosystem: str,
+    name: str,
+    version: str,
+    image: str | None = None,
 ) -> frozenset[str]:
     """Return the set of SPDX IDs additionally allowed for this specific package.
 
-    Match: ecosystem + name (required); version (optional — omit to match all).
+    Match: ecosystem + name (required); version and image (optional).
+    Omitted versions match all versions. Image-scoped exceptions require an
+    explicit matching image.
     """
     extra: set[str] = set()
     for exc in policy.exceptions:
         if exc.get("type") != ecosystem:
             continue
         if exc.get("name") != name:
+            continue
+        images = exc.get("images")
+        if images is not None and (image is None or image not in images):
             continue
         exc_version = exc.get("version")
         if exc_version is not None and exc_version != version:
@@ -254,7 +275,12 @@ class Violation:
 
 
 def validate_row(
-    policy: Policy, ecosystem: str, name: str, version: str, spdx: str
+    policy: Policy,
+    ecosystem: str,
+    name: str,
+    version: str,
+    spdx: str,
+    image: str | None = None,
 ) -> Violation | None:
     if not spdx or spdx == "UNKNOWN":
         if policy.unknown_action == "deny":
@@ -267,7 +293,7 @@ def validate_row(
             )
         return None
 
-    extra_allow = _exception_allow_set(policy, ecosystem, name, version)
+    extra_allow = _exception_allow_set(policy, ecosystem, name, version, image)
     # Exceptions override BOTH the deny list and the not-in-allow case for
     # this specific (ecosystem, name): "denied unless explicitly excepted".
     # An auditor who has reviewed bash@5.2 and confirmed it's GPL-3.0-or-later
@@ -343,6 +369,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to a *-deps.csv (repeatable for multiple ecosystems)",
     )
     parser.add_argument(
+        "--image",
+        default=None,
+        help=(
+            "Compliance image name used by image-scoped [[exceptions]]. "
+            "Scoped exceptions fail closed when this argument is omitted."
+        ),
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
     args = parser.parse_args(argv)
@@ -380,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                     row["name"],
                     row["version"],
                     row.get("spdx", "") or "UNKNOWN",
+                    image=args.image,
                 )
                 if v is not None:
                     violations.append(v)

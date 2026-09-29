@@ -31,6 +31,37 @@ _DIFFUSION_FIELDS = {f.name for f in dataclasses.fields(OmniDiffusionKwargs)}
 _PARALLEL_FIELDS = {f.name for f in dataclasses.fields(OmniParallelKwargs)}
 
 
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+def test_rejects_invalid_diffusion_capacity(capacity):
+    config = _make_omni_config(max_num_seqs=capacity)
+    with pytest.raises(ValueError, match="max-num-seqs"):
+        config.validate()
+
+
+def test_concurrent_h3_requires_step_execution():
+    config = _make_omni_config(
+        request_adapter="minimax_h3", request_adapter_workflow="fl2va", max_num_seqs=2
+    )
+    with pytest.raises(ValueError, match="requires --step-execution"):
+        config.validate()
+
+
+def test_concurrent_h3_step_execution_valid():
+    config = _make_omni_config(
+        request_adapter="minimax_h3",
+        request_adapter_workflow="fl2va",
+        max_num_seqs=2,
+        step_execution=True,
+    )
+    config.validate()
+
+
+def test_step_execution_rejects_cache_backend():
+    config = _make_omni_config(step_execution=True, cache_backend="cache_dit")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        config.validate()
+
+
 def _make_omni_config(**overrides) -> OmniConfig:
     """Build a minimal OmniConfig with valid defaults, applying overrides.
 
@@ -274,18 +305,18 @@ def test_diffusion_kwargs_expose_runtime_wrapper_fields():
         "diffusion_attention_backend",
         "diffusion_quantization_config",
     }
-    assert expected.issubset(
-        _DIFFUSION_FIELDS
-    ), f"Missing diffusion kwargs: {expected - _DIFFUSION_FIELDS}"
+    assert expected.issubset(_DIFFUSION_FIELDS), (
+        f"Missing diffusion kwargs: {expected - _DIFFUSION_FIELDS}"
+    )
 
 
 def test_parallel_kwargs_expose_runtime_wrapper_fields():
     """Fields previously injected by launch_worker._build_h3_tuned_omni_kwargs
     are now first-class OmniParallelKwargs members."""
     expected = {"text_encoder_tp_size", "vae_parallel_mode"}
-    assert expected.issubset(
-        _PARALLEL_FIELDS
-    ), f"Missing parallel kwargs: {expected - _PARALLEL_FIELDS}"
+    assert expected.issubset(_PARALLEL_FIELDS), (
+        f"Missing parallel kwargs: {expected - _PARALLEL_FIELDS}"
+    )
 
 
 def test_diffusion_kwargs_defaults_match_vllm_omni():

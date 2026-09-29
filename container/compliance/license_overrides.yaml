@@ -319,6 +319,7 @@ overrides:
   - { ecosystem: dpkg, name: nats-server,       license: "Apache-2.0",       source: "NATS Server upstream — https://github.com/nats-io/nats-server/blob/main/LICENSE" }
   - { ecosystem: dpkg, name: media-types,       license: "GPL-2.0-or-later", source: "Debian/Ubuntu media-types package; copyright file references common-licenses/GPL" }
   - { ecosystem: dpkg, name: libgc1,            license: "BSD-3-Clause",     source: "Boehm-GC upstream — http://www.hboehm.info/gc/license.txt (MIT-like, mapped to closest SPDX)" }
+  - { ecosystem: dpkg, name: libgsm1,           license: "TU-Berlin-2.0",     source: "Ubuntu libgsm copyright — https://packages.ubuntu.com/noble/amd64/libgsm1/copyright" }
   - { ecosystem: dpkg, name: numactl,           license: "GPL-2.0-or-later", source: "Linux NUMA tools, GPL-2+" }
   - { ecosystem: dpkg, name: ubuntu-keyring,    license: "GPL-2.0-or-later", source: "Ubuntu keyring; copyright file references common-licenses/GPL-2" }
 
@@ -432,9 +433,11 @@ overrides:
 
   # --- Additional Python deps surfaced by vllm-dev / trtllm-dev / sglang-dev builds ---
   - { ecosystem: python, name: deep_gemm,                       license: "MIT",          source: "DeepSeek DeepGEMM — https://github.com/deepseek-ai/DeepGEMM (MIT)" }
+  - { ecosystem: python, name: instanttensor,                   license: "Apache-2.0",   source: "InstantTensor upstream LICENSE — https://github.com/scitix/InstantTensor/blob/main/LICENSE" }
   - { ecosystem: python, name: nvidia-cudnn-frontend,           license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA cuDNN Frontend — bundled under NVIDIA cuDNN SLA" }
   - { ecosystem: python, name: onnx,                            license: "Apache-2.0",   source: "ONNX — https://github.com/onnx/onnx (Apache-2.0)" }
   - { ecosystem: python, name: setuptools,                      license: "MIT",          source: "setuptools — pypa/setuptools (MIT)" }
+  - { ecosystem: python, name: sigstore-models,                 license: "MIT",          source: "sigstore-models upstream LICENSE — https://github.com/astral-sh/sigstore-models/blob/main/LICENSE" }
   - { ecosystem: python, name: tensorrt,                        license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA TensorRT SLA — https://docs.nvidia.com/deeplearning/tensorrt/sla/index.html" }
   - { ecosystem: python, name: tensorrt_cu13,                   license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA TensorRT SLA" }
   - { ecosystem: python, name: tensorrt_cu13_bindings,          license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA TensorRT SLA" }
@@ -855,6 +858,7 @@ overrides:
   - { ecosystem: rust, name: tracing-subscriber, license: "MIT", source: "crates.io declared license — https://crates.io/crates/tracing-subscriber" }
   - { ecosystem: rust, name: tracing-tree, license: "MIT OR Apache-2.0", source: "crates.io declared license — https://crates.io/crates/tracing-tree" }
   - { ecosystem: rust, name: try-lock, license: "MIT", source: "crates.io declared license — https://crates.io/crates/try-lock" }
+  - { ecosystem: rust, name: tsp-asn1, license: "Apache-2.0", source: "Trail of Bits rfc3161-client workspace LICENSE — https://github.com/trailofbits/rfc3161-client/blob/main/LICENSE" }
   - { ecosystem: rust, name: typeid, license: "MIT OR Apache-2.0", source: "crates.io declared license — https://crates.io/crates/typeid" }
   - { ecosystem: rust, name: typenum, license: "MIT OR Apache-2.0", source: "crates.io declared license — https://crates.io/crates/typenum" }
   - { ecosystem: rust, name: ucd-trie, license: "MIT OR Apache-2.0", source: "crates.io declared license — https://crates.io/crates/ucd-trie" }

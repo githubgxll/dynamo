@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from dingo.video_gateway.adapters.base import UploadedArtifact
 from dingo.video_gateway.artifact_store import FileArtifactStore
 from dingo.video_gateway.config import MediaConfig
 from dingo.video_gateway.errors import GatewayError
+from dingo.video_gateway.file_io import opened_file, run_file_io
 
 
 @dataclass(slots=True)
@@ -58,6 +58,8 @@ async def parse_multipart(
     request: web.Request,
     artifacts: FileArtifactStore,
     limits: MediaConfig,
+    *,
+    upload_root: Path | None = None,
 ) -> ParsedMultipart:
     if request.content_type != "multipart/form-data":
         raise GatewayError(
@@ -65,7 +67,8 @@ async def parse_multipart(
             "unsupported_media_type",
             "video requests require multipart/form-data",
         )
-    upload_root = await artifacts.create_upload()
+    if upload_root is None:
+        upload_root = await artifacts.create_upload()
     fields: dict[str, list[str]] = {}
     uploads: list[UploadedArtifact] = []
     total_file_bytes = 0
@@ -95,8 +98,7 @@ async def parse_multipart(
             temporary = destination.with_suffix(".part")
             digest = hashlib.sha256()
             size = 0
-            output = temporary.open("xb")
-            try:
+            async with opened_file(temporary.open, "xb") as output:
                 while True:
                     chunk = await part.read_chunk(size=1024 * 1024)
                     if not chunk:
@@ -118,12 +120,10 @@ async def parse_multipart(
                             "reference files exceed the aggregate upload limit",
                         )
                     digest.update(chunk)
-                    await asyncio.to_thread(output.write, chunk)
-                await asyncio.to_thread(output.flush)
-                await asyncio.to_thread(os.fsync, output.fileno())
-            finally:
-                output.close()
-            await asyncio.to_thread(os.replace, temporary, destination)
+                    await run_file_io(output.write, chunk)
+                await run_file_io(output.flush)
+                await run_file_io(os.fsync, output.fileno())
+            await run_file_io(os.replace, temporary, destination)
             filename = Path(part.filename).name or f"upload-{ordinal}"
             uploads.append(
                 UploadedArtifact(
@@ -144,6 +144,6 @@ async def parse_multipart(
             upload_root=upload_root,
             total_bytes=total_file_bytes,
         )
-    except Exception:
+    except BaseException:
         await artifacts.discard(upload_root)
         raise

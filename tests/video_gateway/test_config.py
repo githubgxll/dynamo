@@ -61,6 +61,15 @@ def test_config_maps_arbitrary_full_targets_without_namespace_assumptions(tmp_pa
     assert config.pools[0].execution_mode == "stream"
 
 
+@pytest.mark.parametrize("capacity", [True, False, 1.5, "2", None])
+def test_worker_capacity_requires_integer_without_coercion(tmp_path, capacity):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = {"worker_capacity": capacity}
+    with pytest.raises(ValueError, match="worker_capacity must be an integer"):
+        parse_config(raw)
+
+
 def test_legacy_compatibility_version_is_derived_without_revision_drift(tmp_path):
     raw = _raw(tmp_path)
     without_legacy = parse_config(deepcopy(raw))
@@ -96,6 +105,53 @@ def test_detached_execution_requires_explicit_pool_setting(tmp_path):
     raw["pools"][0]["execution_mode"] = "implicit"
     with pytest.raises(ValueError, match="execution_mode"):
         parse_config(raw)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"worker_prefetch_capacity": 1},
+        {"worker_prefetch_capacity": 2, "early_release_slot": True},
+        {"worker_prefetch_capacity": True, "early_release_slot": True},
+        {"worker_prefetch_capacity": 1.5, "early_release_slot": True},
+        {"finalization_timeout_s": float("nan")},
+        {"finalization_timeout_s": float("inf")},
+        {"finalization_timeout_s": 0},
+        {"finalization_max_retries": -1},
+        {"finalization_max_retries": 17},
+        {"finalization_concurrency": 0},
+        {"finalization_concurrency": 4, "finalization_pending_limit": 3},
+    ],
+)
+def test_invalid_continuous_execution_settings_fail_fast(tmp_path, settings):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = settings
+    with pytest.raises(ValueError):
+        parse_config(raw)
+
+
+def test_early_release_requires_detached_mode(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["scheduling"] = {"early_release_slot": True}
+    with pytest.raises(ValueError, match="detached"):
+        parse_config(raw)
+
+
+def test_continuous_execution_defaults_off_and_does_not_change_adapter_revision(
+    tmp_path,
+):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    original = parse_config(raw).pools[0]
+    assert original.scheduling.early_release_slot is False
+    assert original.scheduling.worker_prefetch_capacity == 0
+    raw["pools"][0]["scheduling"] = {
+        "early_release_slot": True,
+        "worker_prefetch_capacity": 1,
+    }
+    updated = parse_config(raw).pools[0]
+    assert updated.configuration_revision == original.configuration_revision
 
 
 @pytest.mark.parametrize(
@@ -145,6 +201,51 @@ def test_unknown_discovery_backend_fails_config_validation(tmp_path):
     raw["runtime"] = {"discovery_backend": "namespace-name"}
 
     with pytest.raises(ValueError, match="discovery_backend"):
+        parse_config(raw)
+
+
+def test_video_discovery_watchdog_is_opt_in_and_configurable(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).runtime.discovery_watchdog.enabled is False
+
+    raw["runtime"] = {
+        "discovery_backend": "etcd",
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 1.5,
+            "mismatch_grace_s": 4.5,
+        },
+    }
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "endpoints": ["http://etcd-0:2379", "http://etcd-1:2379"],
+    }
+
+    watchdog = parse_config(raw).runtime.discovery_watchdog
+    assert watchdog.enabled is True
+    assert watchdog.interval_s == 1.5
+    assert watchdog.mismatch_grace_s == 4.5
+
+
+def test_video_discovery_watchdog_rejects_non_etcd_state(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {"discovery_watchdog": {"enabled": True}}
+
+    with pytest.raises(ValueError, match="requires etcd"):
+        parse_config(raw)
+
+
+def test_video_discovery_watchdog_rejects_too_short_grace(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 2,
+            "mismatch_grace_s": 1,
+        }
+    }
+
+    with pytest.raises(ValueError, match="at least interval_s"):
         parse_config(raw)
 
 
@@ -222,6 +323,33 @@ def test_lifecycle_and_artifact_watermarks_are_configurable(tmp_path):
     assert config.artifact_store.soft_min_free_bytes == 4096
 
 
+def test_task_store_watch_response_timeout_is_opt_in(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).task_store.watch_response_timeout_s is None
+
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": 6,
+    }
+    config = parse_config(raw)
+
+    assert config.task_store.watch_response_timeout_s == 6
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_task_store_watch_response_timeout_must_be_positive(tmp_path, value):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": value,
+    }
+
+    with pytest.raises(ValueError, match="watch_response_timeout_s"):
+        parse_config(raw)
+
+
 def test_artifact_soft_watermark_cannot_be_below_hard_watermark(tmp_path):
     raw = _raw(tmp_path)
     raw["artifact_store"].update(
@@ -248,8 +376,7 @@ def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
     assert config.media.max_single_file_bytes == 50 * 1024 * 1024
     assert config.media.max_result_encoded_bytes >= config.media.max_result_bytes
     assert (
-        config.media.inflight_memory_budget_bytes
-        >= config.media.max_task_memory_bytes
+        config.media.inflight_memory_budget_bytes >= config.media.max_task_memory_bytes
     )
 
 

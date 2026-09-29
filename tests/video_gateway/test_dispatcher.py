@@ -301,6 +301,38 @@ async def _submit(service, model):
     )
 
 
+async def test_idle_watch_snapshot_refresh_preserves_ready_state(
+    make_gateway_config,
+):
+    config = make_gateway_config()
+    client = FakeClient()
+    store = WatchMemoryTaskStore()
+    artifacts = FileArtifactStore(config.artifact_store.root)
+    adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
+    dispatcher = VideoDispatcher(
+        config,
+        store,
+        artifacts,
+        {"fl-pool": client},
+        adapters,
+        context_factory=FakeContext,
+        generation="idle-watch-refresh-test",
+    )
+    pool = dispatcher.pools["fl-pool"]
+    dispatcher._task_watch_healthy = True
+    dispatcher._task_watch_ready.set()
+    pool.lease_watch_healthy = True
+
+    await dispatcher._resync_task_watch(preserve_health=True)
+    await dispatcher._resync_lease_cache(pool, preserve_health=True)
+
+    assert dispatcher._task_watch_healthy is True
+    assert dispatcher._task_watch_ready.is_set()
+    assert pool.lease_watch_healthy is True
+    assert dispatcher._task_watch_revision >= 0
+    assert pool.lease_revision > 0
+
+
 async def test_two_pools_with_same_numeric_instance_never_cross_route(
     make_gateway_config,
 ):
@@ -434,6 +466,63 @@ async def test_detached_pool_acknowledges_then_finishes_from_shared_response(
         assert "dingo_video_detached_status_fallback_reads_total" not in metrics
     finally:
         handler.release.set()
+        await dispatcher.stop()
+        await manager.shutdown()
+
+
+async def test_detached_metrics_use_outer_worker_execution_duration(
+    make_gateway_config,
+):
+    class Handler:
+        async def generate(self, request, context):
+            await asyncio.sleep(0.05)
+            yield {
+                "status": "completed",
+                "data": [
+                    {
+                        "output_format": "mp4",
+                        "b64_json": base64.b64encode(_MINIMAL_MP4).decode(),
+                    }
+                ],
+                # The inline value covers output formatting only. It must not
+                # become the Gateway's Worker execution duration.
+                "inference_time_s": 0.001,
+                "stage_durations": {"output_total_s": 0.001},
+            }
+
+    pool = _pool("fl-pool", "public-fl", "dyn://scope-a.backend.generate")
+    pool["execution_mode"] = "detached"
+    config = make_gateway_config(pools=[pool])
+    manager = DetachedOmniTaskManager(
+        Handler(), config.artifact_store.root, drain_timeout_s=1
+    )
+    store, _artifacts, dispatcher, service = _stack(
+        config, {"fl-pool": _DetachedClient(manager)}
+    )
+    await dispatcher.start()
+    try:
+        submitted = await _submit(service, "public-fl")
+        terminal = await dispatcher.wait_terminal(submitted.stored.task.id, 2)
+
+        assert terminal.task.status == TaskStatus.COMPLETED
+        assert terminal.task.inference_time_s is not None
+        assert terminal.task.inference_time_s >= 0.04
+        assert terminal.task.stage_durations is not None
+        assert terminal.task.stage_durations["output_total_s"] == 0.001
+        public = terminal.task.public_dict()
+        assert public["metrics"]["inference_time_s"] >= 0.04
+        assert "stage_durations" not in public
+        assert terminal.task.diagnostics_dict()["diagnostics"]["stage_durations"]["output_total_s"] == 0.001
+        prometheus = dispatcher.telemetry.render_prometheus()
+        execution_sum = next(
+            line
+            for line in prometheus
+            if line.startswith(
+                'dingo_video_task_stage_duration_seconds_sum{pool="fl-pool",stage="execution"}'
+            )
+        )
+        assert float(execution_sum.rsplit(" ", 1)[1]) >= 0.04
+    finally:
         await dispatcher.stop()
         await manager.shutdown()
 

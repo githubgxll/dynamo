@@ -8,21 +8,22 @@ import logging
 import os
 
 import uvloop
-
 from dynamo import prometheus_names
+from dynamo.llm import ModelInput, ModelType, WorkerType, fetch_model, register_model
+from dynamo.runtime import DistributedRuntime
+from dynamo.runtime.logging import configure_dynamo_logging
+
 from dingo.common.config_dump import dump_config
 from dingo.common.storage import get_fs
 from dingo.common.utils.graceful_shutdown import install_signal_handlers
 from dingo.common.utils.output_modalities import get_output_modalities
 from dingo.common.utils.runtime import create_runtime
-from dynamo.llm import ModelInput, ModelType, WorkerType, fetch_model, register_model
-from dynamo.runtime import DistributedRuntime
-from dynamo.runtime.logging import configure_dynamo_logging
+from dingo.common.utils.runtime_termination import (
+    run_with_runtime_termination_guard,
+)
 from dingo.vllm.health_check import VllmOmniHealthCheckPayload
 from dingo.vllm.main import setup_metrics_collection
-from dingo.vllm.omni.realtime_utils import init_omni_realtime
-from dingo.vllm.omni.stage_router import init_omni_stage_router
-from dingo.vllm.omni.stage_worker import init_omni_stage
+from dingo.vllm.omni.engine_monitor import OmniEngineMonitor
 
 from .args import OmniConfig, parse_omni_args
 
@@ -60,6 +61,13 @@ async def init_omni(
         media_output_fs=media_fs,
         media_output_http_url=config.media_output_http_url,
     )
+    # Monitor AsyncOmni independently from the standard AsyncLLM worker path so
+    # a dead stage/rank cannot leave a registered endpoint with no live engine.
+    _engine_monitor = OmniEngineMonitor(
+        runtime,
+        handler.engine_client,
+        shutdown_event,
+    )
     serve_handler = handler.generate
     if config.detached_video_task_root is not None:
         from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
@@ -68,6 +76,8 @@ async def init_omni(
             handler,
             config.detached_video_task_root,
             drain_timeout_s=config.detached_video_drain_timeout,
+            execution_capacity=config.diffusion.max_num_seqs or 1,
+            prefetch_capacity=config.detached_video_prefetch_capacity,
         )
         serve_handler = detached_manager.generate
         logger.info(
@@ -132,9 +142,14 @@ async def init_omni(
         raise
     finally:
         logger.debug("Cleaning up Omni worker")
-        if detached_manager is not None:
-            await detached_manager.shutdown()
-        handler.cleanup()
+        try:
+            if detached_manager is not None:
+                await detached_manager.shutdown()
+        finally:
+            try:
+                await asyncio.to_thread(handler.output_formatter.close)
+            finally:
+                handler.cleanup()
 
 
 async def worker():
@@ -158,16 +173,33 @@ async def worker():
     install_signal_handlers(loop, runtime, shutdown_endpoints, shutdown_event)
 
     if config.stage_id is not None:
+        # Optional execution modes have their own upstream dependencies. Do not
+        # import them when serving a full diffusion pipeline (or parsing --help).
+        from dingo.vllm.omni.stage_worker import init_omni_stage
+
         await init_omni_stage(runtime, config, shutdown_endpoints, shutdown_event)
         logger.debug("init_omni_stage completed (stage %d)", config.stage_id)
     elif config.omni_router:
+        from dingo.vllm.omni.stage_router import init_omni_stage_router
+
         await init_omni_stage_router(runtime, config, shutdown_endpoints)
         logger.debug("init_omni_stage_router completed")
     elif config.realtime:
+        from dingo.vllm.omni.realtime_utils import init_omni_realtime
+
         await init_omni_realtime(runtime, config, shutdown_endpoints, shutdown_event)
         logger.debug("init_omni_realtime completed, exiting...")
     else:
-        await init_omni(runtime, config, shutdown_event)
+        omni = init_omni(runtime, config, shutdown_event)
+        if config.detached_video_task_root is not None:
+            await run_with_runtime_termination_guard(
+                omni,
+                runtime,
+                shutdown_event,
+                component="detached vLLM-Omni Video Worker",
+            )
+        else:
+            await omni
         logger.debug("Omni worker completed, exiting...")
 
 

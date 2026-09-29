@@ -69,15 +69,46 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _enumerate_installed_dpkgs() -> set[str]:
-    """Return the set of installed dpkg package names."""
+def _required_dpkg_source_packages(
+    policy_path: Path | None, image: str | None
+) -> set[str]:
+    """Return installed dpkg names whose image-scoped exception requires source."""
+    if policy_path is None or image is None:
+        return set()
+    from .policy.validate import load_policy
+
+    policy = load_policy(policy_path)
+    return {
+        str(exc["name"])
+        for exc in policy.exceptions
+        if exc.get("type") == "dpkg"
+        and image in (exc.get("images") or [])
+        and exc.get("name")
+    }
+
+
+def _parse_installed_dpkg_sources(output: str) -> dict[str, str]:
+    """Parse dpkg-query output into binary-package -> source-package names."""
+    packages: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split("\t", 1)
+        if not parts or not parts[0].strip():
+            continue
+        binary = parts[0].strip()
+        source = parts[1].strip() if len(parts) == 2 else ""
+        packages[binary] = source or binary
+    return packages
+
+
+def _enumerate_installed_dpkgs() -> dict[str, str]:
+    """Return installed binary packages mapped to their source package."""
     result = subprocess.run(
-        ["dpkg-query", "-W", "-f=${Package}\\n"],
+        ["dpkg-query", "-W", "-f=${Package}\\t${source:Package}\\n"],
         check=True,
         capture_output=True,
         text=True,
     )
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    return _parse_installed_dpkg_sources(result.stdout)
 
 
 def _baseline_dpkg_names(baseline_sbom: Path) -> set[str]:
@@ -198,24 +229,28 @@ def _rewrite_deb822(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def collect_dpkg_sources(baseline_sbom: Path | None, output_dir: Path) -> int:
-    """Diff installed dpkg state against the baseline, fetch source for the deltas.
+def collect_dpkg_sources(
+    baseline_sbom: Path | None,
+    output_dir: Path,
+    required_packages: set[str] | None = None,
+) -> int:
+    """Fetch unique source packages for dpkg deltas from the baseline.
 
-    Returns the number of packages whose source was successfully fetched.
+    Returns the number of binary packages covered by fetched source packages.
 
-    For each delta package, `apt-get source --download-only -d` fetches
-    the `.dsc` + `.tar.{xz,gz}` and (when present) `.debian.tar.{xz,gz}`
-    into the cwd. NVIDIA-proprietary packages from the cuda repos don't
-    have public source — we log and continue rather than failing the
-    build, matching how Debian's `non-free` repository handles the
-    same case.
+    For each unique source package, `apt-get source --download-only` fetches
+    the `.dsc` + `.tar.{xz,gz}` and (when present) `.debian.tar.{xz,gz}` into
+    the cwd. NVIDIA-proprietary packages from the cuda repos don't have public
+    source — we log and continue rather than failing the build, matching how
+    Debian's `non-free` repository handles the same case.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        installed = _enumerate_installed_dpkgs()
+        installed_sources = _enumerate_installed_dpkgs()
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         logger.error("dpkg-query failed (is dpkg installed?): %s", exc)
         return 0
+    installed = set(installed_sources)
     logger.info("Installed dpkg packages: %d", len(installed))
 
     if baseline_sbom is None:
@@ -238,35 +273,53 @@ def collect_dpkg_sources(baseline_sbom: Path | None, output_dir: Path) -> int:
     if not delta_names:
         return 0
 
-    fetched = 0
+    required_packages = required_packages or set()
+    fetched_names: set[str] = set()
     skipped: list[str] = []
+    source_to_binaries: dict[str, set[str]] = {}
+    for binary in delta_names:
+        source_to_binaries.setdefault(installed_sources[binary], set()).add(binary)
     with _deb_src_enabled():
-        for name in sorted(delta_names):
+        for source_name, binary_names in sorted(source_to_binaries.items()):
             try:
                 subprocess.run(
-                    ["apt-get", "source", "--only-source", "--download-only", name],
+                    [
+                        "apt-get",
+                        "source",
+                        "--only-source",
+                        "--download-only",
+                        source_name,
+                    ],
                     check=True,
                     cwd=output_dir,
                     env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
                     capture_output=True,
                 )
-                fetched += 1
+                fetched_names.update(binary_names)
             except subprocess.CalledProcessError:
                 # Most common cause: NVIDIA-proprietary repos don't publish
                 # source. Documented in the bundle README. Log so an auditor
                 # can see which packages were skipped and why.
-                skipped.append(name)
-                logger.debug("no public source for %s; skipping", name)
+                skipped.append(source_name)
+                logger.debug("no public source for %s; skipping", source_name)
 
     if skipped:
         logger.warning(
-            "Skipped %d dpkg packages with no public source repo "
+            "Skipped %d dpkg source packages with no public source repo "
             "(typically NVIDIA-proprietary; see bundle README): %s",
             len(skipped),
             ", ".join(skipped[:20]) + (" …" if len(skipped) > 20 else ""),
         )
-    logger.info("dpkg sources collected: %d / %d", fetched, len(delta_names))
-    return fetched
+    missing_required = (required_packages & installed) - fetched_names
+    if missing_required:
+        raise RuntimeError(
+            "required corresponding source unavailable for image-scoped "
+            f"dpkg exception(s): {', '.join(sorted(missing_required))}"
+        )
+    logger.info(
+        "dpkg sources collected: %d / %d", len(fetched_names), len(delta_names)
+    )
+    return len(fetched_names)
 
 
 # First-party Rust crate prefixes. Crates whose name starts with any of
@@ -654,6 +707,17 @@ def main(argv: list[str] | None = None) -> int:
             "pruned from the output; everything else is copied as-is."
         ),
     )
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="License policy containing image-scoped source requirements.",
+    )
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Compliance image name used to select required dpkg sources.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -691,7 +755,12 @@ def main(argv: list[str] | None = None) -> int:
 
     counts: dict[str, int] = {}
     if "dpkg" in ecosystems:
-        counts["dpkg"] = collect_dpkg_sources(base_sbom, args.sources_root / "dpkg")
+        required_dpkg = _required_dpkg_source_packages(args.policy, args.image)
+        counts["dpkg"] = collect_dpkg_sources(
+            base_sbom,
+            args.sources_root / "dpkg",
+            required_packages=required_dpkg,
+        )
     if "rust" in ecosystems:
         if args.rust_site_packages is not None:
             site_dirs = [args.rust_site_packages]

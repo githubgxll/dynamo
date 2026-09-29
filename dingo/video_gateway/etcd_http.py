@@ -87,12 +87,17 @@ class EtcdWatchCompacted(StoreUnavailable):
         )
 
 
+class EtcdWatchIdleTimeout(StoreUnavailable):
+    """A healthy watch stream produced no events or progress before its deadline."""
+
+
 class EtcdHttpClient:
     def __init__(
         self,
         url: str | Sequence[str],
         *,
         timeout_s: float = 5.0,
+        watch_response_timeout_s: float | None = None,
         telemetry: GatewayTelemetry | None = None,
     ) -> None:
         raw_urls = (url,) if isinstance(url, str) else tuple(url)
@@ -110,6 +115,9 @@ class EtcdHttpClient:
         # request code uses the endpoint set below.
         self.url = self.urls[0]
         self.timeout = aiohttp.ClientTimeout(total=timeout_s)
+        if watch_response_timeout_s is not None and watch_response_timeout_s <= 0:
+            raise ValueError("watch response timeout must be positive")
+        self.watch_response_timeout_s = watch_response_timeout_s
         self.telemetry = telemetry
         self._session: aiohttp.ClientSession | None = None
         self._endpoint_index = 0
@@ -220,7 +228,7 @@ class EtcdHttpClient:
         timeout = aiohttp.ClientTimeout(
             total=None,
             sock_connect=self.timeout.total,
-            sock_read=None,
+            sock_read=self.watch_response_timeout_s,
         )
         endpoints = await self._endpoint_order()
         for position, (index, endpoint) in enumerate(endpoints):
@@ -267,7 +275,20 @@ class EtcdHttpClient:
                 await self._mark_endpoint(index, succeeded=False)
                 if yielded or position + 1 == len(endpoints):
                     raise
-            except (aiohttp.ClientError, TimeoutError) as exc:
+            except TimeoutError as exc:
+                if yielded:
+                    # An established watch can legitimately be idle. Refresh it
+                    # from a new snapshot without penalizing the etcd endpoint.
+                    raise EtcdWatchIdleTimeout(
+                        f"etcd endpoint {endpoint} {path} watch was idle for "
+                        f"{self.watch_response_timeout_s} seconds"
+                    ) from exc
+                await self._mark_endpoint(index, succeeded=False)
+                if position + 1 == len(endpoints):
+                    raise StoreUnavailable(
+                        f"etcd endpoint {endpoint} {path} stream failed: {exc}"
+                    ) from exc
+            except aiohttp.ClientError as exc:
                 await self._mark_endpoint(index, succeeded=False)
                 if yielded or position + 1 == len(endpoints):
                     raise StoreUnavailable(

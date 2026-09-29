@@ -18,8 +18,14 @@ def test_telemetry_renders_bounded_task_and_etcd_metrics(caplog):
     failed = _task("video-observed")
     failed.status = TaskStatus.FAILED
     failed.error = terminal_error("worker_lease_lost", "lease lost")
+    failed.queue_wait_s = 0.1
+    failed.inference_time_s = 1.2
+    failed.stage_durations = {"worker_queue_wait": 0.3}
 
     telemetry.record_submission(task.pool_id, "created", "async")
+    telemetry.set_gauge(
+        "dingo_video_discovery_consistent", 1, labels={"pool": task.pool_id}
+    )
     telemetry.record_stage_duration(task.pool_id, "queue", 0.125)
     telemetry.record_etcd_request("kv/range", 0.01, succeeded=False)
     with caplog.at_level(logging.INFO, logger="dingo.video_gateway.audit"):
@@ -43,10 +49,18 @@ def test_telemetry_renders_bounded_task_and_etcd_metrics(caplog):
     assert 'stage="queue"' in text
     assert 'dingo_video_etcd_request_errors_total{operation="kv/range"} 1' in text
     assert 'error_code="worker_lease_lost"' in text
+    assert (
+        'dingo_video_discovery_consistent{pool="pool-a"} 1'
+        in text
+    )
 
     event = json.loads(caplog.records[-1].message)
     assert event["log_type"] == "video_task_lifecycle"
     assert event["event"] == "failed"
     assert event["task_id"] == task.id
     assert event["gateway_generation"] == "gateway-a"
+    assert event["gateway_queue_wait_s"] == 0.1
+    assert event["worker_queue_wait_s"] == 0.3
+    assert event["worker_inference_time_s"] == 1.2
+    assert event["stage_durations"] == {"worker_queue_wait": 0.3}
     assert "prompt" not in event

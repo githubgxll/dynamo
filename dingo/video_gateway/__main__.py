@@ -20,6 +20,7 @@ from dingo.video_gateway.config import load_config
 from dingo.video_gateway.dingo_adapter import create_pool_clients
 from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.etcd_http import EtcdHttpClient
+from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.service import VideoGatewayService
 from dingo.video_gateway.task_store import EtcdTaskStore, MemoryTaskStore
 from dingo.video_gateway.telemetry import GatewayTelemetry
@@ -47,9 +48,16 @@ async def _wait_for_shutdown(runtime, stopped: asyncio.Event) -> bool:
     signal. A cancelled Runtime cannot rebuild its discovery clients, so the
     Video Gateway must let Kubernetes create a fresh process.
     """
+
+    async def wait_runtime_shutdown() -> None:
+        # PyO3's future_into_py returns an asyncio Future, while test doubles
+        # and pure-Python runtimes may return a coroutine.  Await it inside a
+        # coroutine so create_task supports both forms consistently.
+        await runtime.wait_shutdown()
+
     signal_wait = asyncio.create_task(stopped.wait(), name="video-gateway-signal")
     runtime_wait = asyncio.create_task(
-        runtime.wait_shutdown(), name="video-gateway-runtime-shutdown"
+        wait_runtime_shutdown(), name="video-gateway-runtime-shutdown"
     )
     waits = {signal_wait, runtime_wait}
     try:
@@ -69,7 +77,7 @@ async def run(args: argparse.Namespace) -> None:
     from dynamo.runtime.logging import configure_dynamo_logging
 
     configure_dynamo_logging()
-    config = load_config(args.config)
+    config = await run_file_io(load_config, args.config)
     if config.task_store.kind == "memory" and not args.allow_memory_store:
         raise RuntimeError("memory Task Store requires --allow-memory-store")
     adapters = {pool.pool_id: create_adapter(pool) for pool in config.pools}
@@ -83,7 +91,7 @@ async def run(args: argparse.Namespace) -> None:
     runner: web.AppRunner | None = None
     try:
         clients = await create_pool_clients(runtime, config)
-        artifacts = FileArtifactStore(config.artifact_store.root)
+        artifacts = await run_file_io(FileArtifactStore, config.artifact_store.root)
         telemetry = GatewayTelemetry()
         if config.task_store.kind == "memory":
             store = MemoryTaskStore()
@@ -93,6 +101,9 @@ async def run(args: argparse.Namespace) -> None:
                 EtcdHttpClient(
                     config.task_store.endpoints,
                     timeout_s=config.task_store.request_timeout_s,
+                    watch_response_timeout_s=(
+                        config.task_store.watch_response_timeout_s
+                    ),
                     telemetry=telemetry,
                 ),
                 prefix=config.task_store.prefix,
@@ -128,10 +139,33 @@ async def run(args: argparse.Namespace) -> None:
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, request_stop)
-        if await _wait_for_shutdown(runtime, stopped):
-            reason = "Dynamo discovery Runtime terminated"
-            logger.critical("%s; restarting Video Gateway", reason)
-            raise RuntimeError(reason)
+        process_shutdown = asyncio.create_task(
+            _wait_for_shutdown(runtime, stopped),
+            name="video-gateway-process-shutdown",
+        )
+        dispatcher_fatal = asyncio.create_task(
+            dispatcher.wait_fatal(), name="video-gateway-dispatcher-fatal"
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {process_shutdown, dispatcher_fatal},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if dispatcher_fatal in done:
+                reason = dispatcher_fatal.result()
+                logger.critical("%s", reason)
+                raise RuntimeError(reason)
+            if await process_shutdown:
+                reason = "Dynamo discovery Runtime terminated"
+                logger.critical("%s; restarting Video Gateway", reason)
+                raise RuntimeError(reason)
+        finally:
+            for waiter in (process_shutdown, dispatcher_fatal):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(
+                process_shutdown, dispatcher_fatal, return_exceptions=True
+            )
     finally:
         try:
             if runner is not None:

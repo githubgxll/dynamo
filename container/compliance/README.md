@@ -44,6 +44,19 @@ denied / `UNKNOWN` license not covered by an exception. The `sboms` and `legal` 
 stages expose `/sboms` and `/legal` for CI extraction; the final runtime stage does
 `COPY --from=licenses /legal /legal` so NOTICES ship inside the image.
 
+Policy exceptions may include an `images = ["vllm-runtime", ...]` scope. The
+licenses stage passes its rendered compliance image name to the validator; a
+scoped exception never applies when the image differs or is omitted. This keeps
+framework-specific approvals from weakening the policy for other images.
+
+The CUDA vLLM runtime preserves the upstream Ubuntu FFmpeg stack and therefore
+has package-name and license-set scoped GPL/LGPL exceptions. Package renames,
+new dependencies, or new license identifiers still fail closed. Any
+distribution build of that image must also build the `sources_archive` target
+with `ENABLE_SOURCE_ARCHIVAL=true` and retain the resulting `sources.zip`
+alongside the immutable image digest. The normal runtime image continues to
+carry NOTICE and SBOM data under `/legal`.
+
 `BASELINE_SBOM_FILE` is rendered from `container/context.yaml`'s per-(framework, device)
 `baseline_sbom` key (see `render.py:_resolve_compliance_inputs`). When set, the generators
 subtract the baseline's components so NOTICES attribute only what Dynamo adds on top of the
