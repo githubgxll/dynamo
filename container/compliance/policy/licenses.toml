@@ -299,6 +299,17 @@ copyleft = "deny"
 # allow = ["GPL-2.0-only"]
 # reason = "Pure-Python library, isolated import surface; legal-approved 2026-XX-XX"
 
+# --- H3 / vLLM-Omni evaluation candidate -------------------------------------
+# Keep the upstream license identity and NOTICE/SBOM generation. This narrowly
+# scoped build exception is not a statement of legal or release approval.
+[[exceptions]]
+type = "python"
+name = "soxr"
+version = "1.1.0"
+images = ["vllm-runtime"]
+allow = ["LGPL-2.1-or-later"]
+reason = "Requested H3 evaluation build exception: soxr is a default vLLM-Omni 0.30 audio dependency. Preserve its LGPL attribution and NOTICE/SBOM; formal distribution review and corresponding-source obligations remain applicable."
+
 # --- vLLM video runtime FFmpeg/codec exceptions ------------------------------
 # Package names and reviewed license sets from the upstream vLLM Ubuntu FFmpeg
 # stack. These approvals apply only to vllm-runtime images; new packages or

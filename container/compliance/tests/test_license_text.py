@@ -96,7 +96,7 @@ def test_vllm_ffmpeg_exceptions_are_image_scoped():
     scoped = [
         exc
         for exc in policy.exceptions
-        if "vllm-runtime" in (exc.get("images") or [])
+        if exc.get("type") == "dpkg" and "vllm-runtime" in (exc.get("images") or [])
     ]
     assert scoped
     for exc in scoped:
@@ -105,6 +105,26 @@ def test_vllm_ffmpeg_exceptions_are_image_scoped():
         assert exc["images"] == ["vllm-runtime", "vllm-runtime-efa"]
         assert exc.get("allow")
         assert exc.get("reason")
+
+
+def test_h3_soxr_exception_is_exact_and_preserves_other_denials():
+    policy = load_policy(_POLICY)
+    spdx = "LGPL-2.1-or-later"
+    assert validate_row(policy, "python", "soxr", "1.1.0", spdx, "vllm-runtime") is None
+    # Each omitted or changed scope must continue to fail the original policy.
+    for ecosystem, name, version, license_id, image in (
+        ("python", "soxr", "1.1.0", spdx, None),
+        ("python", "soxr", "1.1.0", spdx, "sglang-runtime"),
+        ("python", "soxr", "1.1.0", spdx, "vllm-runtime-efa"),
+        ("python", "soxr", "1.0.0", spdx, "vllm-runtime"),
+        ("python", "soxr", "1.2.0", spdx, "vllm-runtime"),
+        ("dpkg", "soxr", "1.1.0", spdx, "vllm-runtime"),
+        ("python", "another-package", "1.1.0", spdx, "vllm-runtime"),
+        ("python", "soxr", "1.1.0", "UNKNOWN", "vllm-runtime"),
+        ("python", "soxr", "1.1.0", "GPL-3.0-only", "vllm-runtime"),
+        ("python", "soxr", "1.1.0", spdx + " AND GPL-3.0-only", "vllm-runtime"),
+    ):
+        assert validate_row(policy, ecosystem, name, version, license_id, image) is not None
 
 
 def test_vllm_scoped_dpkg_sources_are_required():
@@ -322,7 +342,8 @@ def test_write_merged_csv_notes_only_for_non_permissive(tmp_path):
     }
     out = tmp_path / "osrb-deps.csv"
     write_merged_csv(comps, exc, out)
-    rows = {(r["ecosystem"], r["name"]): r for r in _csv.DictReader(out.open())}
+    with out.open(encoding="utf-8", newline="") as stream:
+        rows = {(r["ecosystem"], r["name"]): r for r in _csv.DictReader(stream)}
     # 6-column schema incl. notes
     assert list(next(iter(rows.values())).keys()) == [
         "ecosystem",

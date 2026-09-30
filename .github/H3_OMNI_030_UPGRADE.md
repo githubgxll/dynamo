@@ -110,6 +110,17 @@ validated by rebasing the repository.
 
 ## H3 protocol and deployment
 
+The H3 evaluation branch has one exact Python license-policy exception:
+`soxr==1.1.0`, `LGPL-2.1-or-later`, image `vllm-runtime`. Omni 0.30 declares
+soxr as a default audio dependency. It was already installed before the optional
+KVBM/ModelExpress plugins were disabled. Keep the license validator and
+NOTICE/SBOM generation enabled; this exception neither changes the detected
+license nor permits other package versions/images. It is an engineering build
+policy for this requested evaluation candidate, not legal or release sign-off.
+Formal distribution retains the repository's existing license review and
+corresponding-source requirements; the existing sources collector does not
+automatically archive Python source distributions.
+
 Do not widen the old image-overlay version gate (0.27.1 / 0.27.0rc1), or mount
 the old deployment's `pipeline_minimax_h3.py`, `vae.py`, `quality_policy.py`
 over 0.30. Start with the native released implementation, keeping old baseline
