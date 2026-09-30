@@ -17,6 +17,7 @@ on:
           - dynamo
           - vllm
           - sglang
+          - vbench
           - all
         default: configured
 
@@ -74,6 +75,7 @@ jobs:
           python3 -c "import jinja2, yaml"
 
       - name: Log in to the private registry
+        if: matrix.publish == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ matrix.registry }}
@@ -90,6 +92,7 @@ jobs:
           driver: docker
 
       - name: Configure GitHub Actions cache for sccache
+        if: matrix.framework != 'vbench'
         uses: actions/github-script@v7
         with:
           # sccache's GHA backend needs the job-scoped cache service URL and
@@ -151,6 +154,7 @@ jobs:
           sbom: false
 
       - name: Render ${{ matrix.framework }} ${{ matrix.render_target }} Dockerfile
+        if: matrix.framework != 'vbench'
         shell: bash
         env:
           BUILDER_IMAGE: ${{ matrix.builder_image }}
@@ -167,6 +171,8 @@ jobs:
             --builder-image "${BUILDER_IMAGE}"
 
       - name: Build and push ${{ matrix.image }}
+        if: matrix.framework != 'vbench'
+        id: runtime_image
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -179,6 +185,7 @@ jobs:
           build-args: |
             PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
@@ -191,15 +198,139 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Publish job summary
+      # VBench uses a static Dockerfile, its own CUDA base, and no native
+      # Dynamo builder or GPU. Preparation exports evidence but never pushes.
+      - name: Resolve VBench preparation base image
+        if: matrix.framework == 'vbench' && matrix.vbench_phase == 'prepare'
+        id: vbench_prepare_base
+        shell: bash
+        run: |
+          python3 .github/scripts/vbench_ci.py resolve-base \
+            --lock .vbench-base/base.lock.json \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Validate reviewed VBench publish locks
+        if: matrix.framework == 'vbench' && matrix.vbench_phase == 'publish'
+        id: vbench_publish_base
+        shell: bash
+        run: |
+          python3 .github/scripts/vbench_ci.py verify-locks \
+            --directory container/vbench/locks \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Prepare VBench dependency and asset evidence (no push)
+        if: matrix.framework == 'vbench' && matrix.vbench_phase == 'prepare'
+        id: vbench_prepare
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          target: preparation_artifact
+          pull: true
+          push: false
+          outputs: type=local,dest=.vbench-preparation
+          build-args: |
+            BASE_IMAGE=${{ steps.vbench_prepare_base.outputs.base_image }}
+            VBENCH_PHASE=prepare
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Build and publish reviewed VBench image
+        if: matrix.framework == 'vbench' && matrix.vbench_phase == 'publish'
+        id: vbench_image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          target: runtime
+          pull: true
+          push: true
+          tags: ${{ matrix.image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.vbench_publish_base.outputs.base_image }}
+            VBENCH_PHASE=publish
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Record published image digest
+        if: matrix.publish == 'true' && (steps.runtime_image.outputs.digest != '' || steps.vbench_image.outputs.digest != '')
+        shell: bash
         env:
           BUILDER_IMAGE: ${{ matrix.builder_image }}
           IMAGE: ${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.vbench_image.outputs.digest || steps.runtime_image.outputs.digest }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
-          echo "### Published image" >> "${GITHUB_STEP_SUMMARY}"
-          echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
-          if [ -n "${BUILDER_IMAGE}" ]; then
-            echo "" >> "${GITHUB_STEP_SUMMARY}"
-            echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
-            echo "\`${BUILDER_IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/vbench_ci.py record-image \
+            --image "${IMAGE}" --digest "${IMAGE_DIGEST}" \
+            --source-commit "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" --builder-image "${BUILDER_IMAGE}" \
+            --dockerfile "${DOCKERFILE}" --output .dingo-build-evidence/image.json \
+            --summary "${GITHUB_STEP_SUMMARY}"
+          cp "${DOCKERFILE}" .github/dingo-images.json .dingo-build-evidence/
+
+      - name: Export VBench runtime audit and license evidence
+        if: matrix.framework == 'vbench' && steps.vbench_image.outputs.digest != ''
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          target: image_evidence_artifact
+          push: false
+          outputs: type=local,dest=.vbench-image-evidence
+          build-args: |
+            BASE_IMAGE=${{ steps.vbench_publish_base.outputs.base_image }}
+            VBENCH_PHASE=publish
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Collect available VBench preparation evidence
+        if: always() && matrix.framework == 'vbench'
+        shell: bash
+        env:
+          PREPARE_OUTCOME: ${{ steps.vbench_prepare.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.vbench_image.outcome }}
+          VBENCH_PHASE: ${{ matrix.vbench_phase }}
+        run: |
+          mkdir -p .vbench-preparation
+          if [ -f .vbench-base/base.lock.json ]; then
+            cp .vbench-base/base.lock.json .vbench-preparation/base.lock.json
           fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = {key: os.environ.get(key, '') for key in (
+              'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
+              'VBENCH_PHASE', 'PREPARE_OUTCOME', 'PUBLISH_OUTCOME')}
+          Path('.vbench-preparation/workflow-status.json').write_text(json.dumps(data, indent=2) + '\n')
+          PY
+          if [ "${VBENCH_PHASE}" = prepare ]; then
+            echo '### VBench preparation only' >> "${GITHUB_STEP_SUMMARY}"
+            echo 'No Harbor image was published. Download and review the preparation artifact before switching vbench.phase to publish.' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload VBench preparation and audit evidence
+        if: always() && matrix.framework == 'vbench'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vbench-${{ matrix.vbench_phase }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .vbench-preparation/
+            .vbench-image-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn
+
+      - name: Upload image evidence
+        if: always() && matrix.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-${{ matrix.framework }}-${{ matrix.docker_target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: .dingo-build-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn

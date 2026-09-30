@@ -5,6 +5,10 @@
   "cuda_version": "13.0",
   "commit_sha_length": 12,
   "keep_buildkit_state": true,
+  "vbench": {
+    "phase": "prepare",
+    "cuda_version": "12.1"
+  },
   "images": [
     {
       "framework": "dynamo",
@@ -21,7 +25,7 @@
     },
     {
       "framework": "vllm",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo-vllm"
     },
     {
@@ -29,6 +33,12 @@
       "enabled": false,
       "repository": "ai-dingo-sglang",
       "docker_target": "pre_runtime"
+    },
+    {
+      "framework": "vbench",
+      "enabled": true,
+      "repository": "ai-dingo-testing/vench",
+      "tag_prefix": "v0.1.5-fd18b3d-cu121-r1"
     }
   ]
 }

@@ -14,8 +14,8 @@ from pathlib import Path
 
 import yaml
 
-SUPPORTED_FRAMEWORKS = {"dynamo", "vllm", "sglang"}
-SUPPORTED_SELECTIONS = {"configured", "dynamo", "vllm", "sglang", "all"}
+SUPPORTED_FRAMEWORKS = {"dynamo", "vllm", "sglang", "vbench"}
+SUPPORTED_SELECTIONS = {"configured", "dynamo", "vllm", "sglang", "vbench", "all"}
 SUPPORTED_PLATFORMS = {"linux/amd64"}
 SUPPORTED_CUDA_VERSIONS = {"13.0"}
 CONTEXT_PATH = Path(__file__).resolve().parents[2] / "container/context.yaml"
@@ -23,6 +23,7 @@ SUPPORTED_DOCKER_TARGETS = {
     "dynamo": {"router", "runtime"},
     "vllm": {"runtime", "pre_runtime"},
     "sglang": {"runtime", "pre_runtime"},
+    "vbench": {"preparation_artifact", "runtime"},
 }
 
 REGISTRY_PATTERN = re.compile(
@@ -127,7 +128,7 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
         raise ValueError("commit_sha_length must be an integer between 7 and 40")
     short_sha = github_sha[:sha_length].lower()
     repo_root = Path(__file__).resolve().parents[2]
-    builder_fingerprint = compute_builder_fingerprint(repo_root)
+    builder_fingerprint = None
 
     keep_buildkit_state = config.get("keep_buildkit_state", False)
     if not isinstance(keep_buildkit_state, bool):
@@ -160,6 +161,45 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
             raise ValueError(
                 f"images[{index}].repository is not a valid lowercase repository name"
             )
+
+        # Evaluation has its own CUDA and dependency stack. Keep it out of the
+        # Dynamo renderer, reusable native builder and sccache paths entirely.
+        if framework == "vbench":
+            vbench = config.get("vbench")
+            if not isinstance(vbench, dict):
+                raise ValueError("vbench configuration must be an object")
+            phase = require_string(vbench, "phase")
+            if phase not in {"prepare", "publish"}:
+                raise ValueError("vbench.phase must be prepare or publish")
+            if vbench.get("cuda_version") != "12.1":
+                raise ValueError("vbench.cuda_version must be 12.1")
+            if "docker_target" in image:
+                raise ValueError("vbench docker_target is determined by vbench.phase")
+            tag_prefix = require_string(image, "tag_prefix")
+            tag = f"{tag_prefix}-{short_sha}"
+            if not TAG_PATTERN.fullmatch(tag):
+                raise ValueError("generated VBench tag is invalid")
+            target_key = (framework, phase)
+            if target_key in seen_targets:
+                raise ValueError(f"duplicate framework/target configuration: {target_key}")
+            seen_targets.add(target_key)
+            matrix.append({
+                "framework": framework,
+                "registry": registry,
+                "platform": platform,
+                "cuda_version": "12.1",
+                "keep_buildkit_state": "true" if keep_buildkit_state else "false",
+                "dockerfile": "container/vbench/Dockerfile",
+                "render_target": phase,
+                "docker_target": "preparation_artifact" if phase == "prepare" else "runtime",
+                "image": f"{registry}/{namespace}/{repository}:{tag}",
+                "cache_image": "",
+                "builder_image": "",
+                "sccache_cache_version": "",
+                "vbench_phase": phase,
+                "publish": "true" if phase == "publish" else "false",
+            })
+            continue
 
         if framework in {"vllm", "sglang"}:
             if "tag_prefix" in image:
@@ -199,6 +239,8 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
         )
 
         architecture = platform.rsplit("/", 1)[-1]
+        if builder_fingerprint is None:
+            builder_fingerprint = compute_builder_fingerprint(repo_root)
         image_repository = f"{registry}/{namespace}/{repository}"
         cache_tag = f"buildcache-cu{cuda_version.replace('.', '')}-{architecture}"
         builder_tag = (
@@ -231,6 +273,8 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                     else ""
                 ),
                 "sccache_cache_version": sccache_cache_version,
+                "vbench_phase": "",
+                "publish": "true",
             }
         )
 

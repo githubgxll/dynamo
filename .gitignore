@@ -168,3 +168,9 @@ package-lock.json
 
 # HuggingFace hub cache downloaded by tests (never commit; committed fixtures use plain dir names)
 lib/llm/tests/data/sample-models/models--*/
+
+# VBench CI exports are evidence, never source or build inputs.
+/.vbench-preparation/
+/.vbench-image-evidence/
+/.vbench-base/
+/.dingo-build-evidence/

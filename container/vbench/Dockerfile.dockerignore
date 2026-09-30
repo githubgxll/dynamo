@@ -1,0 +1,17 @@
+**
+!container/
+!container/vbench/
+!container/vbench/**
+!container/compliance/
+!container/compliance/**
+**/__pycache__/**
+**/*.pyc
+**/tests/**
+**/test_*.py
+**/.git/**
+**/*.mp4
+**/*.zip
+**/*.whl
+**/*.pth
+**/*.pt
+**/*.safetensors

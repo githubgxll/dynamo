@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "description": "Preparation inputs, not a completed asset lock. Unknown weight hashes are learned once in prepare and mandatory in publish.",
+  "sources": [
+    {
+      "id": "vbench-source",
+      "source_kind": "vbench",
+      "root": "source",
+      "url": "https://codeload.github.com/Vchitect/VBench/zip/fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+      "revision": "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+      "sha256": "80629a3b0d281b7f60c3244de8f49ab0997dc5c0a30af6459f73458461ea4a4a",
+      "archive_prefix": "VBench-fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+      "max_bytes": 419430400,
+      "license": "Apache-2.0 top level; AMT CC-BY-NC-4.0 and RAFT BSD-3-Clause have separate terms",
+      "license_url": "https://github.com/Vchitect/VBench/blob/fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490/LICENSE"
+    },
+    {
+      "id": "dino-source",
+      "source_kind": "dino",
+      "root": "assets",
+      "path": "vbench/dino_model/facebookresearch_dino_main",
+      "url": "https://codeload.github.com/facebookresearch/dino/zip/7c446df5b9f45747937fb0d72314eb9f7b66930a",
+      "revision": "7c446df5b9f45747937fb0d72314eb9f7b66930a",
+      "archive_prefix": "dino-7c446df5b9f45747937fb0d72314eb9f7b66930a",
+      "max_bytes": 104857600,
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/facebookresearch/dino/blob/7c446df5b9f45747937fb0d72314eb9f7b66930a/LICENSE"
+    }
+  ],
+  "weights": [
+    {
+      "id": "dino-vitb16",
+      "url": "https://dl.fbaipublicfiles.com/dino/dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth",
+      "path": "vbench/dino_model/dino_vitbase16_pretrain.pth",
+      "dimensions": ["subject_consistency"],
+      "license_url": "https://github.com/facebookresearch/dino/blob/7c446df5b9f45747937fb0d72314eb9f7b66930a/LICENSE",
+      "checkpoint_terms": "Review checkpoint applicability separately from source license"
+    },
+    {
+      "id": "clip-vit-b32",
+      "url": "https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt",
+      "path": "vbench/clip_model/ViT-B-32.pt",
+      "sha256": "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
+      "dimensions": ["background_consistency"],
+      "license_url": "https://github.com/openai/CLIP/blob/main/LICENSE",
+      "checkpoint_terms": "Review OpenAI CLIP checkpoint terms"
+    },
+    {
+      "id": "amt-s",
+      "hf_repository": "lalala125/AMT",
+      "hf_filename": "amt-s.pth",
+      "path": "vbench/amt_model/amt-s.pth",
+      "dimensions": ["motion_smoothness"],
+      "license": "AMT source: CC-BY-NC-4.0",
+      "license_url": "https://github.com/Vchitect/VBench/blob/fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490/vbench/third_party/amt/LICENSE",
+      "checkpoint_terms": "Noncommercial source terms; checkpoint permission requires explicit review"
+    },
+    {
+      "id": "raft-things",
+      "url": "https://dl.dropboxusercontent.com/s/4j4z58wuv8o0mfz/models.zip",
+      "archive_member": "models/raft-things.pth",
+      "path": "vbench/raft_model/models/raft-things.pth",
+      "dimensions": ["dynamic_degree"],
+      "max_bytes": 419430400,
+      "license": "RAFT source: BSD-3-Clause",
+      "license_url": "https://github.com/Vchitect/VBench/blob/fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490/vbench/third_party/RAFT/LICENSE",
+      "checkpoint_terms": "Review pretrained checkpoint terms separately"
+    },
+    {
+      "id": "clip-vit-l14",
+      "url": "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt",
+      "path": "vbench/clip_model/ViT-L-14.pt",
+      "sha256": "b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836",
+      "dimensions": ["aesthetic_quality"],
+      "license_url": "https://github.com/openai/CLIP/blob/main/LICENSE",
+      "checkpoint_terms": "Review OpenAI CLIP checkpoint terms"
+    },
+    {
+      "id": "laion-linear-head",
+      "url": "https://raw.githubusercontent.com/LAION-AI/aesthetic-predictor/6d122adad522ab246644d9dc1c6d7a3810ee255f/sa_0_4_vit_l_14_linear.pth",
+      "revision": "6d122adad522ab246644d9dc1c6d7a3810ee255f",
+      "path": "vbench/aesthetic_model/emb_reader/sa_0_4_vit_l_14_linear.pth",
+      "dimensions": ["aesthetic_quality"],
+      "license": "Source repository: MIT",
+      "license_url": "https://github.com/LAION-AI/aesthetic-predictor/blob/6d122adad522ab246644d9dc1c6d7a3810ee255f/LICENSE",
+      "checkpoint_terms": "Review checkpoint applicability of repository license"
+    },
+    {
+      "id": "musiq-spaq",
+      "url": "https://github.com/chaofengc/IQA-PyTorch/releases/download/v0.1-weights/musiq_spaq_ckpt-358bb6af.pth",
+      "path": "vbench/pyiqa_model/musiq_spaq_ckpt-358bb6af.pth",
+      "dimensions": ["imaging_quality"],
+      "license": "pyIQA contains noncommercial terms",
+      "license_url": "https://github.com/chaofengc/IQA-PyTorch",
+      "checkpoint_terms": "Review converted MUSIQ-SPAQ checkpoint terms separately"
+    }
+  ],
+  "links": [
+    {
+      "path": "torch/hub/checkpoints/dino_vitbase16_pretrain.pth",
+      "target": "vbench/dino_model/dino_vitbase16_pretrain.pth"
+    }
+  ]
+}
