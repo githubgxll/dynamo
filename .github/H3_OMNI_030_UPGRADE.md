@@ -88,8 +88,13 @@ exception is also explicitly recorded when reached through Omni's dependency
 closure. All direct Omni requirements must be satisfied.
 
 There is no KVBM/NIXL mismatch exemption. Distribution path evidence distinguishes
-repeated enumeration from the reviewed Ubuntu/system shadowing cases; other
-duplicates and unknown conflicts still fail. Review dependency-audit.json,
+repeated enumeration from Ubuntu system packages shadowed by local wheels for
+cryptography, PyJWT, six and oauthlib. Exactly one local wheel must own the actual
+import and effective metadata. A system egg-info/dist-info pair may describe the
+same inactive version; both paths are recorded. Competing system versions,
+multiple local wheels, unknown packages/paths and unowned imports still fail.
+This metadata-only follow-up preserves the dependency installer and builder
+fingerprint. Review dependency-audit.json,
 the two framework reports, and before/after package records before deployment.
 An accepted upstream metadata override is not GPU collective-communication
 qualification.

@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import hashlib
 import io
+import importlib.metadata as md
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -56,7 +58,8 @@ def official_stack(*, torch="2.13.0+cu130", nccl="2.30.7", requirement=NCCL_REQU
 
 
 def shadow_pair(name="cryptography"):
-    module = {"cryptography": "cryptography/__init__.py", "pyjwt": "jwt/__init__.py", "six": "six.py"}[name]
+    module = {"cryptography": "cryptography/__init__.py", "pyjwt": "jwt/__init__.py",
+              "six": "six.py", "oauthlib": "oauthlib/__init__.py"}[name]
     system = Distribution(name, "1.0", path=f"/usr/lib/python3/dist-packages/{name}-1.0.egg-info")
     wheel = Distribution(name, "2.0", path=f"/usr/local/lib/python3.12/dist-packages/{name}-2.0.dist-info", files=[module])
     return system, wheel, wheel.locate_file(module)
@@ -216,7 +219,7 @@ class DependencyAuditTests(unittest.TestCase):
         self.assertEqual(audit(Distribution("some", path="/one"), Distribution("some", path="/two"))["status"], "FAIL")
 
     def test_known_shadow_pairs_require_matching_effective_import_and_wheel_files(self):
-        for name in ("cryptography", "pyjwt", "six"):
+        for name in ("cryptography", "pyjwt", "six", "oauthlib"):
             with self.subTest(name=name), patch("collect_runtime_manifest.resolved_path", side_effect=str):
                 system, wheel, origin = shadow_pair(name)
                 report = audit(system, wheel, effective_distribution=lambda _: wheel, origin_resolver=lambda _: origin)
@@ -224,6 +227,104 @@ class DependencyAuditTests(unittest.TestCase):
                 self.assertEqual(report["packages"][name], "2.0")
                 self.assertEqual(report["shadowed_distributions"][0]["shadowed_version"], "1.0")
                 self.assertEqual(report["distribution_records"][name]["import_origin"], origin)
+
+    def test_logged_cryptography_system_egg_and_dist_info_shadow(self):
+        with patch("collect_runtime_manifest.resolved_path", side_effect=str):
+            wheel = Distribution("cryptography", "50.0.1",
+                path="/usr/local/lib/python3.12/dist-packages/cryptography-50.0.1.dist-info",
+                files=["cryptography/__init__.py"])
+            system = [Distribution("cryptography", "41.0.7",
+                path=f"/usr/lib/python3/dist-packages/{name}")
+                for name in ("cryptography.egg-info", "cryptography-41.0.7.dist-info")]
+            report = audit(*system, wheel, effective_distribution=lambda _: wheel,
+                origin_resolver=lambda _: wheel.locate_file("cryptography/__init__.py"))
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["packages"]["cryptography"], "50.0.1")
+        shadow = report["shadowed_distributions"][0]
+        self.assertEqual(shadow["shadowed_version"], "41.0.7")
+        self.assertEqual(len(shadow["shadowed_metadata_paths"]), 2)
+        self.assertIsNone(shadow["shadowed_metadata_path"])
+
+    def test_logged_oauthlib_shadow_with_verified_nccl_override(self):
+        with patch("collect_runtime_manifest.resolved_path", side_effect=str):
+            system, wheel, origin = shadow_pair("oauthlib")
+            system.version, wheel.version = "3.2.2", "4.0.0"
+            system._path = "/usr/lib/python3/dist-packages/oauthlib-3.2.2.egg-info"
+            wheel._path = "/usr/local/lib/python3.12/dist-packages/oauthlib-4.0.0.dist-info"
+            report = audit(*official_stack(), system, wheel, evidence=evidence(),
+                effective_distribution=lambda _: wheel, origin_resolver=lambda _: origin)
+            review_uv_check(report, 1, KNOWN_UV_OUTPUT)
+        self.assertEqual(report["status"], "PASS_WITH_UPSTREAM_NCCL_OVERRIDE")
+        self.assertEqual(report["packages"]["oauthlib"], "4.0.0")
+
+    def test_ambiguous_system_or_local_metadata_still_fails(self):
+        with patch("collect_runtime_manifest.resolved_path", side_effect=str):
+            system, wheel, origin = shadow_pair()
+            additions = [
+                Distribution("cryptography", "0.9", path="/usr/lib/python3/dist-packages/cryptography-0.9.dist-info"),
+                Distribution("cryptography", "1.0", path="/usr/lib/python3/dist-packages/cryptography.egg-info"),
+                Distribution("cryptography", "1.0", path="/usr/lib/python3/dist-packages/cryptography.metadata"),
+                Distribution("cryptography", "2.0", path="/usr/local/lib/python3.12/dist-packages/cryptography-extra.dist-info"),
+            ]
+            for extra in additions:
+                with self.subTest(path=extra._path):
+                    report = audit(system, wheel, extra, effective_distribution=lambda _: wheel,
+                                   origin_resolver=lambda _: origin)
+                    self.assertEqual(report["status"], "FAIL")
+
+    def test_reviewed_shadow_without_wheel_record_still_fails(self):
+        with patch("collect_runtime_manifest.resolved_path", side_effect=str):
+            for name in ("cryptography", "oauthlib"):
+                system, wheel, origin = shadow_pair(name)
+                wheel.files = []
+                report = audit(system, wheel, effective_distribution=lambda _: wheel,
+                               origin_resolver=lambda _: origin)
+                self.assertEqual(report["status"], "FAIL")
+
+    def test_real_metadata_discovery_and_import_precedence(self):
+        # Actual importlib metadata/RECORD/find_spec behavior on disk; remap only
+        # the temporary directory prefix to emulate Ubuntu roots on Windows.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            local = root / "usr/local/lib/python3.12/dist-packages"
+            system = root / "usr/lib/python3/dist-packages"
+            local.mkdir(parents=True)
+            system.mkdir(parents=True)
+            for base, name, version, suffix in (
+                (local, "oauthlib", "4.0.0", ".dist-info"),
+                (system, "oauthlib", "3.2.2", ".egg-info"),
+                (local, "cryptography", "50.0.1", ".dist-info"),
+                (system, "cryptography", "41.0.7", ".egg-info"),
+                (system, "cryptography", "41.0.7", ".dist-info"),
+            ):
+                metadata = base / f"{name}-{version}{suffix}"
+                metadata.mkdir()
+                filename = "METADATA" if suffix == ".dist-info" else "PKG-INFO"
+                (metadata / filename).write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+                module = base / name / "__init__.py"
+                module.parent.mkdir(exist_ok=True)
+                module.write_text("# metadata/import precedence fixture\n")
+                if base == local:
+                    (metadata / "RECORD").write_text(f"{name}/__init__.py,,\n")
+
+            def ubuntu_path(path):
+                return "/" + Path(path).resolve().relative_to(root).as_posix()
+
+            distributions = list(md.distributions(path=[str(local), str(system)]))
+            self.assertEqual(len(distributions), 5)
+            original_path = list(sys.path)
+            with patch("collect_runtime_manifest.resolved_path", side_effect=ubuntu_path), patch.object(
+                    sys, "path", [str(local), str(system), *original_path]):
+                report = audit(*distributions)
+            self.assertEqual(report["status"], "PASS", report["errors"])
+            self.assertEqual(report["packages"]["oauthlib"], "4.0.0")
+            self.assertEqual(report["packages"]["cryptography"], "50.0.1")
+            self.assertEqual(len(report["shadowed_distributions"]), 2)
+            # If the system path takes priority, no shadow exception is valid.
+            with patch("collect_runtime_manifest.resolved_path", side_effect=ubuntu_path), patch.object(
+                    sys, "path", [str(system), str(local), *original_path]):
+                report = audit(*distributions)
+            self.assertEqual(report["status"], "FAIL")
 
     def test_known_names_do_not_blindly_allow_duplicate_paths(self):
         with patch("collect_runtime_manifest.resolved_path", side_effect=str):

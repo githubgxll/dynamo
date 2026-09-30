@@ -20,7 +20,9 @@ BUILD_INFO_DIRECTORY = Path("/opt/dynamo/build-info")
 BASE_DIGEST = "sha256:439c19d48db36401abc914b9842d060fe610a54bc3ac29bb02505f0b69af1baf"
 BASE_TAG = "v0.30.0-ubuntu2404"
 NCCL_NAME, NCCL_VERSION, TORCH_VERSION = "nvidia-nccl-cu13", "2.30.7", "2.13.0+cu130"
-SHADOWABLE_MODULES = {"cryptography": "cryptography", "pyjwt": "jwt", "six": "six"}
+SHADOWABLE_MODULES = {
+    "cryptography": "cryptography", "pyjwt": "jwt", "six": "six", "oauthlib": "oauthlib",
+}
 
 
 def upstream_nccl_evidence(base_reference, overrides_text, protected_text):
@@ -87,7 +89,11 @@ def import_origin(module):
 
 
 def select_distributions(distributions, report, effective_distribution, origin_resolver):
-    """Identical realpaths deduplicate; only proven Ubuntu wheel shadows pass."""
+    """Deduplicate realpaths; verify the effective wheel over Ubuntu metadata.
+
+    Ubuntu can expose both egg-info and dist-info for one system version.
+    Metadata count alone does not tell us which package Python imports.
+    """
     groups = {}
     for dist in distributions:
         try:
@@ -115,8 +121,8 @@ def select_distributions(distributions, report, effective_distribution, origin_r
         chosen, import_file = unique[0], None
         if len(unique) > 1:
             try:
-                if key not in SHADOWABLE_MODULES or len(unique) != 2:
-                    raise ValueError("not a reviewed Ubuntu system/wheel pair")
+                if key not in SHADOWABLE_MODULES:
+                    raise ValueError("not a reviewed Ubuntu system/wheel shadow")
                 if not all(item["metadata_path"] for item in unique):
                     raise ValueError("metadata path unavailable")
                 major_minor = ".".join(report["python"].split(".")[:2])
@@ -124,8 +130,18 @@ def select_distributions(distributions, report, effective_distribution, origin_r
                 system_root = "/usr/lib/python3/dist-packages"
                 wheel = [item for item in unique if item["metadata_path"].rsplit("/", 1)[0] == wheel_root]
                 system = [item for item in unique if item["metadata_path"].rsplit("/", 1)[0] == system_root]
-                if len(wheel) != 1 or len(system) != 1:
+                if len(wheel) != 1 or not system or len(wheel) + len(system) != len(unique):
                     raise ValueError("unexpected metadata roots")
+                if not wheel[0]["metadata_path"].endswith(".dist-info"):
+                    raise ValueError("effective local metadata is not a wheel dist-info")
+                # Permit one Ubuntu record or its egg-info/dist-info pair, all
+                # describing the same inactive system version. Two wheels or
+                # competing system versions still indicate an ambiguous install.
+                system_kinds = [Path(item["metadata_path"]).suffix for item in system]
+                if (len(system_kinds) != len(set(system_kinds))
+                        or not set(system_kinds).issubset({".egg-info", ".dist-info"})
+                        or len({item["version"] for item in system}) != 1):
+                    raise ValueError("ambiguous Ubuntu system metadata versions or formats")
                 selected, chosen = effective_distribution(key), wheel[0]
                 if metadata_path(selected) != chosen["metadata_path"] or str(Version(selected.version)) != chosen["version"]:
                     raise ValueError("effective metadata is not the wheel distribution")
@@ -137,7 +153,8 @@ def select_distributions(distributions, report, effective_distribution, origin_r
                 report["shadowed_distributions"].append({"name": key,
                     "effective_version": chosen["version"], "effective_metadata_path": chosen["metadata_path"],
                     "import_origin": import_file, "shadowed_version": system[0]["version"],
-                    "shadowed_metadata_path": system[0]["metadata_path"],
+                    "shadowed_metadata_path": system[0]["metadata_path"] if len(system) == 1 else None,
+                    "shadowed_metadata_paths": sorted(item["metadata_path"] for item in system),
                     "reason": "Verified Ubuntu system metadata shadowed by the imported local wheel"})
             except Exception as exc:
                 report["errors"].append(f"Invalid installed metadata: duplicate installed distribution: {key}: {exc}")
