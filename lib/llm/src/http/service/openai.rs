@@ -492,14 +492,12 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
 //
 // When a gateway translates Anthropic `/v1/messages` requests to OpenAI
 // `/v1/chat/completions` format it may leave Anthropic-specific content-block
-// types inside assistant `content` arrays. The OpenAI deserializer only accepts
-// `text` and `refusal` part types, so `thinking`, `tool_use`, and
-// `redacted_thinking` blocks cause a 400 "data did not match any variant of
-// untagged enum ChatCompletionRequestAssistantMessageContent" error.
+// types inside assistant and user `content` arrays. Those blocks are not valid
+// OpenAI message parts, so the request fails deserialization before reaching
+// the model.
 //
 // This middleware inspects the raw JSON body *before* axum's `Json` extractor
-// deserializes it. For every assistant message whose `content` is an array
-// containing Anthropic block types, it converts:
+// deserializes it. For assistant messages it converts:
 //
 //   {type:"thinking", thinking:"…"}      → reasoning_content (segments form)
 //   {type:"redacted_thinking", …}        → dropped (lossy: encrypted reasoning
@@ -507,6 +505,10 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
 //   {type:"tool_use", id,name,input}     → tool_calls[] entry
 //   {type:"text", text:"…"}              → content string
 //   {type:"refusal", refusal:"…"}        → refusal field
+//
+// For user messages, it converts each `{type:"tool_result", tool_use_id, …}`
+// block into a separate `role:"tool"` message and preserves intervening user
+// content in order.
 //
 // Thinking/tool interleaving is preserved: reasoning segments are emitted one
 // per tool-call position (segments.len() == tool_calls.len() + 1), matching
@@ -847,6 +849,141 @@ fn anthropic_compat_reject(byte_len: usize, message: String) -> Response {
         .into_response()
 }
 
+/// Convert one Anthropic tool_result block to an OpenAI tool message. Tool
+/// result arrays support text and base64 image blocks; unsupported blocks are
+/// rejected rather than silently discarded.
+fn convert_anthropic_tool_result(block: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let tool_call_id = block
+        .get("tool_use_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            "tool_result block is missing a non-empty 'tool_use_id' field".to_string()
+        })?;
+
+    let is_error = match block.get("is_error") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(_) => return Err("tool_result 'is_error' must be a boolean".to_string()),
+    };
+
+    let content = match block.get("content") {
+        None | Some(serde_json::Value::Null) => serde_json::Value::String(String::new()),
+        Some(serde_json::Value::String(text)) => serde_json::Value::String(if is_error {
+            format!("[tool error] {text}")
+        } else {
+            text.clone()
+        }),
+        Some(serde_json::Value::Array(parts)) => {
+            let mut converted = Vec::with_capacity(parts.len() + if is_error { 1 } else { 0 });
+            if is_error {
+                converted.push(serde_json::json!({"type": "text", "text": "[tool error]"}));
+            }
+            for (part_idx, part) in parts.iter().enumerate() {
+                match part.get("type").and_then(serde_json::Value::as_str) {
+                    Some("text") => {
+                        let text = part
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| {
+                                format!("tool_result content block {part_idx} is missing a string 'text' field")
+                            })?;
+                        converted.push(serde_json::json!({"type": "text", "text": text}));
+                    }
+                    Some("image") => {
+                        let source = part.get("source").ok_or_else(|| {
+                            format!("tool_result image block {part_idx} is missing 'source'")
+                        })?;
+                        let source_type = source.get("type").and_then(serde_json::Value::as_str);
+                        let media_type =
+                            source.get("media_type").and_then(serde_json::Value::as_str);
+                        let data = source.get("data").and_then(serde_json::Value::as_str);
+                        if source_type != Some("base64") {
+                            return Err(format!(
+                                "tool_result image block {part_idx} uses an unsupported source type"
+                            ));
+                        }
+                        let media_type =
+                            media_type
+                                .filter(|value| !value.is_empty())
+                                .ok_or_else(|| {
+                                    format!(
+                                        "tool_result image block {part_idx} is missing 'media_type'"
+                                    )
+                                })?;
+                        let data = data.ok_or_else(|| {
+                            format!("tool_result image block {part_idx} is missing 'data'")
+                        })?;
+                        converted.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": {"url": format!("data:{media_type};base64,{data}")}
+                        }));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported tool_result content block type at index {part_idx}"
+                        ));
+                    }
+                }
+            }
+            serde_json::Value::Array(converted)
+        }
+        Some(_) => {
+            return Err("tool_result 'content' must be a string or an array".to_string());
+        }
+    };
+
+    Ok(serde_json::json!({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": content,
+    }))
+}
+
+/// Split Anthropic tool_result blocks out of a user message, retaining
+/// ordinary user content in place between the generated tool messages.
+fn convert_anthropic_user_tool_results(
+    message: &serde_json::Value,
+) -> Result<Option<Vec<serde_json::Value>>, String> {
+    let Some(blocks) = message.get("content").and_then(serde_json::Value::as_array) else {
+        return Ok(None);
+    };
+    if !blocks
+        .iter()
+        .any(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result"))
+    {
+        return Ok(None);
+    }
+
+    let mut converted = Vec::new();
+    let mut user_parts = Vec::new();
+    for (block_idx, block) in blocks.iter().enumerate() {
+        if block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result") {
+            if !user_parts.is_empty() {
+                let mut user_message = message.clone();
+                user_message["content"] = serde_json::Value::Array(std::mem::take(&mut user_parts));
+                converted.push(user_message);
+            }
+            converted.push(
+                convert_anthropic_tool_result(block)
+                    .map_err(|error| format!("content block {block_idx}: {error}"))?,
+            );
+        } else {
+            // Anthropic text blocks already match OpenAI's text-part shape.
+            // Preserve other ordinary blocks as supplied so mixed content
+            // keeps its order and the downstream parser can validate it.
+            user_parts.push(block.clone());
+        }
+    }
+    if !user_parts.is_empty() {
+        let mut user_message = message.clone();
+        user_message["content"] = serde_json::Value::Array(user_parts);
+        converted.push(user_message);
+    }
+
+    Ok(Some(converted))
+}
+
 /// Middleware that normalizes Anthropic content blocks in OpenAI chat
 /// completion requests before deserialization.
 pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: Next) -> Response {
@@ -887,7 +1024,9 @@ pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: N
         }
     };
 
-    // Walk messages, convert assistant messages with Anthropic content blocks.
+    // Walk messages, convert assistant blocks first, then split user tool
+    // results. This keeps assistant tool_calls ahead of the resulting tool
+    // messages in the request history.
     let modified = if let Some(messages) = json.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut changed = false;
         for (msg_idx, msg) in messages.iter_mut().enumerate() {
@@ -1026,6 +1165,29 @@ pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: N
 
             changed = true;
         }
+
+        let original_messages = std::mem::take(messages);
+        let mut normalized_messages = Vec::with_capacity(original_messages.len());
+        for (msg_idx, msg) in original_messages.into_iter().enumerate() {
+            if msg.get("role").and_then(serde_json::Value::as_str) == Some("user") {
+                match convert_anthropic_user_tool_results(&msg) {
+                    Ok(Some(converted)) => {
+                        normalized_messages.extend(converted);
+                        changed = true;
+                    }
+                    Ok(None) => normalized_messages.push(msg),
+                    Err(error) => {
+                        return anthropic_compat_reject(
+                            body_bytes.len(),
+                            format!("messages[{msg_idx}]: {error}"),
+                        );
+                    }
+                }
+            } else {
+                normalized_messages.push(msg);
+            }
+        }
+        *messages = normalized_messages;
         changed
     } else {
         false
