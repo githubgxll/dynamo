@@ -7,37 +7,16 @@ set -euo pipefail
 : "${VLLM_OMNI_REF:?VLLM_OMNI_REF must be set}"
 
 VLLM_OMNI_PROTECTED_PACKAGES_FILE="${VLLM_OMNI_PROTECTED_PACKAGES_FILE:-/tmp/vllm_omni_protected_packages.txt}"
-
-PROTECTED_CONSTRAINTS="$(mktemp /tmp/vllm-openai-protected.XXXXXX.txt)"
+RUNTIME_DEPENDENCY_HELPER="${RUNTIME_DEPENDENCY_HELPER:-/tmp/runtime_dependency_requirements.py}"
+BUILD_INFO=/opt/dynamo/build-info
+PROTECTED_CONSTRAINTS="${BUILD_INFO}/protected-before-omni.txt"
+RUNTIME_REQUIREMENTS="${BUILD_INFO}/dynamo-vllm-default-requirements.txt"
 VLLM_OMNI_VERSION="${VLLM_OMNI_REF#v}"
 
-cleanup() {
-  rm -rf "${PROTECTED_CONSTRAINTS}"
-}
-
-trap cleanup EXIT
-
-python3 - "${VLLM_OMNI_PROTECTED_PACKAGES_FILE}" "${VLLM_OMNI_VERSION}" <<'PY' > "${PROTECTED_CONSTRAINTS}"
-import importlib.metadata as md
-from pathlib import Path
-import sys
-
-for raw_line in Path(sys.argv[1]).read_text().splitlines():
-    name = raw_line.strip()
-    if not name or name.startswith("#"):
-        continue
-    # Omni 0.29.0rc1 and 0.30.0 require transformers>=5.13,<5.15.
-    # Permit their API stack and paired tokenizer to resolve while retaining
-    # the compiled core pins. Do not generalize this to unreviewed releases.
-    if sys.argv[2] in {"0.29.0rc1", "0.30.0"} and name in {"transformers", "tokenizers"}:
-        continue
-    try:
-        dist = md.distribution(name)
-    except Exception:
-        continue
-    project_name = dist.metadata.get("Name") or name
-    print(f"{project_name}=={dist.version}")
-PY
+python3 "${RUNTIME_DEPENDENCY_HELPER}" before \
+  --directory "${BUILD_INFO}" \
+  --protected-packages "${VLLM_OMNI_PROTECTED_PACKAGES_FILE}" \
+  --omni-version "${VLLM_OMNI_VERSION}"
 
 export VLLM_OMNI_TARGET_DEVICE
 
@@ -48,31 +27,25 @@ if [ "${VLLM_OMNI_VERSION}" = "0.30.0" ]; then
   OMNI_REQUIREMENT='https://files.pythonhosted.org/packages/b0/42/6068bdd37584af1d96156c42f44f8da340f5184abb9b0e8cdd0799b62766/vllm_omni-0.30.0-py3-none-any.whl#sha256=141cb0c7b9c07970e5c92a99aab9696e81682dbfa3d2bfcde359c3c1533385f4'
 fi
 
-mkdir -p /opt/dynamo/build-info
-cp "${PROTECTED_CONSTRAINTS}" /opt/dynamo/build-info/protected-before-omni.txt
-
-# Use --system flag only for CUDA (system Python), omit for CPU/XPU (venv)
+# Jointly resolve the complete Omni default dependency graph and actual installed
+# Dynamo/vLLM default requirements. This fills dependencies skipped by the local
+# Dynamo wheel's --no-deps install without replacing the compiled GPU stack.
+# Keep inherited UV_OVERRIDE intact: the official base deliberately overrides
+# Torch's NCCL metadata pin for its DeepEP support. Constraints freeze that NCCL.
+# Use --system flag only for CUDA (system Python), omit for CPU/XPU (venv).
 if [ "${VLLM_OMNI_TARGET_DEVICE}" = "cuda" ]; then
   uv pip install --system \
     --prerelease=allow \
     --constraints "${PROTECTED_CONSTRAINTS}" \
+    --requirements "${RUNTIME_REQUIREMENTS}" \
     "${OMNI_REQUIREMENT}"
 else
   uv pip install \
     --prerelease=allow \
     --constraints "${PROTECTED_CONSTRAINTS}" \
+    --requirements "${RUNTIME_REQUIREMENTS}" \
     "${OMNI_REQUIREMENT}"
 fi
 
-# Verify the protected runtime solve survived dependency installation.
-python3 - "${PROTECTED_CONSTRAINTS}" <<'PY'
-import importlib.metadata as md
-from pathlib import Path
-import sys
-
-for line in Path(sys.argv[1]).read_text().splitlines():
-    name, expected = line.split("==", 1)
-    actual = md.version(name)
-    if actual != expected:
-        raise RuntimeError(f"Protected package changed: {name}: {expected} -> {actual}")
-PY
+# Record path-level evidence and verify that no protected version drifted.
+python3 "${RUNTIME_DEPENDENCY_HELPER}" after --directory "${BUILD_INFO}"

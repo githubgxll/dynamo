@@ -17,8 +17,30 @@ unchanged. This does not deploy or update the shared Runner.
 - Official `vllm/vllm-openai:v0.30.0-ubuntu2404`, multi-platform index pinned
   in `container/context.yaml`; CI still targets `linux/amd64`.
 - Omni's released wheel is SHA-256 pinned in `install_vllm_omni.sh`.
-- Keep compiled packages inherited from the base image constrained. Only the
-  reviewed Transformers/tokenizers API pair may be resolved by Omni.
+- Keep the compiled core and all installed `nvidia-*` libraries constrained to
+  their inherited versions. The shared Transformers/tokenizers API pair may
+  resolve against both vLLM and Omni requirements.
+
+## H3 dependency repair
+
+This branch builds an H3 tuning image. `enable_kvbm` and
+`enable_modelexpress` are false in the vLLM context, as requested. These are
+optional Dynamo plugins, not Omni default dependencies. Do not use this image
+with DynamoConnector/KVBM or a ModelExpress `mx` load format. Keep the upstream
+NIXL wheels: Omni's own NIXL paths are independent of the disabled KVBM plugin.
+
+The installer extracts the installed default requirements of ai-dingo,
+ai-dingo-runtime and vLLM, and resolves them together with the full hash-pinned
+Omni wheel. This fills Kubernetes/zstandard and respects the runtime's existing
+Pydantic upper bound, including matching pydantic-core. It does not request the
+older ai-dingo[vllm] extra pins. All Omni default dependencies are retained,
+including s3tokenizer and ONNX; no ModelExpress Protobuf cap is applied.
+
+Snapshots and constraints before/after installation are stored in build-info.
+Any change to an inherited protected GPU library stops the build. This is a
+candidate dependency solve; the local metadata tests do not execute the real
+Linux image installation. Optional Omni extras such as `[vsa]`, `[fa4]` and
+`[dev]` are outside the default profile and require separate qualification.
 
 ## Existing build and publishing contract
 
@@ -55,20 +77,29 @@ These records are not a complete transitive input lock. Existing mutable native
 builder inputs and the older compliance baseline remain outside this update.
 
 The complete `uv pip check` output and exit code are retained for review. The
-collector audits the whole installed environment, including dependency extras
-and Python-version requirements. The only metadata exception is precisely KVBM
-1.3.0 requiring `nixl[cu13]==1.0.1` while NIXL 1.3.1 is installed. This preserves
-the branch's existing `--no-deps` installation policy; do not downgrade NIXL to
-satisfy that historical metadata. Other missing or incompatible dependencies,
-invalid metadata and checker execution errors stop the build. An allowed
-metadata exception does not establish KVBM/NIXL ABI compatibility. Review the
-saved dependency audit before accepting the image for deployment.
+collector audits the installed environment and reports separate default
+dependency closures for vLLM and Omni, including requested extras. The sole
+permitted mismatch is the fixed official base's Torch 2.13.0+cu130 metadata
+request for NCCL 2.29.7 with installed NCCL 2.30.7. Its source reference,
+upstream override file and pre-install protected versions must all match.
+Upstream deliberately uses NCCL 2.30.7 for DeepEPv2; downgrading it to satisfy
+the older Torch metadata would break that upstream choice. The reviewed
+exception is also explicitly recorded when reached through Omni's dependency
+closure. All direct Omni requirements must be satisfied.
+
+There is no KVBM/NIXL mismatch exemption. Distribution path evidence distinguishes
+repeated enumeration from the reviewed Ubuntu/system shadowing cases; other
+duplicates and unknown conflicts still fail. Review dependency-audit.json,
+the two framework reports, and before/after package records before deployment.
+An accepted upstream metadata override is not GPU collective-communication
+qualification.
 
 Runtime, builder and cache image names carry no personal prefix. The proposed
 publishing branch is `DingoRouter-h3-omni030-base-20260929`; the local preparation
 branch is `h3/omni030`. Kubernetes Pod naming is independent of image naming.
-Use a new publishing branch after the rebase so the previous failed branch
-remains available without force-pushing. The inherited Runner/GC deployment
+Continue pushing new commits to this existing rebased publishing branch; do not
+reuse the pre-rebase `DingoRouter-h3-omni030-20260929` branch or force-push it.
+The inherited Runner/GC deployment
 files are not applied by this change; actual Runner deployment state is not
 validated by rebasing the repository.
 

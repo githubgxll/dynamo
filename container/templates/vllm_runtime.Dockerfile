@@ -24,6 +24,12 @@ ARG NIXL_REF
 ARG CUDA_MAJOR
 {% endif %}
 ARG MODELEXPRESS_VERSION
+ARG RUNTIME_IMAGE
+ARG RUNTIME_IMAGE_TAG
+
+# Record the actual FROM input for the narrowly scoped upstream NCCL override
+# review. This is provenance, not a separate configurable version selection.
+ENV DYNAMO_VLLM_BASE_IMAGE=${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG}
 
 WORKDIR /workspace
 
@@ -143,9 +149,9 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 {% endif %}
 
 {% if target not in ("dev", "local-dev") %}
-# Keep the upstream Python solve intact: install only Dynamo-owned wheels and
-# suppress transitive dependency resolution unless a later validation proves a
-# missing package must be added explicitly.
+# Install local wheels without allowing optional native plugins to re-solve
+# the GPU stack. The Omni layer below jointly resolves the default requirements
+# of ai-dingo, ai-dingo-runtime and vLLM with the full released Omni package.
 
 # Install Dynamo runtime wheels and optional KVBM/GMS wheels.
 # Use --no-deps to prevent dependency conflicts (e.g., KVBM downgrading nixl).
@@ -194,6 +200,7 @@ RUN set -eux; \
 # constraining packages already solved in the upstream vLLM image.
 RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target=/tmp/vllm_omni_protected_packages.txt \
     --mount=type=bind,source=./container/deps/vllm/install_vllm_omni.sh,target=/tmp/install_vllm_omni.sh \
+    --mount=type=bind,source=./container/deps/vllm/runtime_dependency_requirements.py,target=/tmp/runtime_dependency_requirements.py,readonly \
     --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     export UV_CACHE_DIR=/root/.cache/uv; \
@@ -268,9 +275,9 @@ RUN rm -rf /workspace/vllm
 
 {% if target not in ("dev", "local-dev") and device == "cuda" %}
 # Keep the complete uv result and independently audit every installed package,
-# Python requirement and recursively referenced extra. Only the exact reviewed
-# KVBM 1.3.0 -> nixl[cu13]==1.0.1 / installed NIXL 1.3.1 metadata mismatch is
-# permitted; every other conflict and uv tool failure aborts the build.
+# Python requirement and referenced extra, with separate vLLM/Omni closures.
+# Only the exact NCCL override verified against this official base input is
+# permitted. KVBM/NIXL mismatches and unknown failures have no exemption.
 RUN --mount=type=bind,source=./container/deps/vllm/collect_runtime_manifest.py,target=/tmp/collect_runtime_manifest.py,readonly \
     set -eu; \
     mkdir -p /opt/dynamo/build-info; \
