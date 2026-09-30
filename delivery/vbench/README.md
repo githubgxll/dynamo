@@ -50,7 +50,7 @@ call delivery\vbench\02-submit-prepare.cmd
 
 Linux Runner自动执行：
 
-1. 解析官方CUDA12.1基础镜像的linux/amd64 digest。
+1. 解析官方CUDA12.1基础镜像的linux/amd64 digest，再分别通过Buildx客户端与Docker daemon检查同一digest。daemon实际预拉取并核对平台和RepoDigests后才进入构建。
 2. 为Python3.10生成完整传递依赖锁和哈希，安装后执行两套依赖检查。
 3. 准备七个评价权重、固定VBench/DINO源码、配置和Torch hub缓存映射。
 4. 在BuildKit `--network=none` 中检查文件和加载全部六维模型。这里没有视频评分，也没有GPU验收。
@@ -180,9 +180,47 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 | --- | --- |
 | 本机Git push | 完整报错、当前分支和HEAD；403看账号写权限，连接失败看本机17890代理 |
 | Resolve base | 基础镜像tag和imagetools错误；这是Runner拉取层 |
+| Check and pull locked VBench base with Docker daemon | 制品中base-pull目录；客户端检查、daemon拉取及本地镜像身份分别记录。无需自己SSH登录Runner |
 | prepare_environment | uv依赖冲突正文、pip-check；不能靠删除默认依赖通过 |
 | prepare_assets | 失败资产ID/host与HTTP或hash错误；不要发signed URL或token |
 | CPU禁网加载 | cpu-check或首个异常，缺哪个文件/导入；不得转到Pod联网补装 |
 | 许可检查 | legal/license-status.json和对应许可证；不发送账号密码 |
 | K8s Pending/ImagePull | Pod describe中的调度或镜像拉取事件；不据此修改同事节点 |
 | GPU维度失败 | 对应dimension.log、worker-evidence及run-manifest；保留原始输入与失败目录 |
+
+## 基础镜像HEAD请求反复EOF：本次检查与操作
+
+2026-09-30已对比H3成功任务（run181/job109755487555）与VBench重跑失败任务（run186/job109817114361）：实际Runner均为dingo-gxl-runner、同一Machine，Docker记录的代理均为10.201.136.68:1080。该值是日志中的观察记录，没有写入本包的代理配置。
+
+两条流程的GitHub token都是contents:read，Buildx均使用docker driver。H3登录的是内部Harbor，日志显示复用Harbor builder，同时成功读取docker.io/vllm/vllm-openai的元数据。VBench prepare跳过Harbor登录，只拉公开nvidia/cuda；Harbor凭据不会授予Docker Hub权限。H3成功不证明另一个镜像路径在稍后的请求一定正常。
+
+本机经127.0.0.1:17890匿名验证了报错中的精确CUDA digest，HEAD/GET均200且清单内容SHA匹配。因此镜像存在且公开可读取；Runner的EOF仍可能涉及代理/出网访问控制，但日志没有给出GitHub或Harbor权限不足的证据。本机检查不替代Runner检查。
+
+本次改动为VBench增加 `Check and pull locked VBench base with Docker daemon` 步骤：
+
+- 客户端读取同一digest，保留独立结果；不是只检查父tag。
+- daemon按linux/amd64拉同一digest，只对EOF/超时等临时故障进行最多3次有限重试。每次拉取上限10分钟，间隔10秒；明确拒绝、镜像不存在或证书错误不循环重试。
+- 拉取后核对OS、架构和RepoDigests。通过后VBench使用pull:false，允许使用同一个Docker daemon的本地内容；固定digest不变。pull:false并不保证BuildKit绝不访问registry。
+- native框架原有流程保持不变，未更改账号、代理、TLS或GPU环境。失败报告经过脱敏，随prepare制品导出。
+
+提交本次改动仍在 **Windows CMD**：
+
+```cmd
+cd /d D:\AI\dynamo-vbench
+call delivery\vbench\01-check.cmd
+call delivery\vbench\02-submit-prepare.cmd
+```
+
+这会生成新提交并触发新运行。GitHub里重跑旧run186仍使用旧提交4500a8e5f，不会带上这些新检查。当前仍是prepare，不发布Harbor。
+
+如果新检查失败，下载 `vbench-prepare-...` 制品，查看 `base-pull/base-pull-summary.json` 和对应的客户端/daemon日志。失败制品不能用于03导入完整准备锁。
+
+| 新证据 | 后续定位 |
+| --- | --- |
+| 客户端成功，daemon失败 | 同事检查Runner Docker服务的代理、DNS、出口和镜像仓库访问策略；不能只看Runner shell中的export |
+| 客户端与daemon都失败 | 看错误类型核对目标仓库/清单、公共认证服务及共同出网链路 |
+| 明确unauthorized/denied | 针对实际报错域名检查认证、失效的已有Docker Hub凭据或代理授权；不把Harbor管理员密码用于Docker Hub |
+| 429/toomanyrequests | Docker Hub限流；由Runner维护者处理账号或镜像缓存策略 |
+| daemon拉取和身份检查成功，随后FROM仍失败 | 单独检查BuildKit解析/缓存路径；已拉取不代表构建自动通过 |
+
+交给同事的最少信息：对应job链接、失败阶段、base-pull-summary.json、脱敏错误和精确digest。请其确认这个Runner Docker实际使用的出口、Docker Hub相关域名（registry-1.docker.io/auth.docker.io及实际blob下载目标）是否可用，以及是否已有组内批准的Harbor基础镜像缓存。不要发送密码或令牌，不要随机替换基础版本或关闭证书校验。

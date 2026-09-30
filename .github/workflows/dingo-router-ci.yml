@@ -218,6 +218,22 @@ jobs:
             --directory container/vbench/locks \
             --github-output "${GITHUB_OUTPUT}"
 
+      - name: Check and pull locked VBench base with Docker daemon
+        if: matrix.framework == 'vbench'
+        id: vbench_base_pull
+        shell: bash
+        timeout-minutes: 35
+        env:
+          VBENCH_PHASE: ${{ matrix.vbench_phase }}
+        run: |
+          if [ "${VBENCH_PHASE}" = prepare ]; then
+            lock=.vbench-base/base.lock.json
+          else
+            lock=container/vbench/locks/base.lock.json
+          fi
+          python3 .github/scripts/vbench_ci.py pull-base \
+            --lock "${lock}" --evidence .vbench-base/pull-evidence
+
       - name: Prepare VBench dependency and asset evidence (no push)
         if: matrix.framework == 'vbench' && matrix.vbench_phase == 'prepare'
         id: vbench_prepare
@@ -227,7 +243,9 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           target: preparation_artifact
-          pull: true
+          # The exact digest was pulled and checked with this Docker daemon.
+          # Allow its local content; false does not guarantee zero registry access.
+          pull: false
           push: false
           outputs: type=local,dest=.vbench-preparation
           build-args: |
@@ -246,7 +264,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           target: runtime
-          pull: true
+          pull: false
           push: true
           tags: ${{ matrix.image }}
           build-args: |
@@ -296,18 +314,22 @@ jobs:
         env:
           PREPARE_OUTCOME: ${{ steps.vbench_prepare.outcome }}
           PUBLISH_OUTCOME: ${{ steps.vbench_image.outcome }}
+          BASE_PULL_OUTCOME: ${{ steps.vbench_base_pull.outcome }}
           VBENCH_PHASE: ${{ matrix.vbench_phase }}
         run: |
           mkdir -p .vbench-preparation
           if [ -f .vbench-base/base.lock.json ]; then
             cp .vbench-base/base.lock.json .vbench-preparation/base.lock.json
           fi
+          if [ -d .vbench-base/pull-evidence ]; then
+            cp -R .vbench-base/pull-evidence .vbench-preparation/base-pull
+          fi
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           data = {key: os.environ.get(key, '') for key in (
               'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
-              'VBENCH_PHASE', 'PREPARE_OUTCOME', 'PUBLISH_OUTCOME')}
+              'VBENCH_PHASE', 'BASE_PULL_OUTCOME', 'PREPARE_OUTCOME', 'PUBLISH_OUTCOME')}
           Path('.vbench-preparation/workflow-status.json').write_text(json.dumps(data, indent=2) + '\n')
           PY
           if [ "${VBENCH_PHASE}" = prepare ]; then
