@@ -849,9 +849,9 @@ fn anthropic_compat_reject(byte_len: usize, message: String) -> Response {
         .into_response()
 }
 
-/// Convert one Anthropic tool_result block to an OpenAI tool message. Tool
-/// result arrays support text and base64 image blocks; unsupported blocks are
-/// rejected rather than silently discarded.
+/// Convert one text-only Anthropic tool_result block to an OpenAI tool message.
+/// Image results are rejected because the tool-message media path is not
+/// preprocessed by Dynamo.
 fn convert_anthropic_tool_result(block: &serde_json::Value) -> Result<serde_json::Value, String> {
     let tool_call_id = block
         .get("tool_use_id")
@@ -891,33 +891,9 @@ fn convert_anthropic_tool_result(block: &serde_json::Value) -> Result<serde_json
                         converted.push(serde_json::json!({"type": "text", "text": text}));
                     }
                     Some("image") => {
-                        let source = part.get("source").ok_or_else(|| {
-                            format!("tool_result image block {part_idx} is missing 'source'")
-                        })?;
-                        let source_type = source.get("type").and_then(serde_json::Value::as_str);
-                        let media_type =
-                            source.get("media_type").and_then(serde_json::Value::as_str);
-                        let data = source.get("data").and_then(serde_json::Value::as_str);
-                        if source_type != Some("base64") {
-                            return Err(format!(
-                                "tool_result image block {part_idx} uses an unsupported source type"
-                            ));
-                        }
-                        let media_type =
-                            media_type
-                                .filter(|value| !value.is_empty())
-                                .ok_or_else(|| {
-                                    format!(
-                                        "tool_result image block {part_idx} is missing 'media_type'"
-                                    )
-                                })?;
-                        let data = data.ok_or_else(|| {
-                            format!("tool_result image block {part_idx} is missing 'data'")
-                        })?;
-                        converted.push(serde_json::json!({
-                            "type": "image_url",
-                            "image_url": {"url": format!("data:{media_type};base64,{data}")}
-                        }));
+                        return Err(format!(
+                            "image blocks in tool_result content are not supported (block index {part_idx})"
+                        ));
                     }
                     _ => {
                         return Err(format!(
@@ -969,10 +945,13 @@ fn convert_anthropic_user_tool_results(
                     .map_err(|error| format!("content block {block_idx}: {error}"))?,
             );
         } else {
-            // Anthropic text blocks already match OpenAI's text-part shape.
-            // Preserve other ordinary blocks as supplied so mixed content
-            // keeps its order and the downstream parser can validate it.
-            user_parts.push(block.clone());
+            // Keep ordinary content in place, but remove Anthropic-only cache
+            // hints that have no OpenAI equivalent.
+            let mut part = block.clone();
+            if let Some(object) = part.as_object_mut() {
+                object.remove("cache_control");
+            }
+            user_parts.push(part);
         }
     }
     if !user_parts.is_empty() {
@@ -7128,6 +7107,72 @@ mod tests {
         // Non-assistant messages must pass through untouched.
         assert_eq!(echoed["messages"][0], payload["messages"][0]);
         assert_eq!(echoed["messages"][2], payload["messages"][2]);
+    }
+
+    #[tokio::test]
+    async fn test_middleware_converts_user_tool_results_in_order_and_strips_cache_control() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "type": "function", "function": {"name": "one", "arguments": "{}"}},
+                    {"id": "t2", "type": "function", "function": {"name": "two", "arguments": "{}"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "before", "cache_control": {"type": "ephemeral"}},
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "first result"},
+                    {"type": "tool_result", "tool_use_id": "t2", "is_error": true,
+                     "content": [{"type": "text", "text": "second result"}]},
+                    {"type": "text", "text": "after", "cache_control": {"type": "ephemeral"}}
+                ]}
+            ]
+        });
+
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let echoed: serde_json::Value = resp.json().await.expect("echo json");
+        let messages = echoed["messages"].as_array().expect("messages array");
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"][0]["text"], "before");
+        assert!(messages[1]["content"][0].get("cache_control").is_none());
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "t1");
+        assert_eq!(messages[2]["content"], "first result");
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "t2");
+        assert_eq!(
+            messages[3]["content"],
+            serde_json::json!([
+                {"type": "text", "text": "[tool error]"},
+                {"type": "text", "text": "second result"}
+            ])
+        );
+        assert_eq!(messages[4]["role"], "user");
+        assert_eq!(messages[4]["content"][0]["text"], "after");
+        assert!(messages[4]["content"][0].get("cache_control").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_middleware_rejects_image_tool_results() {
+        let url = spawn_compat_echo_server().await;
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png", "data": "aGVsbG8="
+                    }}
+                ]}
+            ]}]
+        });
+
+        let resp = post_json(&url, &payload).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err: serde_json::Value = resp.json().await.expect("error json");
+        let message = err["message"].as_str().unwrap_or_default();
+        assert!(message.contains("image blocks in tool_result content are not supported"));
     }
 
     #[tokio::test]
