@@ -6662,6 +6662,106 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_anthropic_tool_result_text_content() {
+        let text_result = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "first result"
+        });
+        assert_eq!(
+            convert_anthropic_tool_result(&text_result).unwrap(),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": "first result"
+            })
+        );
+
+        let block_result = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "t2",
+            "is_error": true,
+            "content": [{
+                "type": "text",
+                "text": "second result",
+                "cache_control": {"type": "ephemeral"}
+            }]
+        });
+        assert_eq!(
+            convert_anthropic_tool_result(&block_result).unwrap(),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "t2",
+                "content": [
+                    {"type": "text", "text": "[tool error]"},
+                    {"type": "text", "text": "second result"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn test_convert_anthropic_tool_result_rejects_image_content() {
+        let image_result = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aGVsbG8="
+                }
+            }]
+        });
+
+        let error = convert_anthropic_tool_result(&image_result).unwrap_err();
+        assert!(error.contains("image blocks in tool_result content are not supported"));
+    }
+
+    #[test]
+    fn test_convert_anthropic_user_tool_results_splits_in_order_and_strips_cache_control() {
+        let message = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "before", "cache_control": {"type": "ephemeral"}},
+                {"type": "tool_result", "tool_use_id": "t1", "content": "first result"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": [
+                    {"type": "text", "text": "second result"}
+                ]},
+                {"type": "text", "text": "after", "cache_control": {"type": "ephemeral"}}
+            ]
+        });
+
+        let converted = convert_anthropic_user_tool_results(&message)
+            .unwrap()
+            .expect("tool_result blocks should trigger conversion");
+        assert_eq!(
+            converted,
+            vec![
+                serde_json::json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "before"}]
+                }),
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": "t1",
+                    "content": "first result"
+                }),
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": "t2",
+                    "content": [{"type": "text", "text": "second result"}]
+                }),
+                serde_json::json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "after"}]
+                })
+            ]
+        );
+    }
+
+    #[test]
     fn test_convert_interleaved_thinking_tool_use_preserves_order() {
         // thinking A → text → tool_use 1 → thinking B → tool_use 2
         let blocks = make_blocks(vec![
