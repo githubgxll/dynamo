@@ -96,16 +96,12 @@ sglang:
     base_image: nvcr.io/nvidia/cuda-dl-base
     runtime_image: lmsysorg/sglang
     base_image_tag: 25.11-cuda13.0-devel-ubuntu24.04
-    runtime_image_tag: glm-5.3-flash
-    # Baseline is the TRUE base of the third-party lmsysorg/sglang image,
-    # nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04 (Docker Hub; CUDA_VERSION=13.0.1,
-    # cuDNN 9.13.0.50, ubuntu24.04), NOT a self-baseline of lmsysorg/sglang.
-    # lmsysorg/sglang is built FROM this nvidia/cuda cudnn-devel base, so this
-    # attributes everything sglang adds over the clean NVIDIA CUDA+cuDNN floor
-    # (framework, python stack, system libs) rather than hiding it. Per-arch stem;
-    # the licenses stage appends -${TARGETARCH}.cdx.json. (sglang ships no system
-    # GPL ffmpeg/codec dpkgs; the GPL imageio-ffmpeg pip binary is replaced by an
-    # in-tree LGPL ffmpeg in sglang_runtime.Dockerfile — no dpkg purge needed.)
+    runtime_image_tag: v0.5.21
+    # Historical CUDA 13.0.1 compliance corpus; not refreshed for this runtime
+    # update. Upstream v0.5.21 uses CUDA 13.0.3, so refresh this baseline before
+    # publishing compliance artifacts for the new image. Dingo image CI uses
+    # the pre_runtime target and does not publish SBOM/provenance artifacts.
+    # Per-arch stem; the licenses stage appends -${TARGETARCH}.cdx.json.
     baseline_sbom: cuda@8b2705ea
   xpu:
     base_image: intel/deep-learning-essentials
