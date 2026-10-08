@@ -21,12 +21,12 @@
     },
     {
       "framework": "vllm",
-      "enabled": true,
+      "enabled": false,
       "repository": "ai-dingo-vllm"
     },
     {
       "framework": "sglang",
-      "enabled": false,
+      "enabled": true,
       "repository": "ai-dingo-sglang",
       "docker_target": "pre_runtime"
     }

@@ -511,12 +511,17 @@ class SglangLLMEngine(LLMEngine):
             if finish_reason:
                 prompt_tokens = meta_info["prompt_tokens"]
                 completion_tokens = meta_info["completion_tokens"]
+                cached_tokens = meta_info.get("cached_tokens")
                 out["finish_reason"] = finish_reason["type"]
                 out["completion_usage"] = {
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
                 }
+                if cached_tokens is not None:
+                    out["completion_usage"]["prompt_tokens_details"] = {
+                        "cached_tokens": cached_tokens
+                    }
                 prompt_payload = (
                     _shared_logprobs.extract_prompt_logprobs_from_sglang_meta(meta_info)
                 )
