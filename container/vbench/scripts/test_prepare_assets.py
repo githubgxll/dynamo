@@ -5,6 +5,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import socket
+import ssl
 import stat
 import tempfile
 import unittest
@@ -118,6 +120,70 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("secret-value", str(raised.exception))
         self.assertNotIn("token", str(raised.exception))
         self.assertIn("example.com", str(raised.exception))
+
+    def test_network_errors_report_reason_type_and_numeric_code_only(self):
+        secret = "https://cdn.example/file?token=secret-value"
+        errors = [
+            (urllib.error.URLError(socket.gaierror(-2, secret)), "gaierror", "errno=-2"),
+            (urllib.error.URLError(TimeoutError(secret)), "TimeoutError", None),
+            (urllib.error.URLError(ssl.SSLError(1, secret)), "SSLError", "errno=1"),
+            (urllib.error.HTTPError(secret, 403, secret, {}, None), "HTTP 403", None),
+        ]
+        for error, kind, code in errors:
+            with self.subTest(kind=kind):
+                destination = self.root / "download"
+                partial = self.root / "download.partial"
+                partial.write_bytes(b"partial-data")
+                with patch.object(assets.urllib.request.OpenerDirector, "open", side_effect=error), self.assertRaises(assets.AssetError) as raised:
+                    assets.download("https://example.com/weight", destination)
+                detail = str(raised.exception)
+                self.assertIn(kind, detail)
+                if code:
+                    self.assertIn(code, detail)
+                self.assertNotIn("secret-value", detail)
+                self.assertNotIn("cdn.example", detail)
+                self.assertFalse(partial.exists())
+                self.assertFalse(destination.exists())
+
+    def test_archive_checkpoint_preserves_bytes_in_prepare_and_publish(self):
+        weight = b"\x80\x02fake-checkpoint-never-deserialized"
+        checksum = hashlib.sha256(weight).hexdigest()
+        archive = self.archive({"Repo/weight.pth": weight, "Repo/other.pth": b"excluded"}).read_bytes()
+        archive_sha = hashlib.sha256(archive).hexdigest()
+        catalog = {"schema_version": 1, "sources": [], "weights": [{
+            "id": "linear-head", "url": "https://codeload.github.com/example/repo/zip/" + "1" * 40,
+            "revision": "1" * 40, "archive_member": "Repo/weight.pth", "path": "model/weight.pth",
+            "sha256": archive_sha, "checkpoint_sha256": checksum,
+        }], "links": []}
+        catalog_path = self.root / "catalog.json"
+        assets.write_json(catalog_path, catalog)
+
+        def fake_download(url, destination, **kwargs):
+            self.assertEqual(kwargs["expected_sha256"], archive_sha)
+            Path(destination).write_bytes(archive)
+            return {"sha256": archive_sha, "bytes": len(archive)}
+
+        lock = self.root / "prepare-evidence" / "assets.lock.json"
+        for phase in ("prepare", "publish"):
+            args = argparse.Namespace(phase=phase, catalog=str(catalog_path), lock=str(lock),
+                output=str(self.root / (phase + "-assets")), vbench_source=str(self.root / (phase + "-source")),
+                evidence=str(self.root / (phase + "-evidence")), timeout=1, deadline=1)
+            with patch.object(assets, "download", side_effect=fake_download):
+                assets.run(args)
+            self.assertEqual((Path(args.output) / "model/weight.pth").read_bytes(), weight)
+            self.assertFalse((Path(args.output) / "model/other.pth").exists())
+        manifest = assets.read_json(lock)
+        self.assertEqual(manifest["downloads"][0]["sha256"], archive_sha)
+        self.assertEqual(manifest["files"][0]["sha256"], checksum)
+        self.assertEqual(lock.read_bytes(), (self.root / "publish-evidence/assets.lock.json").read_bytes())
+
+        catalog["weights"][0]["checkpoint_sha256"] = "0" * 64
+        assets.write_json(catalog_path, catalog)
+        args = argparse.Namespace(**{**vars(args), "phase": "prepare", "output": str(self.root / "bad-assets"),
+            "vbench_source": str(self.root / "bad-source"), "evidence": str(self.root / "bad-evidence")})
+        with patch.object(assets, "download", side_effect=fake_download), self.assertRaisesRegex(assets.AssetError, "checkpoint SHA256 mismatch"):
+            assets.run(args)
+        self.assertFalse((Path(args.evidence) / "assets.lock.json").exists())
 
     def test_prepare_publish_roundtrip_and_no_mutable_resolution_in_publish(self):
         source_zip = self.archive({"Repo/LICENSE": "license", "Repo/vbench/__init__.py": "pass"}).read_bytes()

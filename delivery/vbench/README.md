@@ -185,7 +185,7 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 | Check and pull locked VBench base with Docker daemon | 制品中base-pull目录；客户端检查、daemon拉取及本地镜像身份分别记录。无需自己SSH登录Runner |
 | foundation中的Python工具安装 | 第一处ReadTimeout/SSL/HTTP错误及实际索引地址；索引超时后的No matching distribution不能证明版本不存在 |
 | prepare_environment | uv依赖冲突正文、pip-check；不能靠删除默认依赖通过 |
-| prepare_assets | 失败资产ID/host与HTTP或hash错误；不要发signed URL或token |
+| prepare_assets | 失败资产ID/host与HTTP、reason_type、errno或hash错误；不要发signed URL或token |
 | CPU禁网加载 | cpu-check或首个异常，缺哪个文件/导入；不得转到Pod联网补装 |
 | 许可检查 | legal/license-status.json和对应许可证；不发送账号密码 |
 | K8s Pending/ImagePull | Pod describe中的调度或镜像拉取事件；不据此修改同事节点 |
@@ -250,3 +250,35 @@ call delivery\vbench\02-submit-prepare.cmd
 02提交新代码并触发Linux Runner，无需在Windows安装目标Torch、进入Pod或申请GPU。不要重跑旧run187期待加载本次修改。当前phase仍是prepare，不上传Harbor。修正放在apt层之后；同一Runner的缓存仍保留时，可复用此前系统包层，不保证缓存未被清理。
 
 如果下次实际请求已变成清华镜像但仍超时，请提供该步骤首个错误和job链接，由同事核对 **BuildKit构建容器** 到 `pypi.tuna.tsinghua.edu.cn` 的出口、代理/NO_PROXY和访问策略。Docker daemon能拉镜像与RUN里的pip能访问索引是两条不同路径。Nexus只有在同事给出已确认的PyPI仓库地址及用法后再接入，当前不编造内部路径。
+
+## 2026-10-08：LAION权重下载失败修正
+
+最新日志的首个失败是 `laion-linear-head` 访问 `raw.githubusercontent.com` 时出现 `URLError`。旧诊断只保留外层异常类型，不能据此确定是DNS、TLS、代理还是连接中断，也没有权限拒绝的证据。并行的environment步骤标记为CANCELED，是assets失败导致构建终止，不能据此判断Torch依赖失败或已经安装完成。
+
+前面的VBench/DINO源码已通过 `codeload.github.com` 下载。本次将LAION改为从官方同一提交 `6d122adad522ab246644d9dc1c6d7a3810ee255f` 的codeload ZIP提取精确的 `sa_0_4_vit_l_14_linear.pth`。这是明确记录的下载路径变更，没有自动选择不明镜像。只提取该权重，不复制归档中的其他模型、图片或数据集；评分路径与六维协议保持不变。
+
+本机通过既有代理分别下载raw文件和归档，确认目标权重逐字节相同、不是LFS指针；未反序列化模型：
+
+- 归档：1,822,818字节，SHA256 `0326ed1d15965dc82bde9dfc7799858785e1114915ffff2dd737566743ee4783`。
+- 提取权重：4,071字节，SHA256 `2cd4e60f4f24ae3bcd57b847b13c1f3ba27edc28cc1a7f9ce74ee9f421243cba`。
+- 目录中的 `sha256` 校验下载归档，`checkpoint_sha256` 校验提取权重；prepare/publish仍分别记录、检查下载和最终文件。若官方重打包导致ZIP字节改变，会停止并要求重新核验，不会静默接受。
+- 本机证据：`D:\AI\_workspace\VBench_Image_20260930\diagnostics-20261008\laion-source-probe.json` 与 `laion-extraction-check.json`。本机验证不能替代Runner验证。
+
+下载诊断现会保留底层异常类型和数字错误码，例如 `reason_type=gaierror` 或 `errno=...`，不打印可能带签名URL的异常原文。后续MUSIQ下载仍访问GitHub Releases及其CDN；本机HEAD已成功，但Runner实际下载尚未验证。
+
+在 **Windows CMD** 先检查：
+
+```cmd
+cd /d D:\AI\dynamo-vbench
+call delivery\vbench\01-check.cmd
+```
+
+看到 `PASS_LOCAL_ONLY` 后提交新代码：
+
+```cmd
+call delivery\vbench\02-submit-prepare.cmd
+```
+
+02会commit、push到自己的VBench分支并触发Linux Runner；不要重跑旧提交期待获得修复。本轮仍为prepare，不推送Harbor，不需要K8s命令或GPU。新日志应出现 `Acquiring laion-linear-head from codeload.github.com`。目录和脚本变更后需生成新的准备锁，不能沿用旧制品。
+
+本次没有改动environment安装层；其uv下载缓存能否复用取决于Runner是否保留缓存。之前失败的assets层未完成，下一次会重新获取该层的资产。若新官方地址仍失败，提供第一个失败资产、reason_type/errno/HTTP状态及job链接，让Runner维护者检查该构建容器到对应域名的出口；无需到K8s重复代理测试。

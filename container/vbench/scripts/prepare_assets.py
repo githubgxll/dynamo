@@ -86,6 +86,23 @@ class HTTPSRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def download_error_detail(exc):
+    """Expose error classes/numeric codes, never URLs or library error text."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, AssetError):
+        return str(exc)
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    detail = type(exc).__name__
+    if reason is not exc:
+        detail += f" (reason_type={type(reason).__name__})"
+    for attribute in ("errno", "verify_code"):
+        value = getattr(reason, attribute, None)
+        if type(value) is int:
+            detail += f" {attribute}={value}"
+    return detail
+
+
 def download(url, destination, *, expected_sha256=None, max_bytes=2 * 1024**3, timeout=90, deadline=1800):
     valid_https(url)
     host = urllib.parse.urlsplit(url).hostname
@@ -119,9 +136,7 @@ def download(url, destination, *, expected_sha256=None, max_bytes=2 * 1024**3, t
     except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError, AssetError) as exc:
         temporary.unlink(missing_ok=True)
         # Never include exc text: network libraries can embed signed CDN URLs.
-        detail = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
-        if isinstance(exc, AssetError):
-            detail = str(exc)
+        detail = download_error_detail(exc)
         raise AssetError(f"download failed for {host}: {detail}; check Runner/build-stage egress and proxy; no fallback source was used") from None
 
 
@@ -249,12 +264,17 @@ def resolve_hf_revision(repo_id, directory):
     return revision
 
 
-def validate_checkpoint(path):
+def validate_checkpoint(path, *, expected_sha256=None):
     """Reject an HTML error page/LFS pointer without unpickling untrusted weights."""
     with Path(path).open("rb") as file:
         signature = file.read(4)
     if not (signature.startswith(b"PK\x03\x04") or (len(signature) >= 2 and signature[0] == 0x80 and 2 <= signature[1] <= 5)):
         raise AssetError("checkpoint lacks expected PyTorch ZIP/pickle signature; not accepting an HTML page or LFS pointer")
+    if expected_sha256 is not None:
+        if not isinstance(expected_sha256, str) or not SHA256.fullmatch(expected_sha256):
+            raise AssetError("invalid checkpoint SHA256 in catalog")
+        if file_hash(path) != expected_sha256:
+            raise AssetError("checkpoint SHA256 mismatch")
 
 
 def run(args):
@@ -313,11 +333,11 @@ def run(args):
             elif item.get("archive_member"):
                 destination = rooted(output, item["path"])
                 extract_archive(archive, destination, member=item["archive_member"])
-                validate_checkpoint(destination)
+                validate_checkpoint(destination, expected_sha256=item.get("checkpoint_sha256"))
             else:
                 destination = rooted(output, item["path"])
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                validate_checkpoint(archive)
+                validate_checkpoint(archive, expected_sha256=item.get("checkpoint_sha256"))
                 shutil.copyfile(archive, destination)
         for link in catalog.get("links", []):
             path, target = rooted(output, link["path"]), rooted(output, link["target"])

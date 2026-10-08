@@ -77,8 +77,12 @@
     },
     {
       "id": "laion-linear-head",
-      "url": "https://raw.githubusercontent.com/LAION-AI/aesthetic-predictor/6d122adad522ab246644d9dc1c6d7a3810ee255f/sa_0_4_vit_l_14_linear.pth",
+      "url": "https://codeload.github.com/LAION-AI/aesthetic-predictor/zip/6d122adad522ab246644d9dc1c6d7a3810ee255f",
       "revision": "6d122adad522ab246644d9dc1c6d7a3810ee255f",
+      "archive_member": "aesthetic-predictor-6d122adad522ab246644d9dc1c6d7a3810ee255f/sa_0_4_vit_l_14_linear.pth",
+      "sha256": "0326ed1d15965dc82bde9dfc7799858785e1114915ffff2dd737566743ee4783",
+      "checkpoint_sha256": "2cd4e60f4f24ae3bcd57b847b13c1f3ba27edc28cc1a7f9ce74ee9f421243cba",
+      "max_bytes": 16777216,
       "path": "vbench/aesthetic_model/emb_reader/sa_0_4_vit_l_14_linear.pth",
       "dimensions": ["aesthetic_quality"],
       "license": "Source repository: MIT",
