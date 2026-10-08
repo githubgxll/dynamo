@@ -281,4 +281,67 @@ call delivery\vbench\02-submit-prepare.cmd
 
 02会commit、push到自己的VBench分支并触发Linux Runner；不要重跑旧提交期待获得修复。本轮仍为prepare，不推送Harbor，不需要K8s命令或GPU。新日志应出现 `Acquiring laion-linear-head from codeload.github.com`。目录和脚本变更后需生成新的准备锁，不能沿用旧制品。
 
-本次没有改动environment安装层；其uv下载缓存能否复用取决于Runner是否保留缓存。之前失败的assets层未完成，下一次会重新获取该层的资产。若新官方地址仍失败，提供第一个失败资产、reason_type/errno/HTTP状态及job链接，让Runner维护者检查该构建容器到对应域名的出口；无需到K8s重复代理测试。
+上述LAION路径修正当时尚未启用资产下载缓存，失败的assets层需重新获取所有资产。后续CLIP连接中断暴露了这一共同问题，已按下面的恢复方案补齐；无需到K8s重复代理测试。
+
+## 2026-10-08：统一处理资产断连与失败重跑
+
+### 这次日志说明什么
+
+失败发生在CLIP ViT-L/14下载，错误为 `URLError (reason_type=SSLEOFError) errno=8`：TLS连接未正常结束。仅此日志无法确定断开来自远端CDN、代理还是中间网络。当前同域名的CLIP B/32下载已通过，历史运行也曾通过L/14，因此不能把本次现象直接认定为固定权限不足或永久域名封锁。
+
+`hardlinking may not be supported` 是uv跨文件系统缓存挂载的提示，不是模型下载错误；后面的environment CANCELED是并行assets失败后被取消，不表示全部依赖已安装，也不表示依赖冲突。
+
+此前下载器每个文件只有一次机会，且所有下载在临时目录中；后一个文件失败会让下一次构建重下前面所有资产。本次修复这两处共同机制，不再替换CLIP下载地址。
+
+### 本次修改的边界
+
+| 部分 | 新行为 |
+| --- | --- |
+| 网络恢复 | 对同一官方URL最多尝试3次，间隔2秒、5秒；临时TLS EOF、连接重置/超时、临时DNS失败、HTTP408/429/500/502/503/504及响应截断可重试 |
+| 明确错误 | 证书验证失败、401/403/404、错误哈希、超出大小限制立即停止；不关闭TLS验证、不更换资产、不自动换源 |
+| 数据校验 | 要求HTTP200；有Content-Length时核对实际字节数，保留大小上限和预期SHA256；每次失败删除partial，从头重试，未实现分段续传 |
+| 时间限制 | 保留90秒单次socket操作超时，全部尝试共享原来的1800秒单文件时间预算，重试不会重置预算；底层DNS/系统调用仍受运行平台约束 |
+| 下载缓存 | 在独立BuildKit缓存挂载 `/var/cache/vbench-downloads` 中逐个保存下载和校验成功的文件，`sharing=locked`；不会等全部资产成功才保存 |
+| 缓存校验 | 按资产目录SHA256和原URL隔离；每次命中重新计算哈希/字节数、检查receipt和内容格式，并强制服从当前publish锁。损坏条目只清除自己，重新访问原URL，不能据此更新锁 |
+| 提取隔离 | 每次验证先写独立staging，成功后才复制到最终源码/模型目录，防止失败解压留下残缺或多余文件 |
+| 依赖安装 | 仅在构建RUN设置 `UV_LINK_MODE=copy`，适应uv缓存与虚拟环境的不同文件系统；包版本、依赖范围和模型协议不变 |
+
+首次尚无可信哈希的prepare资产仍按原协议首次记录；格式检查不等于成功加载模型，后续CPU禁网加载和H100评分验收仍然必要。缓存记录不是发布依据，publish必须使用完整准备锁。HF的main查询不进入下载缓存，每次实际执行prepare时解析提交，再缓存固定提交URL；若整个Docker资产层已经命中，则不会重新执行该查询。
+
+缓存不进入镜像资产或锁文件的files清单。换Runner或BuildKit垃圾回收后会重新下载；之前旧版未挂载缓存的失败下载不能追回。首次运行新版本仍需建立缓存，之后只有保留缓存的Runner才能复用已完成资产。
+
+### 已做的验证及尚未验证的部分
+
+- 故障注入覆盖TLS首次失败后恢复、传输中断、Content-Length截断、重试耗尽、证书/权限/哈希错误不重试、时间预算和partial清理。
+- 缓存测试覆盖损坏文件/receipt、错误哈希/字节数、源变更、写入中断、验证失败不入缓存及publish原锁不可被缓存替代。
+- 整体流程测试：第三资产失败时前两项保留；新一轮prepare只下载缺失项；publish禁止下载仍复现原锁；失败解压产生的测试ghost文件不进入最终源码。
+- 本机完整检查：93 passed、67 subtests passed；2个需要真实符号链接的测试因Windows权限跳过，另有模拟symlink/junction拒绝检查通过。
+- 本机实际下载约1.8MB的官方LAION归档：注入一次TLS EOF后第二次成功，哈希与原权重一致；后续禁止下载仍能从缓存按原锁复现。结果：`D:\AI\_workspace\VBench_Image_20260930\diagnostics-20261008\asset-recovery-20261008T103325766060Z\result.json`。
+- 本机未发现可用docker命令，未验证完整Linux镜像、Runner出口、大模型完整下载、CPU模型加载或GPU评分。上述小资产验证通过本机127.0.0.1:17890代理，不能替代Runner验证。
+
+### 操作位置与下一次检查
+
+在本机 **Windows CMD** 执行，先检查，看到 `PASS_LOCAL_ONLY` 后再执行提交：
+
+```cmd
+cd /d D:\AI\dynamo-vbench
+call delivery\vbench\01-check.cmd
+```
+
+```cmd
+call delivery\vbench\02-submit-prepare.cmd
+```
+
+02提交并推送新代码，触发组内Linux Runner；只操作自己的VBench分支。不要重跑旧提交。本轮仍为prepare，不推送Harbor、不部署Pod、不申请GPU。新的Dockerfile与脚本已参与输入指纹，需生成新准备锁，不能套用旧制品。
+
+CI日志会同时显示简短 `Asset download attempt 1/3 ...` 和脱敏的 `Asset transfer` 记录：
+
+- `event=retry`：这一资产发生可重试错误；查看attempt、reason、bytes_received。
+- `event=stored`：该资产已校验并保存到构建缓存。
+- `event=hit`：已重新校验并复用缓存，无需下载该资产。
+- `event=invalid`：只淘汰一个无效缓存条目，再从其原URL下载。
+- `event=failure`：重试用尽或遇到不允许重试的错误，应检查该条reason。
+
+成功制品中新增 `asset-acquisition.jsonl`；失败RUN的文件系统不能由最终target导出，因此失败时应保存CI中的同名事件日志。日志只显示代理配置是否存在（如 `https_proxy_configured`），不打印代理地址、密码或签名重定向URL；配置存在也不证明目标请求实际通过了该代理。
+
+如果同一地址3次仍以TLS EOF失败，交给Runner维护者：job链接、资产ID、原官方域名、三次attempt/reason、bytes_received及配置布尔值。请其确认该Runner的 **BuildKit RUN** 实际出口、代理/NO_PROXY和CDN连接是否稳定。当前workflow没有显式传递代理build-args，但Docker客户端配置可能自动注入，不能仅凭代码判定未配置；Docker拉镜像代理、本机Git代理和Pod网络也不能替代这一步证据。此时应修复构建端连接或使用同事确认的内部资产镜像，不继续随机换源或放宽校验。

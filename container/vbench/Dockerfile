@@ -30,7 +30,7 @@ COPY container/vbench/requirements.in /opt/vbench-build/requirements.in
 COPY container/vbench/scripts/prepare_environment.py /opt/vbench-build/scripts/prepare_environment.py
 COPY container/vbench/locks/ /opt/vbench-build/locks/
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    python /opt/vbench-build/scripts/prepare_environment.py --phase "${VBENCH_PHASE}" \
+    UV_LINK_MODE=copy python /opt/vbench-build/scripts/prepare_environment.py --phase "${VBENCH_PHASE}" \
       --inputs /opt/vbench-build/requirements.in --lock /opt/vbench-build/locks/requirements.lock \
       --evidence /opt/vbench-build-info
 
@@ -38,10 +38,13 @@ FROM foundation AS assets
 ARG VBENCH_PHASE=prepare
 COPY container/vbench/assets-catalog.json /opt/vbench-build/assets-catalog.json
 COPY container/vbench/scripts/prepare_assets.py /opt/vbench-build/scripts/prepare_assets.py
+COPY container/vbench/scripts/asset_cache.py /opt/vbench-build/scripts/asset_cache.py
 COPY container/vbench/locks/ /opt/vbench-build/locks/
-RUN python /opt/vbench-build/scripts/prepare_assets.py --phase "${VBENCH_PHASE}" \
+RUN --mount=type=cache,id=dingo-vbench-assets-v1,target=/var/cache/vbench-downloads,sharing=locked \
+    python /opt/vbench-build/scripts/prepare_assets.py --phase "${VBENCH_PHASE}" \
       --catalog /opt/vbench-build/assets-catalog.json --lock /opt/vbench-build/locks/assets.lock.json \
-      --output /opt/vbench-assets --vbench-source /opt/VBench --evidence /opt/vbench-build-info
+      --output /opt/vbench-assets --vbench-source /opt/VBench --evidence /opt/vbench-build-info \
+      --cache-dir /var/cache/vbench-downloads
 
 FROM environment AS prepared
 ARG BASE_IMAGE

@@ -134,7 +134,7 @@ class AssetTests(unittest.TestCase):
                 destination = self.root / "download"
                 partial = self.root / "download.partial"
                 partial.write_bytes(b"partial-data")
-                with patch.object(assets.urllib.request.OpenerDirector, "open", side_effect=error), self.assertRaises(assets.AssetError) as raised:
+                with patch.object(assets.time, "sleep"), patch.object(assets.urllib.request.OpenerDirector, "open", side_effect=error), self.assertRaises(assets.AssetError) as raised:
                     assets.download("https://example.com/weight", destination)
                 detail = str(raised.exception)
                 self.assertIn(kind, detail)
