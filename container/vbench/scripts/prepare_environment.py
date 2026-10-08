@@ -14,13 +14,16 @@ import difflib
 import hashlib
 import io
 import json
+import os
 import platform
 import shutil
 import subprocess
 import sys
-import urllib.request
+import tempfile
 import zipfile
 from pathlib import Path
+
+from package_sources import load_sources
 
 ORIGINAL_SHA256 = "245d58861537b820c616e8b3ef618ccfad2a24724a2d74be2b0542643c01a878"
 ORIGINAL_FILENAME = "facexlib-0.3.0-py3-none-any.whl"
@@ -88,26 +91,32 @@ def patch_facexlib(original: Path, output_dir: Path, evidence: Path) -> Path:
     return output
 
 
-def acquire_original(wheels: Path) -> Path:
+def acquire_original(wheels: Path, sources: dict | None = None) -> Path:
+    sources = sources or load_sources()
     wheels.mkdir(parents=True, exist_ok=True)
     original = wheels / ORIGINAL_FILENAME
     if original.exists():
         if sha256(original) != ORIGINAL_SHA256:
             raise ValueError("cached facexlib original has wrong SHA256")
         return original
-    with urllib.request.urlopen("https://pypi.org/pypi/facexlib/0.3.0/json", timeout=60) as response:
-        metadata = json.load(response)
-    candidates = [item for item in metadata["urls"] if item["filename"] == ORIGINAL_FILENAME]
-    if len(candidates) != 1 or candidates[0]["digests"]["sha256"] != ORIGINAL_SHA256:
-        raise ValueError("PyPI metadata does not match reviewed facexlib wheel")
-    url = candidates[0]["url"]
-    if not url.startswith("https://files.pythonhosted.org/"):
-        raise ValueError("unexpected PyPI artifact origin")
-    with urllib.request.urlopen(url, timeout=60) as response, original.open("wb") as target:
-        while chunk := response.read(1024 * 1024):
-            target.write(chunk)
-    if sha256(original) != ORIGINAL_SHA256:
-        raise ValueError("downloaded facexlib wheel has wrong SHA256")
+    # Fetch this one reviewed artifact before its metadata adjustment. --no-deps
+    # applies only to acquisition; the later uv install resolves the full graph.
+    # Failed/partial downloads must never poison the next attempt's cache.
+    with tempfile.TemporaryDirectory(prefix="facexlib-download-", dir=wheels) as temporary:
+        root = Path(temporary)
+        requirement = root / "original-wheel.txt"
+        requirement.write_text(f"facexlib==0.3.0 --hash=sha256:{ORIGINAL_SHA256}\n", encoding="utf-8")
+        destination = root / "download"
+        destination.mkdir()
+        run([sys.executable, "-m", "pip", "--isolated", "--disable-pip-version-check", "download",
+             "--index-url", sources["python_index"], "--only-binary=:all:", "--no-deps", "--require-hashes",
+             "--retries", "1", "--timeout", "15", "--dest", str(destination), "-r", str(requirement)])
+        downloaded = destination / ORIGINAL_FILENAME
+        if {item.name for item in destination.iterdir()} != {ORIGINAL_FILENAME} or not downloaded.is_file():
+            raise ValueError("facexlib download did not produce exactly the reviewed wheel")
+        if sha256(downloaded) != ORIGINAL_SHA256:
+            raise ValueError("downloaded facexlib wheel has wrong SHA256")
+        os.replace(downloaded, original)
     return original
 
 
@@ -129,16 +138,18 @@ def main() -> None:
     if sys.version_info[:2] != (3, 10) or sys.platform != "linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise SystemExit("Resolve/install only inside the Linux amd64 Python 3.10 image")
     args.evidence.mkdir(parents=True, exist_ok=True)
+    sources = load_sources()
+    print(f"Dependency Python index: {sources['python_index']}; Torch index: {sources['torch_index']}", flush=True)
     wheels = Path("/opt/vbench-build/wheels")
-    patch_facexlib(acquire_original(wheels), wheels, args.evidence)
+    patch_facexlib(acquire_original(wheels, sources), wheels, args.evidence)
     if args.phase == "prepare":
         args.lock.parent.mkdir(parents=True, exist_ok=True)
         # Re-preparation after a reviewed policy change resolves anew inside the
         # disposable build filesystem. No source checkout lock is rewritten.
         generated = args.evidence / "requirements.lock"
         run(["uv", "pip", "compile", str(args.inputs), "--python", sys.executable,
-             "--generate-hashes", "--upgrade", "--no-build-isolation", "--default-index", "https://pypi.org/simple",
-             "--index", "https://download.pytorch.org/whl/cu121", "--index-strategy", "unsafe-best-match",
+             "--generate-hashes", "--upgrade", "--no-build-isolation", "--default-index", sources["python_index"],
+             "--index", sources["torch_index"], "--index-strategy", "unsafe-best-match",
              "--output-file", str(generated)])
         if generated.resolve() != args.lock.resolve():
             shutil.copy2(generated, args.lock)
@@ -150,7 +161,7 @@ def main() -> None:
     # Use the Dockerfile's pinned setuptools/wheel instead of resolving a
     # second, unrecorded build-isolation dependency environment.
     run(["uv", "pip", "install", "--python", sys.executable, "--require-hashes", "--no-build-isolation",
-         "--default-index", "https://pypi.org/simple", "--index", "https://download.pytorch.org/whl/cu121",
+         "--default-index", sources["python_index"], "--index", sources["torch_index"],
          "--index-strategy", "unsafe-best-match", "-r", str(args.lock)])
     run([sys.executable, "-m", "pip", "check"], args.evidence / "pip-check.txt")
     run(["uv", "pip", "check", "--python", sys.executable], args.evidence / "uv-pip-check.txt")
@@ -158,6 +169,7 @@ def main() -> None:
     run([sys.executable, "-m", "pip", "freeze", "--all"], args.evidence / "installed-freeze.txt")
     (args.evidence / "dependency-build.json").write_text(json.dumps({
         "phase": args.phase, "python": sys.version, "platform": platform.platform(),
+        "package_sources": sources,
         "inputs_sha256": sha256(args.inputs), "lock_sha256": sha256(args.lock),
         "full_declared_dependency_closure": True, "pip_check": "passed", "uv_pip_check": "passed",
         "build_isolation": False, "build_tools": "Pinned pip/setuptools/wheel/uv from Dockerfile and requirements.in",

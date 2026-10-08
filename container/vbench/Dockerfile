@@ -17,7 +17,11 @@ ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH \
     VBENCH_CACHE_DIR=/opt/vbench-assets/vbench TORCH_HOME=/opt/vbench-assets/torch \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
     OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
-RUN python -m pip install --no-cache-dir pip==24.3.1 setuptools==75.8.0 wheel==0.45.1 uv==0.8.22
+# One version-controlled source selection covers bootstrap and later resolution.
+# Keep it after apt so this fix can reuse the expensive system-package layer.
+COPY container/vbench/package-sources.json /opt/vbench-build/package-sources.json
+COPY container/vbench/scripts/package_sources.py /opt/vbench-build/scripts/package_sources.py
+RUN python /opt/vbench-build/scripts/package_sources.py bootstrap --evidence /opt/vbench-build-info
 
 # Keep resolver and asset layers independent of scoring code and Git commit IDs.
 FROM foundation AS environment

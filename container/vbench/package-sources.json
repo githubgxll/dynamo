@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "python_index": "https://pypi.tuna.tsinghua.edu.cn/simple",
+  "torch_index": "https://download.pytorch.org/whl/cu121"
+}

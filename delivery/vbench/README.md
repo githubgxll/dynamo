@@ -61,6 +61,8 @@ Linux Runner自动执行：
 
 依赖采用独立Python3.10、PyTorch2.3.1/CUDA12.1环境，不继承H3的vLLM/Omni环境。保留pyIQA完整声明依赖；其中facexlib原声明普通OpenCV，而pyIQA要求headless版，两者会同时提供 `cv2`。脚本将facexlib固定wheel的这一条依赖改为headless并增加本地版本号，保留所有Python代码及许可，导出原/新wheel哈希、METADATA差异和文件清单。它没有修改六维评分算法，也没有用 `--no-deps` 隐去依赖冲突。
 
+Python取包来源统一记录在 `container/vbench/package-sources.json`：普通包沿用组内SGLang已使用的清华HTTPS镜像，Torch/torchvision继续使用官方CUDA12.1索引。工具bootstrap、uv解析/安装和facexlib原始wheel获取读取同一配置。facexlib取包时的 `pip download --no-deps` 只下载一个带固定SHA256的原始wheel，不执行环境安装；最终uv步骤仍检查完整依赖。配置文件参与构建输入指纹，改变来源后必须重新prepare。
+
 ## 第三步 下载并导入准备制品
 
 准备任务结束后，在运行详情页的 **Artifacts** 下载 `vbench-prepare-...` ZIP；不要下载误认为镜像的 `.dockerbuild` 文件。如果任务失败，制品可能只有workflow-status和base.lock；这不够继续发布，需要保留第一个失败步骤的日志。
@@ -181,6 +183,7 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 | 本机Git push | 完整报错、当前分支和HEAD；403看账号写权限，连接失败看本机17890代理 |
 | Resolve base | 基础镜像tag和imagetools错误；这是Runner拉取层 |
 | Check and pull locked VBench base with Docker daemon | 制品中base-pull目录；客户端检查、daemon拉取及本地镜像身份分别记录。无需自己SSH登录Runner |
+| foundation中的Python工具安装 | 第一处ReadTimeout/SSL/HTTP错误及实际索引地址；索引超时后的No matching distribution不能证明版本不存在 |
 | prepare_environment | uv依赖冲突正文、pip-check；不能靠删除默认依赖通过 |
 | prepare_assets | 失败资产ID/host与HTTP或hash错误；不要发signed URL或token |
 | CPU禁网加载 | cpu-check或首个异常，缺哪个文件/导入；不得转到Pod联网补装 |
@@ -224,3 +227,26 @@ call delivery\vbench\02-submit-prepare.cmd
 | daemon拉取和身份检查成功，随后FROM仍失败 | 单独检查BuildKit解析/缓存路径；已拉取不代表构建自动通过 |
 
 交给同事的最少信息：对应job链接、失败阶段、base-pull-summary.json、脱敏错误和精确digest。请其确认这个Runner Docker实际使用的出口、Docker Hub相关域名（registry-1.docker.io/auth.docker.io及实际blob下载目标）是否可用，以及是否已有组内批准的Harbor基础镜像缓存。不要发送密码或令牌，不要随机替换基础版本或关闭证书校验。
+
+## 2026-10-08：基础镜像之后的PyPI超时修正
+
+用户贴出的run187日志已到foundation的工具安装，失败的是容器内访问 `https://pypi.org/simple/pip/`，这一层约99秒；不能把约20分钟的整场构建全部算成这一层。此前基础镜像拉取与系统依赖安装已经推进，但还没有验证VBench依赖或GPU。
+
+旧脚本在bootstrap、uv compile/install及facexlib的PyPI JSON查询中分别使用默认或写死的PyPI来源。当前统一为版本控制的清华HTTPS索引配置，保留四个工具原版本及Torch官方cu121源。没有增加新的代理地址、关闭TLS或更换pip版本。bootstrap/单wheel获取使用15秒单请求超时、一次重试，尽早结束不通的请求；后续实际Runner连通性仍需CI确认。
+
+本机通过既有127.0.0.1:17890代理已查到四个工具版本，并下载facexlib原wheel验证SHA256。证据位于 `D:\AI\_workspace\VBench_Image_20260930\diagnostics-20261008\tuna-mirror-probe.json`，它只证明本机测试结果，不代表Runner已通过。
+
+执行位置仍是 **Windows CMD**，先检查，通过后再提交：
+
+```cmd
+cd /d D:\AI\dynamo-vbench
+call delivery\vbench\01-check.cmd
+```
+
+```cmd
+call delivery\vbench\02-submit-prepare.cmd
+```
+
+02提交新代码并触发Linux Runner，无需在Windows安装目标Torch、进入Pod或申请GPU。不要重跑旧run187期待加载本次修改。当前phase仍是prepare，不上传Harbor。修正放在apt层之后；同一Runner的缓存仍保留时，可复用此前系统包层，不保证缓存未被清理。
+
+如果下次实际请求已变成清华镜像但仍超时，请提供该步骤首个错误和job链接，由同事核对 **BuildKit构建容器** 到 `pypi.tuna.tsinghua.edu.cn` 的出口、代理/NO_PROXY和访问策略。Docker daemon能拉镜像与RUN里的pip能访问索引是两条不同路径。Nexus只有在同事给出已确认的PyPI仓库地址及用法后再接入，当前不编造内部路径。
