@@ -23,6 +23,9 @@ from dingo.common.lora.manager import LoRAInfo  # noqa: E402
 from dynamo.llm import ModelType, WorkerType  # noqa: E402
 from dingo.vllm import llm_engine as llm_engine_mod  # noqa: E402
 from dingo.vllm.llm_engine import VllmLLMEngine  # noqa: E402
+from dingo.vllm.multimodal_utils.request_processor import (  # noqa: E402
+    VllmMultimodalRequestProcessor,
+)
 
 pytestmark = [
     pytest.mark.unit,
@@ -201,6 +204,10 @@ async def test_generate_passes_resolved_lora_request(monkeypatch):
     engine._default_sampling_params = SimpleNamespace()
     engine._model_max_len = None
     engine._dp_range = None
+    engine._multimodal_request_processor = VllmMultimodalRequestProcessor(
+        model=engine.engine_args.model,
+        enable_multimodal=False,
+    )
 
     captured: dict = {}
 

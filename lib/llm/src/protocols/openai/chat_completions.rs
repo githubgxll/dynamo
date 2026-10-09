@@ -24,7 +24,6 @@ use crate::protocols::common::extensions::{
 
 pub mod aggregator;
 mod delta;
-pub mod jail;
 pub mod tool_parser_v2;
 
 pub use aggregator::DeltaAggregator;
@@ -345,9 +344,7 @@ fn is_glm53_model_id(model: &str) -> bool {
         // Compare on a normalized form so the alias-family deployed model ids
         // (`glm-5.3`, `glm5.3`, `GLM_5.3`) match; version suffix must stay
         // exact — `glm53` without the dot must NOT match.
-        let normalized = name
-            .to_ascii_lowercase()
-            .replace(['-', '_'], "");
+        let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
         normalized == "glm5.3"
     })
 }
@@ -1858,7 +1855,11 @@ mod tests {
             let error = request
                 .normalize_reasoning_template_args()
                 .expect_err("unsupported GLM-5.3 effort must be rejected");
-            assert!(error.to_string().contains("low`, `medium`, `high`, or `max"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("low`, `medium`, `high`, or `max")
+            );
         }
 
         // `medium` is now accepted

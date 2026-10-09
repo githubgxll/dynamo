@@ -218,6 +218,12 @@ def resolve_request_force_reasoning(
     if reasoning_parser_name == "minimax-m3":
         return kwargs.get("thinking_mode") != "disabled"
 
+    if reasoning_parser_name == "mistral":
+        reasoning_effort = request.get("reasoning_effort")
+        if reasoning_effort is None:
+            reasoning_effort = kwargs.get("reasoning_effort")
+        return reasoning_effort is not None and reasoning_effort != "none"
+
     if reasoning_parser_name in _THINKING_BY_DEFAULT:
         flag_key = (
             "thinking"
@@ -2213,3 +2219,13 @@ class SglangStreamingPostProcessor:
 
         self._withhold_logprobs_payload(logprobs_payload)
         return None
+
+
+def _guided_tool_choice_requires_reasoning(
+    request: dict[str, Any], force_reasoning: bool
+) -> bool:
+    """Return whether SGLang should reason before guided tool-call JSON."""
+    tool_choice = request.get("tool_choice", "auto")
+    return force_reasoning and (
+        tool_choice == "required" or _is_named_tool_choice(tool_choice)
+    )

@@ -4,6 +4,7 @@
 """Live-cluster DGD checkpoint/restore deploy test."""
 
 import asyncio
+import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ CHECKPOINT_PLURAL = "dynamocheckpoints"
 FRONTEND_COMPONENT = "Frontend"
 TARGET_CONTAINER = "main"
 CHECKPOINT_MODEL = "Qwen/Qwen3-0.6B"
+CHECKPOINT_STORAGE_MOUNT_PATH = "/checkpoints"
 
 CHECKPOINT_ID_LABEL = "nvidia.com/snapshot-checkpoint-id"
 CHECKPOINT_SOURCE_LABEL = "nvidia.com/snapshot-is-checkpoint-source"
@@ -72,6 +74,12 @@ class CheckpointBackendConfig:
     target_container: str
     model: str
     args: tuple[str, ...]
+    env: tuple[tuple[str, str], ...] = ()
+    extra_volumes: tuple[dict[str, Any], ...] = ()
+    extra_volume_mounts: tuple[dict[str, Any], ...] = ()
+    pod_spec_updates: dict[str, Any] | None = None
+    container_resources: dict[str, Any] | None = None
+    checkpoint_startup_policy: str | None = None
 
 
 CHECKPOINT_BACKENDS = {
@@ -118,6 +126,7 @@ CHECKPOINT_BACKENDS = {
             "--skip-tokenizer-init",
         ),
     ),
+
 }
 
 
@@ -156,19 +165,42 @@ def _new_checkpoint_spec(
     raw_spec = deployment_spec.spec()
     decode = _component(raw_spec, backend.decode_component)
     pod_spec = decode.setdefault("podTemplate", {}).setdefault("spec", {})
-    pod_spec["nodeSelector"] = dict(GPU_NODE_SELECTOR)
-    pod_spec["tolerations"] = list(GPU_TOLERATIONS)
     containers = pod_spec.setdefault("containers", [])
     if not containers:
         raise AssertionError(
             f"component {backend.decode_component!r} has no containers"
         )
-    containers[0]["args"] = list(backend.args)
+    pod_spec["nodeSelector"] = dict(GPU_NODE_SELECTOR)
+    pod_spec["tolerations"] = list(GPU_TOLERATIONS)
+    if backend.pod_spec_updates:
+        pod_spec.update(copy.deepcopy(backend.pod_spec_updates))
+    container = containers[0]
+    container["args"] = list(backend.args)
+    if backend.container_resources:
+        container["resources"] = copy.deepcopy(backend.container_resources)
+    if backend.extra_volumes:
+        pod_spec.setdefault("volumes", []).extend(
+            copy.deepcopy(volume) for volume in backend.extra_volumes
+        )
+    if backend.extra_volume_mounts:
+        container.setdefault("volumeMounts", []).extend(
+            copy.deepcopy(mount) for mount in backend.extra_volume_mounts
+        )
+    if backend.env:
+        env = container.setdefault("env", [])
+        for name, value in backend.env:
+            for item in env:
+                if item.get("name") == name:
+                    item["value"] = value
+                    break
+            else:
+                env.append({"name": name, "value": value})
 
-    decode.setdefault("experimental", {})["checkpoint"] = {
-        "enabled": True,
-        "targetContainerName": backend.target_container,
-    }
+    checkpoint = decode.setdefault("experimental", {}).setdefault("checkpoint", {})
+    checkpoint["enabled"] = True
+    checkpoint["targetContainerName"] = backend.target_container
+    if backend.checkpoint_startup_policy is not None:
+        checkpoint["startupPolicy"] = backend.checkpoint_startup_policy
     return deployment_spec
 
 

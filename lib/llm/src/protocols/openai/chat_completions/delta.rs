@@ -276,9 +276,7 @@ impl crate::protocols::openai::DeltaGeneratorExt<NvCreateChatCompletionStreamRes
 
             // Propagate completion token details if provided, including
             // reasoning tokens (upstream fix #11027).
-            if let Some(completion_details) =
-                completion_usage.completion_tokens_details.as_ref()
-            {
+            if let Some(completion_details) = completion_usage.completion_tokens_details.as_ref() {
                 self.usage.completion_tokens_details = Some(completion_details.clone());
             }
         }

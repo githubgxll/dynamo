@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dingo KVBM post-merge tests
+
+on:
+  push:
+    branches: [DingoRouter-base]
+  workflow_dispatch:
+    inputs:
+      test_image:
+        description: Test-ready vLLM image with ai-dingo, kvbm, pytest and CUDA 13
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dingo-kvbm-postmerge-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kvbm:
+    # Opt in only after providing an H100 runner and a test-ready image.
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_KVBM_POSTMERGE == 'true'
+    runs-on: ${{ fromJSON(vars.KVBM_GPU_RUNNER_LABELS || '["self-hosted","linux","x64","dingo","h100"]') }}
+    timeout-minutes: 120
+    env:
+      KVBM_TEST_IMAGE: ${{ inputs.test_image || vars.KVBM_TEST_IMAGE }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Check image and GPU prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${KVBM_TEST_IMAGE}"
+          nvidia-smi --query-gpu=name --format=csv,noheader | grep -q H100
+          docker version
+      - name: Log in to the optional private test registry
+        if: vars.KVBM_TEST_REGISTRY != ''
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.KVBM_TEST_REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Run KVBM post-merge coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${KVBM_TEST_IMAGE}"
+          docker run --rm --gpus all --ipc=host --network=host \
+            --user "$(id -u):$(id -g)" --workdir /workspace \
+            --env HOME=/tmp --env PYTHONPATH=/workspace --env HF_TOKEN \
+            --env KVBM_MLA_BACKEND=FLASH_ATTN_MLA \
+            --env DYN_TEST_OUTPUT_PATH=/tmp/dingo-kvbm-tests \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
+            --entrypoint python3 "${KVBM_TEST_IMAGE}" -m pytest \
+            tests/kvbm_integration \
+            -m 'post_merge and h100 and kvbm and gpu_1 and (kvbm_consolidator or kvbm_determinism)' \
+            --basetemp=/tmp/dingo-kvbm-pytest -o cache_dir=/tmp/dingo-kvbm-pytest-cache -v

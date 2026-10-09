@@ -38,6 +38,25 @@ import (
 
 const backendFrameworkSGLang = "sglang"
 
+func TestIsDynamoGraphDeploymentConversionAnnotation(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{key: annDGDSpec, want: true},
+		{key: annDGDStatus, want: true},
+		{key: "nvidia.com/dgd-future", want: true},
+		{key: "nvidia.com/generated-dgd-spec", want: false},
+		{key: "example.com/dgd-spec", want: false},
+	}
+
+	for _, test := range tests {
+		if got := isDynamoGraphDeploymentConversionAnnotation(test.key); got != test.want {
+			t.Errorf("IsDynamoGraphDeploymentConversionAnnotation(%q) = %t, want %t", test.key, got, test.want)
+		}
+	}
+}
+
 // roundTripFromV1beta1 converts a v1beta1 DGD to v1alpha1 and back, returning
 // the final v1beta1 object. For any valid v1beta1 input V the returned V'
 // must equal V (syntactic round-trip invariant).
@@ -906,6 +925,7 @@ func TestDGD_RoundTrip_Status(t *testing.T) {
 				"worker": {
 					ComponentKind:     v1beta1.ComponentKindDeployment,
 					ComponentNames:    []string{"dgd-worker-0", "dgd-worker-1"},
+					RuntimeNamespace:  "ns-status-worker-abc123",
 					Replicas:          2,
 					UpdatedReplicas:   2,
 					ReadyReplicas:     ptr.To(int32(2)),
@@ -2095,4 +2115,18 @@ func TestDGD_RoundTrip_KvTransferPolicy(t *testing.T) {
 			t.Errorf("v1beta1 empty experimental round-trip mismatch (-want +got):\n%s", diff)
 		}
 	})
+}
+
+func TestProjectDynamoGraphDeploymentOverrideAnnotations(t *testing.T) {
+	src := map[string]interface{}{annDGDSpec: "private", "nvidia.com/dgd-future": "future", "example.com/user": "keep"}
+	dst := ProjectDynamoGraphDeploymentOverrideAnnotations(src)
+	if len(src) != 3 {
+		t.Fatal("projection mutated source")
+	}
+	if len(dst) != 1 || dst["example.com/user"] != "keep" {
+		t.Fatalf("unexpected projection: %v", dst)
+	}
+	if ProjectDynamoGraphDeploymentOverrideAnnotations(nil) != nil {
+		t.Fatal("nil map must stay nil")
+	}
 }

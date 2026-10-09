@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dingo external contribution labels
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  contribution_labels:
+    if: ${{ github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name }}
+    permissions:
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      # Repository-level secret or variable containing a JSON array of logins.
+      # This job handles metadata only and does not check out PR code.
+      - name: Classify contributor and add PR labels
+        uses: actions/github-script@v7
+        env:
+          APPROVED_EXTERNAL_CONTRIBUTORS: ${{ secrets.APPROVED_EXTERNAL_CONTRIBUTORS || vars.APPROVED_EXTERNAL_CONTRIBUTORS }}
+        with:
+          script: |
+            const pr = context.payload.pull_request
+            const author = pr.user.login
+            let approved = []
+
+            try {
+              const parsed = JSON.parse(process.env.APPROVED_EXTERNAL_CONTRIBUTORS || '[]')
+              if (Array.isArray(parsed)) {
+                approved = parsed
+              } else {
+                core.warning('APPROVED_EXTERNAL_CONTRIBUTORS must be a JSON array; treating contributor as untrusted.')
+              }
+            } catch {
+              core.warning('APPROVED_EXTERNAL_CONTRIBUTORS is invalid JSON; treating contributor as untrusted.')
+            }
+
+            const trusted = approved.some(login => typeof login === 'string' && login === author)
+            core.setOutput('is_trusted', String(trusted))
+
+            const definitions = [
+              { name: 'external-contribution', color: '5319e7', description: 'Contribution from an external fork' }
+            ]
+            if (trusted) {
+              definitions.push({ name: 'trusted-contributor', color: '0e8a16', description: 'Author exactly matches the approved contributor list' })
+            }
+
+            for (const label of definitions) {
+              try {
+                await github.rest.issues.getLabel({ ...context.repo, name: label.name })
+              } catch (error) {
+                if (error.status !== 404) throw error
+                try {
+                  await github.rest.issues.createLabel({ ...context.repo, ...label })
+                } catch (creationError) {
+                  if (creationError.status !== 422) throw creationError
+                  // Another PR job may have created the same repository label.
+                  await github.rest.issues.getLabel({ ...context.repo, name: label.name })
+                }
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: pr.number,
+              labels: definitions.map(label => label.name)
+            })
