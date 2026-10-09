@@ -2,11 +2,46 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from dingo.common.lora.manager import LoRAInfo
+
+try:
+    from dynamo.llm.exceptions import InvalidArgument
+    from PIL import Image
+    from vllm.sampling_params import RequestOutputKind, SamplingParams
+    from vllm_omni.inputs.data import OmniDiffusionSamplingParams
+
+    from dingo.common.protocols.audio_protocol import NvCreateAudioSpeechRequest
+    from dingo.common.protocols.image_protocol import NvCreateImageRequest
+    from dingo.common.protocols.video_protocol import NvCreateVideoRequest, VideoNvExt
+    from dingo.common.utils.output_modalities import RequestType
+    from dingo.vllm.lora_state import LoRAState
+    from dingo.vllm.omni.audio_handler import AudioGenerationHandler
+    from dingo.vllm.omni.main import _register_lora_engine_routes
+    from dingo.vllm.omni.omni_handler import EngineInputs, OmniHandler
+    from dingo.vllm.omni.utils import (
+        MAX_IMAGE_DIMENSION,
+        build_original_prompt,
+        image_generation_size_from_request,
+        parse_omni_request,
+        streaming_sampling_params,
+    )
+except ImportError:
+    pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
+
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.vllm,
+    pytest.mark.gpu_0,
+    pytest.mark.multimodal,
+    pytest.mark.pre_merge,
+]
+
+from contextlib import asynccontextmanager
 
 try:
     from PIL import Image
@@ -23,13 +58,6 @@ try:
 except ImportError:
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
 
-pytestmark = [
-    pytest.mark.unit,
-    pytest.mark.vllm,
-    pytest.mark.gpu_0,
-    pytest.mark.pre_merge,
-]
-
 
 def _make_handler(stage_types=("diffusion",)):
     with patch(
@@ -41,6 +69,8 @@ def _make_handler(stage_types=("diffusion",)):
     config.model = "test-model"
     config.served_model_name = None
     config.output_modalities = ["text"]
+    config.enable_lora = False  # Disable LoRA for tests unless explicitly set
+    config.engine_args = SimpleNamespace(enable_lora=False)
     handler.config = config
 
     defaults = []
@@ -58,6 +88,26 @@ def _make_handler(stage_types=("diffusion",)):
         stage_type=stage_types[i]
     )
     handler.engine_client = engine_client
+
+    # BaseOmniHandler.__init__ is mocked out in tests; recreate LoRA state attrs
+    # expected by BaseWorkerHandler helpers called by OmniHandler.
+    handler._lora_state = LoRAState()
+    handler.loaded_loras = handler._lora_state.loaded_loras
+    handler._lora_load_locks = handler._lora_state.lora_load_locks
+    handler._lora_load_locks_guard = handler._lora_state.lora_load_locks_guard
+    handler._lora_capacity = None
+    handler._lora_capacity_guard = (
+        asyncio.Lock()
+    )  # Shared capacity guard for concurrent loads
+    handler._engine_loaded_loras = set()
+
+    # Add attributes required by _resolve_lora_request() (called by _resolve_and_apply_lora)
+    handler._served_model_name = config.served_model_name or config.model
+    handler._served_model_aliases = tuple(
+        getattr(config, "served_model_aliases", ()) or ()
+    )
+    handler.engine_args = SimpleNamespace(model=config.model)
+
     return handler
 
 
@@ -70,85 +120,40 @@ class TestEngineInputs:
         assert ei.sampling_params_list is None
         assert ei.response_format is None
         assert ei.output_format is None
+        assert ei.stream_audio is False
 
 
-class TestRequestAdapterLifecycle:
-    @pytest.mark.asyncio
-    async def test_generate_wraps_stream_in_adapter_scope(self):
-        handler = _make_handler()
-        events = []
+def test_streaming_sampling_params_preserves_request_overrides():
+    engine_client = SimpleNamespace(
+        default_sampling_params_list=[SamplingParams(temperature=0.1, max_tokens=8)]
+    )
+    requested = SamplingParams(temperature=0.7, max_tokens=42, top_p=0.8)
 
-        class _Adapter:
-            @asynccontextmanager
-            async def request_scope(self, request_id, context=None):
-                assert context is not None
-                events.append(("enter", request_id))
-                try:
-                    yield "scope-token"
-                finally:
-                    events.append(("exit", request_id))
+    result = streaming_sampling_params(engine_client, [requested])
 
-        handler.request_adapter = _Adapter()
+    assert result[0].temperature == 0.7
+    assert result[0].max_tokens == 42
+    assert result[0].top_p == 0.8
+    assert result[0].output_kind == RequestOutputKind.DELTA
+    assert requested.output_kind == RequestOutputKind.CUMULATIVE
 
-        async def _generate(request, context, request_id, request_scope=None):
-            assert request_scope == "scope-token"
-            yield {"status": "completed"}
 
-        handler._generate_openai_mode = _generate
-        context = SimpleNamespace(id=lambda: "request-lifecycle")
+def test_streaming_sampling_params_preserves_explicit_empty_list():
+    engine_client = SimpleNamespace(
+        default_sampling_params_list=[SamplingParams(temperature=0.1)]
+    )
 
-        chunks = [chunk async for chunk in handler.generate({}, context)]
+    result = streaming_sampling_params(engine_client, [])
 
-        assert chunks == [{"status": "completed"}]
-        assert events == [
-            ("enter", "request-lifecycle"),
-            ("exit", "request-lifecycle"),
-        ]
+    assert result == []
 
-    @pytest.mark.asyncio
-    async def test_adapter_scope_exits_when_consumer_closes_stream(self):
-        handler = _make_handler()
-        closed = asyncio.Event()
 
-        class _Adapter:
-            @asynccontextmanager
-            async def request_scope(self, request_id, context=None):
-                assert context is not None
-                try:
-                    yield object()
-                finally:
-                    closed.set()
+def test_streaming_sampling_params_preserves_empty_engine_defaults():
+    engine_client = SimpleNamespace(default_sampling_params_list=[])
 
-        handler.request_adapter = _Adapter()
+    result = streaming_sampling_params(engine_client)
 
-        async def _generate(request, context, request_id, request_scope=None):
-            yield {"status": "in_progress"}
-            await asyncio.Event().wait()
-
-        handler._generate_openai_mode = _generate
-        context = SimpleNamespace(id=lambda: "request-cancelled")
-        stream = handler.generate({}, context)
-
-        await anext(stream)
-        await stream.aclose()
-
-        assert closed.is_set()
-
-    @pytest.mark.asyncio
-    async def test_generate_without_adapter_keeps_noop_scope(self):
-        handler = _make_handler()
-        handler.request_adapter = None
-
-        async def _generate(request, context, request_id, request_scope=None):
-            assert request_scope is None
-            yield {"status": "completed"}
-
-        handler._generate_openai_mode = _generate
-        context = SimpleNamespace(id=lambda: "ordinary-request")
-
-        assert [chunk async for chunk in handler.generate({}, context)] == [
-            {"status": "completed"}
-        ]
+    assert result == []
 
 
 class TestBuildEngineInputs:
@@ -253,7 +258,7 @@ class TestI2VEngineInputs:
         """T2V has no multi_modal_data; I2V attaches image to prompt."""
         handler = _make_handler()
         req = NvCreateVideoRequest(
-            prompt="a drone", model="test", size="832x480", seconds=2
+            prompt="a drone", model="test-model", size="832x480", seconds=2
         )
 
         # T2V: no image
@@ -273,7 +278,7 @@ class TestI2VEngineInputs:
         handler = _make_handler()
         req = NvCreateVideoRequest(
             prompt="bear",
-            model="test",
+            model="test-model",
             size="832x480",
             nvext=VideoNvExt(
                 boundary_ratio=0.875, guidance_scale_2=1.0, num_inference_steps=40
@@ -284,6 +289,60 @@ class TestI2VEngineInputs:
         assert sp.boundary_ratio == 0.875
         assert sp.guidance_scale_2 == 1.0
         assert sp.num_inference_steps == 40
+
+    async def test_media_passthrough_reaches_sampling_params(self):
+        """A top-level SDK extra_body field, nested by the frontend under
+        extra_args["media_passthrough"], rides sampling params extra_args to
+        the engine. Nothing is set on the sampling params by attribute name."""
+        handler = _make_handler()
+        req = NvCreateVideoRequest(
+            prompt="a cat by the sea",
+            model="test-model",
+            size="832x480",
+            extra_args={
+                "media_passthrough": {
+                    "backend_custom_knob": 0.5,
+                    "denoise_strength": 0.8,
+                }
+            },
+        )
+        result = await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+        sp = result.sampling_params_list[0]
+        assert sp.extra_args["backend_custom_knob"] == 0.5
+        assert sp.extra_args["denoise_strength"] == 0.8
+
+    @pytest.mark.parametrize(
+        "bad_knob",
+        [
+            {"frame_interpolation_model_path": "attacker/repository"},
+            {"guardrails": False},
+            {"safety_checker": None},
+            {"vae_checkpoint_url": "http://evil/x.pkl"},
+        ],
+    )
+    async def test_media_passthrough_rejects_load_and_policy_knobs(self, bad_knob):
+        """A path/checkpoint field or a policy control is refused while the
+        request is being built, before any engine call, so it cannot reach a
+        model load or a guardrail switch."""
+        handler = _make_handler()
+        handler.engine_client.generate = MagicMock(
+            side_effect=AssertionError("engine must not run for a rejected request")
+        )
+        req = NvCreateVideoRequest(
+            prompt="a cat",
+            model="test-model",
+            size="832x480",
+            extra_args={"media_passthrough": bad_knob},
+        )
+        with pytest.raises(ValueError):
+            await handler.build_engine_inputs(req, RequestType.VIDEO_GENERATION)
+
+    def test_media_passthrough_absent_is_a_no_op(self):
+        req = NvCreateVideoRequest(prompt="a cat", model="test-model")
+        assert req.extra_args is None
+        handler = _make_handler()
+        inputs = handler._engine_inputs_from_video(req)
+        assert inputs.sampling_params_list is not None
 
     def test_i2v_protocol_roundtrip(self):
         """VideoNvExt and NvCreateVideoRequest serialize/deserialize I2V fields correctly."""
@@ -414,6 +473,184 @@ class TestBuildSamplingParamsList:
         sp = OmniDiffusionSamplingParams()
         handler._build_sampling_params_list(sp)
         handler.engine_client.default_sampling_params_list[0].clone.assert_called_once()
+
+
+class TestLoraEngineRouteRegistration:
+    @pytest.mark.asyncio
+    async def test_register_lora_engine_routes_dispatches_each_handler(self):
+        runtime = MagicMock()
+        handler = SimpleNamespace(
+            load_lora=MagicMock(),
+            unload_lora=MagicMock(),
+            list_loras=MagicMock(),
+        )
+
+        async def _yield_once(payload):
+            yield {"status": "ok", "payload": payload}
+
+        handler.load_lora.side_effect = _yield_once
+        handler.unload_lora.side_effect = _yield_once
+        handler.list_loras.side_effect = _yield_once
+
+        _register_lora_engine_routes(runtime, handler)
+
+        registered = {
+            call.args[0]: call.args[1]
+            for call in runtime.register_engine_route.call_args_list
+        }
+
+        # Routes use the update/ engine-management prefix.
+        assert set(registered) == {
+            "update/load_lora",
+            "update/unload_lora",
+            "update/list_loras",
+        }
+
+        body = {"lora_name": "adapterA"}
+        assert await registered["update/load_lora"](body) == {
+            "status": "ok",
+            "payload": body,
+        }
+        assert await registered["update/unload_lora"](body) == {
+            "status": "ok",
+            "payload": body,
+        }
+        assert await registered["update/list_loras"](body) == {
+            "status": "ok",
+            "payload": body,
+        }
+
+
+class TestLoraRequestParsing:
+    def test_extract_lora_name_accepts_delete_route_alias_shape(self):
+        handler = _make_handler()
+
+        assert (
+            handler._extract_lora_name_from_request({"name": "adapterA"}) == "adapterA"
+        )
+        assert (
+            handler._extract_lora_name_from_request({"adapter_name": "adapterA"})
+            == "adapterA"
+        )
+        assert (
+            handler._extract_lora_name_from_request({"model": "adapterA"}) == "adapterA"
+        )
+
+
+class TestLoraEnablement:
+    def test_resolve_lora_request_unknown_adapter_raises_when_enabled(self):
+        handler = _make_handler()
+        handler.config.engine_args.enable_lora = True
+
+        with patch(
+            "dingo.vllm.omni.omni_handler.get_lora_manager",
+            return_value=MagicMock(),
+        ):
+            with pytest.raises(ValueError, match="unknown model or LoRA adapter"):
+                handler._resolve_lora_request("ghost-adapter")
+
+    def test_resolve_lora_request_unknown_adapter_is_none_when_manager_missing(self):
+        handler = _make_handler()
+        handler.config.engine_args.enable_lora = True
+
+        with patch("dingo.vllm.omni.omni_handler.get_lora_manager", return_value=None):
+            assert handler._resolve_lora_request("ghost-adapter") is None
+
+    def test_resolve_lora_request_served_alias_is_treated_as_base_model(self):
+        handler = _make_handler()
+        handler.config.engine_args.enable_lora = True
+        handler.config.served_model_aliases = ["test-model-alias"]
+        handler._served_model_aliases = tuple(handler.config.served_model_aliases)
+
+        with patch(
+            "dingo.vllm.omni.omni_handler.get_lora_manager",
+            return_value=MagicMock(),
+        ):
+            assert handler._resolve_lora_request("test-model-alias") is None
+
+
+class TestLoraCapacity:
+    def test_resolve_lora_capacity_uses_configured_max_loras(self):
+        """Omni Base handler should defer LoRA capacity to configured max_loras."""
+        from dingo.vllm.omni.base_handler import BaseOmniHandler
+
+        handler = BaseOmniHandler.__new__(BaseOmniHandler)
+        config = SimpleNamespace(
+            engine_args=SimpleNamespace(enable_lora=True, max_loras=4)
+        )
+
+        assert handler._resolve_lora_capacity(config) == 4
+
+    @pytest.mark.asyncio
+    async def test_second_distinct_adapter_load_is_rejected_at_capacity_one(self):
+        handler = _make_handler()
+        handler._lora_capacity = 1
+        handler._lora_state.loaded_loras = {
+            "adapterA": LoRAInfo(id=123, path="/cache/adapterA")
+        }
+        handler.loaded_loras = handler._lora_state.loaded_loras
+
+        results = [
+            result
+            async for result in handler.load_lora(
+                {"lora_name": "adapterB", "source": {"uri": "file:///adapter-b"}}
+            )
+        ]
+
+        assert results[-1]["status"] == "error"
+        assert "LoRA capacity exceeded" in results[-1]["message"]
+        handler.engine_client.add_lora.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_new_adapter_still_rejected_at_capacity_when_hot_swap_enabled(self):
+        handler = _make_handler()
+        handler._lora_capacity = 1
+        handler._lora_state.loaded_loras = {
+            "adapterA": LoRAInfo(id=123, path="/cache/adapterA")
+        }
+        handler.loaded_loras = handler._lora_state.loaded_loras
+
+        with patch.dict("os.environ", {"DYN_LORA_HOTSWAP_ENABLED": "true"}):
+            results = [
+                result
+                async for result in handler.load_lora(
+                    {"lora_name": "adapterB", "source": {"uri": "file:///adapter-b"}}
+                )
+            ]
+
+        assert results[-1]["status"] == "error"
+        assert "LoRA capacity exceeded" in results[-1]["message"]
+        handler.engine_client.add_lora.assert_not_called()
+
+
+class TestDiffusionLoraAttachment:
+    def test_apply_lora_to_diffusion_sampling_params_sets_lora_request(self):
+        diffusion_sp = OmniDiffusionSamplingParams()
+        llm_sp = SamplingParams()
+        lora_request = MagicMock()
+
+        OmniHandler._apply_lora_to_sampling_params(
+            [llm_sp, diffusion_sp],
+            lora_request,
+        )
+
+        assert diffusion_sp.lora_request is lora_request
+
+    def test_apply_lora_to_diffusion_sampling_params_raises_when_attr_missing(self):
+        class _NoLoraRequestSamplingParams(OmniDiffusionSamplingParams):
+            def __setattr__(self, name, value):
+                if name == "lora_request" and value is not None:
+                    raise AttributeError("lora_request is not supported")
+                super().__setattr__(name, value)
+
+        diffusion_sp = _NoLoraRequestSamplingParams()
+        lora_request = MagicMock()
+
+        with pytest.raises(
+            RuntimeError,
+            match="OmniDiffusionSamplingParams no longer exposes 'lora_request'",
+        ):
+            OmniHandler._apply_lora_to_sampling_params([diffusion_sp], lora_request)
 
 
 class TestBuildOriginalPrompt:
@@ -563,10 +800,146 @@ class TestParseOmniRequest:
             "guidance_scale": 1.5,
         }
 
+    @pytest.mark.parametrize("bad", ["abc", [1, 2], {"w": 1}, 1.5, True])
+    def test_nvext_dimensions_reject_non_integers(self, bad):
+        # nvext is applied after image_generation_size_from_request and wins, so
+        # it needs its own bound or it reopens every case that helper rejects.
+        request = {"prompt": "x", "size": "512x512", "nvext": {"width": bad}}
+        with pytest.raises(ValueError, match=r"nvext\.width must be an integer"):
+            asyncio.run(parse_omni_request(request, ["image"]))
 
-# ---------------------------------------------------------------------------
-# AudioGenerationHandler — data_source / response_format field mapping
-# ---------------------------------------------------------------------------
+    @pytest.mark.parametrize("bad", [0, -1, MAX_IMAGE_DIMENSION + 1])
+    def test_nvext_dimensions_reject_out_of_range(self, bad):
+        request = {"prompt": "x", "size": "512x512", "nvext": {"height": bad}}
+        with pytest.raises(ValueError, match=r"nvext\.height must be between"):
+            asyncio.run(parse_omni_request(request, ["image"]))
+
+    def test_nvext_overrides_an_out_of_range_size(self):
+        # nvext is the highest-priority source, so the size it replaces never
+        # reaches the engine and must not be validated on the way past.
+        request = {
+            "prompt": "x",
+            "size": "99999x99999",
+            "nvext": {"width": 512, "height": 512},
+        }
+        result = asyncio.run(parse_omni_request(request, ["image"]))
+        sp = result["sampling_params_list"]
+        assert (sp["width"], sp["height"]) == (512, 512)
+        assert result["engine_inputs"]["mm_processor_kwargs"] == {
+            "target_h": 512,
+            "target_w": 512,
+        }
+
+    def test_nvext_partial_override_still_validates_the_surviving_size(self):
+        # Only width is replaced, so the height that survives from `size` is
+        # still the value that reaches the engine, and still has to be bounded.
+        request = {"prompt": "x", "size": "512x99999", "nvext": {"width": 512}}
+        with pytest.raises(ValueError, match=r"height in size='512x99999'"):
+            asyncio.run(parse_omni_request(request, ["image"]))
+
+
+class TestImageGenerationSizeValidation:
+    """Client-supplied image dimensions are bounded wherever they enter."""
+
+    @pytest.mark.parametrize("bad", ["not-a-number", [1], {"w": 1}, 1.5, True])
+    def test_rejects_non_integer_width(self, bad):
+        with pytest.raises(ValueError, match="width must be an integer"):
+            image_generation_size_from_request({"width": bad})
+
+    @pytest.mark.parametrize("bad", [0, -1, MAX_IMAGE_DIMENSION + 1])
+    def test_rejects_out_of_range_width(self, bad):
+        with pytest.raises(ValueError, match="width must be between"):
+            image_generation_size_from_request({"width": bad})
+
+    @pytest.mark.parametrize("size", ["0x0", "-1x-1", "8192x8192"])
+    def test_rejects_out_of_range_size(self, size):
+        # The message must name ``size``: the client never sent ``width`` and
+        # would have no field to correct.
+        with pytest.raises(ValueError, match=r"width in size='"):
+            image_generation_size_from_request({"size": size})
+
+    def test_unparseable_size_still_falls_back_to_defaults(self):
+        # parse_size's documented contract: only what it does parse is bounded.
+        assert image_generation_size_from_request({"size": "not-a-size"}) == (
+            1024,
+            1024,
+        )
+
+    def test_explicit_width_overrides_an_out_of_range_size(self):
+        # The size value is discarded, so it must not be validated on its way out.
+        request = {"size": "99999x99999", "width": 512, "height": 512}
+        assert image_generation_size_from_request(request) == (512, 512)
+
+    def test_a_discarded_extra_body_width_is_not_validated(self):
+        # Same rule one level down: the top-level field wins over extra_body, so
+        # the extra_body value never reaches the engine and must not fail the
+        # request. Only the value that survives the precedence chain is checked.
+        request = {"extra_body": {"width": "abc"}, "width": 512}
+        assert image_generation_size_from_request(request) == (512, 1024)
+
+    def test_extra_body_width_still_applies_when_not_overridden(self):
+        request = {"extra_body": {"width": 100, "height": 100}}
+        assert image_generation_size_from_request(request) == (100, 100)
+
+    def test_accepts_the_maximum(self):
+        maximum = f"{MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION}"
+        assert image_generation_size_from_request({"size": maximum}) == (
+            MAX_IMAGE_DIMENSION,
+            MAX_IMAGE_DIMENSION,
+        )
+
+    def test_a_long_size_is_truncated_in_the_error(self):
+        # size is unbounded client input and this message reaches both the
+        # caller and the handler's log line, so it must not echo all of it.
+        long_size = "9" * 100 + "x1"
+        with pytest.raises(ValueError) as excinfo:
+            image_generation_size_from_request({"size": long_size})
+        message = str(excinfo.value)
+        assert long_size not in message
+        assert "..." in message and len(message) < 120
+
+    def test_non_string_size_falls_back_to_defaults(self):
+        # parse_size tolerates a non-string size; the error label must too.
+        assert image_generation_size_from_request({"size": 1024}) == (1024, 1024)
+
+
+class TestImageEndpointSizeValidation:
+    """/v1/images/generations takes the same bound as the chat path."""
+
+    def test_rejects_out_of_range_size(self):
+        handler = _make_handler()
+        req = NvCreateImageRequest(prompt="x", size="99999x99999")
+        with pytest.raises(ValueError, match=r"width in size='99999x99999'"):
+            handler._engine_inputs_from_image(req)
+
+    def test_accepts_a_supported_size(self):
+        handler = _make_handler()
+        req = NvCreateImageRequest(prompt="x", size="1024x768")
+        inputs = handler._engine_inputs_from_image(req)
+        assert inputs.prompt["mm_processor_kwargs"] == {
+            "target_h": 768,
+            "target_w": 1024,
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejection_propagates_instead_of_yielding_a_chat_chunk(self):
+        """The images route has no failure shape, so a rejection must not be
+        yielded as a chat.completion.chunk. It leaves the handler as
+        InvalidArgument, the registered binding exception the HTTP layer answers
+        with a 400."""
+        handler = _make_handler()
+        handler.config.output_modalities = ["image"]
+        request = {"prompt": "x", "size": "99999x99999"}
+
+        with pytest.raises(InvalidArgument) as excinfo:
+            async for _ in handler._generate_openai_mode(request, None, "req-1"):
+                pass
+
+        # The client-facing message is the reason alone: errors.rs reads a
+        # registered exception's .value(py).str(), so no "ValueError: " prefix.
+        assert str(excinfo.value) == (
+            "width in size='99999x99999' must be between 1 and 4096"
+        )
 
 
 def _make_audio_handler():
@@ -646,3 +1019,82 @@ class TestAudioHandlerFieldMapping:
             NvCreateAudioSpeechRequest(input="hi")
         )
         assert result.request_type == RequestType.AUDIO_GENERATION
+
+
+class TestRequestAdapterLifecycle:
+    @pytest.mark.asyncio
+    async def test_generate_wraps_stream_in_adapter_scope(self):
+        handler = _make_handler()
+        events = []
+
+        class _Adapter:
+            @asynccontextmanager
+            async def request_scope(self, request_id, context=None):
+                assert context is not None
+                events.append(("enter", request_id))
+                try:
+                    yield "scope-token"
+                finally:
+                    events.append(("exit", request_id))
+
+        handler.request_adapter = _Adapter()
+
+        async def _generate(request, context, request_id, request_scope=None):
+            assert request_scope == "scope-token"
+            yield {"status": "completed"}
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "request-lifecycle")
+
+        chunks = [chunk async for chunk in handler.generate({}, context)]
+
+        assert chunks == [{"status": "completed"}]
+        assert events == [
+            ("enter", "request-lifecycle"),
+            ("exit", "request-lifecycle"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_adapter_scope_exits_when_consumer_closes_stream(self):
+        handler = _make_handler()
+        closed = asyncio.Event()
+
+        class _Adapter:
+            @asynccontextmanager
+            async def request_scope(self, request_id, context=None):
+                assert context is not None
+                try:
+                    yield object()
+                finally:
+                    closed.set()
+
+        handler.request_adapter = _Adapter()
+
+        async def _generate(request, context, request_id, request_scope=None):
+            yield {"status": "in_progress"}
+            await asyncio.Event().wait()
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "request-cancelled")
+        stream = handler.generate({}, context)
+
+        await anext(stream)
+        await stream.aclose()
+
+        assert closed.is_set()
+
+    @pytest.mark.asyncio
+    async def test_generate_without_adapter_keeps_noop_scope(self):
+        handler = _make_handler()
+        handler.request_adapter = None
+
+        async def _generate(request, context, request_id, request_scope=None):
+            assert request_scope is None
+            yield {"status": "completed"}
+
+        handler._generate_openai_mode = _generate
+        context = SimpleNamespace(id=lambda: "ordinary-request")
+
+        assert [chunk async for chunk in handler.generate({}, context)] == [
+            {"status": "completed"}
+        ]

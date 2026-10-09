@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::prompt_membership_trie::WorkerLookup;
 use super::single::ActiveSequences;
+#[cfg(test)]
+use super::single::DEFAULT_ACTIVE_REQUEST_EXPIRY_DURATION;
 use crate::protocols::{DpRank, WorkerId, WorkerWithDpRank};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +67,6 @@ pub enum WorkerTopologyError {
 #[derive(Clone)]
 pub(super) struct RemovedWorkerState {
     pub(super) worker: WorkerWithDpRank,
-    pub(super) trie_lookup: Arc<RwLock<WorkerLookup>>,
 }
 
 impl std::fmt::Debug for RemovedWorkerState {
@@ -86,20 +86,15 @@ pub(super) struct WorkerTopologyChange {
 pub(super) struct WorkerSlot {
     pub(super) worker: WorkerWithDpRank,
     pub(super) sequences: RwLock<ActiveSequences>,
-    pub(super) trie_lookup: Arc<RwLock<WorkerLookup>>,
 }
 
 impl WorkerSlot {
-    fn new(worker: WorkerWithDpRank, block_size: usize, expiry_enabled: bool) -> Self {
-        let sequences = if expiry_enabled {
-            ActiveSequences::new(block_size)
-        } else {
-            ActiveSequences::new_without_expiry(block_size)
-        };
+    /// Creates a worker slot with the table's expiry policy.
+    fn new(worker: WorkerWithDpRank, block_size: usize, expiry_duration: Option<Duration>) -> Self {
+        let sequences = ActiveSequences::new_with_expiry(block_size, expiry_duration);
         Self {
             worker,
             sequences: RwLock::new(sequences),
-            trie_lookup: Arc::new(RwLock::new(WorkerLookup::default())),
         }
     }
 }
@@ -108,25 +103,25 @@ pub(super) struct WorkerTable {
     pub(super) slots: Vec<WorkerSlot>,
     pub(super) index: FxHashMap<WorkerWithDpRank, usize>,
     worker_ranges: HashMap<WorkerId, WorkerDpRange>,
-    expiry_enabled: bool,
+    expiry_duration: Option<Duration>,
 }
 
 impl WorkerTable {
+    /// Creates test worker slots with the default stale-request expiry duration.
+    #[cfg(test)]
     pub(super) fn new(block_size: usize, dp_range: &HashMap<u64, (u32, u32)>) -> Self {
-        Self::new_with_expiry(block_size, dp_range, true)
+        Self::new_with_expiry(
+            block_size,
+            dp_range,
+            Some(DEFAULT_ACTIVE_REQUEST_EXPIRY_DURATION),
+        )
     }
 
-    pub(super) fn new_without_expiry(
+    /// Builds worker slots from an optional stale-request expiry policy.
+    pub(super) fn new_with_expiry(
         block_size: usize,
         dp_range: &HashMap<u64, (u32, u32)>,
-    ) -> Self {
-        Self::new_with_expiry(block_size, dp_range, false)
-    }
-
-    fn new_with_expiry(
-        block_size: usize,
-        dp_range: &HashMap<u64, (u32, u32)>,
-        expiry_enabled: bool,
+        expiry_duration: Option<Duration>,
     ) -> Self {
         let worker_ranges: HashMap<WorkerId, WorkerDpRange> = dp_range
             .iter()
@@ -142,14 +137,14 @@ impl WorkerTable {
         let mut index = FxHashMap::default();
         for worker in workers_from_ranges(worker_ranges.values().copied()) {
             let idx = slots.len();
-            slots.push(WorkerSlot::new(worker, block_size, expiry_enabled));
+            slots.push(WorkerSlot::new(worker, block_size, expiry_duration));
             index.insert(worker, idx);
         }
         Self {
             slots,
             index,
             worker_ranges,
-            expiry_enabled,
+            expiry_duration,
         }
     }
 
@@ -251,7 +246,7 @@ impl WorkerTable {
         for worker in target_workers {
             let slot = old.remove(&worker).unwrap_or_else(|| {
                 added.push(worker);
-                WorkerSlot::new(worker, block_size, self.expiry_enabled)
+                WorkerSlot::new(worker, block_size, self.expiry_duration)
             });
             self.slots.push(slot);
         }
@@ -281,18 +276,12 @@ impl WorkerTable {
             let idx = self.slots.len();
             let slot = old
                 .remove(&worker)
-                .unwrap_or_else(|| WorkerSlot::new(worker, block_size, self.expiry_enabled));
+                .unwrap_or_else(|| WorkerSlot::new(worker, block_size, self.expiry_duration));
             self.slots.push(slot);
             self.index.insert(worker, idx);
         }
 
-        let removed = old
-            .into_values()
-            .map(|slot| RemovedWorkerState {
-                worker: slot.worker,
-                trie_lookup: slot.trie_lookup,
-            })
-            .collect();
+        let removed = old.into_values().map(RemovedWorkerState::from).collect();
 
         WorkerTopologyChange { added, removed }
     }
@@ -318,7 +307,7 @@ impl WorkerTable {
 
         let idx = self.slots.len();
         self.slots
-            .push(WorkerSlot::new(worker, block_size, self.expiry_enabled));
+            .push(WorkerSlot::new(worker, block_size, self.expiry_duration));
         self.index.insert(worker, idx);
         WorkerTopologyChange {
             added: vec![worker],
@@ -331,7 +320,6 @@ impl From<WorkerSlot> for RemovedWorkerState {
     fn from(slot: WorkerSlot) -> Self {
         Self {
             worker: slot.worker,
-            trie_lookup: slot.trie_lookup,
         }
     }
 }
@@ -492,7 +480,7 @@ mod tests {
                 }),
                 Instant::now(),
             );
-            assert_eq!(outcome.membership_delta.stores[0].hashes, vec![1, 2, 3],);
+            assert_eq!(outcome.membership_delta.stores[0].path, vec![1, 2, 3]);
         }
 
         let change = table

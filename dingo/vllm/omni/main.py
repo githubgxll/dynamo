@@ -14,6 +14,8 @@ from dynamo.runtime import DistributedRuntime
 from dynamo.runtime.logging import configure_dynamo_logging
 
 from dingo.common.config_dump import dump_config
+from dingo.common.model_taints import register_model_taint_route
+from dingo.common.rl import first_endpoint_response
 from dingo.common.storage import get_fs
 from dingo.common.utils.graceful_shutdown import install_signal_handlers
 from dingo.common.utils.output_modalities import get_output_modalities
@@ -21,6 +23,7 @@ from dingo.common.utils.runtime import create_runtime
 from dingo.common.utils.runtime_termination import (
     run_with_runtime_termination_guard,
 )
+from dingo.vllm.handlers import get_lora_manager
 from dingo.vllm.health_check import VllmOmniHealthCheckPayload
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.engine_monitor import OmniEngineMonitor
@@ -32,10 +35,43 @@ logger = logging.getLogger(__name__)
 shutdown_endpoints: list = []
 
 
+def _base_model_lora_capacity(config: OmniConfig, lora_enabled: bool) -> int | None:
+    """Return LoRA capacity advertised on the base model registration card."""
+    if not lora_enabled:
+        return None
+    return getattr(config.engine_args, "max_loras", None)
+
+
+def _register_lora_engine_routes(runtime, handler) -> None:
+    route_handlers = {
+        "load_lora": handler.load_lora,
+        "unload_lora": handler.unload_lora,
+        "list_loras": handler.list_loras,
+    }
+
+    for route_name, endpoint_handler in route_handlers.items():
+
+        async def _engine_route(
+            body: dict,
+            endpoint_handler=endpoint_handler,
+        ) -> dict:
+            return await first_endpoint_response(endpoint_handler, body)
+
+        # Register under the update/<name> engine-management route prefix
+        # to match system status server's call_lora_endpoint lookup
+        runtime.register_engine_route(f"update/{route_name}", _engine_route)
+
+    logger.info(
+        "Registered LoRA engine routes: %s",
+        ", ".join(f"update/{name}" for name in route_handlers),
+    )
+
+
 async def init_omni(
     runtime: DistributedRuntime, config: OmniConfig, shutdown_event: asyncio.Event
 ):
     """Initialize Omni worker for multi-stage pipeline generation."""
+    # Intentional function-local import to avoid omni package import cycles.
     from dingo.vllm.omni import OmniHandler
 
     generate_endpoint = runtime.endpoint(
@@ -43,6 +79,31 @@ async def init_omni(
     )
 
     shutdown_endpoints[:] = [generate_endpoint]
+
+    engine_lora_enabled = bool(getattr(config.engine_args, "enable_lora", False))
+    lora_enabled = engine_lora_enabled and (get_lora_manager() is not None)
+    if engine_lora_enabled and not lora_enabled:
+        logger.warning(
+            "LoRA is enabled in engine args, but LoRA endpoints are disabled "
+            "because LoRAManager is unavailable. Ensure DYN_LORA_ENABLED=true "
+            "and LoRAManager initialization succeeds."
+        )
+    load_lora_endpoint = None
+    unload_lora_endpoint = None
+    list_loras_endpoint = None
+    if lora_enabled:
+        load_lora_endpoint = runtime.endpoint(
+            f"{config.namespace}.{config.component}.load_lora"
+        )
+        unload_lora_endpoint = runtime.endpoint(
+            f"{config.namespace}.{config.component}.unload_lora"
+        )
+        list_loras_endpoint = runtime.endpoint(
+            f"{config.namespace}.{config.component}.list_loras"
+        )
+        shutdown_endpoints.extend(
+            [load_lora_endpoint, unload_lora_endpoint, list_loras_endpoint]
+        )
 
     media_fs = (
         get_fs(config.media_output_fs_url) if config.media_output_fs_url else None
@@ -60,6 +121,7 @@ async def init_omni(
         ),
         media_output_fs=media_fs,
         media_output_http_url=config.media_output_http_url,
+        generate_endpoint=generate_endpoint,
     )
     # Monitor AsyncOmni independently from the standard AsyncLLM worker path so
     # a dead stage/rank cannot leave a registered endpoint with no live engine.
@@ -87,6 +149,9 @@ async def init_omni(
 
     logger.info("Omni worker initialized for model: %s", config.model)
 
+    if lora_enabled:
+        _register_lora_engine_routes(runtime, handler)
+
     setup_metrics_collection(config, generate_endpoint, logger)
 
     if config.engine_args.data_parallel_rank:
@@ -97,6 +162,7 @@ async def init_omni(
         await shutdown_event.wait()
         return
 
+    register_model_taint_route(runtime, generate_endpoint)
     model_type = get_output_modalities(config.output_modalities, config.model)
     if model_type is None:
         model_type = ModelType.Images
@@ -114,6 +180,7 @@ async def init_omni(
             # frontend, so they register as Aggregated.
             worker_type=WorkerType.Aggregated,
             needs=[],
+            max_gpu_lora_count=_base_model_lora_capacity(config, lora_enabled),
         )
 
         logger.info("Starting to serve Omni worker endpoint...")
@@ -122,21 +189,47 @@ async def init_omni(
             await VllmOmniHealthCheckPayload.create(handler.engine_client)
         ).to_dict()
 
-        await generate_endpoint.serve_endpoint(
-            serve_handler,
-            graceful_shutdown=True,
-            metrics_labels=[
-                (
-                    prometheus_names.labels.MODEL,
-                    config.served_model_name or config.model,
-                ),
-                (
-                    prometheus_names.labels.MODEL_NAME,
-                    config.served_model_name or config.model,
-                ),
-            ],
-            health_check_payload=health_check_payload,
-        )
+        model_metrics_labels = [
+            (
+                prometheus_names.labels.MODEL,
+                config.served_model_name or config.model,
+            ),
+            (
+                prometheus_names.labels.MODEL_NAME,
+                config.served_model_name or config.model,
+            ),
+        ]
+
+        serve_tasks = [
+            generate_endpoint.serve_endpoint(
+                serve_handler,
+                graceful_shutdown=True,
+                metrics_labels=model_metrics_labels,
+                health_check_payload=health_check_payload,
+            )
+        ]
+        if lora_enabled:
+            assert load_lora_endpoint is not None
+            assert unload_lora_endpoint is not None
+            assert list_loras_endpoint is not None
+            serve_tasks.extend(
+                [
+                    load_lora_endpoint.serve_endpoint(
+                        handler.load_lora,
+                        metrics_labels=model_metrics_labels,
+                    ),
+                    unload_lora_endpoint.serve_endpoint(
+                        handler.unload_lora,
+                        metrics_labels=model_metrics_labels,
+                    ),
+                    list_loras_endpoint.serve_endpoint(
+                        handler.list_loras,
+                        metrics_labels=model_metrics_labels,
+                    ),
+                ]
+            )
+
+        await asyncio.gather(*serve_tasks)
     except Exception as e:
         logger.error("Omni worker failed: %s", e)
         raise
@@ -157,6 +250,10 @@ async def worker():
 
     dump_config(config.dump_config_to, config)
 
+    if getattr(config.engine_args, "enable_lora", False):
+        if "DYN_LORA_ENABLED" not in os.environ:
+            os.environ["DYN_LORA_ENABLED"] = "true"
+
     if not config.served_model_name:
         config.served_model_name = config.engine_args.served_model_name = config.model
 
@@ -168,6 +265,7 @@ async def worker():
         discovery_backend=config.discovery_backend,
         request_plane=config.request_plane,
         event_plane=config.event_plane,
+        response_plane=config.response_plane,
     )
 
     install_signal_handlers(loop, runtime, shutdown_endpoints, shutdown_event)

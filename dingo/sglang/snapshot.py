@@ -6,20 +6,48 @@
 import asyncio
 import gc
 import logging
+import os
 import time
 from typing import Any
 
 import sglang as sgl
+from sglang.srt.managers.io_struct import (
+    ContinueGenerationReqInput,
+    PauseGenerationReqInput,
+    ReleaseMemoryOccupationReqInput,
+    ResumeMemoryOccupationReqInput,
+)
 
 from dingo.common.snapshot.lifecycle import (
     EngineSnapshotController,
     SnapshotConfig,
     configure_snapshot_capture_env,
 )
-
-from .pause import SGLangEnginePauseController
+from dingo.sglang._compat import override_server_args, resolved_server_args
 
 logger = logging.getLogger(__name__)
+
+
+class _SGLangSnapshotLifecycle:
+    """Adapt SGLang's native controls to the snapshot lifecycle interface."""
+
+    def __init__(self, engine: sgl.Engine):
+        self._tokenizer_manager = engine.tokenizer_manager
+
+    async def pause(self) -> None:
+        await self._tokenizer_manager.pause_generation(PauseGenerationReqInput())
+        await self._tokenizer_manager.release_memory_occupation(
+            ReleaseMemoryOccupationReqInput(), None
+        )
+
+    async def resume(self) -> None:
+        await self._tokenizer_manager.resume_memory_occupation(
+            ResumeMemoryOccupationReqInput(), None
+        )
+        await self._tokenizer_manager.continue_generation(ContinueGenerationReqInput())
+
+    def mark_resumed(self) -> None:
+        pass
 
 
 async def warmup_engine(engine: sgl.Engine, server_args: Any) -> None:
@@ -71,9 +99,9 @@ async def warmup_engine(engine: sgl.Engine, server_args: Any) -> None:
         warmup_args["input_ids"] = np.load(
             server_args.debug_tensor_dump_input_file
         ).tolist()
-        warmup_args["sampling_params"][
-            "max_new_tokens"
-        ] = DUMMY_DEBUG_TENSOR_MAX_NEW_TOKENS
+        warmup_args["sampling_params"]["max_new_tokens"] = (
+            DUMMY_DEBUG_TENSOR_MAX_NEW_TOKENS
+        )
 
     is_disaggregated = server_args.disaggregation_mode != "null"
     if is_disaggregated:
@@ -135,31 +163,41 @@ async def prepare_snapshot_engine(
     configure_snapshot_capture_env()
     logger.info("Snapshot mode enabled (watcher-driven signals)")
 
-    # Enable memory_saver so GPU memory can be released for CRIU.
-    # When using GMS, weights use VA-stable unmap/remap (no CPU backup); GMS
-    # forbids enable_weights_cpu_backup. Otherwise use CPU backup for weights.
-    server_args.override("dynamo.snapshot", enable_memory_saver=True)
-    try:
-        from gpu_memory_service.integrations.sglang import is_gms_active
+    # Snapshot engines are created before the Dynamo endpoint exists, so their
+    # FPM publisher cannot be wired to the relay. Disable it before SGLang
+    # publishes ServerArgs; 0.5.18 forbids changing it afterwards. This applies
+    # on both the GMS V0 and V1 paths.
+    snapshot_overrides = {"enable_forward_pass_metrics": False}
 
-        _using_gms = is_gms_active()
-    except ImportError:
-        _using_gms = False
-    if not _using_gms:
-        server_args.override("dynamo.snapshot", enable_weights_cpu_backup=True)
+    if os.environ.get("DYN_GMS_USE_V1") != "true":
+        # Enable memory_saver so GPU memory can be released for CRIU.
+        # When using GMS, weights use VA-stable unmap/remap (no CPU backup); GMS
+        # forbids enable_weights_cpu_backup. Otherwise use CPU backup for weights.
+        snapshot_overrides["enable_memory_saver"] = True
+        try:
+            from gpu_memory_service.integrations.sglang import is_gms_active
+
+            _using_gms = is_gms_active()
+        except ImportError:
+            _using_gms = False
+        if not _using_gms:
+            snapshot_overrides["enable_weights_cpu_backup"] = True
+
+    override_server_args(server_args, "dynamo.snapshot", **snapshot_overrides)
 
     start_time = time.time()
     engine = sgl.Engine(server_args=server_args)
     logger.info(
         f"SGLang engine loaded in {time.time() - start_time:.2f}s (snapshot mode)"
     )
-    await warmup_engine(engine, server_args)
+    runtime_server_args = resolved_server_args(engine.server_args)
+    await warmup_engine(engine, runtime_server_args)
 
     gc.collect()
 
     snapshot_controller = EngineSnapshotController(
         engine=engine,
-        pause_controller=SGLangEnginePauseController(engine),
+        pause_controller=_SGLangSnapshotLifecycle(engine),
         snapshot_config=snapshot_config,
     )
     if not await snapshot_controller.wait_for_restore():

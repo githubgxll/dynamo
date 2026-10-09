@@ -19,386 +19,1072 @@ package validation
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	nvidiacomv1beta1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/checkpoint"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
-	controllercommon "github.com/ai-dynamo/dynamo/deploy/operator/internal/controller_common"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/dra"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/dynamo"
-	"github.com/ai-dynamo/dynamo/deploy/operator/internal/dynamo/epp"
-	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/provideroverride"
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// SharedSpecValidatorV1Beta1 validates v1beta1 DynamoComponentDeploymentSharedSpec fields.
-// DGD components use it directly; DCD can move to it when its admission path is ported to v1beta1.
-type SharedSpecValidatorV1Beta1 struct {
-	spec         *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec
-	fieldPath    string
-	grovePathway bool
-	mgr          ctrl.Manager
+// sharedValidation carries request-wide dependencies and accumulation used by
+// validation for API types shared by multiple resources.
+type sharedValidation struct {
+	ctx                                context.Context
+	mgr                                ctrl.Manager
+	warnings                           admission.Warnings
+	runtimeVersionSource               runtimeVersionValidationSource
+	ratchetRuntimeVersion              bool
+	allowMissingRuntimeVersionOverride bool
 }
 
-func NewSharedSpecValidatorV1Beta1(
+func (v *sharedValidation) warn(message string) {
+	v.warnings = append(v.warnings, message)
+}
+
+func (v *sharedValidation) warnf(format string, args ...any) {
+	v.warn(fmt.Sprintf(format, args...))
+}
+
+type dynamoComponentDeploymentSharedSpecValidationOptions struct {
+	grovePathway                      bool
+	validateInferencePoolAvailability bool
+	providerOverridesSupported        bool
+	workloadProvider                  string
+	oldComponent                      *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec
+}
+
+// validateDynamoComponentDeploymentSharedSpec validates spec. spec and fldPath must not be nil.
+// Options are supplied by the owning resource.
+func (v *sharedValidation) validateDynamoComponentDeploymentSharedSpec(
 	spec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
-	fieldPath string,
-	grovePathway bool,
-	mgr ctrl.Manager,
-) *SharedSpecValidatorV1Beta1 {
-	return &SharedSpecValidatorV1Beta1{
-		spec:         spec,
-		fieldPath:    fieldPath,
-		grovePathway: grovePathway,
-		mgr:          mgr,
-	}
-}
+	fldPath *field.Path,
+	options dynamoComponentDeploymentSharedSpecValidationOptions,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
 
-func (v *SharedSpecValidatorV1Beta1) Validate(ctx context.Context) (admission.Warnings, error) {
-	var errs []error
-	if v.spec.Replicas != nil && *v.spec.Replicas < 0 {
-		errs = append(errs, fmt.Errorf("%s.replicas must be non-negative", v.fieldPath))
-	}
-	if err := v.validateMinAvailable(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validatePodTemplate(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateCompilationCache(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateSharedMemory(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateCheckpointConfig(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateGMSClientContainerNames(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validatePodTemplateAnnotations(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateEPPConfig(ctx); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateGPUMemoryService(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateFailover(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := v.validateSnapshotWithGPUMemoryService(); err != nil {
-		errs = append(errs, err)
-	}
-	return nil, errors.Join(errs...)
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateMinAvailable() error {
-	if v.spec.MinAvailable == nil {
-		return nil
-	}
-	if !v.grovePathway {
-		return fmt.Errorf("%s.minAvailable is currently supported only for Grove-backed DynamoGraphDeployment components", v.fieldPath)
-	}
-	if *v.spec.MinAvailable <= 0 {
-		return fmt.Errorf("%s.minAvailable must be greater than 0", v.fieldPath)
-	}
-	replicas := int32(1)
-	if v.spec.Replicas != nil {
-		replicas = *v.spec.Replicas
-	}
-	if replicas > 0 && replicas < *v.spec.MinAvailable {
-		return fmt.Errorf("%s.replicas must be 0 or greater than or equal to minAvailable", v.fieldPath)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validatePodTemplate() error {
-	if v.spec.PodTemplate == nil {
-		if v.spec.FrontendSidecar != nil {
-			return fmt.Errorf("%s.frontendSidecar requires podTemplate.spec.containers", v.fieldPath)
-		}
-		return nil
+	// Validate the provider-native fragment in this component context.
+	if spec.ProviderOverride != nil {
+		allErrs = append(allErrs, v.validateProviderOverride(
+			spec.ProviderOverride,
+			fldPath.Child("providerOverride"),
+			providerOverrideValidationOptions{
+				supported:        options.providerOverridesSupported,
+				workloadProvider: options.workloadProvider,
+				scope:            provideroverride.ScopeComponent,
+				component:        spec,
+			},
+		)...)
 	}
 
-	containers := v.spec.PodTemplate.Spec.Containers
-	if v.spec.FrontendSidecar != nil {
-		target := *v.spec.FrontendSidecar
-		if target == "" {
-			return fmt.Errorf("%s.frontendSidecar must not be empty", v.fieldPath)
-		}
-		found := false
-		for i := range containers {
-			if containers[i].Name == target {
-				found = true
-				break
+	// Enforce Grove-only availability semantics before validating later fields.
+	if spec.MinAvailable != nil && !options.grovePathway {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath.Child("minAvailable"),
+			"is currently supported only for Grove-backed DynamoGraphDeployment components",
+		))
+	}
+
+	// Validate the complete role schema against the enclosing component shape.
+	if spec.Roles != nil {
+		allErrs = append(allErrs, v.validateComponentRoles(
+			spec,
+			fldPath.Child("roles"),
+			options.providerOverridesSupported,
+			options.workloadProvider,
+		)...)
+	}
+
+	// Reject invalid shared-memory quantities before resource-specific validation.
+	if spec.SharedMemorySize != nil && spec.SharedMemorySize.Sign() < 0 {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("sharedMemorySize"),
+			spec.SharedMemorySize.String(),
+			"must be non-negative",
+		))
+	}
+
+	// Ratchet unsupported legacy multinode combinations on update.
+	allErrs = append(allErrs, validateMultinodeComponentType(spec, options.oldComponent, fldPath.Child("multinode"))...)
+
+	if spec.ComponentType == nvidiacomv1beta1.ComponentTypeEPP {
+		if options.validateInferencePoolAvailability {
+			if err := inferencePoolAvailabilityError(v.ctx, v.mgr); err != nil {
+				allErrs = append(allErrs, field.Forbidden(fldPath.Child("type"), fmt.Sprintf("cannot deploy EPP component: %v", err)))
 			}
 		}
-		if !found {
-			return fmt.Errorf("%s.frontendSidecar %q does not match any podTemplate.spec.containers name",
-				v.fieldPath, target)
+		if spec.Replicas != nil && *spec.Replicas != 1 {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("replicas"),
+				*spec.Replicas,
+				"EPP component must have exactly 1 replica",
+			))
+		}
+	}
+	// Validate the represented eppConfig once using the submitted API version's field path.
+	if spec.EPPConfig != nil && !v.hasRuntimeVersionSource(runtimeVersionSourceV1Alpha1) {
+		allErrs = append(allErrs, v.validateEPPConfig(spec.EPPConfig, fldPath.Child("eppConfig"))...)
+	}
+
+	if spec.FrontendSidecar != nil {
+		frontendSidecarPath := fldPath.Child("frontendSidecar")
+		if spec.PodTemplate == nil {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("podTemplate", "spec", "containers"),
+				"is required when frontendSidecar is set",
+			))
+		} else if *spec.FrontendSidecar == "" {
+			allErrs = append(allErrs, field.Invalid(frontendSidecarPath, *spec.FrontendSidecar, "must not be empty"))
+		} else if !hasContainerNamed(spec.PodTemplate.Spec.Containers, *spec.FrontendSidecar) {
+			allErrs = append(allErrs, field.Invalid(
+				frontendSidecarPath,
+				*spec.FrontendSidecar,
+				"must match a podTemplate.spec.containers name",
+			))
 		}
 	}
 
-	for i := range containers {
-		container := containers[i]
-		if container.Name != consts.MainContainerName && container.Image == "" {
-			return fmt.Errorf("%s.podTemplate.spec.containers[%d].image is required for sidecar container %q",
-				v.fieldPath, i, container.Name)
+	if spec.Experimental != nil {
+		allErrs = append(allErrs, v.validateExperimentalSpec(
+			spec.Experimental,
+			fldPath.Child("experimental"),
+			experimentalSpecValidationOptions{
+				componentType: spec.ComponentType,
+				resources:     dynamo.GetMainContainerResources(spec),
+				containers:    podTemplateContainers(spec.PodTemplate),
+				grovePathway:  options.grovePathway,
+			},
+		)...)
+	}
+
+	// Validate runtime compatibility against the source-version fields.
+	if v.validatesRuntimeVersionFor(runtimeVersionSourceV1Beta1) {
+		image, imagePath := runtimeVersionImageAndPath(spec, fldPath)
+		if err := eppRuntimeCompatibilityError(
+			eppRuntimeContractV1Beta1(spec, image),
+			fldPath.Child("eppConfig"),
+		); err != nil {
+			allErrs = append(allErrs, err)
+		}
+		if image == "" {
+			allErrs = append(allErrs, field.Required(imagePath, "is required"))
+		} else if !v.toleratesMissingRuntimeVersionOverride(string(spec.ComponentType)) &&
+			runtimeVersionOverrideRequired(image, spec.RuntimeVersionOverride) {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("runtimeVersionOverride"),
+				runtimeVersionOverrideRequiredMessage,
+			))
 		}
 	}
-	for i := range v.spec.PodTemplate.Spec.InitContainers {
-		container := v.spec.PodTemplate.Spec.InitContainers[i]
-		if container.Image == "" {
-			return fmt.Errorf("%s.podTemplate.spec.initContainers[%d].image is required for init container %q",
-				v.fieldPath, i, container.Name)
-		}
-	}
-	return nil
+
+	return allErrs
 }
 
-func (v *SharedSpecValidatorV1Beta1) validateCompilationCache() error {
-	if v.spec.CompilationCache == nil {
-		return nil
-	}
-	if v.spec.CompilationCache.PVCName == "" {
-		return fmt.Errorf("%s.compilationCache.pvcName is required", v.fieldPath)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateSharedMemory() error {
-	if v.spec.SharedMemorySize == nil {
-		return nil
-	}
-	if v.spec.SharedMemorySize.Sign() < 0 {
-		return fmt.Errorf("%s.sharedMemorySize must be non-negative", v.fieldPath)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateCheckpointConfig() error {
-	checkpoint := betaCheckpoint(v.spec)
-	if checkpoint == nil {
-		return nil
-	}
-	if checkpoint.Job != nil && checkpoint.CheckpointRef != nil && *checkpoint.CheckpointRef != "" {
-		return fmt.Errorf("%s.experimental.checkpoint.job cannot be set when checkpointRef is specified", v.fieldPath)
-	}
-	if checkpoint.TargetContainerName != "" {
-		if errs := k8svalidation.IsDNS1123Label(checkpoint.TargetContainerName); len(errs) > 0 {
-			return fmt.Errorf(
-				"%s.experimental.checkpoint.targetContainerName %q is not a valid Kubernetes container name: %s",
-				v.fieldPath,
-				checkpoint.TargetContainerName,
-				strings.Join(errs, "; "),
-			)
-		}
-	}
-	if checkpoint.Job == nil {
-		return nil
-	}
-	if len(checkpoint.Job.GMSClientContainers) > 0 {
-		gms := betaGPUMemoryService(v.spec)
-		if gms == nil {
-			return fmt.Errorf("%s.experimental.checkpoint.job.gmsClientContainers requires gpuMemoryService to be set", v.fieldPath)
-		}
-		if betaGMSMode(gms.Mode) == nvidiacomv1beta1.GMSModeInterPod {
-			return fmt.Errorf("%s.experimental.checkpoint.job.gmsClientContainers is only supported with gpuMemoryService.mode=IntraPod", v.fieldPath)
-		}
-	}
-	for i, name := range checkpoint.Job.GMSClientContainers {
-		if errs := k8svalidation.IsDNS1123Label(name); len(errs) > 0 {
-			return fmt.Errorf(
-				"%s.experimental.checkpoint.job.gmsClientContainers[%d] %q is not a valid Kubernetes container name: %s",
-				v.fieldPath,
-				i,
-				name,
-				strings.Join(errs, "; "),
-			)
-		}
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateGMSClientContainerNames() error {
-	gms := betaGPUMemoryService(v.spec)
-	if gms == nil {
-		return nil
-	}
-	for i, name := range gms.ExtraClientContainers {
-		if errs := k8svalidation.IsDNS1123Label(name); len(errs) > 0 {
-			return fmt.Errorf(
-				"%s.experimental.gpuMemoryService.extraClientContainers[%d] %q is not a valid Kubernetes container name: %s",
-				v.fieldPath,
-				i,
-				name,
-				strings.Join(errs, "; "),
-			)
-		}
-	}
-	if len(gms.ExtraClientContainers) > 0 && betaGMSMode(gms.Mode) == nvidiacomv1beta1.GMSModeInterPod {
-		return fmt.Errorf("%s.experimental.gpuMemoryService.extraClientContainers is only supported with mode=IntraPod", v.fieldPath)
-	}
-	if len(gms.ExtraClientPods) > 0 {
-		return fmt.Errorf("%s.experimental.gpuMemoryService.extraClientPods is reserved for inter-pod GMS and is not implemented yet", v.fieldPath)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validatePodTemplateAnnotations() error {
-	annotations := dynamo.GetPodTemplateAnnotations(v.spec)
-	return validateVLLMDistributedExecutorBackendAnnotation(v.fieldPath+".podTemplate.metadata.annotations", annotations)
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateEPPConfig(ctx context.Context) error {
-	if v.spec.ComponentType != nvidiacomv1beta1.ComponentTypeEPP {
-		return nil
-	}
-	if err := v.checkInferencePoolAPIAvailability(ctx); err != nil {
-		return fmt.Errorf("%s: cannot deploy EPP component: %w", v.fieldPath, err)
-	}
-	if v.spec.IsMultinode() {
-		return fmt.Errorf("%s: EPP component cannot be multinode (multinode field must be nil or nodeCount must be 1)", v.fieldPath)
-	}
-	if v.spec.Replicas != nil && *v.spec.Replicas != 1 {
-		return fmt.Errorf("%s: EPP component must have exactly 1 replica (found %d replicas)", v.fieldPath, *v.spec.Replicas)
-	}
-	if v.spec.EPPConfig == nil {
-		return fmt.Errorf("%s.eppConfig is required for EPP components", v.fieldPath)
-	}
-	if v.spec.EPPConfig.ConfigMapRef == nil && v.spec.EPPConfig.Config == nil {
-		return fmt.Errorf("%s.eppConfig: either configMapRef or config must be specified (no default configuration provided)", v.fieldPath)
-	}
-	if v.spec.EPPConfig.ConfigMapRef != nil && v.spec.EPPConfig.Config != nil {
-		return fmt.Errorf("%s.eppConfig: configMapRef and config are mutually exclusive, only one can be specified", v.fieldPath)
-	}
-	if v.spec.EPPConfig.ConfigMapRef != nil && v.spec.EPPConfig.ConfigMapRef.Name == "" {
-		return fmt.Errorf("%s.eppConfig.configMapRef.name is required", v.fieldPath)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) checkInferencePoolAPIAvailability(ctx context.Context) error {
-	if v.mgr == nil {
-		return fmt.Errorf("manager is required to detect InferencePool API availability")
-	}
-	if !controllercommon.DetectInferencePoolAvailability(ctx, v.mgr) {
-		return fmt.Errorf(
-			"InferencePool API group (%s) is not available in the cluster. "+
-				"EPP requires the Gateway API Inference Extension to be installed. "+
-				"Please install the Gateway API Inference Extension before deploying EPP components",
-			epp.InferencePoolGroup)
-	}
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateGPUMemoryService() error {
-	gms := betaGPUMemoryService(v.spec)
-	if gms == nil {
-		return nil
-	}
-
-	isWorker := v.spec.ComponentType == nvidiacomv1beta1.ComponentTypeWorker ||
-		v.spec.ComponentType == nvidiacomv1beta1.ComponentTypePrefill ||
-		v.spec.ComponentType == nvidiacomv1beta1.ComponentTypeDecode
-	if !isWorker {
-		return fmt.Errorf(
-			"%s.experimental.gpuMemoryService: GPU memory service is only supported for worker components (type must be worker, prefill, or decode)",
-			v.fieldPath)
-	}
-
-	gpuCount, err := dra.ExtractGPUCountFromResourceRequirements(dynamo.GetMainContainerResources(v.spec))
-	if err != nil || gpuCount < 1 {
-		return fmt.Errorf(
-			"%s.experimental.gpuMemoryService: GPU memory service requires podTemplate.spec.containers[main].resources.limits.nvidia.com/gpu >= 1",
-			v.fieldPath)
-	}
-
-	return nil
-}
-
-func (v *SharedSpecValidatorV1Beta1) validateFailover() error {
-	failover := betaFailover(v.spec)
-	if failover == nil {
-		return nil
-	}
-
-	var errs []error
-	gms := betaGPUMemoryService(v.spec)
-	failoverMode := betaGMSMode(failover.Mode)
-
-	switch failoverMode {
-	case nvidiacomv1beta1.GMSModeIntraPod:
-		if gms == nil {
-			errs = append(errs, fmt.Errorf(
-				"%s.experimental.failover: intraPod failover requires gpuMemoryService to be set",
-				v.fieldPath))
-		} else if betaGMSMode(gms.Mode) != nvidiacomv1beta1.GMSModeIntraPod {
-			errs = append(errs, fmt.Errorf(
-				"%s.experimental.failover: failover.mode %q must match gpuMemoryService.mode %q",
-				v.fieldPath, failoverMode, gms.Mode))
-		}
-		if failover.NumShadows != 0 && failover.NumShadows != 1 {
-			errs = append(errs, fmt.Errorf(
-				"%s.experimental.failover.numShadows=%d is invalid for mode=%q: intraPod uses a fixed 1 primary + 1 shadow sidecar; "+
-					"use failover.mode=%q to configure numShadows",
-				v.fieldPath, failover.NumShadows, nvidiacomv1beta1.GMSModeIntraPod, nvidiacomv1beta1.GMSModeInterPod))
-		}
-
-	case nvidiacomv1beta1.GMSModeInterPod:
-		if gms == nil {
-			errs = append(errs, fmt.Errorf(
-				"%s.experimental.failover: interPod failover requires gpuMemoryService.mode=%q",
-				v.fieldPath, nvidiacomv1beta1.GMSModeInterPod))
-		} else if betaGMSMode(gms.Mode) != nvidiacomv1beta1.GMSModeInterPod {
-			detected := string(gms.Mode)
-			if detected == "" {
-				detected = unsetValue
-			}
-			errs = append(errs, fmt.Errorf(
-				"%s.experimental.failover: interPod failover requires gpuMemoryService.mode=%q (got %q)",
-				v.fieldPath, nvidiacomv1beta1.GMSModeInterPod, detected))
-		}
-		if failover.NumShadows < 1 {
-			errs = append(errs, fmt.Errorf("%s.experimental.failover.numShadows must be >= 1", v.fieldPath))
-		}
-
-		gpuCount, err := dra.ExtractGPUCountFromResourceRequirements(dynamo.GetMainContainerResources(v.spec))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s.podTemplate.spec.containers[main].resources.limits.nvidia.com/gpu: %w", v.fieldPath, err))
-		} else if gpuCount < 1 {
-			errs = append(errs, fmt.Errorf("%s: GMS failover requires at least 1 GPU in podTemplate.spec.containers[main].resources.limits.nvidia.com/gpu", v.fieldPath))
-		}
-
-		switch v.spec.ComponentType {
-		case nvidiacomv1beta1.ComponentTypeEPP, nvidiacomv1beta1.ComponentTypeFrontend, nvidiacomv1beta1.ComponentTypePlanner:
-			errs = append(errs, fmt.Errorf("%s: GMS failover is not supported for type %q", v.fieldPath, v.spec.ComponentType))
-		}
-
+func supportsMultinodeComponentType(componentType nvidiacomv1beta1.ComponentType) bool {
+	switch componentType {
+	case nvidiacomv1beta1.ComponentTypeWorker,
+		nvidiacomv1beta1.ComponentTypePrefill,
+		nvidiacomv1beta1.ComponentTypeDecode:
+		return true
 	default:
-		errs = append(errs, fmt.Errorf("%s.experimental.failover.mode %q is invalid", v.fieldPath, failover.Mode))
+		return false
 	}
-
-	return errors.Join(errs...)
 }
 
-func (v *SharedSpecValidatorV1Beta1) validateSnapshotWithGPUMemoryService() error {
-	checkpoint := betaCheckpoint(v.spec)
-	gms := betaGPUMemoryService(v.spec)
-	if checkpoint == nil || !checkpoint.Enabled || gms == nil {
+func hasUnsupportedMultinode(spec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec) bool {
+	return spec != nil && spec.Multinode != nil && !supportsMultinodeComponentType(spec.ComponentType)
+}
+
+// validateMultinodeComponentType rejects unsupported new combinations and
+// ratchets identical legacy violations on update. fldPath points to multinode.
+func validateMultinodeComponentType(
+	newSpec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	oldSpec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	fldPath *field.Path,
+) field.ErrorList {
+	if !hasUnsupportedMultinode(newSpec) {
 		return nil
 	}
-	if os.Getenv(consts.DynamoOperatorAllowGMSSnapshotEnvVar) == "1" {
+	if oldSpec != nil && oldSpec.ComponentType == newSpec.ComponentType &&
+		hasUnsupportedMultinode(oldSpec) &&
+		apiequality.Semantic.DeepEqual(oldSpec.Multinode, newSpec.Multinode) {
 		return nil
 	}
-	return fmt.Errorf(
-		"%s.experimental.checkpoint: GMS + Snapshot is temporarily disabled; disable gpuMemoryService or enable the internal GMS + Snapshot gate",
-		v.fieldPath)
+	return field.ErrorList{field.Forbidden(
+		fldPath,
+		"multinode is supported only for worker, prefill, or decode components",
+	)}
+}
+
+func removesUnsupportedMultinode(
+	newSpec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	oldSpec *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+) bool {
+	return hasUnsupportedMultinode(oldSpec) &&
+		newSpec.Multinode == nil &&
+		newSpec.ComponentType == oldSpec.ComponentType
+}
+
+type providerOverrideValidationOptions struct {
+	supported        bool
+	workloadProvider string
+	scope            provideroverride.Scope
+	component        *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec
+}
+
+// validateProviderOverride validates override. override and fldPath must not be nil.
+// options.component is nil only for the root DGD provider context.
+func (v *sharedValidation) validateProviderOverride(
+	override *nvidiacomv1beta1.ProviderOverride,
+	fldPath *field.Path,
+	options providerOverrideValidationOptions,
+) field.ErrorList {
+	// Reject provider fragments in API contexts that cannot lower them.
+	if !options.supported {
+		return field.ErrorList{field.Forbidden(
+			fldPath,
+			"provider overrides are supported only for components embedded in a DynamoGraphDeployment",
+		)}
+	}
+
+	// Require the durable provider selection before interpreting the fragment.
+	if options.workloadProvider == "" {
+		return field.ErrorList{field.Forbidden(
+			fldPath,
+			fmt.Sprintf(
+				"requires controller-owned annotation %q to be materialized; wait for controller adoption and retry",
+				consts.KubeAnnotationWorkloadProvider,
+			),
+		)}
+	}
+
+	// Provider-native overrides currently target only Grove schemas.
+	if options.workloadProvider != consts.WorkloadProviderGrove {
+		return field.ErrorList{field.Forbidden(
+			fldPath,
+			fmt.Sprintf("requires workload provider %q, but %q is selected", consts.WorkloadProviderGrove, options.workloadProvider),
+		)}
+	}
+
+	// Validate the explicit provider schema version before resolving its target.
+	if override.APIVersion == "" {
+		return field.ErrorList{field.Required(fldPath.Child("apiVersion"), "is required")}
+	}
+	if override.APIVersion != provideroverride.GroveAPIVersion {
+		return field.ErrorList{field.NotSupported(
+			fldPath.Child("apiVersion"),
+			override.APIVersion,
+			[]string{provideroverride.GroveAPIVersion},
+		)}
+	}
+
+	// Resolve the only target valid for this provider context and component shape.
+	expectedTarget, err := provideroverride.ExpectedTarget(
+		options.workloadProvider,
+		override.APIVersion,
+		options.scope,
+		options.component,
+	)
+	if err != nil {
+		return field.ErrorList{field.Forbidden(fldPath, err.Error())}
+	}
+	if override.Target == "" {
+		return field.ErrorList{field.Required(
+			fldPath.Child("target"),
+			"must be defaulted from the provider context",
+		)}
+	}
+	if override.Target != expectedTarget {
+		return field.ErrorList{field.Invalid(
+			fldPath.Child("target"),
+			override.Target,
+			fmt.Sprintf("must match the provider-context target %q", expectedTarget),
+		)}
+	}
+
+	// Map provider ownership and shape errors to exact Kubernetes field paths.
+	valuePath := fldPath.Child("value")
+	allErrs := field.ErrorList{}
+	for _, valueErr := range provideroverride.ValidateValue(override.Target, override.Value.Raw) {
+		errPath := valuePath
+		if valueErr.Path != "" {
+			parts := strings.Split(valueErr.Path, ".")
+			errPath = valuePath.Child(parts[0], parts[1:]...)
+		}
+		if valueErr.OwnershipViolation {
+			allErrs = append(allErrs, field.Forbidden(errPath, valueErr.Detail))
+			continue
+		}
+		allErrs = append(allErrs, field.Invalid(errPath, nil, valueErr.Detail))
+	}
+	return allErrs
+}
+
+// validateComponentRoles validates the role set defined by the enclosing
+// component. component and fldPath must not be nil.
+func (v *sharedValidation) validateComponentRoles(
+	component *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	fldPath *field.Path,
+	providerOverridesSupported bool,
+	workloadProvider string,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if component.Multinode == nil {
+		return field.ErrorList{field.Forbidden(
+			fldPath,
+			"roles are supported only for component shapes that define a role schema; this release supports multinode components",
+		)}
+	}
+
+	// Multinode explicit mode is a closed schema: exactly one leader and worker.
+	seen := make(map[string]struct{}, len(component.Roles))
+	for i := range component.Roles {
+		role := &component.Roles[i]
+		rolePath := fldPath.Index(i)
+		scope, knownRole := provideroverride.ScopeForComponentRole(role.Name)
+		if !knownRole {
+			allErrs = append(allErrs, field.NotSupported(
+				rolePath.Child("name"),
+				role.Name,
+				[]string{nvidiacomv1beta1.ComponentRoleLeader, nvidiacomv1beta1.ComponentRoleWorker},
+			))
+		} else if _, exists := seen[role.Name]; exists {
+			allErrs = append(allErrs, field.Duplicate(rolePath.Child("name"), role.Name))
+		} else {
+			seen[role.Name] = struct{}{}
+		}
+
+		if role.Replicas != nil && knownRole {
+			expected := int32(1)
+			if role.Name == nvidiacomv1beta1.ComponentRoleWorker {
+				expected = component.Multinode.NodeCount - 1
+			}
+			if *role.Replicas != expected {
+				allErrs = append(allErrs, field.Invalid(
+					rolePath.Child("replicas"),
+					*role.Replicas,
+					fmt.Sprintf("must equal %d for multinode role %q", expected, role.Name),
+				))
+			}
+		}
+
+		if knownRole {
+			allErrs = append(allErrs, v.validateComponentRoleSpec(
+				role,
+				rolePath,
+				componentRoleSpecValidationOptions{
+					providerOverridesSupported: providerOverridesSupported,
+					workloadProvider:           workloadProvider,
+					scope:                      scope,
+					component:                  component,
+				},
+			)...)
+		}
+	}
+
+	for _, requiredRole := range []string{
+		nvidiacomv1beta1.ComponentRoleLeader,
+		nvidiacomv1beta1.ComponentRoleWorker,
+	} {
+		if _, exists := seen[requiredRole]; !exists {
+			allErrs = append(allErrs, field.Required(
+				fldPath,
+				fmt.Sprintf("must contain the %q role", requiredRole),
+			))
+		}
+	}
+	return allErrs
+}
+
+type componentRoleSpecValidationOptions struct {
+	providerOverridesSupported bool
+	workloadProvider           string
+	scope                      provideroverride.Scope
+	component                  *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec
+	podTemplateAllowed         bool
+}
+
+// validateComponentRoleSpec validates role. role and fldPath must not be nil;
+// the optional provider override and PodTemplate may be nil.
+func (v *sharedValidation) validateComponentRoleSpec(
+	role *nvidiacomv1beta1.ComponentRoleSpec,
+	fldPath *field.Path,
+	options componentRoleSpecValidationOptions,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if role.PodTemplate != nil && !options.podTemplateAllowed {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath.Child("podTemplate"),
+			"is not supported for this component role",
+		))
+	}
+	if role.ProviderOverride == nil {
+		return allErrs
+	}
+
+	// Validate the provider fragment against this exact multinode role.
+	return append(allErrs, v.validateProviderOverride(
+		role.ProviderOverride,
+		fldPath.Child("providerOverride"),
+		providerOverrideValidationOptions{
+			supported:        options.providerOverridesSupported,
+			workloadProvider: options.workloadProvider,
+			scope:            options.scope,
+			component:        options.component,
+		},
+	)...)
+}
+
+// validateEPPConfig validates deprecated Go-EPP config. config and fldPath must not be nil.
+func (v *sharedValidation) validateEPPConfig(
+	config *nvidiacomv1beta1.EPPConfig,
+	fldPath *field.Path,
+) field.ErrorList {
+	if config.ConfigMapRef == nil || config.ConfigMapRef.Name != "" {
+		return nil
+	}
+	return field.ErrorList{field.Required(fldPath.Child("configMapRef", "name"), "is required")}
+}
+
+// validateTopologyConstraint validates constraint. constraint, specConstraint, and fldPath must not be nil.
+// topologyInfo may be nil when live topology validation is not applicable.
+func (v *sharedValidation) validateTopologyConstraint(
+	constraint *nvidiacomv1beta1.TopologyConstraint,
+	fldPath *field.Path,
+	specConstraint *nvidiacomv1beta1.SpecTopologyConstraint,
+	topologyInfo *clusterTopologyInfo,
+) field.ErrorList {
+	if topologyInfo == nil {
+		return nil
+	}
+
+	packDomainPath := fldPath.Child("packDomain")
+	componentIndex, exists := topologyInfo.domainIndex[string(constraint.PackDomain)]
+	if !exists {
+		return field.ErrorList{field.Invalid(
+			packDomainPath,
+			constraint.PackDomain,
+			fmt.Sprintf("does not exist in ClusterTopology %q; available domains: %v", topologyInfo.name, topologyInfo.domains),
+		)}
+	}
+	if specConstraint.PackDomain == "" {
+		return nil
+	}
+	specIndex, exists := topologyInfo.domainIndex[string(specConstraint.PackDomain)]
+	if exists && componentIndex < specIndex {
+		return field.ErrorList{field.Invalid(
+			packDomainPath,
+			constraint.PackDomain,
+			fmt.Sprintf("must be equal to or narrower than the deployment-level domain %q", specConstraint.PackDomain),
+		)}
+	}
+	return nil
+}
+
+type experimentalSpecValidationOptions struct {
+	componentType nvidiacomv1beta1.ComponentType
+	resources     corev1.ResourceRequirements
+	containers    []corev1.Container
+	grovePathway  bool
+}
+
+// validateExperimentalSpec validates experimental. experimental and fldPath must not be nil.
+func (v *sharedValidation) validateExperimentalSpec(
+	experimental *nvidiacomv1beta1.ExperimentalSpec,
+	fldPath *field.Path,
+	options experimentalSpecValidationOptions,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if experimental.GPUMemoryService != nil {
+		allErrs = append(allErrs, v.validateGPUMemoryServiceSpec(
+			experimental.GPUMemoryService,
+			fldPath.Child("gpuMemoryService"),
+			options.componentType,
+			options.resources,
+			options.containers,
+		)...)
+	}
+	if experimental.Failover != nil {
+		allErrs = append(allErrs, v.validateFailoverSpec(
+			experimental.Failover,
+			fldPath.Child("failover"),
+			experimental.GPUMemoryService,
+			options.componentType,
+			options.resources,
+		)...)
+	}
+	if experimental.Grove != nil {
+		allErrs = append(allErrs, v.validateGroveSpec(
+			experimental.Grove,
+			fldPath.Child("grove"),
+			options.grovePathway,
+		)...)
+	}
+	if experimental.Checkpoint != nil {
+		allErrs = append(allErrs, v.validateComponentCheckpointConfig(
+			experimental.Checkpoint,
+			fldPath.Child("checkpoint"),
+			experimental.GPUMemoryService,
+			options.componentType,
+		)...)
+	}
+
+	for _, err := range checkpoint.ValidateCheckpointCompatibility(experimental) {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath.Child("checkpoint"),
+			err.Error(),
+		))
+	}
+	return allErrs
+}
+
+// validateGPUMemoryServiceSpec validates gpuMemoryService. gpuMemoryService and fldPath must not be nil.
+func (v *sharedValidation) validateGPUMemoryServiceSpec(
+	gpuMemoryService *nvidiacomv1beta1.GPUMemoryServiceSpec,
+	fldPath *field.Path,
+	componentType nvidiacomv1beta1.ComponentType,
+	resources corev1.ResourceRequirements,
+	containers []corev1.Container,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	// Restrict GMS to component types that own GPU-backed workloads.
+	switch componentType {
+	case nvidiacomv1beta1.ComponentTypeWorker,
+		nvidiacomv1beta1.ComponentTypePrefill,
+		nvidiacomv1beta1.ComponentTypeDecode:
+	default:
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath,
+			"GPU memory service is only supported for worker, prefill, or decode components",
+		))
+	}
+
+	// Require the main container to expose at least one GPU to GMS.
+	gpuCount, err := dra.ExtractGPUCountFromResourceRequirements(resources)
+	if err != nil || gpuCount < 1 {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath,
+			"GPU memory service requires podTemplate.spec.containers[main].resources.limits.nvidia.com/gpu >= 1",
+		))
+	}
+
+	// Skip container-client validation for the inter-pod topology.
+	if effectiveGMSMode(gpuMemoryService.Mode) != nvidiacomv1beta1.GMSModeIntraPod {
+		return allErrs
+	}
+
+	// Validate every GMS client reference at its indexed field path.
+	seen := make(map[string]struct{}, len(gpuMemoryService.ExtraClientContainers))
+	extraClientContainersPath := fldPath.Child("extraClientContainers")
+	for i, name := range gpuMemoryService.ExtraClientContainers {
+		clientPath := extraClientContainersPath.Index(i)
+		if _, exists := seen[name]; exists {
+			allErrs = append(allErrs, field.Duplicate(clientPath, name))
+			continue
+		}
+		seen[name] = struct{}{}
+		if !hasContainerNamed(containers, name) {
+			allErrs = append(allErrs, field.Invalid(
+				clientPath,
+				name,
+				"does not name a container in podTemplate.spec.containers",
+			))
+		}
+	}
+
+	return allErrs
+}
+
+// validateFailoverSpec validates failover. failover and fldPath must not be nil.
+// gms may be nil because failover validates that sibling relationship.
+func (v *sharedValidation) validateFailoverSpec(
+	failover *nvidiacomv1beta1.FailoverSpec,
+	fldPath *field.Path,
+	gms *nvidiacomv1beta1.GPUMemoryServiceSpec,
+	componentType nvidiacomv1beta1.ComponentType,
+	resources corev1.ResourceRequirements,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	failoverMode := effectiveGMSMode(failover.Mode)
+	if gms == nil {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath,
+			fmt.Sprintf("gpuMemoryService is required when failover mode is %q", failoverMode),
+		))
+	} else if effectiveGMSMode(gms.Mode) != failoverMode {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("mode"),
+			failover.Mode,
+			fmt.Sprintf("must match gpuMemoryService.mode %q", gms.Mode),
+		))
+	}
+
+	if failoverMode == nvidiacomv1beta1.GMSModeInterPod {
+		gpuCount, err := dra.ExtractGPUCountFromResourceRequirements(resources)
+		if err != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath,
+				fmt.Sprintf("failed to read main-container GPU limit: %v", err),
+			))
+		} else if gpuCount < 1 {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath,
+				"GMS failover requires at least 1 GPU in podTemplate.spec.containers[main].resources.limits.nvidia.com/gpu",
+			))
+		}
+
+		switch componentType {
+		case nvidiacomv1beta1.ComponentTypeEPP,
+			nvidiacomv1beta1.ComponentTypeFrontend,
+			nvidiacomv1beta1.ComponentTypePlanner:
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath,
+				fmt.Sprintf("GMS failover is not supported for component type %q", componentType),
+			))
+		}
+	}
+	return allErrs
+}
+
+// validateGroveSpec validates grove. grove and fldPath must not be nil.
+// grovePathway is supplied by the owning resource.
+func (v *sharedValidation) validateGroveSpec(
+	grove *nvidiacomv1beta1.GroveSpec,
+	fldPath *field.Path,
+	grovePathway bool,
+) field.ErrorList {
+	if k8sptr.Deref(grove.ForceScalingGroup, false) && !grovePathway {
+		return field.ErrorList{field.Forbidden(
+			fldPath.Child("forceScalingGroup"),
+			"is currently supported only for Grove-backed DynamoGraphDeployment components",
+		)}
+	}
+	return nil
+}
+
+// validateComponentCheckpointConfig validates checkpoint. checkpoint and fldPath must not be nil.
+// gms may be nil because checkpoint validates that sibling relationship.
+func (v *sharedValidation) validateComponentCheckpointConfig(
+	checkpointConfig *nvidiacomv1beta1.ComponentCheckpointConfig,
+	fldPath *field.Path,
+	gms *nvidiacomv1beta1.GPUMemoryServiceSpec,
+	componentType nvidiacomv1beta1.ComponentType,
+) field.ErrorList {
+	var allErrs field.ErrorList
+	if checkpointConfig.Enabled && !features.MustGateFrom(v.ctx).Enabled(features.Checkpoint) {
+		allErrs = append(allErrs, field.Forbidden(fldPath, "checkpoint functionality is disabled in the operator configuration"))
+	}
+	if checkpointConfig.Enabled && componentType == "" {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath,
+			"checkpoint functionality requires component type to be explicitly set to worker, prefill, or decode",
+		))
+	} else if checkpointConfig.Enabled && !dynamo.IsWorkerComponent(string(componentType)) {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath,
+			"checkpoint functionality is supported only for worker, prefill, and decode components",
+		))
+	}
+	if checkpointConfig.Job == nil {
+		return allErrs
+	}
+	return append(allErrs, v.validateComponentCheckpointJobConfig(checkpointConfig.Job, fldPath.Child("job"), gms)...)
+}
+
+// validateComponentCheckpointJobConfig validates job. job and fldPath must not be nil.
+// gms may be nil because the job validates that sibling relationship.
+func (v *sharedValidation) validateComponentCheckpointJobConfig(
+	job *nvidiacomv1beta1.ComponentCheckpointJobConfig,
+	fldPath *field.Path,
+	gms *nvidiacomv1beta1.GPUMemoryServiceSpec,
+) field.ErrorList {
+	if len(job.GMSClientContainers) == 0 {
+		return nil
+	}
+	if gms == nil {
+		return field.ErrorList{field.Forbidden(
+			fldPath.Child("gmsClientContainers"),
+			"requires gpuMemoryService to be set",
+		)}
+	}
+	if effectiveGMSMode(gms.Mode) == nvidiacomv1beta1.GMSModeInterPod {
+		return field.ErrorList{field.Forbidden(
+			fldPath.Child("gmsClientContainers"),
+			"is only supported with gpuMemoryService.mode=IntraPod",
+		)}
+	}
+	return nil
+}
+
+// validateDynamoComponentDeploymentSharedSpecUpdate validates a component update.
+// newComponent, oldComponent, and fldPath must not be nil; ownerKind.Kind must not be empty.
+func (v *sharedValidation) validateDynamoComponentDeploymentSharedSpecUpdate(
+	newComponent *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	oldComponent *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	fldPath *field.Path,
+	canModifyReplicas bool,
+	ownerKind schema.GroupKind,
+	validateGPUMemoryServiceNewState bool,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	// Keep an existing component-level provider identity stable across updates.
+	if newComponent.ProviderOverride != nil && oldComponent.ProviderOverride != nil {
+		allErrs = append(allErrs, validateProviderOverrideUpdate(
+			newComponent.ProviderOverride,
+			oldComponent.ProviderOverride,
+			fldPath.Child("providerOverride"),
+		)...)
+	}
+
+	// Keep the component's multinode shape stable across updates. Permit
+	// removing a legacy multinode value from an unsupported component type.
+	if newComponent.IsMultinode() != oldComponent.IsMultinode() {
+		if !removesUnsupportedMultinode(newComponent, oldComponent) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("multinode"),
+				newComponent.Multinode,
+				"cannot change node topology between single-node and multi-node after creation",
+			))
+		}
+	} else {
+		if !hasUnsupportedMultinode(newComponent) &&
+			newComponent.Multinode != nil && oldComponent.Multinode != nil &&
+			newComponent.Multinode.NodeCount != oldComponent.Multinode.NodeCount {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("multinode", "nodeCount"),
+				newComponent.Multinode.NodeCount,
+				apivalidation.FieldImmutableErrorMsg,
+			))
+		}
+		allErrs = append(allErrs, validateComponentRolesUpdate(
+			newComponent,
+			oldComponent,
+			fldPath.Child("roles"),
+		)...)
+	}
+
+	// Protect replica ownership when a scaling adapter is present in either state.
+	if (newComponent.ScalingAdapter != nil || oldComponent.ScalingAdapter != nil) && !canModifyReplicas &&
+		k8sptr.Deref(newComponent.Replicas, int32(1)) != k8sptr.Deref(oldComponent.Replicas, int32(1)) {
+		allErrs = append(allErrs, field.Forbidden(
+			fldPath.Child("replicas"),
+			"cannot be modified directly when scaling adapter is enabled; scale or update the related DynamoGraphDeploymentScalingAdapter instead",
+		))
+	}
+
+	topologyPath := fldPath.Child("topologyConstraint")
+	if newComponent.TopologyConstraint != nil {
+		allErrs = append(allErrs, v.validateTopologyConstraintUpdate(
+			newComponent.TopologyConstraint,
+			oldComponent.TopologyConstraint,
+			topologyPath,
+			ownerKind,
+		)...)
+	} else if oldComponent.TopologyConstraint != nil {
+		allErrs = append(allErrs, field.Invalid(
+			topologyPath,
+			newComponent.TopologyConstraint,
+			fmt.Sprintf("is immutable and cannot be added, removed, or changed after creation; delete and recreate the %s to change topology constraints", ownerKind.Kind),
+		))
+	}
+
+	if newComponent.Experimental != nil {
+		allErrs = append(allErrs, v.validateExperimentalSpecUpdate(
+			newComponent.Experimental,
+			oldComponent.Experimental,
+			fldPath.Child("experimental"),
+			experimentalSpecUpdateValidationOptions{
+				ownerKind:                        ownerKind,
+				componentType:                    newComponent.ComponentType,
+				resources:                        dynamo.GetMainContainerResources(newComponent),
+				containers:                       podTemplateContainers(newComponent.PodTemplate),
+				validateGPUMemoryServiceNewState: validateGPUMemoryServiceNewState,
+			},
+		)...)
+	} else if oldComponent.Experimental != nil {
+		oldGMS := gpuMemoryServiceForExperimental(oldComponent.Experimental)
+		if isInterPodGMS(oldGMS) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("experimental", "gpuMemoryService", "mode"),
+				nil,
+				fmt.Sprintf("the inter-pod GMS layout cannot be toggled after creation; delete and recreate the %s", ownerKind.Kind),
+			))
+		}
+		oldFailover := failoverForExperimental(oldComponent.Experimental)
+		if isInterPodFailover(oldFailover) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("experimental", "failover"),
+				nil,
+				fmt.Sprintf("inter-pod GMS failover cannot be toggled after creation; delete and recreate the %s", ownerKind.Kind),
+			))
+		}
+		if forceScalingGroupFor(oldComponent.Experimental) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("experimental", "grove", "forceScalingGroup"),
+				nil,
+				fmt.Sprintf("cannot be toggled after creation; delete and recreate the %s to change it", ownerKind.Kind),
+			))
+		}
+	}
+
+	// Ratchet only complete, unchanged source-version runtime contract violations.
+	if v.hasRuntimeVersionSource(runtimeVersionSourceV1Beta1) {
+		newImage, imagePath := runtimeVersionImageAndPath(newComponent, fldPath)
+		oldImage, _ := runtimeVersionImageAndPath(oldComponent, fldPath)
+		overrideChanged := newComponent.RuntimeVersionOverride != oldComponent.RuntimeVersionOverride
+
+		if newImage == "" && oldImage != "" {
+			allErrs = append(allErrs, field.Required(imagePath, "is required"))
+		} else if !v.toleratesMissingRuntimeVersionOverride(string(newComponent.ComponentType)) &&
+			runtimeVersionOverrideRequired(newImage, newComponent.RuntimeVersionOverride) &&
+			(newImage != oldImage || overrideChanged) {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("runtimeVersionOverride"),
+				runtimeVersionOverrideRequiredMessage,
+			))
+		}
+
+		if err := eppRuntimeCompatibilityUpdateError(
+			eppRuntimeContractV1Beta1(newComponent, newImage),
+			eppRuntimeContractV1Beta1(oldComponent, oldImage),
+			apiequality.Semantic.DeepEqual(newComponent.EPPConfig, oldComponent.EPPConfig),
+			fldPath.Child("eppConfig"),
+		); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+	return allErrs
+}
+
+// validateComponentRolesUpdate permits equivalent role-mode migrations and
+// otherwise keeps explicit role names stable. Inputs must not be nil.
+func validateComponentRolesUpdate(
+	newComponent *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	oldComponent *nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec,
+	fldPath *field.Path,
+) field.ErrorList {
+	// Permit representation-only implicit/explicit migrations, but require
+	// role-specific configuration changes to happen in a subsequent update.
+	if (newComponent.Roles == nil) != (oldComponent.Roles == nil) {
+		explicitComponent := newComponent
+		implicitComponent := oldComponent
+		if explicitComponent.Roles == nil {
+			explicitComponent, implicitComponent = implicitComponent, explicitComponent
+		}
+		if explicitComponent.Multinode != nil && implicitComponent.Multinode != nil &&
+			dynamo.ExplicitMultinodeRolesMatchImplicit(explicitComponent) {
+			return nil
+		}
+		return field.ErrorList{field.Forbidden(
+			fldPath,
+			"cannot switch between implicit and explicit roles while changing the resolved role model; make the equivalent role structure explicit first",
+		)}
+	}
+
+	// Match role-level provider identity by semantic name rather than list order.
+	allErrs := field.ErrorList{}
+	newRoles := newComponent.Roles
+	oldRoles := oldComponent.Roles
+	oldByName := make(map[string]*nvidiacomv1beta1.ComponentRoleSpec, len(oldRoles))
+	for i := range oldRoles {
+		oldByName[oldRoles[i].Name] = &oldRoles[i]
+	}
+	newNames := make(map[string]struct{}, len(newRoles))
+	for i := range newRoles {
+		newRole := &newRoles[i]
+		newNames[newRole.Name] = struct{}{}
+		oldRole, exists := oldByName[newRole.Name]
+		if !exists {
+			continue
+		}
+		allErrs = append(allErrs, validateComponentRoleSpecUpdate(
+			newRole,
+			oldRole,
+			fldPath.Index(i),
+		)...)
+	}
+	if len(newNames) != len(oldByName) {
+		allErrs = append(allErrs, field.Invalid(fldPath, newRoles, "role names are immutable after creation"))
+		return allErrs
+	}
+	for name := range oldByName {
+		if _, exists := newNames[name]; !exists {
+			allErrs = append(allErrs, field.Invalid(fldPath, newRoles, "role names are immutable after creation"))
+			break
+		}
+	}
+	return allErrs
+}
+
+// validateComponentRoleSpecUpdate validates a role update. newRole, oldRole,
+// and fldPath must not be nil; either optional provider override may be nil.
+func validateComponentRoleSpecUpdate(
+	newRole *nvidiacomv1beta1.ComponentRoleSpec,
+	oldRole *nvidiacomv1beta1.ComponentRoleSpec,
+	fldPath *field.Path,
+) field.ErrorList {
+	if newRole.ProviderOverride == nil || oldRole.ProviderOverride == nil {
+		return nil
+	}
+
+	// Keep an existing role-level provider identity stable across updates.
+	return validateProviderOverrideUpdate(
+		newRole.ProviderOverride,
+		oldRole.ProviderOverride,
+		fldPath.Child("providerOverride"),
+	)
+}
+
+// validateProviderOverrideUpdate validates an override update. newOverride, oldOverride, and fldPath must not be nil.
+func validateProviderOverrideUpdate(
+	newOverride *nvidiacomv1beta1.ProviderOverride,
+	oldOverride *nvidiacomv1beta1.ProviderOverride,
+	fldPath *field.Path,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	// Keep the persisted provider schema version immutable.
+	if newOverride.APIVersion != oldOverride.APIVersion {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("apiVersion"),
+			newOverride.APIVersion,
+			apivalidation.FieldImmutableErrorMsg,
+		))
+	}
+
+	// Keep the persisted lowering target immutable.
+	if newOverride.Target != oldOverride.Target {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("target"),
+			newOverride.Target,
+			apivalidation.FieldImmutableErrorMsg,
+		))
+	}
+	return allErrs
+}
+
+// validateTopologyConstraintUpdate validates a topology constraint update.
+// newConstraint and fldPath must not be nil; oldConstraint may be nil for an addition and ownerKind.Kind must not be empty.
+func (v *sharedValidation) validateTopologyConstraintUpdate(
+	newConstraint *nvidiacomv1beta1.TopologyConstraint,
+	oldConstraint *nvidiacomv1beta1.TopologyConstraint,
+	fldPath *field.Path,
+	ownerKind schema.GroupKind,
+) field.ErrorList {
+	if oldConstraint != nil && newConstraint.PackDomain == oldConstraint.PackDomain {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		fldPath,
+		newConstraint,
+		fmt.Sprintf("is immutable and cannot be added, removed, or changed after creation; delete and recreate the %s to change topology constraints", ownerKind.Kind),
+	)}
+}
+
+type experimentalSpecUpdateValidationOptions struct {
+	ownerKind                        schema.GroupKind
+	componentType                    nvidiacomv1beta1.ComponentType
+	resources                        corev1.ResourceRequirements
+	containers                       []corev1.Container
+	validateGPUMemoryServiceNewState bool
+}
+
+// validateExperimentalSpecUpdate validates an experimental spec update.
+// newExperimental and fldPath must not be nil; oldExperimental may be nil for an addition and options.ownerKind.Kind must not be empty.
+func (v *sharedValidation) validateExperimentalSpecUpdate(
+	newExperimental *nvidiacomv1beta1.ExperimentalSpec,
+	oldExperimental *nvidiacomv1beta1.ExperimentalSpec,
+	fldPath *field.Path,
+	options experimentalSpecUpdateValidationOptions,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	newGMS := newExperimental.GPUMemoryService
+	if newGMS != nil && options.validateGPUMemoryServiceNewState {
+		allErrs = append(allErrs, v.validateGPUMemoryServiceSpec(
+			newGMS,
+			fldPath.Child("gpuMemoryService"),
+			options.componentType,
+			options.resources,
+			options.containers,
+		)...)
+	}
+
+	oldGMS := gpuMemoryServiceForExperimental(oldExperimental)
+	if isInterPodGMS(newGMS) != isInterPodGMS(oldGMS) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("gpuMemoryService", "mode"),
+			k8sptr.Deref(newGMS, nvidiacomv1beta1.GPUMemoryServiceSpec{}).Mode,
+			fmt.Sprintf("the inter-pod GMS layout cannot be toggled after creation; delete and recreate the %s", options.ownerKind.Kind),
+		))
+	}
+
+	newFailover := newExperimental.Failover
+	oldFailover := failoverForExperimental(oldExperimental)
+	if isInterPodFailover(newFailover) != isInterPodFailover(oldFailover) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("failover"),
+			newFailover,
+			fmt.Sprintf("inter-pod GMS failover cannot be toggled after creation; delete and recreate the %s", options.ownerKind.Kind),
+		))
+	}
+	if isInterPodFailover(newFailover) && isInterPodFailover(oldFailover) &&
+		effectiveNumShadows(newFailover) != effectiveNumShadows(oldFailover) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("failover", "numShadows"),
+			newFailover.NumShadows,
+			fmt.Sprintf("is immutable for inter-pod GMS failover; delete and recreate the %s to change it", options.ownerKind.Kind),
+		))
+	}
+
+	oldGrove := groveForExperimental(oldExperimental)
+	if newExperimental.Grove != nil {
+		allErrs = append(allErrs, v.validateGroveSpecUpdate(
+			newExperimental.Grove,
+			oldGrove,
+			fldPath.Child("grove"),
+			options.ownerKind,
+		)...)
+	} else if oldGrove != nil && k8sptr.Deref(oldGrove.ForceScalingGroup, false) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("grove", "forceScalingGroup"),
+			nil,
+			fmt.Sprintf("cannot be toggled after creation; delete and recreate the %s to change it", options.ownerKind.Kind),
+		))
+	}
+	return allErrs
+}
+
+// validateGroveSpecUpdate validates a grove update. newGrove and fldPath must
+// not be nil; oldGrove may be nil for an addition. false and omitted both
+// mean automatic selection, so only the effective opt-in is immutable.
+func (v *sharedValidation) validateGroveSpecUpdate(
+	newGrove *nvidiacomv1beta1.GroveSpec,
+	oldGrove *nvidiacomv1beta1.GroveSpec,
+	fldPath *field.Path,
+	ownerKind schema.GroupKind,
+) field.ErrorList {
+	oldForced := oldGrove != nil && k8sptr.Deref(oldGrove.ForceScalingGroup, false)
+	newForced := k8sptr.Deref(newGrove.ForceScalingGroup, false)
+	if newForced == oldForced {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		fldPath.Child("forceScalingGroup"),
+		newForced,
+		fmt.Sprintf("cannot be toggled after creation; delete and recreate the %s to change it", ownerKind.Kind),
+	)}
 }

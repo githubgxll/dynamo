@@ -18,6 +18,9 @@ FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
 ARG PIP_INDEX_URL
 ARG UV_DEFAULT_INDEX
 ARG MODELEXPRESS_VERSION
+{% if device == "cuda" %}
+ARG CUDA_MAJOR
+{% endif %}
 
 WORKDIR /workspace
 
@@ -26,6 +29,45 @@ COPY --from=dynamo_base /usr/bin/nats-server /usr/bin/nats-server
 COPY --from=dynamo_base /usr/local/bin/etcd/ /usr/local/bin/etcd/
 
 ENV PATH=/usr/local/bin/etcd:$PATH
+
+{% if device == "cuda" %}
+# Install the TurboJPEG runtime used by frontend JPEG decoding and bring
+# base-image OS packages up to the current patch releases. --only-upgrade skips
+# anything not already installed while keeping both operations in one layer.
+# libjemalloc2 lets Dynamo processes opt into jemalloc via
+# LD_PRELOAD or DYN_FRONTEND_JEMALLOC; it is not preloaded by default.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libturbojpeg \
+        libjemalloc2 && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
+        dirmngr \
+        gnupg \
+        gnupg-utils \
+        gnupg2 \
+        gpg \
+        gpg-agent \
+        gpgconf \
+        gpgsm \
+        gpgv \
+        keyboxd \
+        libssl3t64 \
+        openssl && \
+    rm -rf /var/lib/apt/lists/* && \
+    ldconfig && \
+    ldconfig -p | grep -q 'libturbojpeg.so.0'
+{% else %}
+# Install the TurboJPEG runtime used by frontend JPEG decoding.
+# libjemalloc2 lets Dynamo processes opt into jemalloc via
+# LD_PRELOAD or DYN_FRONTEND_JEMALLOC; it is not preloaded by default.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libturbojpeg \
+        libjemalloc2 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ldconfig && \
+    ldconfig -p | grep -q 'libturbojpeg.so.0'
+{% endif %}
 
 # Create dynamo user with group 0 for OpenShift compatibility
 RUN userdel -r ubuntu > /dev/null 2>&1 || true \
@@ -73,25 +115,6 @@ $NIXL_PLUGIN_DIR:\
 ${LD_LIBRARY_PATH:-}
 {% endif %}
 
-# Copy ffmpeg from wheel_builder: versioned shared libs (libav*.so*,
-# libsw*.so*) for the Rust media-ffmpeg decoder, plus the LGPL CLI binary
-# (built with h264_nvenc + libvpx_vp9 encoders) that imageio targets via
-# IMAGEIO_FFMPEG_EXE for video encoding. Ungated by enable_media_ffmpeg
-# because the upstream lmsysorg/sglang base image always ships
-# imageio-ffmpeg with a GPL-encumbered prebuilt binary that we replace
-# unconditionally below; the LGPL CLI must be present so imageio has
-# something to target.
-RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/local/ \
-    mkdir -p /usr/local/lib/pkgconfig && \
-    cp -rnL /tmp/usr/local/include/libav* /tmp/usr/local/include/libsw* /usr/local/include/ && \
-    cp -nL /tmp/usr/local/lib/libav*.so* /tmp/usr/local/lib/libsw*.so* /usr/local/lib/ && \
-    cp -nL /tmp/usr/local/lib/lib*vpx*.so* /usr/local/lib/ 2>/dev/null || true && \
-    cp -nL /tmp/usr/local/lib/pkgconfig/libav*.pc /tmp/usr/local/lib/pkgconfig/libsw*.pc /usr/local/lib/pkgconfig/ && \
-    cp -nL /tmp/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg && \
-    cp -r /tmp/usr/local/src/ffmpeg /usr/local/src/ && \
-    ldconfig
-ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
-
 {% if target not in ("dev", "local-dev") %}
 # Runtime target installs only the prebuilt Dynamo wheels. SGLang and its NIXL
 # packages come from the upstream lmsysorg/sglang runtime image; --no-deps keeps
@@ -103,6 +126,7 @@ COPY --chmod=775 --chown=dynamo:0 --from=wheel_builder /opt/dynamo/dist/*.whl /o
 RUN pip install --no-deps \
         /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
         /opt/dynamo/wheelhouse/ai_dingo*any.whl \
+        /opt/dynamo/wheelhouse/aisimulate*.whl \
         /opt/dynamo/wheelhouse/nixl/nixl*.whl \
         "distro==1.9.0"
 {% else %}
@@ -110,7 +134,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps \
         /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
-        /opt/dynamo/wheelhouse/ai_dingo*any.whl
+        /opt/dynamo/wheelhouse/ai_dingo*any.whl \
+        /opt/dynamo/wheelhouse/aisimulate*.whl
 
 # Install accelerate for diffusion/video worker pipelines (diffusers requires it
 # for enable_model_cpu_offload but the upstream SGLang runtime image omits it)
@@ -138,12 +163,16 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 {% if context.sglang.enable_modelexpress == "true" %}
 # Install only the ModelExpress client package. --no-deps preserves the upstream
-# SGLang runtime dependency stack.
+# SGLang runtime dependency stack. google-crc32c is imported eagerly by the MX
+# sglang loader (>=0.5.0) and is not in the SGLang base image, so install it
+# alongside; the import check below fails the build on any future --no-deps gap.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     set -eux; \
     export PIP_CACHE_DIR=/root/.cache/pip; \
     pip install --break-system-packages --no-deps \
-        "modelexpress==${MODELEXPRESS_VERSION}"
+        "modelexpress==${MODELEXPRESS_VERSION}"; \
+    pip install --break-system-packages "google-crc32c>=1.5.0"; \
+    python3 -c "import modelexpress.engines.sglang"
 {% endif %}
 {% endif %}
 {% endif %}
@@ -157,16 +186,87 @@ RUN --mount=type=bind,source=./container/deps/requirements.common.txt,target=/tm
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps $(grep -E '^nvtx==' /tmp/requirements.common.txt)
 
-# Replace the upstream lmsysorg/sglang image's imageio-ffmpeg (which ships a
-# GPL-encumbered prebuilt ffmpeg binary in <site-packages>/imageio_ffmpeg/binaries/)
-# with a source install that leaves no binary on disk. IMAGEIO_FFMPEG_EXE points
-# imageio at the LGPL CLI we copied from wheel_builder above. The --no-binary
-# directive lives in the requirements file itself.
+# Install SGLang-specific runtime dependencies without changing the upstream
+# dependency solution. imageio-ffmpeg is installed from source (no bundled
+# binary) for the VP9 video-encode path; see requirements.sglang.txt.
+{% if device == "cuda" %}
 RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tmp/requirements.sglang.txt \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
+    [ "$CUDA_MAJOR" = "13" ] || { echo "ERROR: requirements.sglang.txt hardcodes the mooncake-transfer-engine-cuda13 distribution; got CUDA_MAJOR=$CUDA_MAJOR" >&2; exit 1; } && \
     pip install --break-system-packages --force-reinstall --no-deps \
         --requirement /tmp/requirements.sglang.txt
+{% else %}
+# mooncake and PyNvVideoCodec are CUDA-only. The mooncake floor names the CUDA 13
+# distribution, and PyNvVideoCodec decodes on NVDEC through libnvcuvid, so both
+# are inert on the XPU image and neither is present in its base. The patterns are
+# anchored to the line start so they cannot match inside another requirement, and
+# the checks fail the build if either package arrives by another route -- a filter
+# that silently stopped matching would otherwise look like success. Both checks
+# are positive tests with no `!` and no stderr redirect, so a broken interpreter
+# fails the build instead of passing it vacuously.
+#
+# Whole-RUN branches, rather than a conditional inside one RUN: a `{% raw %}{% if %}{% endraw %}` in the
+# middle of a `\`-continued command emits a blank line that ends the command
+# early. Matches the equivalent branch in vllm_runtime.Dockerfile.
+RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tmp/requirements.sglang.txt \
+    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    export PIP_CACHE_DIR=/root/.cache/pip && \
+    grep -v -e '^PyNvVideoCodec' -e '^mooncake-transfer-engine-cuda13' \
+        /tmp/requirements.sglang.txt > /tmp/requirements.sglang.nonvidia.txt && \
+    pip install --break-system-packages --force-reinstall --no-deps \
+        --requirement /tmp/requirements.sglang.nonvidia.txt && \
+    rm -f /tmp/requirements.sglang.nonvidia.txt && \
+    python3 -c "import importlib.util,sys; sys.exit(1 if importlib.util.find_spec('PyNvVideoCodec') else 0)" && \
+    python3 -c "import importlib.metadata as m, re, sys; names={re.sub(r'[-_.]+', '-', n).lower() for d in m.distributions() if (n := (d.metadata or {}).get('Name'))}; sys.exit(1 if 'mooncake-transfer-engine-cuda13' in names else 0)"
+{% endif %}
+
+# Drop the Nsight efa_metrics plugin the CUDA floor carries: a Go NIC sampler
+# nothing in the serving path loads. On this image it arrives under Nsight
+# Compute rather than Nsight Systems, and both roots move with every base bump,
+# so the paths are globbed and the removal is asserted rather than pinned. This
+# stage has no overlay rebase -- `runtime` is FROM pre_runtime -- so one
+# deletion here ships.
+RUN rm -rf \
+        /usr/local/cuda-*/NsightSystems-cli-*/target-linux-*/plugins/efa_metrics \
+        /opt/nvidia/nsight-systems-cli/*/target-linux-*/plugins/efa_metrics \
+        /opt/nvidia/nsight-compute/*/host/target-linux-*/plugins/efa_metrics && \
+    [ -z "$(find /usr/local /opt -xdev -type d -name efa_metrics 2>/dev/null)" ]
+
+{% if device == "cuda" %}
+# Copy the local FFmpeg build (NVENC/VP9) from wheel_builder: shared libs
+# (libav*.so*, libsw*.so*) + libvpx + the in-tree CLI binary that imageio targets
+# via IMAGEIO_FFMPEG_EXE. Preserve the local video encoder surface.
+RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/local/ \
+    mkdir -p /usr/local/lib/pkgconfig && \
+    cp -rnL /tmp/usr/local/include/libav* /tmp/usr/local/include/libsw* /usr/local/include/ && \
+    cp -nL /tmp/usr/local/lib/libav*.so* /tmp/usr/local/lib/libsw*.so* /usr/local/lib/ && \
+    cp -nL /tmp/usr/local/lib/lib*vpx*.so* /usr/local/lib/ 2>/dev/null || true && \
+    cp -nL /tmp/usr/local/lib/pkgconfig/libav*.pc /tmp/usr/local/lib/pkgconfig/libsw*.pc /usr/local/lib/pkgconfig/ && \
+    cp -nL /tmp/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg && \
+    cp -r /tmp/usr/local/src/ffmpeg /usr/local/src/ && \
+    ldconfig
+ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
+
+{% else %}
+ENV IMAGEIO_FFMPEG_EXE=
+{% endif %}
+
+{% if device != "xpu" and target not in ("dev", "local-dev") %}
+# Add generic UCX aliases beside NIXL's private libraries so native consumers
+# use the same implementation without breaking UCX's $ORIGIN-based core and
+# module lookup. The wheel's auditwheel dependency directory is deliberately
+# placed first for every process; it contains only hash-mangled dependencies
+# plus the two generic UCX aliases. No existing wheel file or ELF metadata is
+# modified. The same script publishes NIXL's C API directory at the second path
+# below and registers it with the runtime linker, so the bare dlopen of
+# libnixl_capi.so in nixl-sys resolves. Both paths are passed explicitly because
+# the ENV on the next line has to name the same two directories.
+RUN --mount=type=bind,source=./container/deps/sglang/install_nixl_ucx_compat.sh,target=/tmp/install_nixl_ucx_compat.sh,readonly \
+    --mount=type=bind,source=./container/deps/sglang/discover_nixl_ucx_layout.py,target=/tmp/discover_nixl_ucx_layout.py,readonly \
+    bash /tmp/install_nixl_ucx_compat.sh /opt/dynamo/nixl-ucx-compat /opt/dynamo/nixl-capi
+ENV LD_LIBRARY_PATH=/opt/dynamo/nixl-ucx-compat:/opt/dynamo/nixl-capi${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+{% endif %}
 
 # Copy tests, deploy and components for CI with correct ownership
 COPY --chmod=775 --chown=dynamo:0 tests /workspace/tests
@@ -177,6 +277,7 @@ COPY --chmod=775 --chown=dynamo:0 dingo/common /workspace/dingo/common
 COPY --chmod=775 --chown=dynamo:0 dingo/frontend /workspace/dingo/frontend
 COPY --chmod=775 --chown=dynamo:0 dingo/sglang /workspace/dingo/sglang
 COPY --chmod=775 --chown=dynamo:0 dingo/mocker /workspace/dingo/mocker
+COPY --chown=dynamo:0 lib /workspace/lib
 COPY --chmod=664 --chown=dynamo:0 LICENSE /workspace/
 
 # Enable forceful shutdown of inflight requests
@@ -238,6 +339,10 @@ CMD []
 #######################################
 
 FROM pre_runtime AS runtime
+# NVDEC (PyNvVideoCodec, added in requirements.sglang.txt) needs the driver
+# "video" capability at runtime so libnvcuvid is exposed; without it
+# PyNvVideoCodec cannot import. Ensure the K8s pod/runtimeClass does not drop it.
+ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
 {% if target not in ("dev", "local-dev") %}
 COPY --from=licenses /legal /legal
 {% endif %}

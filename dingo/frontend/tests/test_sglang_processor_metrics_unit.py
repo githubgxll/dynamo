@@ -1,6 +1,3 @@
-#  SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#  SPDX-License-Identifier: Apache-2.0
-
 """Metrics-focused SGLang processor tests with lightweight SGLang stubs."""
 
 import asyncio
@@ -8,7 +5,6 @@ import importlib
 import json
 import sys
 import types
-from typing import Any
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine
@@ -21,6 +17,8 @@ pytestmark = [
 ]
 
 _MISSING = object()
+
+from typing import Any
 
 
 @pytest.fixture
@@ -140,8 +138,11 @@ def _install_sglang_stubs(install_module):
 
 
 class _PostProcessor:
-    def pop_reasoning_token_count(self) -> int:
-        return 1
+    locally_finished = False
+
+    has_pending_stop_text = False
+
+    local_stop_reason = None
 
     def process_output(self, mapped_response):
         return {
@@ -149,6 +150,9 @@ class _PostProcessor:
             "delta": {"content": "x"},
             "finish_reason": mapped_response["finish_reason"],
         }
+
+    def pop_reasoning_token_count(self) -> int:
+        return 1
 
 
 def _load_processor_module(module_stubs):
@@ -222,12 +226,75 @@ def test_stream_emits_llm_metrics_annotation(module_stubs):
     assert envelope["_dynamo_annotated"] is True
     assert envelope["data"]["usage"] == completion_usage
     metrics = json.loads(envelope["comment"][0])
+    # Zero counts are omitted (text-only request), mirroring the Rust skip-zero behavior.
     assert metrics == {
         "input_tokens": 10,
         "output_tokens": 3,
         "chunk_tokens": 3,
         "cached_tokens": 4,
     }
+
+
+def test_stream_emits_multimodal_counts(module_stubs):
+    # Mixed-media request: assert the SGLang extraction branch reports nonzero
+    # counts (2 images + 1 video), mirroring the vLLM processor test so the
+    # extract_mm_urls wiring cannot silently regress to zero.
+    module = _load_processor_module(module_stubs)
+    processor = module.SglangProcessor(
+        tokenizer=None,
+        routed_engine=FakeRoutedEngine(
+            items=[
+                {
+                    "token_ids": [101, 102, 103],
+                    "finish_reason": "stop",
+                    "completion_usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3,
+                        "total_tokens": 13,
+                    },
+                }
+            ]
+        ),
+        tool_call_parser_name=None,
+        reasoning_parser_name=None,
+        eos_token_ids=None,
+    )
+
+    request = {
+        "model": "test-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "compare"},
+                    {"type": "image_url", "image_url": {"url": "http://x/a.png"}},
+                    {"type": "image_url", "image_url": {"url": "http://x/b.png"}},
+                    {"type": "video_url", "video_url": {"url": "http://x/c.mp4"}},
+                ],
+            }
+        ],
+    }
+
+    async def collect():
+        return [
+            item
+            async for item in processor._generate_and_stream(
+                "req-mm-counts",
+                request,
+                {},
+                list(range(10)),
+                _PostProcessor(),
+            )
+        ]
+
+    items = asyncio.run(collect())
+    metric_items = [item for item in items if item.get("event") == "llm_metrics"]
+    assert len(metric_items) == 1
+    metrics = json.loads(metric_items[0]["comment"][0])
+    assert metrics["image_count"] == 2
+    assert metrics["video_count"] == 1
+    # audio has zero parts, so the key is omitted from the emitted metrics.
+    assert metrics.get("audio_count") is None
 
 
 @pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])

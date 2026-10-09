@@ -18,15 +18,22 @@ from sglang.srt.utils.network import NetworkAddress, get_local_ip_auto, get_zmq_
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
 
+from dynamo.llm import KvEventPublisher, WorkerMetricsPublisher
+from dynamo.runtime import Endpoint
+
 from dingo.common.utils.prometheus import (
     LLMBackendMetrics,
     register_engine_metrics_callback,
 )
-from dynamo.llm import KvEventPublisher, WorkerMetricsPublisher
-from dynamo.runtime import Endpoint
+from dingo.sglang._compat import override_server_args
 from dingo.sglang._disagg import SGLANG_WORKER_GROUP_ID_KEY, get_sglang_worker_group_id
 from dingo.sglang.args import Config
-from dingo.sglang.capacity import kv_metrics_block_values, local_dp_rank_bounds
+from dingo.sglang.capacity import (
+    kv_event_block_size,
+    kv_metrics_block_values,
+    local_dp_rank_bounds,
+    publishes_kv_events,
+)
 
 
 def get_local_dp_rank_range(server_args) -> range:
@@ -44,13 +51,11 @@ def set_forward_pass_metrics_worker_id(
 
     import tempfile
 
-    server_args.override(
+    ipc_path = tempfile.NamedTemporaryFile(delete=False).name
+    override_server_args(
+        server_args,
         "dynamo.forward_pass_metrics",
         forward_pass_metrics_worker_id=str(generate_endpoint.connection_id()),
-    )
-    ipc_path = tempfile.NamedTemporaryFile(delete=False).name
-    server_args.override(
-        "dynamo.forward_pass_metrics",
         forward_pass_metrics_ipc_name=f"ipc://{ipc_path}",
     )
 
@@ -177,6 +182,7 @@ class DynamoSglangPublisher:
 
         self._running = True
         self.kv_publishers: List[KvEventPublisher] = []
+        self.kv_publisher: Optional[KvEventPublisher] = None
         self.fpm_relays: list = []
 
         # ZMQ setup for receiving scheduler metrics (leader node only)
@@ -223,6 +229,8 @@ class DynamoSglangPublisher:
                     if kv_metrics.data_parallel_rank is not None
                     else self.dp_rank
                 )
+                # These token counts are per DCP rank; the physical page size
+                # therefore converts them to widened logical-block counts.
                 active_decode_blocks, total_blocks = kv_metrics_block_values(
                     kv_metrics, self.server_args.page_size
                 )
@@ -286,10 +294,11 @@ class DynamoSglangPublisher:
     def init_kv_event_publish(self) -> List[KvEventPublisher]:
         """Initialize KV event publisher(s) if configured.
 
-        For DP attention mode, creates one subscriber per LOCAL DP rank port.
-        Each SGLang scheduler in DP attention mode publishes to a unique port
-        (base_port + attn_dp_rank). In multi-node setups, each node's dingo.sglang
-        instance subscribes only to the DP ranks running on that node.
+        Creates one subscriber per local KV-cache rank. Pure DP schedulers use
+        their DP replica rank while DP-attention schedulers use their attention
+        DP rank. Both publish to a unique port derived from the base endpoint.
+        In multi-node DP-attention setups, each node's dingo.sglang instance
+        subscribes only to the ranks running on that node.
 
         Multi-node handling:
         - Each node runs dingo.sglang alongside its local SGLang DP ranks
@@ -298,10 +307,17 @@ class DynamoSglangPublisher:
         - NATS handles cross-node event distribution
 
         Returns:
-            List of KvEventPublisher instances if kv_events_config is set,
+            List of KvEventPublisher instances if KV event publishing is enabled,
             empty list otherwise.
         """
-        if self.server_args.kv_events_config:
+        if self.dynamo_args.use_kv_events and not publishes_kv_events(self.server_args):
+            logging.info(
+                "Non-leader node (node_rank=%s) shares the leader's single KV "
+                "rank slice; skipping KV event publishing so the router sees "
+                "exactly one source per (worker_id, dp_rank).",
+                getattr(self.server_args, "node_rank", 0) or 0,
+            )
+        elif self.dynamo_args.use_kv_events:
             kv_events = json.loads(self.server_args.kv_events_config)
             base_ep = kv_events.get("endpoint")
             if not base_ep:
@@ -314,7 +330,7 @@ class DynamoSglangPublisher:
             dp_ranks = get_local_dp_rank_range(self.server_args)
             if len(dp_ranks) > 1:
                 logging.info(
-                    "DP attention mode: subscribing to local DP ranks [%d, %d)",
+                    "Subscribing to local DP ranks [%d, %d)",
                     dp_ranks.start,
                     dp_ranks.stop,
                 )
@@ -339,11 +355,12 @@ class DynamoSglangPublisher:
                 publisher = KvEventPublisher(
                     endpoint=self.generate_endpoint,
                     worker_id=self.kv_worker_id,
-                    kv_block_size=self.server_args.page_size,
+                    kv_block_size=kv_event_block_size(self.server_args),
                     zmq_endpoint=zmq_ep,
                     zmq_topic="",
                     enable_local_indexer=self.dynamo_args.enable_local_indexer,
                     dp_rank=dp_rank,
+                    kv_state_endpoint=self.dynamo_args.kv_state_endpoint,
                 )
                 self.kv_publishers.append(publisher)
 
@@ -464,7 +481,7 @@ async def setup_sgl_metrics(
     and starts a ``DynamoSglangPublisher`` that pulls scheduler metrics
     over ZMQ and (optionally) forwards KV events / FPM stats.
 
-    For **embedding workers** (``config.dynamo_args.embedding_worker``),
+    For **embedding and rerank workers**,
     the chat-shaped pipeline is **skipped entirely**: pooling engines
     have no KV cache, no prefill/decode phase, and no scheduler metrics
     worth collecting, so every metric in that pipeline would emit zeros
@@ -485,9 +502,11 @@ async def setup_sgl_metrics(
     """
     metrics_labels = [("model", engine.server_args.served_model_name)]
 
-    if getattr(config.dynamo_args, "embedding_worker", False):
+    if getattr(config.dynamo_args, "embedding_worker", False) or getattr(
+        config.dynamo_args, "rerank_worker", False
+    ):
         logging.info(
-            "Embedding worker: skipping chat-shaped Prometheus + KV-event "
+            "Pooling worker: skipping chat-shaped Prometheus + KV-event "
             "wiring (no KV cache, no prefill/decode, no scheduler metrics). "
             "Embedding-shaped metrics are registered separately."
         )
@@ -540,7 +559,7 @@ async def setup_sgl_metrics(
 
     publisher.init_engine_metrics_publish()
     node_rank = getattr(config.server_args, "node_rank", 0) or 0
-    if node_rank <= 0:
+    if node_rank <= 0 and config.dynamo_args.use_kv_events:
         publisher.init_kv_event_publish()
     publisher.init_fpm_relay()
 
@@ -569,7 +588,9 @@ async def handle_non_leader_node(
     )
 
     try:
-        if publisher.server_args.kv_events_config:
+        if publisher.dynamo_args.use_kv_events and publishes_kv_events(
+            publisher.server_args
+        ):
             kv_worker_id = await _resolve_multinode_leader_worker_id(
                 publisher.generate_endpoint,
                 publisher.server_args,

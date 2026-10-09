@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dingo.planner.core.perf_model.agg import AggRegressionModel
-from dingo.planner.core.perf_model.decode import DecodeRegressionModel
-from dingo.planner.core.perf_model.prefill import PrefillRegressionModel
-from dingo.planner.core.perf_model.rust_adapter import (
+from dingo.planner.core.perf_model.aic_adapter import (
     PlannerEngineCapacity,
     PlannerEnginePerfModel,
 )
+from dingo.planner.core.perf_model.decode import DecodeRegressionModel
+from dingo.planner.core.perf_model.prefill import PrefillRegressionModel
 
 __all__ = [
     "PrefillRegressionModel",

@@ -19,7 +19,7 @@
 syntax = "proto3";
 
 // Keep the public gRPC wire package stable across the Python source move.
-package dynamo.planner.plugin.v1;
+package dingo.planner.plugin.v1;
 
 // ============================================================================
 // PluginRegistry service

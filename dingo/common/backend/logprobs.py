@@ -6,7 +6,7 @@
 vLLM and TRT-LLM expose logprobs through ``CompletionOutput.logprobs``
 (list aligned with ``token_ids``, dicts of ``token_id -> LogprobInfo``).
 SGLang exposes them through ``meta_info["output_token_logprobs"]`` as
-cumulative tuples ``(logprob, token_id, text_or_None)``.
+incremental tuples ``(logprob, token_id, text_or_None)``.
 
 Both paths emit the same Dynamo wire format on ``GenerateChunk``:
 ``log_probs`` is a flat ``list[float]``, ``top_logprobs`` is
@@ -76,7 +76,11 @@ def extract_from_completion_output(
     by position, so emitting a shorter array would misalign every later
     token. Bail on the whole chunk instead.
     """
-    if getattr(output, "logprobs", None) is None:
+    # An empty list here means the client asked for no logprobs -- TRT-LLM leaves
+    # the field at `[]` rather than None. Testing `is None` would miss that case
+    # and run on to the `token_ids` copy below, which grows with the request and
+    # is discarded a few lines later.
+    if not getattr(output, "logprobs", None):
         return None, None
 
     token_ids = list(getattr(output, "token_ids", None) or [])
@@ -154,7 +158,7 @@ def extract_prompt_logprobs_from_completion_output(
     Returns ``None`` if the engine didn't compute prompt logprobs.
     """
     prompt_logprobs = getattr(output, "prompt_logprobs", None)
-    if prompt_logprobs is None:
+    if not prompt_logprobs:
         return None
 
     payload: list[Optional[dict[str, dict[str, Any]]]] = []
@@ -192,9 +196,10 @@ def extract_prompt_logprobs_from_sglang_meta(
     """Extract prompt logprobs from an SGLang ``meta_info`` dict.
 
     Reads ``input_token_logprobs`` (tuples ``(logprob, token_id, decoded
-    or None)``, starting at prompt position 1) and merges any
-    ``input_top_logprobs`` alternatives. Prepends ``None`` at index 0
-    so the result aligns with Rust's BOS=None ``PromptLogprobs`` shape.
+    or None)``) and merges any ``input_top_logprobs`` alternatives. The pinned
+    SGLang release and its N-1 predecessor both include the leading
+    ``None``-logprob prompt position, which is preserved as Dynamo's BOS=None
+    ``PromptLogprobs`` entry.
     """
     input_logprobs = meta.get("input_token_logprobs")
     if not input_logprobs:
@@ -202,9 +207,12 @@ def extract_prompt_logprobs_from_sglang_meta(
 
     input_top_logprobs = meta.get("input_top_logprobs") or []
 
-    payload: list[Optional[dict[str, dict[str, Any]]]] = [None]
+    payload: list[Optional[dict[str, dict[str, Any]]]] = []
     for idx, item in enumerate(input_logprobs):
         logprob, tok_id, decoded_token = item
+        if logprob is None:
+            payload.append(None)
+            continue
         position_map: dict[str, dict[str, Any]] = {}
         selected_entry: dict[str, Any] = {"logprob": float(logprob)}
         if decoded_token is not None:
@@ -252,6 +260,17 @@ def sglang_top_logprobs_allowed() -> bool:
     )
 
 
+def validate_sglang_top_logprobs(
+    top_logprobs_num: Optional[int], *, allow_top_logprobs: bool
+) -> None:
+    """Reject expensive SGLang top-k logprobs unless explicitly enabled."""
+    if top_logprobs_num is None:
+        return
+    if top_logprobs_num < 1 or allow_top_logprobs:
+        return
+    raise ValueError(_SGLANG_TOP_LOGPROBS_UNSUPPORTED_MSG)
+
+
 def build_sglang_logprob_kwargs(
     output_options: dict[str, Any],
     *,
@@ -273,8 +292,7 @@ def build_sglang_logprob_kwargs(
         parsed = _parse_non_negative_int(value, name)
         if parsed is None:
             return None
-        if parsed >= 1 and not allow_top_logprobs:
-            raise ValueError(_SGLANG_TOP_LOGPROBS_UNSUPPORTED_MSG)
+        validate_sglang_top_logprobs(parsed, allow_top_logprobs=allow_top_logprobs)
         return parsed
 
     logprobs_value = output_options.get("logprobs")
@@ -299,11 +317,11 @@ def build_sglang_logprob_kwargs(
 
 def extract_from_sglang_meta(
     meta_info: dict[str, Any],
-    num_output_logprobs_so_far: int,
+    num_output_logprobs_so_far: int | None = None,
     *,
     return_tokens_as_token_ids: bool = False,
-    incremental: bool = False,
-) -> tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]], int]:
+    incremental: bool | None = None,
+) -> tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]]] | tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]], int]:
     """Extract logprobs from SGLang's ``meta_info`` dict.
 
     When ``incremental_streaming_output`` is False (the SGLang default),
@@ -317,9 +335,13 @@ def extract_from_sglang_meta(
     are already disjoint, so no slicing is needed.  The returned third
     element is ``num_output_logprobs_so_far + len(new_entries)``.
     """
+    direct_incremental = num_output_logprobs_so_far is None
+    if incremental is None:
+        incremental = direct_incremental
+    num_output_logprobs_so_far = num_output_logprobs_so_far or 0
     output_token_logprobs = meta_info.get("output_token_logprobs")
     if not output_token_logprobs:
-        return None, None, num_output_logprobs_so_far
+        return (None, None) if direct_incremental else (None, None, num_output_logprobs_so_far)
 
     if incremental:
         new_logprobs = output_token_logprobs
@@ -329,7 +351,7 @@ def extract_from_sglang_meta(
         new_total = len(output_token_logprobs)
 
     if not new_logprobs:
-        return None, None, new_total
+        return (None, None) if direct_incremental else (None, None, new_total)
 
     log_probs = [float(entry[0]) for entry in new_logprobs]
 
@@ -364,4 +386,4 @@ def extract_from_sglang_meta(
                     )
                 top_logprobs.append(position_list)
 
-    return log_probs, top_logprobs, new_total
+    return (log_probs, top_logprobs) if direct_incremental else (log_probs, top_logprobs, new_total)

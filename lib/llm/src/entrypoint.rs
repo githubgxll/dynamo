@@ -6,7 +6,7 @@
 //! - Connect it to an Input
 
 pub mod input;
-pub use input::{PreprocessedRouting, build_preprocessed_routing};
+pub use input::{PreprocessedRouting, build_preprocessed_routing, http::HttpFrontend};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::ExecutionContext, discovery::LoadThresholdConfig, engines::StreamingEngine,
     local_model::LocalModel, model_card::ModelDeploymentCard,
+    session_affinity::SessionAffinityMode,
     types::openai::chat_completions::OpenAIChatCompletionsStreamingEngine,
 };
 
@@ -47,9 +48,13 @@ pub struct RouterConfig {
     pub kv_router_config: KvRouterConfig,
     /// Load threshold configuration for overload detection
     pub load_threshold_config: LoadThresholdConfig,
+    /// Deprecated compatibility field. Routing and readiness ignore this value.
+    #[serde(default)]
     pub enforce_disagg: bool,
     #[serde(default)]
     pub session_affinity_ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub session_affinity_mode: SessionAffinityMode,
 }
 
 impl RouterConfig {
@@ -60,6 +65,7 @@ impl RouterConfig {
             load_threshold_config: LoadThresholdConfig::default(),
             enforce_disagg: false,
             session_affinity_ttl_secs: None,
+            session_affinity_mode: SessionAffinityMode::Hard,
         }
     }
 
@@ -68,6 +74,9 @@ impl RouterConfig {
         self
     }
 
+    #[deprecated(
+        note = "enforce_disagg is ignored; topology and readiness come from registered worker types"
+    )]
     pub fn with_enforce_disagg(mut self, enforce_disagg: bool) -> Self {
         self.enforce_disagg = enforce_disagg;
         self

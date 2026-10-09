@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import sglang as sgl
@@ -10,7 +11,14 @@ from dynamo._core import Context
 from dynamo.health_check import HEALTH_CHECK_KEY
 
 from dingo.sglang._compat import require_reasoning_kwargs
+from dingo.sglang._disagg import validate_disagg_parallel_sampling
+from dingo.sglang.agent_session import agent_session_kwargs
 from dingo.sglang.args import Config
+from dingo.sglang.engine_generate import (
+    build_native_generate_request,
+    native_generate_payload,
+    native_generate_stream,
+)
 from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.decode_handler import (
@@ -80,6 +88,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         Yields:
             Bootstrap info dict with host, port, and room for decode worker connection.
         """
+        validate_disagg_parallel_sampling(request)
         logging.debug(f"New Request ID: {context.id()}")
         trace_id = context.trace_id
 
@@ -98,9 +107,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 "n": sampling_opts.get("n"),
                 "max_new_tokens": stop_conditions.get("max_tokens"),
                 "min_new_tokens": (
-                    stop_conditions.get("min_tokens")
-                    if sglang_has_tokenizer
-                    else None
+                    stop_conditions.get("min_tokens") if sglang_has_tokenizer else None
                 ),
                 "ignore_eos": stop_conditions.get("ignore_eos"),
                 "no_stop_trim": sampling_opts.get("include_stop_str_in_output"),
@@ -115,6 +122,10 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             sampling_params = {
                 k: v for k, v in sampling_params.items() if v is not None
             }
+        native_payload = native_generate_payload(inner_request)
+        if native_payload is None:
+            sampling_params["n"] = 1
+            sampling_params["max_new_tokens"] = 1
 
         # Use provided bootstrap_info if available (e.g., for health checks with FAKE_BOOTSTRAP_HOST)
         # Otherwise use real bootstrap host/port from engine and generate room locally
@@ -153,6 +164,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
 
         # Prefill encodes the media so the KV it transfers carries the vision
         # context; decode extracts the same URLs to match the token layout.
+        raise_if_unextracted_multimodal(inner_request)
         mm_kwargs = build_disagg_mm_kwargs(inner_request)
 
         routing = inner_request.get("routing") or {}
@@ -170,24 +182,42 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 f"Prefill request {context.id()} will use LoRA adapter: {lora_path}"
             )
 
-        raise_if_unextracted_multimodal(inner_request)
-
-        results = await self.engine.async_generate(
-            **input_param,
-            **mm_kwargs,
-            sampling_params=sampling_params,
-            stream=True,
-            **require_reasoning_kwargs(self.engine, inner_request),
-            bootstrap_host=bootstrap_host,
-            bootstrap_port=bootstrap_port,
-            bootstrap_room=bootstrap_room,
-            external_trace_header=trace_header,
-            rid=trace_id,
-            data_parallel_rank=dp_rank,
-            **self._session_kwargs(inner_request),
-            lora_path=lora_path,
-            **self._priority_kwargs(priority),
-        )
+        priority_kwargs = self._priority_kwargs(priority)
+        if native_payload is not None:
+            input_ids = input_param.get("input_ids")
+            if not isinstance(input_ids, list):
+                raise ValueError("native SGLang Generate requires token input")
+            native_request = build_native_generate_request(
+                native_payload,
+                input_ids=input_ids,
+                fallback_rid=trace_id or context.id(),
+                priority=priority_kwargs.get("priority"),
+                sampling_overrides={"n": 1, "max_new_tokens": 1},
+                bootstrap_host=bootstrap_host,
+                bootstrap_port=bootstrap_port,
+                bootstrap_room=bootstrap_room,
+                external_trace_header=trace_header,
+                routed_dp_rank=dp_rank,
+                lora_path=lora_path,
+            )
+            results = native_generate_stream(self.engine, native_request)
+        else:
+            results = await self.engine.async_generate(
+                **input_param,
+                **mm_kwargs,
+                sampling_params=sampling_params,
+                stream=True,
+                **require_reasoning_kwargs(self.engine, inner_request),
+                bootstrap_host=bootstrap_host,
+                bootstrap_port=bootstrap_port,
+                bootstrap_room=bootstrap_room,
+                external_trace_header=trace_header,
+                rid=trace_id,
+                data_parallel_rank=dp_rank,
+                lora_path=lora_path,
+                **priority_kwargs,
+                **agent_session_kwargs(self.engine, inner_request),
+            )
         if inner_request.get(HEALTH_CHECK_KEY):
             # Canary: stream engine output so the Rust canary sees scheduler output.
             # No _cancellation_monitor — probe is bounded (max_tokens=1, FAKE_BOOTSTRAP_HOST).
@@ -211,7 +241,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         await task
 
     async def _consume_results(
-        self, results: AsyncGenerator[Any, None], context: Context
+        self, results: AsyncIterator[Any], context: Context
     ) -> None:
         """Consume async generator results without processing.
 

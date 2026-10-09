@@ -410,6 +410,7 @@ mod tests {
             device: MatchDetails {
                 overlap_scores: device,
                 last_matched_hashes: Default::default(),
+                kv_transfer_candidates: None,
             },
             lower_tier: HashMap::from([
                 (StorageTier::HostPinned, host),

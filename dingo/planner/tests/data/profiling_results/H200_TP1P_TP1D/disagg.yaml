@@ -43,8 +43,8 @@ spec:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.frontend --http-port 8000"
-    VllmDecodeWorker:
+            - "python3 -m dingo.frontend --http-port 8000"
+    decode:
       envFromSecret: hf-token-secret
       componentType: worker
       replicas: 1
@@ -90,8 +90,8 @@ spec:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.vllm --model nvidia/Llama-3.1-8B-Instruct-FP8  2>&1 | tee /tmp/vllm.log"
-    VllmPrefillWorker:
+            - "python3 -m dingo.vllm --model nvidia/Llama-3.1-8B-Instruct-FP8  2>&1 | tee /tmp/vllm.log"
+    prefill:
       envFromSecret: hf-token-secret
       componentType: worker
       replicas: 1
@@ -137,4 +137,4 @@ spec:
             - /bin/sh
             - -c
           args:
-            - "python3 -m dynamo.vllm --model nvidia/Llama-3.1-8B-Instruct-FP8  --disaggregation-mode prefill 2>&1 | tee /tmp/vllm.log"
+            - "python3 -m dingo.vllm --model nvidia/Llama-3.1-8B-Instruct-FP8  --disaggregation-mode prefill 2>&1 | tee /tmp/vllm.log"
