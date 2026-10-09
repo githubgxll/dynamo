@@ -168,6 +168,58 @@ async def test_clear_kv_blocks_reports_reset_failure():
     )
 
 
+class TestResponseFormatSamplingParams:
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            pytest.param({"type": "object"}, id="json-object"),
+            pytest.param(
+                {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["yes", "no"]},
+                        }
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
+                },
+                id="json-schema",
+            ),
+        ],
+    )
+    def test_reconstructs_normalized_response_format(self, schema):
+        from vllm.sampling_params import StructuredOutputsParams
+
+        request = _make_raw_frontend_request()
+        request["sampling_options"] = {
+            "guided_decoding": {"json": schema},
+            "temperature": 0.25,
+            "top_p": 0.8,
+            "seed": 42,
+        }
+        request["stop_conditions"] = {"max_tokens": 17}
+        request["output_options"] = {"skip_special_tokens": False}
+
+        params = mod.build_sampling_params(request, default_sampling_params={})
+
+        assert isinstance(params.structured_outputs, StructuredOutputsParams)
+        assert params.structured_outputs.json == schema
+        assert not params.structured_outputs.json_object
+        assert params.temperature == 0.25
+        assert params.top_p == 0.8
+        assert params.seed == 42
+        assert params.max_tokens == 17
+        assert params.skip_special_tokens is False
+
+    def test_missing_guidance_does_not_add_structured_outputs(self):
+        params = mod.build_sampling_params(
+            _make_raw_frontend_request(), default_sampling_params={}
+        )
+        assert params.structured_outputs is None
+
+
 class TestReasoningParserForwarding:
     def test_request_reasoning_metadata_reads_extra_args(self):
         request = {

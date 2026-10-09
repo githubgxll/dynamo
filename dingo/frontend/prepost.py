@@ -6,8 +6,9 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
@@ -54,6 +55,7 @@ class PreprocessResult:
     chat_template_kwargs: dict[str, Any]
     engine_prompt: dict[str, Any]
     prompt_token_ids: list[int]
+    guided_decoding: dict[str, Any] | None = None
 
 
 _ASYNC_TOKENIZER_POOL: dict[int, Callable[..., Awaitable[Any]]] = {}
@@ -100,13 +102,80 @@ def _materialize_assistant_tool_calls(
     return normalized
 
 
+def _validate_chat_completion_request(
+    request: dict[str, Any] | ChatCompletionRequest,
+) -> ChatCompletionRequest:
+    if isinstance(request, ChatCompletionRequest):
+        validated_request = request
+    elif not SKIP_REQUEST_VALIDATION:
+        return ChatCompletionRequest.model_validate(request)
+    else:
+        # Trusted fast path; caller must provide OpenAI-compatible payload.
+        validated_request = ChatCompletionRequest.model_construct(**request)
+
+    has_unvalidated_tools = validated_request.tools and any(
+        not hasattr(tool, "model_dump") for tool in validated_request.tools
+    )
+    if (
+        has_unvalidated_tools
+        or isinstance(validated_request.tool_choice, dict)
+        or isinstance(validated_request.response_format, dict)
+        or isinstance(validated_request.structured_outputs, dict)
+    ):
+        # model_validate(model) can return an unvalidated model_construct instance
+        # unchanged. Revalidate its fields instead to normalize nested objects.
+        payload = dict(request) if isinstance(request, ChatCompletionRequest) else request
+        return ChatCompletionRequest.model_validate(payload)
+    return validated_request
+
+
+def _guided_decoding_from_structured_outputs(
+    structured_outputs: Any,
+) -> dict[str, Any] | None:
+    if structured_outputs is None:
+        return None
+
+    guided_decoding: dict[str, Any]
+    if structured_outputs.json is not None:
+        guided_decoding = {"json": structured_outputs.json}
+    elif structured_outputs.regex is not None:
+        guided_decoding = {"regex": structured_outputs.regex}
+    elif structured_outputs.choice is not None:
+        guided_decoding = {"choice": structured_outputs.choice}
+    elif structured_outputs.grammar is not None:
+        guided_decoding = {"grammar": structured_outputs.grammar}
+    elif structured_outputs.json_object:
+        guided_decoding = {"json": {"type": "object"}}
+    elif structured_outputs.structural_tag is not None:
+        guided_decoding = {"structural_tag": structured_outputs.structural_tag}
+    else:
+        return None
+
+    if structured_outputs.whitespace_pattern is not None:
+        guided_decoding["whitespace_pattern"] = structured_outputs.whitespace_pattern
+    return guided_decoding
+
+
+def _reasoning_parser_enabled(
+    reasoning_parser_class: type[ReasoningParser] | None,
+    chat_template_kwargs: dict[str, Any],
+) -> TypeGuard[type[ReasoningParser]]:
+    # Sampling adjustment and output parsing must honor the same thinking switch.
+    return reasoning_parser_class is not None and (
+        chat_template_kwargs.get("enable_thinking") is not False
+    )
+
+
 def _prepare_request(
     request: dict[str, Any] | ChatCompletionRequest,
     *,
     tokenizer: TokenizerLike,
     tool_parser_class: type[ToolParser] | None,
+    reasoning_parser_class: type[ReasoningParser] | None = None,
     exclude_tools_when_tool_choice_none: bool = True,
     enable_auto_tool_choice: bool = False,
+    validated_request: ChatCompletionRequest | None = None,
+    guidance_snapshots: dict[str, Any] | None = None,
 ) -> tuple[ChatCompletionRequest, ToolParser | None, dict[str, Any], Any, ChatParams]:
     """Validate request and build arguments for template rendering.
 
@@ -117,17 +186,11 @@ def _prepare_request(
         messages_for_render: Messages to pass as first arg to render_messages.
         chat_params: ChatParams for render_messages / render_messages_async.
     """
-    if isinstance(request, ChatCompletionRequest):
-        request_for_sampling = request
-    elif SKIP_REQUEST_VALIDATION:
-        # Trusted fast path; caller must provide OpenAI-compatible payload.
-        request_for_sampling = ChatCompletionRequest.model_construct(**request)
-        if request_for_sampling.tools and any(
-            not hasattr(tool, "model_dump") for tool in request_for_sampling.tools
-        ):
-            request_for_sampling = ChatCompletionRequest.model_validate(request)
-    else:
-        request_for_sampling = ChatCompletionRequest.model_validate(request)
+    request_for_sampling = (
+        validated_request
+        if validated_request is not None
+        else _validate_chat_completion_request(request)
+    )
 
     tool_parser: ToolParser | None = None
     # With enable_auto_tool_choice the model may emit tool calls even when the
@@ -155,6 +218,19 @@ def _prepare_request(
     )
     chat_template_kwargs = dict(request_for_sampling.chat_template_kwargs or raw_ctk or {})
     chat_template_kwargs["reasoning_effort"] = request_for_sampling.reasoning_effort
+
+    if _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs):
+        if guidance_snapshots is not None:
+            # Independent snapshots also detect parsers mutating schemas in place.
+            guidance_snapshots["after_tool_parser"] = deepcopy(
+                _guided_decoding_from_structured_outputs(
+                    request_for_sampling.structured_outputs
+                )
+            )
+        request_for_sampling = reasoning_parser_class(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+        ).adjust_request(request_for_sampling)
 
     # Mistral warns that tokenize=False is unsafe for chat templates.
     is_mistral_tokenizer = (
@@ -196,9 +272,26 @@ async def preprocess_chat_request(
     tokenizer: TokenizerLike,
     renderer: _Renderer,
     tool_parser_class: type[ToolParser] | None,
+    reasoning_parser_class: type[ReasoningParser] | None = None,
     exclude_tools_when_tool_choice_none: bool = True,
     enable_auto_tool_choice: bool = False,
 ) -> PreprocessResult:
+    validated_request = _validate_chat_completion_request(request)
+    # Capture caller intent before either parser can mutate the request.
+    client_guidance = deepcopy(
+        _guided_decoding_from_structured_outputs(
+            validated_request.extract_structured_outputs()
+        )
+    )
+    client_structured_guidance = deepcopy(
+        _guided_decoding_from_structured_outputs(validated_request.structured_outputs)
+    )
+    tool_choice = validated_request.tool_choice
+    is_forced_tool_choice = tool_choice == "required" or (
+        getattr(tool_choice, "type", None) == "function"
+        and bool(getattr(getattr(tool_choice, "function", None), "name", None))
+    )
+    guidance_snapshots: dict[str, Any] = {}
     (
         request_for_sampling,
         tool_parser,
@@ -209,9 +302,33 @@ async def preprocess_chat_request(
         request,
         tokenizer=tokenizer,
         tool_parser_class=tool_parser_class,
+        reasoning_parser_class=reasoning_parser_class,
         exclude_tools_when_tool_choice_none=exclude_tools_when_tool_choice_none,
         enable_auto_tool_choice=enable_auto_tool_choice,
+        validated_request=validated_request,
+        guidance_snapshots=guidance_snapshots,
     )
+
+    adjusted_guidance = _guided_decoding_from_structured_outputs(
+        request_for_sampling.structured_outputs
+    )
+    # Inspect structured_outputs directly after parser adjustments: re-extracting
+    # can combine a parser grammar with the caller's now-stale response_format.
+    # A reasoning rewrite wins over caller constraints, unlike automatic tool
+    # guidance; independent snapshots also detect in-place schema changes.
+    if (
+        _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs)
+        and adjusted_guidance != guidance_snapshots["after_tool_parser"]
+    ):
+        guided_decoding = adjusted_guidance
+    elif client_guidance is not None and not is_forced_tool_choice:
+        guided_decoding = client_guidance
+    elif tool_parser is not None and adjusted_guidance != client_structured_guidance:
+        guided_decoding = adjusted_guidance
+    else:
+        # Do not constrain forced tool calls with the caller's answer schema or
+        # invent a fallback grammar when no parser provided one.
+        guided_decoding = None
 
     _, engine_prompt = await renderer.render_messages_async(messages, chat_params)
 
@@ -231,6 +348,7 @@ async def preprocess_chat_request(
         chat_template_kwargs=chat_template_kwargs,
         engine_prompt=engine_prompt,
         prompt_token_ids=tokens,
+        guided_decoding=guided_decoding,
     )
 
 
@@ -261,13 +379,12 @@ class StreamingPostProcessor:
         # `enable_thinking` is the convention adopted across the modern
         # reasoning-capable model families that vLLM supports; templates
         # that don't honor it simply leave it unset (no effect here).
-        thinking_disabled = chat_template_kwargs.get("enable_thinking") is False
         self.reasoning_parser = (
             reasoning_parser_class(
                 tokenizer,
                 chat_template_kwargs=chat_template_kwargs,
             )
-            if reasoning_parser_class and not thinking_disabled
+            if _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs)
             else None
         )
         self._fast_plain_text = (

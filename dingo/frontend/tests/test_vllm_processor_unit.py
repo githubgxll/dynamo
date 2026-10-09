@@ -8,13 +8,18 @@ tool_choice='none' and the exclude_tools_when_tool_choice_none flag.
 """
 
 import json
+from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine as _FakeRoutedEngine
 from transformers import AutoTokenizer
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.sampling_params import StructuredOutputsParams
 from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
+import dingo.frontend.prepost as prepost_module
 from dingo.frontend.prepost import _prepare_request
 
 # Needs vllm packages (gpu_1 container), but does not allocate GPU VRAM.
@@ -124,6 +129,250 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
         assert (
             chat_params.chat_template_kwargs["tools"] is None
         ), "No tools in request should produce None tools in template"
+
+
+_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string", "enum": ["yes", "no"]}},
+                "required": ["label"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+_RESPONSE_FORMATS = [
+    pytest.param({"type": "json_object"}, {"type": "object"}, id="json-object"),
+    pytest.param(
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "answer",
+                "strict": True,
+                "schema": _RESPONSE_SCHEMA,
+            },
+        },
+        _RESPONSE_SCHEMA,
+        id="json-schema",
+    ),
+]
+
+
+def _structured_request(**overrides):
+    return deepcopy(
+        {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "response_format": {"type": "json_object"},
+            **overrides,
+        }
+    )
+
+
+def _fake_renderer():
+    return SimpleNamespace(
+        render_messages_async=AsyncMock(
+            return_value=(None, {"prompt_token_ids": [1, 2, 3]})
+        )
+    )
+
+
+async def _preprocess_structured(request, **kwargs):
+    kwargs.setdefault("tool_parser_class", None)
+    return await prepost_module.preprocess_chat_request(
+        request, tokenizer=object(), renderer=_fake_renderer(), **kwargs
+    )
+
+
+class _GrammarToolParser:
+    """Adapted from main's focused adjust_request grammar-parser fake."""
+
+    def __init__(self, tokenizer, tools):
+        pass
+
+    def adjust_request(self, request):
+        request.structured_outputs = StructuredOutputsParams(
+            grammar='root ::= "<tool_call>"'
+        )
+        return request
+
+
+class _ResponseFormatConsumingToolParser(_GrammarToolParser):
+    def adjust_request(self, request):
+        request.response_format = None
+        return super().adjust_request(request)
+
+
+class _PassthroughReasoningParser:
+    def __init__(self, tokenizer, *, chat_template_kwargs):
+        self.chat_template_kwargs = chat_template_kwargs
+
+    def adjust_request(self, request):
+        request.skip_special_tokens = False
+        return request
+
+    def is_reasoning_end(self, prompt_token_ids):
+        return False
+
+
+class _RewritingReasoningParser(_PassthroughReasoningParser):
+    def adjust_request(self, request):
+        super().adjust_request(request)
+        request.structured_outputs = StructuredOutputsParams(
+            structural_tag='{"format": "reasoning"}'
+        )
+        return request
+
+
+@pytest.mark.asyncio
+class TestResponseFormatGuidance:
+    @pytest.mark.parametrize("skip_validation", [False, True])
+    @pytest.mark.parametrize("request_kind", ["raw", "validated", "constructed"])
+    @pytest.mark.parametrize(("response_format", "schema"), _RESPONSE_FORMATS)
+    async def test_response_format_extracts_inner_schema(
+        self, monkeypatch, skip_validation, request_kind, response_format, schema
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        request = _structured_request(response_format=response_format)
+        if request_kind == "validated":
+            request = ChatCompletionRequest.model_validate(request)
+        elif request_kind == "constructed":
+            request = ChatCompletionRequest.model_construct(**request)
+        result = await _preprocess_structured(request)
+        assert result.guided_decoding == {"json": schema}
+        assert result.prompt_token_ids == [1, 2, 3]
+        assert not isinstance(result.request_for_sampling.response_format, dict)
+
+    @pytest.mark.parametrize("skip_validation", [False, True])
+    @pytest.mark.parametrize("response_format", [None, {"type": "text"}])
+    async def test_unconstrained_response_has_no_guidance(
+        self, monkeypatch, skip_validation, response_format
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        request = _structured_request(response_format=response_format)
+        if response_format is None:
+            request.pop("response_format")
+        assert (await _preprocess_structured(request)).guided_decoding is None
+
+    @pytest.mark.parametrize("skip_validation", [False, True])
+    async def test_raw_structured_outputs_are_validated(
+        self, monkeypatch, skip_validation
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        result = await _preprocess_structured(
+            _structured_request(
+                response_format=None,
+                structured_outputs={"regex": "yes|no", "whitespace_pattern": " *"},
+            )
+        )
+        assert result.guided_decoding == {"regex": "yes|no", "whitespace_pattern": " *"}
+        assert isinstance(
+            result.request_for_sampling.structured_outputs, StructuredOutputsParams
+        )
+
+    @pytest.mark.parametrize(
+        "tool_choice",
+        [
+            "auto",
+            "none",
+            "required",
+            {"type": "function", "function": {"name": "get_weather"}},
+        ],
+    )
+    @pytest.mark.parametrize(("response_format", "schema"), _RESPONSE_FORMATS)
+    @pytest.mark.parametrize(
+        "tool_parser_class", [_GrammarToolParser, _ResponseFormatConsumingToolParser]
+    )
+    async def test_tool_choice_constraint_precedence(
+        self, tool_choice, response_format, schema, tool_parser_class
+    ):
+        result = await _preprocess_structured(
+            _structured_request(
+                tools=TOOL_REQUEST["tools"],
+                tool_choice=tool_choice,
+                response_format=response_format,
+            ),
+            tool_parser_class=tool_parser_class,
+        )
+        expected = (
+            {"json": schema}
+            if tool_choice in ("auto", "none")
+            else {"grammar": 'root ::= "<tool_call>"'}
+        )
+        assert result.guided_decoding == expected
+
+    @pytest.mark.parametrize("with_tools", [False, True])
+    @pytest.mark.parametrize("rewrite", [False, True])
+    async def test_reasoning_rewrite_wins_only_when_changed(self, with_tools, rewrite):
+        overrides = (
+            {"tools": TOOL_REQUEST["tools"], "tool_choice": "auto"}
+            if with_tools
+            else {}
+        )
+        result = await _preprocess_structured(
+            _structured_request(**overrides),
+            tool_parser_class=_ResponseFormatConsumingToolParser
+            if with_tools
+            else None,
+            reasoning_parser_class=_RewritingReasoningParser
+            if rewrite
+            else _PassthroughReasoningParser,
+        )
+        expected = (
+            {"structural_tag": '{"format": "reasoning"}'}
+            if rewrite
+            else {"json": {"type": "object"}}
+        )
+        assert result.guided_decoding == expected
+        assert result.request_for_sampling.skip_special_tokens is False
+
+    async def test_in_place_reasoning_schema_rewrite_is_forwarded(self):
+        class InPlaceReasoningParser(_PassthroughReasoningParser):
+            def adjust_request(self, request):
+                super().adjust_request(request)
+                request.structured_outputs.json["properties"]["answer"]["type"] = (
+                    "integer"
+                )
+                return request
+
+        result = await _preprocess_structured(
+            _structured_request(
+                response_format=None,
+                structured_outputs={
+                    "json": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                    }
+                },
+            ),
+            reasoning_parser_class=InPlaceReasoningParser,
+        )
+        assert result.guided_decoding == {
+            "json": {"type": "object", "properties": {"answer": {"type": "integer"}}}
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs_key", ["chat_template_kwargs", "chat_template_args"]
+    )
+    async def test_disabled_thinking_skips_reasoning_adjustment(self, kwargs_key):
+        class ParserMustNotBeBuilt:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError(
+                    "disabled thinking must not construct a reasoning parser"
+                )
+
+        result = await _preprocess_structured(
+            _structured_request(**{kwargs_key: {"enable_thinking": False}}),
+            reasoning_parser_class=ParserMustNotBeBuilt,
+        )
+        assert result.guided_decoding == {"json": {"type": "object"}}
+        assert result.request_for_sampling.skip_special_tokens is True
 
 
 class TestReasoningParserMetadata:
@@ -293,6 +542,71 @@ async def _run_generate(processor, preproc, *, mm_routing_info=None, context=Non
 
 
 class TestRoutedEnginePath:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("response_format", "schema"), _RESPONSE_FORMATS)
+    async def test_generator_routes_response_format_and_reasoning_metadata(
+        self, vllm_processor_module, monkeypatch, response_format, schema
+    ):
+        module = vllm_processor_module
+        routed_engine = _FakeRoutedEngine()
+        processor = _make_processor(module, routed_engine)
+        processor.tokenizer = SimpleNamespace(eos_token_id=2)
+        processor.tool_parser_class = None
+        processor.reasoning_parser_class = _PassthroughReasoningParser
+        processor.exclude_tools_when_tool_choice_none = True
+        processor.enable_auto_tool_choice = False
+        renderer = _fake_renderer()
+        renderer.process_for_engine_async = AsyncMock(return_value={})
+
+        def process_inputs(request_id, engine_inputs, sampling_params, tasks):
+            return SimpleNamespace(
+                request_id=request_id,
+                external_req_id=None,
+                sampling_params=sampling_params,
+                mm_features=None,
+            )
+
+        processor.input_processor = SimpleNamespace(
+            renderer=renderer,
+            generation_config_fields={},
+            process_inputs=process_inputs,
+        )
+        processor._prepare_mm_routing = AsyncMock(return_value=(None, [], False))
+        monkeypatch.setattr(
+            module.InputProcessor, "assign_request_id", lambda request: None
+        )
+        monkeypatch.setattr(
+            module, "StreamingPostProcessor", lambda **kwargs: _FakePostProcessor()
+        )
+        request = _structured_request(
+            response_format=response_format,
+            max_tokens=17,
+            temperature=0.25,
+            top_p=0.8,
+            seed=42,
+            reasoning_effort="high",
+            chat_template_kwargs={"enable_thinking": True},
+        )
+
+        _ = [chunk async for chunk in processor._generator_inner(request)]
+
+        assert len(routed_engine.requests) == 1
+        payload = routed_engine.requests[0]
+        assert payload["sampling_options"]["guided_decoding"] == {"json": schema}
+        assert payload["sampling_options"]["temperature"] == 0.25
+        assert payload["sampling_options"]["top_p"] == 0.8
+        assert payload["sampling_options"]["seed"] == 42
+        assert payload["stop_conditions"]["max_tokens"] == 17
+        assert payload["output_options"]["skip_special_tokens"] is False
+        assert payload["token_ids"] == [1, 2, 3]
+        assert payload["extra_args"]["reasoning_ended"] is False
+        assert payload["extra_args"]["reasoning_parser_kwargs"] == {
+            "chat_template_kwargs": {
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+            }
+        }
+
     @pytest.mark.asyncio
     async def test_routed_engine_gets_extra_args_metadata(self, vllm_processor_module):
         routed_engine = _FakeRoutedEngine()

@@ -338,6 +338,7 @@ class VllmProcessor:
                 tokenizer=self.tokenizer,
                 renderer=self.input_processor.renderer,
                 tool_parser_class=self.tool_parser_class,
+                reasoning_parser_class=self.reasoning_parser_class,
                 exclude_tools_when_tool_choice_none=self.exclude_tools_when_tool_choice_none,
                 enable_auto_tool_choice=self.enable_auto_tool_choice,
             )
@@ -472,6 +473,8 @@ class VllmProcessor:
             "annotations": [],
             "routing": request.get("routing"),
         }
+        if pre.guided_decoding is not None:
+            dynamo_preproc["sampling_options"]["guided_decoding"] = pre.guided_decoding
         if reasoning_ended is not None:
             dynamo_preproc["reasoning_ended"] = reasoning_ended
         if reasoning_parser_kwargs is not None:
