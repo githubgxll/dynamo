@@ -48,8 +48,7 @@ class ConfigModifierProtocol(Protocol):
         config: dict,
         target: EngineType,
         is_moe_model: bool = False,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
     def set_config_tp_size(
@@ -57,8 +56,9 @@ class ConfigModifierProtocol(Protocol):
         config: dict,
         tp_size: int,
         component_type: SubComponentType = SubComponentType.DECODE,
-    ) -> dict:
-        ...
+        *,
+        num_gpus_per_node: int | None = None,
+    ) -> dict: ...
 
     @classmethod
     def set_config_tep_size(
@@ -67,8 +67,7 @@ class ConfigModifierProtocol(Protocol):
         tep_size: int,
         num_gpus_per_node: int,
         component_type: SubComponentType = SubComponentType.DECODE,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
     def set_config_dep_size(
@@ -77,12 +76,10 @@ class ConfigModifierProtocol(Protocol):
         dep_size: int,
         num_gpus_per_node: int,
         component_type: SubComponentType = SubComponentType.DECODE,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
-    def get_model_name(cls, config: dict) -> Tuple[str, str]:
-        ...
+    def get_model_name(cls, config: dict) -> Tuple[str, str]: ...
 
     @classmethod
     def set_prefill_config(
@@ -91,32 +88,26 @@ class ConfigModifierProtocol(Protocol):
         max_batch_size: int,
         max_num_tokens: int,
         component_type: SubComponentType = SubComponentType.DECODE,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
-    def get_port(cls, config: dict) -> int:
-        ...
+    def get_port(cls, config: dict) -> int: ...
 
     @classmethod
     def get_kv_cache_size_from_dynamo_log(
         cls, dynamo_log_fn: str, attention_dp_size: int = 1
-    ) -> int:
-        ...
+    ) -> int: ...
 
     @classmethod
-    def load_default_config(cls, mode: str = "disagg") -> dict:
-        ...
+    def load_default_config(cls, mode: str = "disagg") -> dict: ...
 
     @classmethod
     def update_model(
         cls, config: dict, model_name: str, model_path: str | None = None
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
-    def update_image(cls, config: dict, image: str) -> dict:
-        ...
+    def update_image(cls, config: dict, image: str) -> dict: ...
 
     @classmethod
     def update_model_from_pvc(
@@ -126,8 +117,7 @@ class ConfigModifierProtocol(Protocol):
         pvc_name: str,
         pvc_mount_path: str,
         pvc_path: str,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
     @classmethod
     def build_dgd_config(
@@ -149,8 +139,7 @@ class ConfigModifierProtocol(Protocol):
         pvc_name: str | None = None,
         pvc_mount_path: str | None = None,
         num_gpus_per_node: int | None = None,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
 
 class BaseConfigModifier:
@@ -720,3 +709,40 @@ class BaseConfigModifier:
             agg_gpus,
             num_gpus_per_node=num_gpus_per_node,
         )
+
+    @classmethod
+    def set_config_replicas(
+        cls,
+        config: dict,
+        replicas: int,
+        component_type: SubComponentType = SubComponentType.DECODE,
+    ) -> dict:
+        """Apply the evaluated Candidate's replica count to the worker component.
+
+        Backend-agnostic (component.replicas is a plain Kubernetes field, no
+        CLI flag involved), unlike set_config_model/set_config_kv_cache, so
+        this lives once here rather than duplicated per backend. Mirrors the
+        one relevant line of _apply_worker_config (component.replicas =
+        replicas) without touching CLI args or GPU resources, since those
+        are already set by set_config_tp_size/tep/dep separately.
+
+        Without this call, a candidate's total materialized GPU footprint
+        (replicas x gpus-per-worker) silently diverges from what was
+        actually evaluated: setup_worker_component_resources correctly sets
+        gpus-per-worker via the tp/tep/dep setters, but replicas is left at
+        whatever the base template hardcodes (confirmed: replicas: 1 in
+        every agg.yaml template), regardless of the candidate's real
+        replicas value. Confirmed in review: a real 4-GPU candidate
+        (tp=2, replicas=2) materialized as a 2-GPU DGD (tp=2, replicas=1).
+        """
+        cfg = Config.model_validate(config)
+        component_name = cls._resolve_component_name(cfg, component_type)
+        component = (
+            get_component_by_name(cfg, component_name) if component_name else None
+        )
+        if component is None:
+            raise ValueError(
+                f"could not find worker component for {component_type} to set replicas"
+            )
+        component.replicas = replicas
+        return cfg.model_dump()

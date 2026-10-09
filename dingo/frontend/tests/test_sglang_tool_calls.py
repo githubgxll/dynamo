@@ -530,6 +530,10 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
         dummy_tc = self.DummyToolCall
 
         class DummyParser:
+            detector = FunctionCallParser(
+                tools=TOOLS, tool_call_parser="hermes"
+            ).detector
+
             def parse_stream_chunk(self, text):
                 # Name event only — no argument fragment ever arrives.
                 return "", [dummy_tc(0, "get_weather", None)]

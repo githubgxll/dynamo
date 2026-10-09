@@ -65,7 +65,7 @@ packages:
   # runtime deliberately preserves its upstream distro FFmpeg instead; that
   # installation is attributed by the dpkg generator and OSRB source archive.
   - name: ffmpeg
-    version: "8.1.2"
+    version: "9.0.1"
     license: LGPL-2.1-or-later
     source: https://ffmpeg.org/
     images:
@@ -115,7 +115,7 @@ packages:
   # etcd — coordination store, downloaded as a release binary in dynamo_base and
   # placed at /usr/local/bin (no apt metadata).
   - name: etcd
-    version: v3.5.33
+    version: v3.5.34
     license: Apache-2.0
     source: https://github.com/etcd-io/etcd
     images:
@@ -130,7 +130,7 @@ packages:
   # nats-server — messaging server, downloaded as a .deb in dynamo_base (dpkg -i
   # may not survive into the final runtime layer attribution reliably).
   - name: nats-server
-    version: v2.12.14
+    version: v2.14.7
     license: Apache-2.0
     source: https://github.com/nats-io/nats-server
     images:

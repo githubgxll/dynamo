@@ -498,6 +498,8 @@ def test_registry_keys_match_vllm_connector_names():
     vLLM uses in ``KVTransferConfig.kv_connector``."""
     assert set(KV_CONNECTOR_PROTOCOLS) == {
         "NixlConnector",
+        "NeuronNixlConnector",
+        "LMCacheMPConnector",
         "MooncakeConnector",
         "DfkvStoreConnector",
     }

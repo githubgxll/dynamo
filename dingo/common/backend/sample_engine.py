@@ -15,8 +15,10 @@ from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from dynamo._core import Context
-from dingo.common.constants import DisaggregationMode
 from dynamo.llm import KvEventPublisher
+
+from dingo.common.constants import DisaggregationMode
+from dingo.common.utils.token_ids import normalize_request_token_ids
 
 from . import telemetry
 from .disagg import enforce_prefill_max_tokens, require_prefill_result
@@ -309,6 +311,7 @@ class SampleLLMEngine(LLMEngine):
     async def generate(
         self, request: GenerateRequest, context: Context
     ) -> AsyncGenerator[GenerateChunk, None]:
+        normalize_request_token_ids(request)
         if self.disaggregation_mode == DisaggregationMode.ENCODE:
             prompt_len = len(request.get("token_ids", []))
             if context.is_stopped():

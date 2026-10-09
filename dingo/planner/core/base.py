@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Optional
 
 import aiohttp.web
+from dynamo.runtime import DistributedRuntime
 from prometheus_client import start_http_server
 
 from dingo.planner.config.defaults import SubComponentType, TargetReplica
@@ -49,7 +50,6 @@ from dingo.planner.monitoring.diagnostics_recorder import DiagnosticsRecorder
 from dingo.planner.monitoring.live_dashboard import start_live_dashboard
 from dingo.planner.monitoring.planner_metrics import PlannerPrometheusMetrics
 from dingo.planner.offline.trace_data import extract_traffic_observations_from_trace
-from dynamo.runtime import DistributedRuntime
 
 if TYPE_CHECKING:
     from dingo.planner.monitoring.worker_info import WorkerInfo
@@ -801,8 +801,8 @@ class NativePlannerBase:
         """Emit power-budget gauges from DGD-resolved caps (read-only observe path).
 
         Per-replica watts come from the cached deployment state
-        (``power_watts_per_replica``, resolved once from the DGD worker
-        podTemplate annotation during Planner startup), so this performs no
+        (``power_watts_per_replica``, resolved once from operator-projected DGD
+        component status during Planner startup), so this performs no
         apiserver I/O and never blocks the tick loop. DGD admission rejects
         changes to the cached power tuple; changing it requires replacing the
         DGD and starting a new Planner. These gauges are advisory
@@ -834,8 +834,8 @@ class NativePlannerBase:
             if not self._power_projected_zero_warned:
                 logger.warning(
                     "power_projected_watts not published: per-replica watts "
-                    "unresolved (prefill=%s, decode=%s). Caps are authored on "
-                    "the DGD worker podTemplate annotation.",
+                    "unresolved (prefill=%s, decode=%s). Caps were not "
+                    "available in current DGD component status.",
                     p_watts,
                     d_watts,
                 )

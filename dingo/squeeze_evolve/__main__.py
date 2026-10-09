@@ -24,9 +24,8 @@ import uuid
 from typing import Any, AsyncIterator
 
 import uvloop
-
 from dynamo.llm import (
-    AicPerfConfig,
+    AisPerfConfig,
     KvRouterConfig,
     ModelInput,
     ModelType,
@@ -35,6 +34,7 @@ from dynamo.llm import (
 )
 from dynamo.runtime import DistributedRuntime, dynamo_worker
 from dynamo.runtime.logging import configure_dynamo_logging
+
 from dingo.squeeze_evolve.args import parse_args
 from dingo.squeeze_evolve.orchestrator import SqueezeEvolveOrchestrator
 
@@ -145,12 +145,12 @@ async def worker(runtime: DistributedRuntime) -> None:
         tiers=tiers,
         runtime=runtime,
         # Parity with dingo.router.args.build_kv_router_config /
-        # build_aic_perf_config, which are typed for DynamoRouterConfig
+        # build_ais_perf_config, which are typed for DynamoRouterConfig
         # (single --endpoint); this config inherits the shared bases directly.
         kv_router_config=KvRouterConfig(**config.kv_router_kwargs()),
-        aic_perf_config=(
-            AicPerfConfig(**config.aic_perf_kwargs())
-            if config.router_prefill_load_model == "aic"
+        ais_perf_config=(
+            AisPerfConfig(**config.ais_perf_kwargs())
+            if config.router_prefill_load_model == "ais"
             else None
         ),
         default_block_size=config.default_block_size,

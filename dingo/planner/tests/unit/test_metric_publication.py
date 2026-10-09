@@ -431,20 +431,20 @@ class TestPlannerPrometheusMetricsHasSlaTargetGauges:
             mock_gauge.return_value = MagicMock()
             metrics = PlannerPrometheusMetrics()
 
-        assert hasattr(
-            metrics, "sla_target_ttft_ms"
-        ), "PlannerPrometheusMetrics is missing sla_target_ttft_ms attribute"
-        assert hasattr(
-            metrics, "sla_target_itl_ms"
-        ), "PlannerPrometheusMetrics is missing sla_target_itl_ms attribute"
+        assert hasattr(metrics, "sla_target_ttft_ms"), (
+            "PlannerPrometheusMetrics is missing sla_target_ttft_ms attribute"
+        )
+        assert hasattr(metrics, "sla_target_itl_ms"), (
+            "PlannerPrometheusMetrics is missing sla_target_itl_ms attribute"
+        )
 
         registered_names = [call.args[0] for call in mock_gauge.call_args_list]
-        assert (
-            f"{PREFIX}_sla_target_ttft_ms" in registered_names
-        ), f"Expected Gauge name '{PREFIX}_sla_target_ttft_ms' not registered"
-        assert (
-            f"{PREFIX}_sla_target_itl_ms" in registered_names
-        ), f"Expected Gauge name '{PREFIX}_sla_target_itl_ms' not registered"
+        assert f"{PREFIX}_sla_target_ttft_ms" in registered_names, (
+            f"Expected Gauge name '{PREFIX}_sla_target_ttft_ms' not registered"
+        )
+        assert f"{PREFIX}_sla_target_itl_ms" in registered_names, (
+            f"Expected Gauge name '{PREFIX}_sla_target_itl_ms' not registered"
+        )
 
 
 def _power_planner(
@@ -456,7 +456,7 @@ def _power_planner(
     """A power-aware planner whose deployment state carries DGD-resolved caps.
 
     Per-replica watts live on the cached ``DeploymentState`` (resolved once
-    from the DGD worker podTemplate annotation during Planner startup), so the
+    from operator-projected DGD component status during Planner startup), so the
     projection reads them directly — no config caps, no apiserver I/O.
     """
     planner = _make_planner(prometheus_enabled=True)

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#[cfg(all(feature = "mm-routing", feature = "media-ffmpeg"))]
+#[cfg(feature = "nixl-media")]
 use anyhow::Context;
 use anyhow::Result;
 #[cfg(feature = "nixl-media")]
@@ -9,7 +9,11 @@ use base64::{Engine as _, engine::general_purpose};
 #[cfg(feature = "nixl-media")]
 use dynamo_memory::SystemStorage;
 #[cfg(feature = "nixl-media")]
-use dynamo_memory::nixl::{self, NixlAgent, NixlDescriptor, RegisteredView};
+use dynamo_memory::nixl::{self, AgentConfig, NixlAgent, NixlDescriptor, RegisteredView};
+#[cfg(feature = "nixl-media")]
+use dynamo_runtime::config::{
+    env_config::parse_or_default, environment_names::llm::DYN_MM_NIXL_PROGRESS_DELAY_US,
+};
 #[cfg(feature = "nixl-media")]
 use flate2::{Compression, write::ZlibEncoder};
 use ndarray::{ArrayBase, Dimension, OwnedRepr};
@@ -17,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "nixl-media")]
 use std::io::Write;
 #[cfg(feature = "nixl-media")]
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use super::decoders::DecodedMediaMetadata;
 
@@ -241,7 +245,11 @@ fn content_hash_for_storage(
     content_hash_for_bytes(tensor_info, bytes, _hash_video)
 }
 
-fn content_hash_for_bytes(tensor_info: &MediaTensorInfo, bytes: &[u8], _hash_video: bool) -> Option<u64> {
+fn content_hash_for_bytes(
+    tensor_info: &MediaTensorInfo,
+    bytes: &[u8],
+    _hash_video: bool,
+) -> Option<u64> {
     if bytes.is_empty() {
         return None;
     }
@@ -363,16 +371,85 @@ pub fn get_nixl_metadata(agent: &NixlAgent, _storage: &SystemStorage) -> Result<
     Ok(format!("b64:{}", b64_encoded))
 }
 
+// Readers send a notification with each read, and the agent keeps every notification until
+// someone takes it. The frontend frees buffers by reference count and never reads them, so
+// without this drain each read leaks about 100 bytes.
+#[cfg(feature = "nixl-media")]
+pub fn drain_nixl_notifications(agent: &NixlAgent) {
+    let result = nixl::NotificationMap::new()
+        .and_then(|mut notifs| agent.get_notifications(&mut notifs, None));
+    if let Err(error) = result {
+        tracing::warn!(%error, "failed to drain media-loader NIXL notifications");
+    }
+}
+
+// NIXL's default progress-thread delay of 0 is the `poll()` timeout of the UCX progress
+// thread, so each idle agent spins a core. With a delay, the thread sleeps in `poll()` for
+// at most this long and wakes early on UCX events. Keep it short: with UCX over TCP, some
+// events do not wake `poll()` and wait for the timeout.
+#[cfg(feature = "nixl-media")]
+const DEFAULT_PROGRESS_THREAD_DELAY_US: u64 = 1_000;
+// NIXL 1.4.1 and earlier cast the delay to `int` before they clamp it. The cast wraps
+// modulo 2^32, so values of 2^31 or more give a negative, zero, or unrelated positive
+// `poll()` timeout. NIXL main clamps first. 1 s is far below that limit.
+#[cfg(feature = "nixl-media")]
+const MAX_PROGRESS_THREAD_DELAY_US: u64 = 1_000_000;
+
+#[cfg(feature = "nixl-media")]
+static PROGRESS_THREAD_DELAY_US: LazyLock<u64> = LazyLock::new(|| {
+    progress_thread_delay_or_default(parse_or_default(
+        DYN_MM_NIXL_PROGRESS_DELAY_US,
+        DEFAULT_PROGRESS_THREAD_DELAY_US,
+    ))
+});
+
+#[cfg(feature = "nixl-media")]
+fn progress_thread_delay_or_default(delay_us: u64) -> u64 {
+    if delay_us <= MAX_PROGRESS_THREAD_DELAY_US {
+        return delay_us;
+    }
+    tracing::warn!(
+        env_var = DYN_MM_NIXL_PROGRESS_DELAY_US,
+        value = delay_us,
+        max = MAX_PROGRESS_THREAD_DELAY_US,
+        "invalid environment variable, using default"
+    );
+    DEFAULT_PROGRESS_THREAD_DELAY_US
+}
+
 #[cfg(feature = "nixl-media")]
 pub fn get_nixl_agent() -> Result<NixlAgent> {
     let name = format!("media-loader-{}", uuid::Uuid::new_v4());
-    let nixl_agent = NixlAgent::with_backends(&name, &["UCX"])?;
+    let config = AgentConfig {
+        pthr_delay_us: *PROGRESS_THREAD_DELAY_US,
+        ..AgentConfig::default()
+    };
+    let mut nixl_agent = NixlAgent::new_with_config(&name, &config)?;
+    nixl_agent
+        .add_backend("UCX")
+        .context("add UCX backend to media-loader NIXL agent")?;
     Ok(nixl_agent)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DataType, canonical_content_hash};
+    use super::{
+        DEFAULT_PROGRESS_THREAD_DELAY_US, DataType, MAX_PROGRESS_THREAD_DELAY_US,
+        canonical_content_hash, progress_thread_delay_or_default,
+    };
+
+    #[test]
+    fn progress_thread_delay_out_of_range_uses_default() {
+        assert_eq!(progress_thread_delay_or_default(0), 0);
+        assert_eq!(
+            progress_thread_delay_or_default(MAX_PROGRESS_THREAD_DELAY_US),
+            MAX_PROGRESS_THREAD_DELAY_US
+        );
+        assert_eq!(
+            progress_thread_delay_or_default(MAX_PROGRESS_THREAD_DELAY_US + 1),
+            DEFAULT_PROGRESS_THREAD_DELAY_US
+        );
+    }
 
     #[test]
     fn canonical_content_hash_payload_is_stable() {

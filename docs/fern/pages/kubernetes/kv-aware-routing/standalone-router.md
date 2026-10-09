@@ -77,14 +77,14 @@ python -m dingo.vllm \
   --model MODEL_NAME \
   --block-size 64 \
   --disaggregation-mode decode \
-  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}' &
 
 # Start prefill workers.
 python -m dingo.vllm \
   --model MODEL_NAME \
   --block-size 64 \
   --disaggregation-mode prefill \
-  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}' &
 ```
 
 For an integrated frontend disaggregated example, see [`examples/backends/vllm/launch/disagg_router.sh`](https://github.com/ai-dynamo/dynamo/blob/main/examples/backends/vllm/launch/disagg_router.sh). For explicit multi-router composition, see the [Global Router README](https://github.com/ai-dynamo/dynamo/blob/main/dingo/global_router/README.md).

@@ -27,12 +27,8 @@ from argparse import Namespace
 from typing import TYPE_CHECKING, Any, Optional
 
 import uvloop
-from packaging.version import Version
-
-from dingo.common.config_dump import dump_config
-from dingo.common.configuration.groups.router_args import build_router_config
 from dynamo.llm import (
-    AicPerfConfig,
+    AisPerfConfig,
     EngineType,
     EntrypointArgs,
     FrontendRoute,
@@ -41,7 +37,12 @@ from dynamo.llm import (
 )
 from dynamo.runtime import DistributedRuntime
 from dynamo.runtime.logging import configure_dynamo_logging
+from packaging.version import Version
 
+from dingo.common.config_dump import dump_config
+from dingo.common.configuration.groups.router_args import build_router_config
+
+from .cpu_affinity import warn_if_frontend_cpu_affinity_spans_numa_nodes
 from .frontend_args import FrontendArgGroup, FrontendConfig
 
 if TYPE_CHECKING:
@@ -340,9 +341,9 @@ def _export_transport_tls_env(config: FrontendConfig) -> None:
     if config.tcp_tls_client_key_path:
         os.environ["DYN_TCP_TLS_CLIENT_KEY_PATH"] = config.tcp_tls_client_key_path
     if config.tcp_tls_client_ca_cert_path:
-        os.environ[
-            "DYN_TCP_TLS_CLIENT_CA_CERT_PATH"
-        ] = config.tcp_tls_client_ca_cert_path
+        os.environ["DYN_TCP_TLS_CLIENT_CA_CERT_PATH"] = (
+            config.tcp_tls_client_ca_cert_path
+        )
     if config.nats_tls_ca_cert_path:
         os.environ["NATS_TLS_CA_CERT_PATH"] = config.nats_tls_ca_cert_path
     if config.nats_tls_insecure:
@@ -396,6 +397,7 @@ async def async_main():
     # it connects to NATS eagerly, so NATS (m)TLS env vars must already be set or
     # the CLI flags are silently ignored (unlike the lazily-dialed TCP planes).
     _export_transport_tls_env(config)
+    warn_if_frontend_cpu_affinity_spans_numa_nodes(logger)
     runtime = DistributedRuntime(
         loop,
         config.discovery_backend,
@@ -457,9 +459,9 @@ async def async_main():
         kwargs["http_metrics_port"] = config.grpc_metrics_port
 
     if config.chat_processor == "vllm":
-        assert (
-            vllm_flags is not None
-        ), "vllm_flags is required when chat processor is vllm"
+        assert vllm_flags is not None, (
+            "vllm_flags is required when chat processor is vllm"
+        )
         chat_engine_factory = setup_engine_factory(
             config, vllm_flags
         ).chat_engine_factory
@@ -470,8 +472,8 @@ async def async_main():
         ).chat_engine_factory
         kwargs["chat_engine_factory"] = chat_engine_factory
 
-    if config.router_prefill_load_model == "aic":
-        kwargs["aic_perf_config"] = AicPerfConfig(**config.aic_perf_kwargs())
+    if config.router_prefill_load_model == "ais":
+        kwargs["ais_perf_config"] = AisPerfConfig(**config.ais_perf_kwargs())
 
     e = EntrypointArgs(EngineType.Dynamic, **kwargs)
     engine = await make_engine(runtime, e)

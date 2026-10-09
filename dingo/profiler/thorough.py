@@ -21,9 +21,9 @@ from itertools import chain
 
 import pandas as pd
 import yaml
-from aiconfigurator.generator.enumerate import enumerate_profiling_configs
-from aiconfigurator.sdk.picking import pick_autoscale, pick_default, pick_load_match
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.generator.enumerate import enumerate_profiling_configs
+from aisimulate.sdk.picking import pick_autoscale, pick_default, pick_load_match
+from aisimulate.sdk.task_v2 import Task
 
 from deploy.utils.dynamo_deployment import DeploymentFailedError, DynamoDeploymentClient
 from dingo.profiler.rapid import _generate_dgd_from_pick
@@ -59,8 +59,6 @@ from dingo.profiler.utils.profile_decode import get_num_request_range
 from dingo.profiler.utils.profiler_status import ProfilerStatus, write_profiler_status
 
 logger = logging.getLogger(__name__)
-
-
 
 
 def _normalize_candidate_model_identity(
@@ -437,7 +435,6 @@ async def run_thorough(
             model_name_or_path=local_or_hf_model,
             trust_remote_code=trust_remote_code,
         )
-
 
     # Overrides may carry stale model arguments, so reassert the DGDR model
     # identity and PVC runtime path after all user-controlled transforms.

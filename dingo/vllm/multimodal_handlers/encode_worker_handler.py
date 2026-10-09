@@ -8,11 +8,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
+import dynamo.nixl_connect as connect
 import torch
+from dynamo.runtime import DistributedRuntime
 from transformers import AutoImageProcessor
 from vllm.engine.arg_utils import AsyncEngineArgs
 
-import dynamo.nixl_connect as connect
 from dingo.common.memory.multimodal_embedding_cache_manager import (
     CachedEmbedding,
     MultimodalEmbeddingCacheManager,
@@ -23,11 +24,14 @@ from dingo.common.multimodal import (
     NixlWriteEmbeddingSender,
 )
 from dingo.common.multimodal.embedding_transfer import AbstractEmbeddingSender
-from dingo.common.multimodal.image_loader import DECODED_VARIANT_KEY, URL_VARIANT_KEY
+from dingo.common.multimodal.image_loader import (
+    DECODED_VARIANT_KEY,
+    URL_VARIANT_KEY,
+    scope_image_cache_key,
+)
 from dingo.common.multimodal.media_descriptor import decoded_content_hash_key
 from dingo.common.utils import nvtx_utils as _nvtx
 from dingo.common.utils.time_section import time_and_log_code_section
-from dynamo.runtime import DistributedRuntime
 
 from ..constants import EmbeddingTransferMode
 from ..multimodal_utils import (
@@ -215,13 +219,16 @@ class EncodeWorkerHandler:
             (None, None)
         )  # Send sentinel value to stop the checker
 
-    def _image_cache_key(self, group_input) -> str | None:
+    def _image_cache_key(
+        self, group_input, cache_scope: str | None = None
+    ) -> str | None:
         """Validate one image group and return its embedding-cache key.
 
         URL images hash the URL (unchanged from the URL-only path). Frontend-
         decoded images reuse the canonical content hash serialized by the Rust
         media decoder; a missing or malformed hash returns ``None`` and the
-        item is encoded without caching.
+        item is encoded without caching. The ImageLoader's session-scoping
+        policy also applies to this embedding cache.
         """
         if group_input is None:
             raise ValueError(
@@ -238,28 +245,36 @@ class EncodeWorkerHandler:
                 "Exactly one of image_url or image_decoded is allowed for the "
                 "encode worker."
             )
+        cache_key: str | None
         if has_url:
-            return get_embedding_hash(group_input.image_url)
-        if not self._enable_frontend_decoding:
-            raise ValueError(
-                "Received a frontend-decoded image but --frontend-decoding is "
-                "not enabled on the encode worker. Enable it on both the "
-                "frontend-facing worker and the encode worker."
-            )
-        cache_key = decoded_content_hash_key(group_input.image_decoded)
-        if (
-            cache_key is None
-            and self.embedding_cache_manager is not None
-            and not self._decoded_content_hash_warning_emitted
-        ):
-            logger.warning(
-                "Frontend-decoded image descriptor has a missing or invalid "
-                "canonical content_hash; this item will bypass the encode-worker "
-                "embedding cache. Ensure the frontend and encode worker use "
-                "compatible Dynamo versions and the descriptor is not corrupted."
-            )
-            self._decoded_content_hash_warning_emitted = True
-        return cache_key
+            cache_key = get_embedding_hash(group_input.image_url)
+        else:
+            if not self._enable_frontend_decoding:
+                raise ValueError(
+                    "Received a frontend-decoded image but --frontend-decoding is "
+                    "not enabled on the encode worker. Enable it on both the "
+                    "frontend-facing worker and the encode worker."
+                )
+            cache_key = decoded_content_hash_key(group_input.image_decoded)
+            if (
+                cache_key is None
+                and self.embedding_cache_manager is not None
+                and not self._decoded_content_hash_warning_emitted
+            ):
+                logger.warning(
+                    "Frontend-decoded image descriptor has a missing or invalid "
+                    "canonical content_hash; this item will bypass the encode-worker "
+                    "embedding cache. Ensure the frontend and encode worker use "
+                    "compatible Dynamo versions and the descriptor is not corrupted."
+                )
+                self._decoded_content_hash_warning_emitted = True
+        if cache_key is None:
+            return None
+        return scope_image_cache_key(
+            cache_key,
+            cache_scope,
+            session_scoped_cache=self.image_loader.session_scoped_cache,
+        )
 
     def _lookup_embedding_item(self, key: str | None) -> EmbeddingItem | None:
         """Return the cached embedding for ``key``, or ``None`` on a miss.
@@ -331,9 +346,9 @@ class EncodeWorkerHandler:
         logger.debug(f"Received encode request: {{ id: {request.request_id} }}.")
 
         request_id = request.request_id
-        assert (
-            request.multimodal_inputs is not None
-        ), "multimodal_inputs must not be None for encode worker"
+        assert request.multimodal_inputs is not None, (
+            "multimodal_inputs must not be None for encode worker"
+        )
 
         # The following steps encode the requested image and provided useful embeddings.
         # 1. Open the image from the provided URL, or read frontend-decoded
@@ -358,7 +373,9 @@ class EncodeWorkerHandler:
                 )
                 for idx in range(len(request.multimodal_inputs)):
                     group_input = request.multimodal_inputs[idx].multimodal_input
-                    embedding_key = self._image_cache_key(group_input)
+                    embedding_key = self._image_cache_key(
+                        group_input, request.image_cache_scope
+                    )
                     cached_item = self._lookup_embedding_item(embedding_key)
                     if cached_item is not None:
                         embedding_lists[idx] = cached_item
@@ -367,10 +384,11 @@ class EncodeWorkerHandler:
                         # keep track of key to avoid recompute of it
                         need_encode_indexes.append((idx, embedding_key))
 
-            with _nvtx.annotate(
-                "mm:enc:image_load", color="green"
-            ), time_and_log_code_section(
-                f"[ENCODE] request: {request_id} image loading"
+            with (
+                _nvtx.annotate("mm:enc:image_load", color="green"),
+                time_and_log_code_section(
+                    f"[ENCODE] request: {request_id} image loading"
+                ),
             ):
                 # Load URL images and read frontend-decoded pixels via NIXL.
                 # load_image_batch preserves order and aggregates per-item
@@ -385,22 +403,26 @@ class EncodeWorkerHandler:
                         wire_items.append(
                             {DECODED_VARIANT_KEY: group_mm_input.image_decoded}
                         )
-                loaded_images = await self.image_loader.load_image_batch(wire_items)
+                loaded_images = await self.image_loader.load_image_batch(
+                    wire_items, cache_scope=request.image_cache_scope
+                )
 
             if loaded_images:
-                with _nvtx.annotate(
-                    "mm:enc:image_preprocess", color="yellow"
-                ), time_and_log_code_section(
-                    f"[ENCODE] request: {request_id} image processing"
+                with (
+                    _nvtx.annotate("mm:enc:image_preprocess", color="yellow"),
+                    time_and_log_code_section(
+                        f"[ENCODE] request: {request_id} image processing"
+                    ),
                 ):
                     image_embeds = await asyncio.to_thread(
                         self.image_processor, images=loaded_images, return_tensors="pt"
                     )
 
-                with _nvtx.annotate(
-                    "mm:enc:vision_encode", color="red"
-                ), time_and_log_code_section(
-                    f"[ENCODE] request: {request_id} encoding"
+                with (
+                    _nvtx.annotate("mm:enc:vision_encode", color="red"),
+                    time_and_log_code_section(
+                        f"[ENCODE] request: {request_id} encoding"
+                    ),
                 ):
                     # Encode the image embeddings using model-specific encoder
                     embeddings = await asyncio.to_thread(

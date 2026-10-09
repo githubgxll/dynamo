@@ -9,7 +9,11 @@ so that existing imports from dingo.vllm.constants continue to work.
 
 from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
 
+# vLLM load formats served by the ModelExpress plugin.
+MX_LOAD_FORMATS = frozenset({"modelexpress", "mx"})
+
 __all__ = [
     "DisaggregationMode",
     "EmbeddingTransferMode",
+    "MX_LOAD_FORMATS",
 ]

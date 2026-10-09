@@ -27,8 +27,7 @@ def validate_legacy_guided_decoding_constraints(request: dict[str, Any]) -> None
     # rejects a scalar, so rejecting here keeps the two paths in step.
     if choice is not None and not isinstance(choice, list):
         raise InvalidArgument(
-            "guided_choice must be a list of strings; received "
-            f"{type(choice).__name__}"
+            f"guided_choice must be a list of strings; received {type(choice).__name__}"
         )
     constraints = (
         ("json", request.get("guided_json") is not None),
@@ -147,7 +146,10 @@ _MEDIA_CONTENT_TYPES = ("image_url", "audio_url", "video_url")
 
 def extract_mm_urls(
     messages: list[dict[str, Any]],
-) -> tuple[dict[str, list[dict[str, str]]] | None, dict[str, list[str | None]] | None,]:
+) -> tuple[
+    dict[str, list[dict[str, str]]] | None,
+    dict[str, list[str | None]] | None,
+]:
     """Extract media and vLLM processor-cache UUIDs from chat messages.
 
     URL-backed parts become ``Url`` variants. Image parts with no URL and an
@@ -165,7 +167,7 @@ def extract_mm_urls(
     has_user_uuid = False
 
     for msg in messages:
-        if not isinstance(msg, dict) or msg.get("role") != "user":
+        if not isinstance(msg, dict) or msg.get("role") not in ("user", "tool"):
             continue
         content = msg.get("content")
         if not isinstance(content, list):

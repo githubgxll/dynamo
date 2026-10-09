@@ -21,6 +21,20 @@ def make_frames(n=3, h=8, w=8) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# compute_num_frames
+# ---------------------------------------------------------------------------
+
+
+def test_compute_num_frames_rounds_fractional_frame_rate():
+    from dingo.common.utils.video_utils import compute_num_frames
+
+    result = compute_num_frames(seconds=10, fps=23.976)
+
+    assert result == 240
+    assert isinstance(result, int)
+
+
+# ---------------------------------------------------------------------------
 # encode_to_video_bytes
 # ---------------------------------------------------------------------------
 
@@ -45,9 +59,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = b"fake-mp4"
             mock_io.BytesIO.return_value = buf
@@ -64,9 +80,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = b"fake-webm"
             mock_io.BytesIO.return_value = buf
@@ -81,9 +99,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = b"bytes"
             mock_io.BytesIO.return_value = buf
@@ -97,9 +117,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = b"bytes"
             mock_io.BytesIO.return_value = buf
@@ -113,9 +135,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             mock_io.BytesIO.return_value = MagicMock()
 
             # ValueError is wrapped into RuntimeError by the except block
@@ -127,9 +151,11 @@ class TestEncodeToVideoBytes:
 
         expected = b"\x00\x01\x02"
         iio = self._mock_iio_v3()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = expected
             mock_io.BytesIO.return_value = buf
@@ -143,9 +169,11 @@ class TestEncodeToVideoBytes:
         from dingo.common.utils.video_utils import encode_to_video_bytes
 
         iio_v2, writer = self._mock_iio_v2()
-        with patch("dingo.common.utils.video_utils.io") as mock_io, patch(
-            "imageio.v3", iio_v2, create=True
-        ), patch.dict("sys.modules", {"imageio.v3": iio_v2}):
+        with (
+            patch("dingo.common.utils.video_utils.io") as mock_io,
+            patch("imageio.v3", iio_v2, create=True),
+            patch.dict("sys.modules", {"imageio.v3": iio_v2}),
+        ):
             buf = MagicMock()
             buf.getvalue.return_value = b"v2-bytes"
             mock_io.BytesIO.return_value = buf

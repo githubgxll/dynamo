@@ -5,14 +5,14 @@ import asyncio
 import logging
 from typing import Optional
 
+from dynamo.llm import WorkerMetricsPublisher
+from dynamo.runtime import Endpoint
 from prometheus_client import CollectorRegistry
 from vllm.config import VllmConfig
 from vllm.v1.metrics.loggers import StatLoggerBase
 from vllm.v1.metrics.stats import IterationStats, SchedulerStats
 
 from dingo.common.utils.prometheus import LLMBackendMetrics
-from dynamo.llm import WorkerMetricsPublisher
-from dynamo.runtime import Endpoint
 
 # Create a dedicated registry for dynamo_component metrics
 # This ensures these metrics are isolated and can be exposed via their own callback
@@ -89,7 +89,7 @@ class DynamoStatLoggerPublisher(StatLoggerBase):
     def init_publish(self) -> None:
         self.inner.publish(self.dp_rank, kv_used_blocks=0)
         dp_rank_str = str(self.dp_rank)
-        self.component_gauges.set_total_blocks(dp_rank_str, 0)
+        self.component_gauges.set_total_blocks(dp_rank_str, self.num_gpu_block)
         self.component_gauges.set_gpu_cache_usage(dp_rank_str, 0.0)
 
     def log_engine_initialized(self) -> None:
@@ -162,9 +162,9 @@ class StatLoggerFactory:
             return NoopStatLogger()
         # component_gauges must be set by setup_vllm_engine() before vLLM
         # calls create_stat_logger() during engine initialization.
-        assert (
-            self.component_gauges is not None
-        ), "component_gauges must be set before creating stat loggers"
+        assert self.component_gauges is not None, (
+            "component_gauges must be set before creating stat loggers"
+        )
         logger = DynamoStatLoggerPublisher(
             endpoint=self.endpoint,
             dp_rank=dp_rank,

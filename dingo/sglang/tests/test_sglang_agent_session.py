@@ -195,6 +195,7 @@ def _new_decode_handler(engine: Any, serving_mode: DisaggregationMode):
 def _new_prefill_handler(engine: Any):
     handler = PrefillWorkerHandler.__new__(PrefillWorkerHandler)
     handler.engine = engine
+    handler.config = SimpleNamespace(server_args=SimpleNamespace())
     handler.bootstrap_host = "127.0.0.1"
     handler.bootstrap_port = 8998
     handler._generate_bootstrap_room = lambda: 42
@@ -217,9 +218,7 @@ async def test_aggregated_generate_forwards_both_session_ids():
     engine = _SessionAwareEngine()
     handler = _new_decode_handler(engine, DisaggregationMode.AGGREGATED)
 
-    async for _ in handler.generate(
-        {"agent_context": _AGENT_CONTEXT}, _context()
-    ):  # noqa: B007
+    async for _ in handler.generate({"agent_context": _AGENT_CONTEXT}, _context()):  # noqa: B007
         pass
 
     assert engine.calls == [{"session_id": "child-1", "parent_session_id": "root-0"}]

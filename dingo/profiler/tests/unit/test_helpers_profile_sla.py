@@ -1074,7 +1074,7 @@ class TestAssembleFinalConfig:
     def test_mocker_plus_planner_rapid_skips_profile_cm(self, tmp_path):
         """Mocker + planner + rapid: mocker base is created first, then planner
         layered. The profile-data ConfigMap is NOT emitted because the mocker
-        pulls AIC perf data at runtime via --aic-perf-model flags."""
+        pulls AIC perf data at runtime via --ais-perf-model flags."""
         dgdr = _make_dgdr(
             features=FeaturesSpec(
                 planner=_make_planner(),
@@ -1261,9 +1261,9 @@ class TestAddProfileDataMockerGuard:
         }
         for name in ("prefill", "decode"):
             args = components[name]["podTemplate"]["spec"]["containers"][0]["args"]
-            assert (
-                "--planner-profile-data" not in args
-            ), f"sglang worker '{name}' should not have --planner-profile-data"
+            assert "--planner-profile-data" not in args, (
+                f"sglang worker '{name}' should not have --planner-profile-data"
+            )
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
@@ -1278,9 +1278,9 @@ class TestAddProfileDataMockerGuard:
         }
         for name in ("prefill", "decode"):
             args = components[name]["podTemplate"]["spec"]["containers"][0]["args"]
-            assert (
-                "--planner-profile-data" in args
-            ), f"mocker worker '{name}' should have --planner-profile-data"
+            assert "--planner-profile-data" in args, (
+                f"mocker worker '{name}' should have --planner-profile-data"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1332,13 +1332,13 @@ class TestNaiveFallbackResolvedBackend:
             )
 
         # The resolved backend must be a concrete name, not 'auto'
-        assert (
-            "resolved_backend" in result
-        ), "result dict must contain 'resolved_backend' key"
+        assert "resolved_backend" in result, (
+            "result dict must contain 'resolved_backend' key"
+        )
         resolved = result["resolved_backend"]
-        assert (
-            resolved != "auto"
-        ), f"resolved_backend must not be 'auto', got {resolved!r}"
+        assert resolved != "auto", (
+            f"resolved_backend must not be 'auto', got {resolved!r}"
+        )
         assert resolved in (
             "vllm",
             "sglang",
@@ -1649,9 +1649,9 @@ class TestRunProfileSkipsInterpolationForAggConfig:
             if call_kwargs.args
             else call_kwargs.kwargs.get("backend")
         )
-        assert (
-            called_backend == "vllm"
-        ), f"run_interpolation must be called with resolved backend 'vllm', got {called_backend!r}"
+        assert called_backend == "vllm", (
+            f"run_interpolation must be called with resolved backend 'vllm', got {called_backend!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -4,9 +4,10 @@
 
 The legacy 3-bucket label collapsed distinct 5-tuples to the same string,
 which corrupted ``thorough.py`` sweep work_dir naming and the
-``aiconfigurator.sdk.picking`` ``groupby("parallel")`` dedup. These tests
+``aisimulate.sdk.picking`` ``groupby("parallel")`` dedup. These tests
 pin the post-fix unique encoding.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -51,14 +52,14 @@ def test_label_distinct_across_all_enumerated_tuples() -> None:
     seen: dict[str, tuple[int, int, int, int, int]] = {}
     for tup in _enumerate():
         label = make_parallel_label(*tup)
-        assert (
-            label not in seen
-        ), f"label collision: {label!r} from {tup} also from {seen[label]}"
+        assert label not in seen, (
+            f"label collision: {label!r} from {tup} also from {seen[label]}"
+        )
         seen[label] = tup
 
 
 def test_groupby_does_not_merge_distinct_topologies() -> None:
-    """``aiconfigurator.sdk.picking`` does ``df.groupby("parallel")``. Two
+    """``aisimulate.sdk.picking`` does ``df.groupby("parallel")``. Two
     distinct topologies must produce two groups, not one."""
     df = pd.DataFrame(
         [
@@ -67,9 +68,9 @@ def test_groupby_does_not_merge_distinct_topologies() -> None:
         ]
     )
     groups = list(df.groupby("parallel"))
-    assert (
-        len(groups) == 2
-    ), "groupby merged distinct topologies — label is not injective"
+    assert len(groups) == 2, (
+        "groupby merged distinct topologies — label is not injective"
+    )
 
 
 # (tp, pp, dp, moe_tp, moe_ep, expected_label)
@@ -94,7 +95,7 @@ _FORMAT_PINS: list[tuple[int, int, int, int, int, str]] = [
 def test_make_parallel_label_format_pin(
     tp: int, pp: int, dp: int, moe_tp: int, moe_ep: int, expected: str
 ) -> None:
-    """Pin the exact label string — ``aiconfigurator.sdk.picking`` and
+    """Pin the exact label string — ``aisimulate.sdk.picking`` and
     ``thorough.py`` consume this string verbatim, so format drift must be
     a deliberate, test-breaking edit."""
     assert make_parallel_label(tp, pp, dp, moe_tp, moe_ep) == expected

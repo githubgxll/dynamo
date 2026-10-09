@@ -13,13 +13,14 @@ import asyncio
 import logging
 
 from dynamo import prometheus_names
-from dingo.common.model_taints import register_model_taint_route
 from dynamo.llm import ModelInput, ModelType, WorkerType, register_model
 from dynamo.runtime import DistributedRuntime
+
+from dingo.common.model_taints import register_model_taint_route
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.base_handler import BaseOmniHandler
 from dingo.vllm.omni.realtime_handler import RealtimeOmniHandler
-from dingo.vllm.realtime.serving import build_realtime_serving
+from dingo.vllm.realtime.factories import build_realtime_serving
 
 from .args import OmniConfig
 from .utils import streaming_sampling_params

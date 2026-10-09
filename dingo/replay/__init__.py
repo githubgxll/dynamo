@@ -7,12 +7,22 @@ The shared offline implementation is owned by AISimulate. Dynamo retains these
 entry points for single-run replay and for Router, Planner, and online adapters.
 """
 
-from dingo.replay.api import run_synthetic_trace_replay, run_trace_replay
-from dingo.replay.report import PlannerReplayDetails, ReplayReport
+from dingo.replay.api import (
+    TelemetryOptions,
+    run_synthetic_trace_replay,
+    run_trace_replay,
+)
+from dingo.replay.report import (
+    PlannerReplayDetails,
+    ReplayReport,
+    ReplayTelemetryDetails,
+)
 
 __all__ = [
     "PlannerReplayDetails",
     "ReplayReport",
+    "ReplayTelemetryDetails",
+    "TelemetryOptions",
     "run_synthetic_trace_replay",
     "run_trace_replay",
 ]

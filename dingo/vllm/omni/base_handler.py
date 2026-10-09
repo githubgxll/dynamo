@@ -18,6 +18,7 @@ except ImportError:
     DiffusionParallelConfig = None  # type: ignore[assignment, misc]
 
 from dynamo._core import Context
+
 from dingo.common.protocols.audio_protocol import NvAudioSpeechResponse
 from dingo.common.protocols.video_protocol import NvVideosResponse
 from dingo.common.utils.output_modalities import RequestType
@@ -77,6 +78,8 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         self.shutdown_event = shutdown_event
 
         self._lora_state = LoRAState()
+        self._paused = False
+        self._pause_lock = asyncio.Lock()
         # Properties loaded_loras, _lora_load_locks, _lora_load_locks_guard are now
         # available through LoRAState. No direct assignment needed since properties
         # are backed by _lora_state after initialization.
@@ -147,6 +150,40 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         # source in engine_args while forwarding them to Omni's diffusion
         # topology explicitly.
         if DiffusionParallelConfig is not None:
+            # Older installed Omni versions can lack newly added parallel
+            # options. Ignore unsupported default values, but reject explicit
+            # non-default values rather than silently changing configuration.
+            parallel_kwargs = dataclasses.asdict(config.parallel)
+            supported_parallel_fields = {
+                field.name for field in dataclasses.fields(DiffusionParallelConfig)
+            }
+            unsupported_parallel_fields = sorted(
+                set(parallel_kwargs) - supported_parallel_fields
+            )
+            if unsupported_parallel_fields:
+                default_parallel_kwargs = dataclasses.asdict(type(config.parallel)())
+                unsupported_non_defaults = [
+                    field
+                    for field in unsupported_parallel_fields
+                    if parallel_kwargs[field] != default_parallel_kwargs[field]
+                ]
+                if unsupported_non_defaults:
+                    options = ", ".join(unsupported_non_defaults)
+                    raise ValueError(
+                        "Installed vLLM-Omni does not support non-default "
+                        f"parallel option(s): {options}. Upgrade vLLM-Omni or "
+                        "remove the unsupported option(s)."
+                    )
+                logger.debug(
+                    "Ignoring parallel options unavailable in the installed "
+                    "vLLM-Omni: %s",
+                    ", ".join(unsupported_parallel_fields),
+                )
+                parallel_kwargs = {
+                    field: value
+                    for field, value in parallel_kwargs.items()
+                    if field in supported_parallel_fields
+                }
             parallel_config = DiffusionParallelConfig(
                 tensor_parallel_size=getattr(
                     config.engine_args, "tensor_parallel_size", 1
@@ -155,7 +192,7 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
                     config.engine_args, "pipeline_parallel_size", 1
                 ),
                 data_parallel_size=getattr(config.engine_args, "data_parallel_size", 1),
-                **dataclasses.asdict(config.parallel),
+                **parallel_kwargs,
             )
             omni_kwargs["parallel_config"] = parallel_config
         else:

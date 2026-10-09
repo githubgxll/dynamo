@@ -23,7 +23,6 @@ pytestmark = [
 
 try:
     from dingo.profiler.thorough import (
-        _enable_chunked_prefill_for_trtllm_candidates,
         _pick_thorough_best_config,
     )
     from dingo.profiler.utils.aic_dataframe import build_decode_row, build_prefill_row
@@ -104,47 +103,6 @@ def _mock_result():
 # ---------------------------------------------------------------------------
 # _pick_thorough_best_config
 # ---------------------------------------------------------------------------
-
-
-def test_profile_candidates_enable_trtllm_chunked_prefill():
-    prefill = SimpleNamespace(
-        dgd_config={
-            "spec": {
-                "components": [
-                    {
-                        "name": "prefill",
-                        "type": "prefill",
-                        "podTemplate": {
-                            "spec": {"containers": [{"name": "main", "args": []}]}
-                        },
-                    }
-                ]
-            }
-        }
-    )
-    decode = SimpleNamespace(
-        dgd_config={
-            "spec": {
-                "components": [
-                    {
-                        "name": "decode",
-                        "type": "decode",
-                        "podTemplate": {
-                            "spec": {"containers": [{"name": "main", "args": []}]}
-                        },
-                    }
-                ]
-            }
-        }
-    )
-
-    _enable_chunked_prefill_for_trtllm_candidates([prefill], [decode])
-
-    for candidate in (prefill, decode):
-        worker = candidate.dgd_config["spec"]["components"][0]
-        args = worker["podTemplate"]["spec"]["containers"][0]["args"]
-        idx = args.index("--trtllm.enable_chunked_prefill")
-        assert args[idx + 1] == "true"
 
 
 class TestPickThoroughBestConfig:

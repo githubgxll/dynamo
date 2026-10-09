@@ -367,13 +367,6 @@ ENV SCCACHE_BUCKET=${USE_SCCACHE:+${SCCACHE_BUCKET}} \
     SCCACHE_GHA_VERSION=${USE_SCCACHE:+${SCCACHE_GHA_VERSION}} \
     SCCACHE_EXECUTABLE=${USE_SCCACHE:+/opt/sccache/sccache}
 
-# Build FFmpeg for every framework's video-encode path, SGLang included. The
-# build is VP9-only (libvpx) — it contains no H.264, H.265, or AAC encoder in
-# any form — so SGLang's video-generation handler gets a VP9 encoder to write
-# with, matching vLLM/TRT-LLM.
-# Build FFmpeg so libs are available for Rust checks in CI.
-# We build the ffmpeg CLI with the libvpx_vp9 encoder so Python code can encode
-# video without the GPL-licensed binary shipped by imageio-ffmpeg.
 # Preserve the t5 media stack: LGPL FFmpeg with hardware H.264 NVENC and
 # libvpx VP9 encoding, plus the decoders required by local video workflows.
 # Retain downloaded sources for the source archive.
@@ -454,6 +447,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     cd ffmpeg-${FFMPEG_VERSION} && \
     ./configure \
         --prefix=/usr/local \
+        --build-suffix=_dynamo \
         --disable-gpl \
         --disable-nonfree \
         --disable-doc \
@@ -473,8 +467,21 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         --enable-protocol=file,pipe,fd && \
     make -j$(nproc) && \
     make install && \
-    /tmp/use-sccache.sh show-stats "FFMPEG" && \
+    # ldconfig BEFORE the guard below, not after. The binary carries no RPATH, so
+    # until the cache knows about these libraries it cannot start -- and the guard
+    # discards stderr, so an unstartable binary produces empty output, matches no
+    # disallowed codec, and passes having checked nothing. Measured on a shipped
+    # image: with the ffmpeg libraries missing from the cache the run fails with
+    # "error while loading shared libraries" and the guard still passes.
     ldconfig && \
+    # --build-suffix renames the pkg-config files too, so `pkg-config libavformat`
+    # stops resolving and ffmpeg-sys-next's probe fails the Rust build outright.
+    # Canonical-name symlinks keep that working; each .pc still reports
+    # -lavformat_dynamo, so consumers link the suffixed library.
+    for pc in /usr/local/lib/pkgconfig/*_dynamo.pc; do \
+        ln -sf "$(basename "$pc")" "${pc%_dynamo.pc}.pc"; \
+    done && \
+    /tmp/use-sccache.sh show-stats "FFMPEG" && \
     mkdir -p /usr/local/src/ffmpeg && \
     find /tmp/ffmpeg-${FFMPEG_VERSION} \( -name config.log -o -name config.status \) -delete && \
     mv /tmp/ffmpeg-${FFMPEG_VERSION}* /usr/local/src/ffmpeg/
@@ -647,9 +654,7 @@ COPY dingo/ /opt/dynamo/dingo/
 # Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels
 ARG USE_SCCACHE
 ARG TARGETARCH
-{% if framework != "sglang" %}
 ARG ENABLE_MEDIA_FFMPEG
-{% endif %}
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
     --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
@@ -669,9 +674,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     uv build --wheel --out-dir /opt/dynamo/dist && \
     cd /opt/dynamo/lib/bindings/python && \
     if [ "$ENABLE_MEDIA_FFMPEG" = "true" ]; then \
-        maturin build --release --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,aic-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
+        maturin build --release --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
     else \
-        maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,aic-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
+        maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
     fi && \
     /tmp/use-sccache.sh show-stats "Dynamo Runtime"
 
@@ -684,16 +689,18 @@ COPY deploy/inference-gateway/sidecar/ /opt/dynamo/deploy/inference-gateway/side
 {% if target == "planner" or (target == "runtime" and framework in ("vllm", "sglang", "trtllm")) %}
 COPY container/deps/requirements.aisimulate.txt /opt/dynamo/container/deps/requirements.aisimulate.txt
 
-# AI Simulate is released separately as an abi3 wheel. Stage the exact published
-# wheel consumed by ai-dynamo instead of rebuilding it from vendored source.
-# Download only this distribution; runtime images own dependency installation
-# through their requirements files and local wheels.
+# AISimulate is released separately as an abi3 wheel. Stage the pinned wheel
+# directly from NVIDIA's package index. Download only this
+# distribution; runtime images own dependency installation through their
+# requirements files and local wheels.
 RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
     export UV_CACHE_DIR=/root/.cache/uv && \
     source ${VIRTUAL_ENV}/bin/activate && \
     python -m pip download \
         --only-binary=:all: \
         --no-deps \
+        --no-index \
+        --find-links https://pypi.nvidia.com/aisimulate/ \
         --dest /opt/dynamo/dist \
         --requirement /opt/dynamo/container/deps/requirements.aisimulate.txt
 {% endif %}
@@ -788,14 +795,13 @@ RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.
 ##################################
 ##### wheel_builder ##############
 ##################################
-{% if ("nixl_ref" in context[framework] or device == "xpu") and target != "frontend" %}
+{% if "nixl_ref" in context[framework] or device == "xpu" %}
 # Builds NIXL (native + Python wheel) and NIXL-linked extension wheels, then
 # consolidates all wheels.
 # Runtime templates COPY from this stage.
 # Note: XPU triggers this path even when the framework section lacks nixl_ref,
 # because no upstream XPU runtime image ships pre-built NIXL.
-# Note: frontend is excluded — it installs NIXL from PyPI at NIXL_REF and does
-# not install KVBM, so nothing in that image consumes a from-source NIXL build.
+# The local frontend consumes a wheel built from its pinned NIXL source.
 
 FROM wheel_builder_base AS reusable_builder_base
 

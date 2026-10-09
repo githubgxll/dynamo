@@ -37,12 +37,25 @@ dynamo:
   # the epp image carries) add on top.
   frontend_baseline_sbom: ubuntu@7291df36
   planner_build_image: python
-  planner_build_image_tag: 3.12-slim
+  planner_build_image_tag: 3.13-slim
   planner_runtime_image: nvcr.io/nvidia/distroless/python
-  planner_runtime_image_tag: 3.12-v4.0.9
+  planner_runtime_image_tag: 3.13-v4.1.6
   # Self-baseline of the distroless-python runtime; the licenses stage subtracts
   # it so planner NOTICES attribute only what the builder adds on top.
-  planner_baseline_sbom: python@ec133be9
+  planner_baseline_sbom: python@5be5c1f0
+  # Planner-scoped interpreter. The planner uses a separate, newer CPython line
+  # from the global python_version below because it is the only stage whose
+  # interpreter is decoupled from the framework/runtime bases: the build stage
+  # FROMs python:${planner_build_image_tag} (Docker Hub), and the runtime
+  # stage FROMs nvcr.io/nvidia/distroless/python:${planner_runtime_image_tag}.
+  # Neither of those images pin the frontend or framework stacks. The global
+  # python_version cannot follow because (a) frontend.Dockerfile apt-installs
+  # python${PYTHON_VERSION}-dev on nvcr.io/nvidia/base/ubuntu:noble (Ubuntu
+  # 24.04 ships python3.12 with no python3.13 in its archive), and (b) the
+  # framework runtime images (vllm/vllm-openai, lmsysorg/sglang,
+  # nvcr.io/nvidia/tensorrt-llm/release) ship python3.12 with cp312 ABI wheels
+  # for torch/vllm/sglang/tensorrt-llm. Moving those is a separate change.
+  planner_python_version: "3.13"
   python_version: "3.12"
   # Pin the manylinux builder instead of following the mutable `latest` tag.
   # Keep the same dated tag for x86_64 and aarch64.
@@ -54,8 +67,8 @@ dynamo:
   # and uv rejects cache entries written by a newer version.
   uv_version: "0.12.0"
 
-  nats_version: v2.12.14
-  etcd_version: v3.5.33
+  nats_version: v2.14.7
+  etcd_version: v3.5.34
 
   nixl_ref: v1.3.2
   nixl_ucx_ref: v1.21.0
@@ -67,10 +80,12 @@ dynamo:
   enable_kvbm: "true"
   enable_media_ffmpeg: "false"
   enable_gpu_memory_service: "true"
-  # 8.1.2 is an upstream maintenance release that picks up security fixes over
-  # 8.1; combined with the narrowed decoder set in wheel_builder it trims the
-  # media decode surface. Keep in sync with native_packages.yaml's ffmpeg entry.
-  ffmpeg_version: "8.1.2"
+  # Built from source in wheel_builder with a narrow codec allowlist and
+  # --build-suffix=_dynamo, so the SONAMEs cannot collide with the FFmpeg another
+  # wheel vendors. Keep in sync with native_packages.yaml's ffmpeg entry and with
+  # the ffmpeg-next/video-rs pins in lib/llm/Cargo.toml, which track the FFmpeg
+  # major.
+  ffmpeg_version: "9.0.1"
   # ffmpeg build inputs (only consumed when ENABLE_MEDIA_FFMPEG=true).
   nv_codec_headers_ref: "n13.0.19.0"
   libvpx_ref: "v1.14.1"
@@ -92,10 +107,9 @@ vllm:
   xpu:
     base_image: vllm/vllm-openai-xpu
     runtime_image: vllm/vllm-openai-xpu
-    base_image_tag: v0.27.1
-    runtime_image_tag: v0.27.1
-    vllm_omni_ref: "v0.27.0rc1"
-    baseline_sbom: vllm-openai-xpu@3309c2e1
+    base_image_tag: v0.29.0
+    runtime_image_tag: v0.29.0
+    baseline_sbom: vllm-openai-xpu@96db42e2
   cpu:
     base_image: ubuntu
     runtime_image: vllm/vllm-openai-cpu
@@ -130,8 +144,8 @@ sglang:
     # (framework, python stack, system libs) rather than hiding it. Per-arch stem;
     # the licenses stage appends -${TARGETARCH}.cdx.json. SGLang's codec-bearing
     # Python wheels are purged in sglang_runtime.Dockerfile; only the in-tree VP9
-    # ffmpeg is copied in (CUDA, for the video-generation encode path) and the
-    # Dynamo Rust wheel is built without media-ffmpeg.
+    # ffmpeg is copied in. The CUDA Dynamo Rust wheel links against that same
+    # codec-limited build for frontend video decoding; XPU remains codec-free.
     baseline_sbom: cuda@0230b7f2
   xpu:
     base_image: intel/deep-learning-essentials

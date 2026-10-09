@@ -3,6 +3,7 @@
 
 """Unit tests for OmniConfig validation and omni argument parsing."""
 
+import argparse
 import contextlib
 import dataclasses
 import logging
@@ -10,6 +11,44 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
+try:
+    import vllm.platforms as vllm_platforms
+    from vllm.engine.arg_utils import _compute_kwargs
+    from vllm.platforms.interface import UnspecifiedPlatform
+
+    from dingo.vllm import main as vllm_main
+    from dingo.vllm.omni.args import (
+        FlexibleArgumentParser,
+        OmniArgGroup,
+        OmniConfig,
+        OmniDiffusionKwargs,
+        OmniEngineArgs,
+        OmniParallelKwargs,
+        parse_omni_args,
+    )
+except ImportError:
+    pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
+
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.vllm,
+    pytest.mark.multimodal,
+    pytest.mark.gpu_0,
+    # Building the vLLM argument parser resolves a device; on an accelerator-less
+    # host that raises unless a platform is pinned first.
+    pytest.mark.usefixtures("vllm_cpu_platform_when_no_accelerator"),
+    pytest.mark.xpu_1,
+    pytest.mark.pre_merge,
+    pytest.mark.profiled_vram_gib(0),
+    pytest.mark.timeout(180),  # 0-GiB unit tests, floor 180s
+]
+
+_DIFFUSION_FIELDS = {f.name for f in dataclasses.fields(OmniDiffusionKwargs)}
+
+_PARALLEL_FIELDS = {f.name for f in dataclasses.fields(OmniParallelKwargs)}
+
+_PLATFORM_UNSET = object()
 
 try:
     import vllm.platforms as vllm_platforms
@@ -27,53 +66,6 @@ try:
     )
 except ImportError:
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
-
-pytestmark = [
-    pytest.mark.unit,
-    pytest.mark.vllm,
-    pytest.mark.gpu_0,
-    # Building the vLLM argument parser resolves a device; on an accelerator-less
-    # host that raises unless a platform is pinned first.
-    pytest.mark.usefixtures("vllm_cpu_platform_when_no_accelerator"),
-    pytest.mark.xpu_1,
-    pytest.mark.pre_merge,
-    pytest.mark.profiled_vram_gib(0),
-    pytest.mark.timeout(180),  # 0-GiB unit tests, floor 180s
-]
-
-_DIFFUSION_FIELDS = {f.name for f in dataclasses.fields(OmniDiffusionKwargs)}
-_PARALLEL_FIELDS = {f.name for f in dataclasses.fields(OmniParallelKwargs)}
-
-
-@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
-def test_rejects_invalid_diffusion_capacity(capacity):
-    config = _make_omni_config(max_num_seqs=capacity)
-    with pytest.raises(ValueError, match="max-num-seqs"):
-        config.validate()
-
-
-def test_concurrent_h3_requires_step_execution():
-    config = _make_omni_config(
-        request_adapter="minimax_h3", request_adapter_workflow="fl2va", max_num_seqs=2
-    )
-    with pytest.raises(ValueError, match="requires --step-execution"):
-        config.validate()
-
-
-def test_concurrent_h3_step_execution_valid():
-    config = _make_omni_config(
-        request_adapter="minimax_h3",
-        request_adapter_workflow="fl2va",
-        max_num_seqs=2,
-        step_execution=True,
-    )
-    config.validate()
-
-
-def test_step_execution_rejects_cache_backend():
-    config = _make_omni_config(step_execution=True, cache_backend="cache_dit")
-    with pytest.raises(ValueError, match="cannot be combined"):
-        config.validate()
 
 
 def _make_omni_config(**overrides) -> OmniConfig:
@@ -142,66 +134,82 @@ def test_omni_config_valid_defaults():
     config.validate()
 
 
-def test_request_adapter_is_disabled_by_default():
-    config = _make_omni_config()
-    assert config.request_adapter is None
-    assert config.request_adapter_workflow is None
-    config.validate()
+def test_startup_lora_paths_parse_as_diffusion_options():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
 
-
-@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
-def test_minimax_h3_request_adapter_requires_explicit_valid_workflow(workflow):
-    config = _make_omni_config(
-        request_adapter="minimax_h3", request_adapter_workflow=workflow
+    args = parser.parse_args(
+        ["--lora-path", "/models/fast-a.safetensors", "/models/fast-b.safetensors"]
     )
-    config.validate()
+
+    assert args.lora_path == [
+        "/models/fast-a.safetensors",
+        "/models/fast-b.safetensors",
+    ]
 
 
-def test_minimax_h3_request_adapter_rejects_missing_workflow():
-    config = _make_omni_config(request_adapter="minimax_h3")
-    with pytest.raises(ValueError, match="requires.*workflow"):
-        config.validate()
+def test_ulysses_a2a_permute_parses_as_parallel_option():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--ulysses-a2a-permute"])
+
+    assert args.ulysses_a2a_permute is True
 
 
-def test_workflow_without_request_adapter_is_rejected():
-    config = _make_omni_config(request_adapter_workflow="fl2va")
-    with pytest.raises(ValueError, match="requires --request-adapter"):
-        config.validate()
+def test_fastvideo_vsa_topk_parses_as_diffusion_option():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--fastvideo-vsa-topk", "64"])
+
+    assert args.fastvideo_vsa_topk == 64
 
 
-@pytest.mark.parametrize("limit", [0, -1])
-def test_request_adapter_media_limit_must_be_positive(limit):
-    config = _make_omni_config(request_adapter_media_max_bytes=limit)
-    with pytest.raises(ValueError, match="media-max-bytes must be > 0"):
-        config.validate()
+def test_diffusion_only_options_remain_unset_when_omitted():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args([])
+
+    assert {
+        "enable_layerwise_offload": args.enable_layerwise_offload,
+        "layerwise_num_gpu_layers": args.layerwise_num_gpu_layers,
+        "vae_use_slicing": args.vae_use_slicing,
+        "vae_use_tiling": args.vae_use_tiling,
+        "boundary_ratio": args.boundary_ratio,
+        "enable_cache_dit_summary": args.enable_cache_dit_summary,
+        "enable_cpu_offload": args.enable_cpu_offload,
+    } == {
+        "enable_layerwise_offload": None,
+        "layerwise_num_gpu_layers": None,
+        "vae_use_slicing": None,
+        "vae_use_tiling": None,
+        "boundary_ratio": None,
+        "enable_cache_dit_summary": None,
+        "enable_cpu_offload": None,
+    }
 
 
-def test_detached_video_tasks_are_disabled_by_default():
-    config = _make_omni_config()
-    assert config.detached_video_task_root is None
-    config.validate()
 
 
-def test_detached_video_tasks_require_minimax_adapter():
-    config = _make_omni_config(detached_video_task_root="/shared/tasks")
-    with pytest.raises(ValueError, match="requires.*minimax_h3"):
-        config.validate()
+def test_diffusion_bool_option_preserves_explicit_false():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--no-vae-use-tiling"])
+
+    assert args.vae_use_tiling is False
 
 
-def test_detached_video_tasks_accept_explicit_minimax_adapter():
-    config = _make_omni_config(
-        request_adapter="minimax_h3",
-        request_adapter_workflow="fl2va",
-        detached_video_task_root="/shared/tasks",
-    )
-    config.validate()
+def test_diffusion_bool_environment_option_is_parsed(monkeypatch):
+    monkeypatch.setenv("DYN_OMNI_VAE_USE_TILING", "false")
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
 
+    args = parser.parse_args([])
 
-@pytest.mark.parametrize("timeout", [0, -1])
-def test_detached_video_drain_timeout_must_be_positive(timeout):
-    config = _make_omni_config(detached_video_drain_timeout=timeout)
-    with pytest.raises(ValueError, match="drain-timeout must be > 0"):
-        config.validate()
+    assert args.vae_use_tiling is False
 
 
 @pytest.mark.parametrize("fps", [0, -1, -100])
@@ -237,6 +245,13 @@ def test_omni_config_invalid_boundary_ratio(ratio):
 def test_omni_config_valid_boundary_ratio(ratio):
     config = _make_omni_config(boundary_ratio=ratio)
     config.validate()
+
+
+@pytest.mark.parametrize("topk", [0, -1])
+def test_omni_config_invalid_fastvideo_vsa_topk(topk):
+    config = _make_omni_config(fastvideo_vsa_topk=topk)
+    with pytest.raises(ValueError, match="--fastvideo-vsa-topk must be > 0"):
+        config.validate()
 
 
 def test_negative_stage_id_rejected():
@@ -277,11 +292,6 @@ def test_omni_router_with_stage_configs_path_valid(tmp_path):
         omni_router=True, stage_configs_path=str(tmp_path / "stages.yaml")
     )
     config.validate()
-
-
-# --- parse_omni_args() on a host with no accelerator ---
-
-_PLATFORM_UNSET = object()
 
 
 @contextlib.contextmanager
@@ -501,9 +511,6 @@ def test_stage_router_honors_disable_log_stats(monkeypatch, tmp_path):
     assert not registered
 
 
-# --- vllm_omni API compatibility guards ---
-
-
 def test_omni_engine_args_importable():
     from vllm_omni.engine.arg_utils import OmniEngineArgs
 
@@ -529,7 +536,97 @@ def test_omni_config_imports_cleanly():
     assert callable(parse_omni_args)
 
 
-# --- vLLM-Omni diffusion / parallel CLI passthrough (runtime wrapper removal) ---
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+def test_rejects_invalid_diffusion_capacity(capacity):
+    config = _make_omni_config(max_num_seqs=capacity)
+    with pytest.raises(ValueError, match="max-num-seqs"):
+        config.validate()
+
+
+def test_concurrent_h3_requires_step_execution():
+    config = _make_omni_config(
+        request_adapter="minimax_h3", request_adapter_workflow="fl2va", max_num_seqs=2
+    )
+    with pytest.raises(ValueError, match="requires --step-execution"):
+        config.validate()
+
+
+def test_concurrent_h3_step_execution_valid():
+    config = _make_omni_config(
+        request_adapter="minimax_h3",
+        request_adapter_workflow="fl2va",
+        max_num_seqs=2,
+        step_execution=True,
+    )
+    config.validate()
+
+
+def test_step_execution_rejects_cache_backend():
+    config = _make_omni_config(step_execution=True, cache_backend="cache_dit")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        config.validate()
+
+
+def test_request_adapter_is_disabled_by_default():
+    config = _make_omni_config()
+    assert config.request_adapter is None
+    assert config.request_adapter_workflow is None
+    config.validate()
+
+
+@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
+def test_minimax_h3_request_adapter_requires_explicit_valid_workflow(workflow):
+    config = _make_omni_config(
+        request_adapter="minimax_h3", request_adapter_workflow=workflow
+    )
+    config.validate()
+
+
+def test_minimax_h3_request_adapter_rejects_missing_workflow():
+    config = _make_omni_config(request_adapter="minimax_h3")
+    with pytest.raises(ValueError, match="requires.*workflow"):
+        config.validate()
+
+
+def test_workflow_without_request_adapter_is_rejected():
+    config = _make_omni_config(request_adapter_workflow="fl2va")
+    with pytest.raises(ValueError, match="requires --request-adapter"):
+        config.validate()
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_request_adapter_media_limit_must_be_positive(limit):
+    config = _make_omni_config(request_adapter_media_max_bytes=limit)
+    with pytest.raises(ValueError, match="media-max-bytes must be > 0"):
+        config.validate()
+
+
+def test_detached_video_tasks_are_disabled_by_default():
+    config = _make_omni_config()
+    assert config.detached_video_task_root is None
+    config.validate()
+
+
+def test_detached_video_tasks_require_minimax_adapter():
+    config = _make_omni_config(detached_video_task_root="/shared/tasks")
+    with pytest.raises(ValueError, match="requires.*minimax_h3"):
+        config.validate()
+
+
+def test_detached_video_tasks_accept_explicit_minimax_adapter():
+    config = _make_omni_config(
+        request_adapter="minimax_h3",
+        request_adapter_workflow="fl2va",
+        detached_video_task_root="/shared/tasks",
+    )
+    config.validate()
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+def test_detached_video_drain_timeout_must_be_positive(timeout):
+    config = _make_omni_config(detached_video_drain_timeout=timeout)
+    with pytest.raises(ValueError, match="drain-timeout must be > 0"):
+        config.validate()
 
 
 def test_diffusion_kwargs_expose_runtime_wrapper_fields():

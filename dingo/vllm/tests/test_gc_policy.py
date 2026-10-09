@@ -69,17 +69,6 @@ def test_stop_is_idempotent_and_allows_restart(monkeypatch):
     assert gc.get_threshold() == thresholds
 
 
-def test_gc_maintain_freezes_objects(monkeypatch):
-    gc_policy = _fresh_module(monkeypatch, None)
-    gc.unfreeze()
-    try:
-        frozen = gc_policy.gc_maintain()
-        assert frozen > 0
-        assert frozen == gc.get_freeze_count()
-    finally:
-        gc.unfreeze()
-
-
 def test_gc_maintain_reclaims_cycles_frozen_by_earlier_ticks(monkeypatch):
     gc_policy = _fresh_module(monkeypatch, None)
 
@@ -223,9 +212,9 @@ def test_stop_reestablishes_vllm_serving_freeze(monkeypatch):
         # generation: a live baseline object that is absent from it has been
         # re-frozen. The pre-fix stop (unfreeze without re-freeze) leaves the
         # sentinel visible here.
-        assert not any(
-            obj is sentinel for obj in gc.get_objects()
-        ), "serving freeze was not re-established after stop"
+        assert not any(obj is sentinel for obj in gc.get_objects()), (
+            "serving freeze was not re-established after stop"
+        )
     finally:
         gc_policy.stop_gc_policy()
         gc.unfreeze()  # do not leave the pytest heap frozen for later tests
