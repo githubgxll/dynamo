@@ -67,6 +67,7 @@
 # === router  (@ai-dynamo/dynamo-router-codeowners) ===
 /dingo/router/                                                               @ai-dynamo/dynamo-router-codeowners
 /lib/kv-router/                                                              @ai-dynamo/dynamo-router-codeowners
+/dingo/kv_dc_relay/                                                          @ai-dynamo/dynamo-router-codeowners
 /dingo/global_router/                                                        @ai-dynamo/dynamo-router-codeowners
 /lib/kv-router/tests/                                                        @ai-dynamo/dynamo-router-codeowners
 /dingo/global_router/tests/                                                  @ai-dynamo/dynamo-router-codeowners
@@ -81,14 +82,14 @@
 # === backend-vllm  (@ai-dynamo/dynamo-backend-vllm-codeowners) ===
 /dingo/vllm/                                                                 @ai-dynamo/dynamo-backend-vllm-codeowners
 /dingo/vllm/tests/                                                           @ai-dynamo/dynamo-backend-vllm-codeowners
+/lib/sidecar/vllm/                                                           @ai-dynamo/dynamo-backend-vllm-codeowners
 /examples/backends/vllm/                                                     @ai-dynamo/dynamo-backend-vllm-codeowners
-/lib/vllm-rs-backend/src/                                                    @ai-dynamo/dynamo-backend-vllm-codeowners
-/lib/vllm-rs-backend/Cargo.toml                                              @ai-dynamo/dynamo-backend-vllm-codeowners
 
 # === backend-trtllm  (@ai-dynamo/dynamo-backend-trtllm-codeowners) ===
 /dingo/trtllm/                                                               @ai-dynamo/dynamo-backend-trtllm-codeowners
 /dingo/trtllm/tests/                                                         @ai-dynamo/dynamo-backend-trtllm-codeowners
 /dingo/trtllm/utils/                                                         @ai-dynamo/dynamo-backend-trtllm-codeowners
+/lib/sidecar/trtllm/                                                         @ai-dynamo/dynamo-backend-trtllm-codeowners
 /dingo/trtllm/configs/                                                       @ai-dynamo/dynamo-backend-trtllm-codeowners
 /dingo/trtllm/engines/                                                       @ai-dynamo/dynamo-backend-trtllm-codeowners
 /dingo/trtllm/workers/                                                       @ai-dynamo/dynamo-backend-trtllm-codeowners
@@ -99,8 +100,8 @@
 # === backend-sglang  (@ai-dynamo/dynamo-backend-sglang-codeowners) ===
 /dingo/sglang/                                                               @ai-dynamo/dynamo-backend-sglang-codeowners
 /dingo/sglang/tests/                                                         @ai-dynamo/dynamo-backend-sglang-codeowners
+/lib/sidecar/sglang/                                                         @ai-dynamo/dynamo-backend-sglang-codeowners
 /examples/backends/sglang/                                                   @ai-dynamo/dynamo-backend-sglang-codeowners
-/lib/backend/sglang-sidecar/                                                 @ai-dynamo/dynamo-backend-sglang-codeowners
 /dingo/sglang/request_handlers/                                              @ai-dynamo/dynamo-backend-sglang-codeowners
 
 # === kv-memory  (@ai-dynamo/dynamo-kv-memory-codeowners) ===
@@ -208,6 +209,7 @@
 /dingo/common/utils/                                                         @ai-dynamo/dynamo-runtime-codeowners
 /lib/backend-common/                                                         @ai-dynamo/dynamo-runtime-codeowners
 /lib/llm/src/common/                                                         @ai-dynamo/dynamo-runtime-codeowners
+/lib/sidecar/common/                                                         @ai-dynamo/dynamo-runtime-codeowners
 /tests/dependencies/                                                         @ai-dynamo/dynamo-runtime-codeowners
 /tests/serve/launch/                                                         @ai-dynamo/dynamo-runtime-codeowners
 /tests/serve/trtllm/                                                         @ai-dynamo/dynamo-runtime-codeowners
@@ -217,6 +219,7 @@
 /lib/runtime/benches/                                                        @ai-dynamo/dynamo-runtime-codeowners
 /dingo/common/backend/                                                       @ai-dynamo/dynamo-runtime-codeowners
 /lib/runtime/examples/                                                       @ai-dynamo/dynamo-runtime-codeowners
+/lib/sidecar/README.md                                                       @ai-dynamo/dynamo-runtime-codeowners
 /tests/serve/fixtures/                                                       @ai-dynamo/dynamo-runtime-codeowners
 /lib/llm/src/discovery/                                                      @ai-dynamo/dynamo-runtime-codeowners
 /lib/runtime/src/utils/                                                      @ai-dynamo/dynamo-runtime-codeowners

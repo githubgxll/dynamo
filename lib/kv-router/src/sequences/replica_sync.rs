@@ -14,10 +14,10 @@ use super::multi_worker::{
     ActiveSequencesMultiWorker, ReplicaWorkerPolicy, SequencePublisher, SequenceSubscriber,
 };
 use super::prompt_registry::WorkerLoadSnapshot;
-use crate::protocols::{ActiveSequenceEvent, ActiveSequenceEventData, WorkerWithDpRank};
-
-const MAX_REPLICA_BATCH_EVENTS: usize = 256;
-const MAX_REPLICA_BATCH_DURATION: Duration = Duration::from_millis(1);
+use crate::protocols::{
+    ActiveSequenceEvent, ActiveSequenceEventData, MAX_REPLICA_BATCH_DURATION,
+    MAX_REPLICA_BATCH_EVENTS, WorkerWithDpRank,
+};
 const REPLICA_REORDER_STATE_TTL: Duration = Duration::from_secs(300);
 
 type ReplicaLifecycleKey = (u64, String);
@@ -27,7 +27,7 @@ type ReplicaLifecycleKey = (u64, String);
 /// The publisher serializes new events per request, but this also protects rolling upgrades
 /// and transports with at-least-once delivery or multiple in-flight publishers.
 #[derive(Default)]
-struct ReplicaLifecycleReorderState {
+pub(super) struct ReplicaLifecycleReorderState {
     free_tombstones: HashMap<ReplicaLifecycleKey, Instant>,
     free_tombstone_order: VecDeque<(Instant, ReplicaLifecycleKey)>,
     pending_prefill_completed: HashMap<ReplicaLifecycleKey, Instant>,
@@ -117,6 +117,15 @@ impl ReplicaBatchEffects {
 }
 
 impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
+    /// Apply one decoded replica-sync batch and flush its deferred effects once.
+    pub fn apply_replica_batch(&self, events: Vec<ActiveSequenceEvent>) {
+        let mut effects = ReplicaBatchEffects::default();
+        for event in events {
+            self.apply_replica_event(event, &mut effects);
+        }
+        self.flush_replica_batch_effects(&mut effects);
+    }
+
     /// Spawn a background task that subscribes to replica-sync events from peer routers
     /// and applies them to the local state.
     pub fn start_replica_sync<S: SequenceSubscriber + 'static>(
@@ -138,7 +147,6 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
         cancel_token: CancellationToken,
     ) -> anyhow::Result<()> {
         let mut effects = ReplicaBatchEffects::default();
-        let mut reorder_state = ReplicaLifecycleReorderState::default();
 
         loop {
             let result = tokio::select! {
@@ -170,7 +178,7 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
                 let event = next_event
                     .take()
                     .expect("replica batch event must be present");
-                self.apply_replica_event(event, &mut effects, &mut reorder_state);
+                self.apply_replica_event(event, &mut effects);
                 batch_events += 1;
 
                 if cancel_token.is_cancelled() {
@@ -212,7 +220,18 @@ impl<P: SequencePublisher + 'static> ActiveSequencesMultiWorker<P> {
         Ok(())
     }
 
-    fn apply_replica_event(
+    fn apply_replica_event(&self, event: ActiveSequenceEvent, effects: &mut ReplicaBatchEffects) {
+        let worker = event.worker;
+        let existing = self.replica_reorder_states.read().get(&worker).cloned();
+        let state = existing.unwrap_or_else(|| {
+            self.replica_reorder_states.write().entry(worker)
+                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(ReplicaLifecycleReorderState::default())))
+                .clone()
+        });
+        self.apply_replica_event_with_reorder(event, effects, &mut state.lock());
+    }
+
+    fn apply_replica_event_with_reorder(
         &self,
         event: ActiveSequenceEvent,
         effects: &mut ReplicaBatchEffects,

@@ -2260,6 +2260,7 @@ version = "1.3.0"
 dependencies = [
  "aligned-vec",
  "anyhow",
+ "arc-swap",
  "async-nats 0.49.1",
  "async-stream",
  "async-trait",
@@ -2662,6 +2663,28 @@ dependencies = [
  "tiktoken-rs",
  "tokenizers 0.21.4",
  "tracing",
+]
+
+[[package]]
+name = "dynamo-sglang-sidecar"
+version = "1.3.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "clap",
+ "dynamo-backend-common",
+ "dynamo-runtime",
+ "futures",
+ "prost 0.13.5",
+ "rand 0.9.4",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tonic 0.13.1",
+ "tonic-build 0.13.1",
+ "tracing",
+ "url",
 ]
 
 [[package]]

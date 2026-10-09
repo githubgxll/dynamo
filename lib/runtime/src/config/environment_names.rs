@@ -340,6 +340,11 @@ pub mod llm {
     /// varies per session and per release, wasting tokens and breaking prompt caching.
     pub const DYN_STRIP_ANTHROPIC_PREAMBLE: &str = "DYN_STRIP_ANTHROPIC_PREAMBLE";
 
+    /// When truthy, force usage in streaming chat and text-completion responses
+    /// regardless of the request's `stream_options.include_usage` value.
+    /// Unset or false preserves request-controlled defaults.
+    pub const DYN_ENABLE_FORCE_INCLUDE_USAGE: &str = "DYN_ENABLE_FORCE_INCLUDE_USAGE";
+
     /// Enable streaming tool call dispatch (`event: tool_call_dispatch` SSE events)
     pub const DYN_ENABLE_STREAMING_TOOL_DISPATCH: &str = "DYN_ENABLE_STREAMING_TOOL_DISPATCH";
 
@@ -604,6 +609,9 @@ pub mod router {
     /// Scheduling policy for the router queue ("fcfs" or "wspt").
     pub const DYN_ROUTER_QUEUE_POLICY: &str = "DYN_ROUTER_QUEUE_POLICY";
     pub const DYN_ROUTER_POLICY_CONFIG: &str = "DYN_ROUTER_POLICY_CONFIG";
+
+    /// Stale active-request cleanup guard in seconds; this is not a request timeout.
+    pub const DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS: &str = "DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS";
 }
 
 /// Request plane transport environment variables
@@ -805,6 +813,7 @@ mod tests {
             llm::DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS,
             llm::DYN_DISABLE_FRONTEND_ADMIN_API,
             llm::DYN_STRIP_ANTHROPIC_PREAMBLE,
+            llm::DYN_ENABLE_FORCE_INCLUDE_USAGE,
             llm::DYN_ENABLE_STREAMING_TOOL_DISPATCH,
             llm::DYN_ENABLE_STREAMING_REASONING_DISPATCH,
             llm::DYN_ENABLE_EXPERIMENTAL_PARSERS_V2,
@@ -864,6 +873,7 @@ mod tests {
             router::DYN_ROUTER_QUEUE_THRESHOLD,
             router::DYN_ROUTER_QUEUE_POLICY,
             router::DYN_ROUTER_POLICY_CONFIG,
+            router::DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS,
             request_plane::DYN_REQUEST_PLANE_CODEC,
             // TCP Response Stream
             tcp_response_stream::DYN_TCP_RESPONSE_STREAM_PORT,

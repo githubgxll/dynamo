@@ -3,7 +3,6 @@
 
 """Unit tests for SGLang backend components."""
 
-import json
 import logging
 import os
 import re
@@ -18,7 +17,6 @@ from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST
 from sglang.srt.managers.io_struct import ProfileReq
 
 import dingo.sglang._compat as sglang_compat
-import dingo.sglang.llm_engine as sglang_llm_engine
 from dingo.common.constants import DisaggregationMode, EmbeddingTransferMode
 from dingo.common.snapshot.constants import SNAPSHOT_CONTROL_DIR_ENV
 from dingo.sglang._compat import (
@@ -90,58 +88,6 @@ def _make_sglang_config(**overrides):
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
-
-
-@pytest.mark.parametrize(
-    ("guided_decoding", "expected"),
-    [
-        (
-            {"json": {"type": "object", "required": ["city"]}},
-            {"json_schema": json.dumps({"type": "object", "required": ["city"]})},
-        ),
-        (
-            {"json": '{"type":"object","required":["city"]}'},
-            {"json_schema": '{"type":"object","required":["city"]}'},
-        ),
-        ({"regex": r"[A-Z]{3}-\d{4}"}, {"regex": r"[A-Z]{3}-\d{4}"}),
-        (
-            {"grammar": 'root ::= "yes" | "no"'},
-            {"ebnf": 'root ::= "yes" | "no"'},
-        ),
-        ({"choice": ["yes", "no"]}, {"regex": "(yes|no)"}),
-    ],
-    ids=["json-object", "json-string", "regex", "grammar", "choice"],
-)
-def test_unified_guided_decoding_maps_sglang_constraints(guided_decoding, expected):
-    assert (
-        sglang_llm_engine.SglangLLMEngine._get_guided_decoding_params(guided_decoding)
-        == expected
-    )
-
-
-def test_unified_guided_decoding_escapes_choice_regex_metacharacters():
-    params = sglang_llm_engine.SglangLLMEngine._get_guided_decoding_params(
-        {"choice": ["a+b", "answer (A)", "[done]?"]}
-    )
-
-    assert params == {"regex": r"(a\+b|answer\ \(A\)|\[done\]\?)"}
-    for choice in ("a+b", "answer (A)", "[done]?"):
-        assert re.fullmatch(params["regex"], choice)
-
-
-def test_unified_guided_decoding_ignores_empty_choice():
-    assert (
-        sglang_llm_engine.SglangLLMEngine._get_guided_decoding_params({"choice": []})
-        == {}
-    )
-
-
-def test_unified_guided_decoding_preserves_structural_tag():
-    structural_tag = {"begin": "<tool>", "schema": {"type": "object"}}
-
-    assert sglang_llm_engine.SglangLLMEngine._get_guided_decoding_params(
-        {"structural_tag": structural_tag}
-    ) == {"structural_tag": json.dumps(structural_tag)}
 
 
 def test_compat_restores_sglang_top_level_exports():
@@ -903,43 +849,6 @@ def test_trace_does_not_activate_fpm_during_snapshot_startup(
 
 
 @pytest.mark.asyncio
-async def test_unified_from_args_marks_fpm_relay_unsupported(monkeypatch):
-    server_args = SimpleNamespace(
-        skip_tokenizer_init=True,
-        model_path="Qwen/Qwen3-0.6B",
-        served_model_name="Qwen/Qwen3-0.6B",
-    )
-    dynamo_args = SimpleNamespace(use_sglang_tokenizer=False)
-    config = SimpleNamespace(
-        server_args=server_args,
-        dynamo_args=dynamo_args,
-        serving_mode=DisaggregationMode.AGGREGATED,
-    )
-    worker_config = object()
-    parse_options = {}
-
-    async def fake_parse_args(argv, *, fpm_trace_relay_supported):
-        parse_options["fpm_trace_relay_supported"] = fpm_trace_relay_supported
-        return config
-
-    monkeypatch.delenv("DYN_ENABLE_TEST_LOGITS_PROCESSOR", raising=False)
-    monkeypatch.setattr(sglang_llm_engine, "parse_args", fake_parse_args)
-    monkeypatch.setattr(
-        sglang_llm_engine.WorkerConfig,
-        "from_runtime_config",
-        lambda *args, **kwargs: worker_config,
-    )
-
-    engine, result_worker_config = await sglang_llm_engine.SglangLLMEngine.from_args(
-        ["--model-path", "Qwen/Qwen3-0.6B"]
-    )
-
-    assert engine.server_args is server_args
-    assert result_worker_config is worker_config
-    assert parse_options["fpm_trace_relay_supported"] is False
-
-
-@pytest.mark.asyncio
 async def test_parse_args_sets_streaming_before_server_args_resolution(
     monkeypatch, mock_sglang_cli
 ):
@@ -1355,7 +1264,6 @@ async def test_lora_registration_model_type_gate(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    from dingo.common.constants import DisaggregationMode
     from dingo.sglang.request_handlers import handler_base
     from dingo.sglang.request_handlers.handler_base import LoraMixin
 
