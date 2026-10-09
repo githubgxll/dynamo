@@ -131,6 +131,8 @@ class EnvironmentClosureTests(unittest.TestCase):
                     commands.append(command)
                     if command[:3] == ["uv", "pip", "compile"]:
                         Path(command[command.index("--output-file") + 1]).write_text(lock.read_text())
+                    if output is not None:
+                        output.write_text("Fixture checker passed.\n")
 
                 argv = ["prepare_environment.py", "--phase", phase, "--inputs", str(inputs), "--lock", str(lock), "--evidence", str(evidence)]
                 with patch.object(prep.sys, "argv", argv), patch.object(prep.sys, "version_info", (3, 10)), patch.object(prep.sys, "platform", "linux"), patch.object(prep.platform, "machine", return_value="x86_64"), patch.object(prep.platform, "platform", return_value="test Linux"), patch.object(prep, "acquire_original") as acquire, patch.object(prep, "patch_facexlib"), patch.object(prep, "run", side_effect=capture):

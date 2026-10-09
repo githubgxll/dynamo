@@ -16,10 +16,12 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -128,6 +130,50 @@ def run(command: list[str], output: Path | None = None) -> None:
         subprocess.run(command, check=True)
 
 
+def check_dependencies(evidence: Path) -> None:
+    """Expose both installed-environment checks before enforcing their result."""
+    checks = [
+        ("pip-check.txt", [sys.executable, "-m", "pip", "check"]),
+        ("uv-pip-check.txt", ["uv", "pip", "check", "--python", sys.executable]),
+    ]
+    records = []
+    for filename, command in checks:
+        output = evidence / filename
+        exit_code, error_type = 0, None
+        try:
+            run(command, output)
+        except subprocess.CalledProcessError as error:
+            exit_code = error.returncode
+        except OSError as error:
+            exit_code, error_type = None, type(error).__name__
+        if output.is_file():
+            diagnostic = output.read_text(encoding="utf-8", errors="replace")
+            # Checker messages normally contain package names and constraints.
+            # Omit any embedded URL rather than emitting credentials/CDN tokens.
+            def redact_url(match):
+                try:
+                    return "<URL host=" + str(urllib.parse.urlsplit(match.group()).hostname) + ">"
+                except ValueError:
+                    return "<URL omitted>"
+            diagnostic = re.sub(r"https?://\S+", redact_url, diagnostic)
+            output.write_text(diagnostic, encoding="utf-8")
+        else:
+            diagnostic = "Checker did not produce its diagnostic file.\n"
+            exit_code, error_type = None, error_type or "MissingDiagnostic"
+        print(f"=== {filename} (exit={exit_code}) ===", flush=True)
+        print(diagnostic, end="" if diagnostic.endswith("\n") else "\n", flush=True)
+        if error_type:
+            print("Checker execution error: " + error_type, flush=True)
+        print(f"=== end {filename} ===", flush=True)
+        records.append({"file": filename, "exit_code": exit_code, "error_type": error_type})
+    passed = all(record["exit_code"] == 0 for record in records)
+    summary = {"status": "PASS" if passed else "FAIL", "checks": records}
+    (evidence / "dependency-checks.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print("Dependency checks: " + json.dumps(summary), flush=True)
+    if not passed:
+        raise RuntimeError("Installed dependency checks failed; review the pip-check.txt and uv-pip-check.txt sections above")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=["prepare", "publish"], required=True)
@@ -163,8 +209,7 @@ def main() -> None:
     run(["uv", "pip", "install", "--python", sys.executable, "--require-hashes", "--no-build-isolation",
          "--default-index", sources["python_index"], "--index", sources["torch_index"],
          "--index-strategy", "unsafe-best-match", "-r", str(args.lock)])
-    run([sys.executable, "-m", "pip", "check"], args.evidence / "pip-check.txt")
-    run(["uv", "pip", "check", "--python", sys.executable], args.evidence / "uv-pip-check.txt")
+    check_dependencies(args.evidence)
     run([sys.executable, "-m", "pip", "inspect", "--local"], args.evidence / "pip-inspect.json")
     run([sys.executable, "-m", "pip", "freeze", "--all"], args.evidence / "installed-freeze.txt")
     (args.evidence / "dependency-build.json").write_text(json.dumps({

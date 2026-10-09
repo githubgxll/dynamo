@@ -345,3 +345,24 @@ CI日志会同时显示简短 `Asset download attempt 1/3 ...` 和脱敏的 `Ass
 成功制品中新增 `asset-acquisition.jsonl`；失败RUN的文件系统不能由最终target导出，因此失败时应保存CI中的同名事件日志。日志只显示代理配置是否存在（如 `https_proxy_configured`），不打印代理地址、密码或签名重定向URL；配置存在也不证明目标请求实际通过了该代理。
 
 如果同一地址3次仍以TLS EOF失败，交给Runner维护者：job链接、资产ID、原官方域名、三次attempt/reason、bytes_received及配置布尔值。请其确认该Runner的 **BuildKit RUN** 实际出口、代理/NO_PROXY和CDN连接是否稳定。当前workflow没有显式传递代理build-args，但Docker客户端配置可能自动注入，不能仅凭代码判定未配置；Docker拉镜像代理、本机Git代理和Pod网络也不能替代这一步证据。此时应修复构建端连接或使用同事确认的内部资产镜像，不继续随机换源或放宽校验。
+
+## AMT三次TLS失败，同时pip check失败：分开处理
+
+2026-10-08后续日志（源码3527caf34）同时显示两项失败，不能归为一个网络错误：
+
+- assets：AMT资产准备访问huggingface.co，三次均为SSLEOFError，均未收到响应正文；每次约5秒，加2/5秒退避总计约22秒。有限重试已运行但未恢复连接，需Runner维护者检查实际出口及代理链路。日志片段没有代理配置事件和stored/hit记录，不能据此判断缓存命中情况；域名级日志也不能单独区分HF提交解析请求与权重请求。
+- environment：`python -m pip check` 返回1，是独立检查失败，本次不是CANCELED。通常与缺包或版本要求有关，也可能是检查程序错误；当前片段没有正文，不能确定具体包或版本。
+
+发现原脚本把pip检查正文重定向到失败层内部文件，且第一项失败就停止，导致uv检查尚未运行。现在两项都会执行并保留TXT，正文和各自退出码同时输出到CI，最终任一失败仍阻止构建。可能包含的URL会隐藏以避免凭据/签名查询出现在证据；不会打印完整pip-inspect或环境变量。成功制品另有 `dependency-checks.json`；失败层不能自动导出，需从CI日志获取检查正文。
+
+下一次提交仍使用上面的Windows CMD入口，新的诊断只随新提交生效，不要重跑旧提交期待获得正文。新日志搜索以下标记，并保留两段完整内容：
+
+```text
+=== pip-check.txt (exit=...) ===
+=== end pip-check.txt ===
+=== uv-pip-check.txt (exit=...) ===
+=== end uv-pip-check.txt ===
+Dependency checks:
+```
+
+这次只修正诊断可见性，未修改依赖版本、源地址、下载重试策略或发布规则。获得具体冲突正文后再修依赖；网络侧不再靠增加重试次数解决。如果并行资产阶段更早失败导致environment被取消，本次运行仍可能到不了依赖检查，不能声称一定能拿到报告。
