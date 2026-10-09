@@ -63,8 +63,7 @@ echo "=========================================="
 # run frontend + KV router
 # dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 python -m dingo.frontend \
-    --router-mode kv \
-    --router-reset-states &
+    --router-mode kv &
 
 # run workers
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag

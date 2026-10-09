@@ -193,7 +193,8 @@ vllm:
 sglang:
   - 'container/deps/sglang/**'
   - 'examples/backends/sglang/**'
-  - 'dingo/sglang/**'
+  - 'dingo/sglang*/**'
+  - 'lib/backend/sglang-sidecar/**'
   - 'container/templates/sglang_*'
   - 'container/deps/sglang/**'
   - '!**/*.md'

@@ -26,6 +26,9 @@ dynamo:
   planner_build_image_tag: 3.12-slim
   planner_runtime_image: nvcr.io/nvidia/distroless/python
   planner_runtime_image_tag: 3.12-v4.0.3
+  # Self-baseline of the distroless-python runtime; the licenses stage subtracts
+  # it so planner NOTICES attribute only what the builder adds on top.
+  planner_baseline_sbom: python@043085f9
   python_version: "3.12"
   # Pin the manylinux builder instead of following the mutable `latest` tag.
   # Keep the same dated tag for x86_64 and aarch64.
@@ -77,7 +80,7 @@ vllm:
     base_image: ubuntu
     runtime_image: vllm/vllm-openai-cpu
     base_image_tag: 22.04
-    runtime_image_tag: v0.24.0
+    runtime_image_tag: v0.25.1
     # baseline_sbom: not yet captured for cpu — runtime build runs without subtraction
   flashinf_ref: v0.6.16.post3
   vllm_omni_ref: "v0.29.0rc1"

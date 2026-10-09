@@ -54,6 +54,7 @@ dynamo-runtime = { path = "../../runtime" }
 dynamo-mocker = { path = "../../mocker" }
 dynamo-parsers = { version = "7.0.0" }
 dynamo-backend-common = { path = "../../backend-common" }
+dynamo-sglang-sidecar = { path = "../../backend/sglang-sidecar" }
 
 anyhow = { version = "1" }
 async-stream = { version = "0.3" }
@@ -113,6 +114,8 @@ dynamo-llm = { path = "../../llm", default-features = false }
 dynamo-llm = { path = "../../llm", default-features = false }
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.31.0", features = ["trace"] }
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [profile.profiling]
 inherits = "release"

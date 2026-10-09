@@ -23,6 +23,7 @@ from dingo.sglang.args import Config
 from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.mm_disagg_utils import (
+    AUDIO_URL_KEY,
     IMAGE_URL_KEY,
     VIDEO_URL_KEY,
     build_disagg_mm_kwargs,
@@ -560,9 +561,10 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         else:
             raise_if_unextracted_multimodal(request)
 
-            # Extract image/video URLs for multimodal requests. SGLang's mm_data_processor
+            # Extract media URLs for multimodal requests. SGLang's mm_data_processor
             # handles loading/preprocessing, and the scheduler does vision encoding.
             mm_data = request.get("multi_modal_data", {})
+            audio_data = extract_media_urls(mm_data, AUDIO_URL_KEY)
             video_data = extract_media_urls(mm_data, VIDEO_URL_KEY)
 
             image_data: list[str] | list[PILImage] | None
@@ -594,6 +596,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             agg = await self.engine.async_generate(
                 **input_param,
                 image_data=image_data,
+                audio_data=audio_data,
                 video_data=video_data,
                 sampling_params=sampling_params,
                 stream=True,

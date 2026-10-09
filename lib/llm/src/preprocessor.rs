@@ -28,7 +28,6 @@ use dynamo_protocols::types::{
     ChatCompletionToolChoiceOption, EncodingFormat,
 };
 use dynamo_renderer::{OAIPromptFormatter, PromptRenderError, RenderedPrompt};
-use dynamo_runtime::config::is_truthy;
 use dynamo_runtime::error::{DynamoError, ErrorType};
 use futures::Stream;
 use futures::stream::{self, StreamExt};
@@ -386,6 +385,7 @@ impl OpenAIPreprocessor {
     fn backend_extra_args<R: OAIChatLikeRequest + NvExtProvider>(
         request: &R,
         reasoning_parser_configured: bool,
+        reasoning_ended: Option<bool>,
     ) -> Option<serde_json::Value> {
         let mut extra_args = serde_json::Map::new();
 
@@ -414,6 +414,9 @@ impl OpenAIPreprocessor {
                 "reasoning_parser_kwargs".to_string(),
                 serde_json::json!({ "chat_template_kwargs": chat_template_args }),
             );
+        }
+        if reasoning_parser_configured && let Some(reasoning_ended) = reasoning_ended {
+            extra_args.insert("reasoning_ended".to_string(), reasoning_ended.into());
         }
 
         if extra_args.is_empty() {
@@ -1124,9 +1127,11 @@ impl OpenAIPreprocessor {
             }));
         }
 
-        if let Some(extra_args) =
-            Self::backend_extra_args(request, self.runtime_config.reasoning_parser.is_some())
-        {
+        if let Some(extra_args) = Self::backend_extra_args(
+            request,
+            self.runtime_config.reasoning_parser.is_some(),
+            None,
+        ) {
             builder.extra_args(Some(extra_args));
         }
 
@@ -1544,9 +1549,14 @@ impl OpenAIPreprocessor {
                 extra_args["formatted_prompt"] = serde_json::Value::String(prompt.to_string());
             }
 
-            if let Some(serde_json::Value::Object(backend_extra_args)) =
-                Self::backend_extra_args(request, self.runtime_config.reasoning_parser.is_some())
-            {
+            if let Some(serde_json::Value::Object(backend_extra_args)) = Self::backend_extra_args(
+                request,
+                self.runtime_config.reasoning_parser.is_some(),
+                Self::prompt_injected_reasoning_ended_arg(
+                    self.runtime_config.reasoning_parser.as_deref(),
+                    formatted_prompt,
+                ),
+            ) {
                 let extra_args_obj = extra_args
                     .as_object_mut()
                     .expect("multimodal extra_args must be an object");
@@ -2196,23 +2206,6 @@ impl OpenAIPreprocessor {
     where
         S: Stream<Item = Annotated<NvCreateChatCompletionStreamResponse>> + Send + 'static,
     {
-        // Kimi K2.5 tool-continuation turns produce the final user-facing
-        // answer directly from the tool result. If the prompt happened to end
-        // with `<think>`, starting the force-reasoning parser in reasoning mode
-        // mislabels that answer as reasoning_content. DeepSeek V4 is the
-        // opposite: its formatter can seed `<think>` for post-tool turns and
-        // the model may emit only the closing `</think>`, so preserving the
-        // injected-reasoning signal is required to avoid leaking the close tag.
-        let last_is_tool = matches!(
-            request.inner.messages.last(),
-            Some(ChatCompletionRequestMessage::Tool(_))
-        );
-        let suppress_reasoning_after_tool = last_is_tool
-            && matches!(
-                self.runtime_config.reasoning_parser.as_deref(),
-                Some("kimi_k25")
-            );
-
         // Guided output may be bare JSON or `reasoning</think>JSON`. Supported
         // parsers inspect the stream shape before deciding whether to parse it.
         let is_guided_tool_choice = matches!(
@@ -2220,20 +2213,28 @@ impl OpenAIPreprocessor {
             Some(ChatCompletionToolChoiceOption::Required)
                 | Some(ChatCompletionToolChoiceOption::Named(_))
         );
+        let is_structured_response = Self::has_structured_response_format(request);
+        let is_guided_output = is_guided_tool_choice || is_structured_response;
         let reasoning_parser = self.runtime_config.reasoning_parser.as_deref();
         // Force parsers opt in by capability; prompt-seeded parsers opt in per request.
         // Structural-tag tool formats do not use this guided-JSON detection path.
-        let inspect_force_reasoning_guided_output = is_guided_tool_choice
+        let inspect_force_reasoning_guided_output = is_guided_output
             && !uses_tool_call_structural_tag
             && Self::supports_reasoning_before_guided_json(reasoning_parser);
-        let inspect_prompt_injected_guided_output = is_guided_tool_choice
+        let inspect_prompt_injected_guided_output = is_guided_output
             && prompt_injected_reasoning
             && !uses_tool_call_structural_tag
-            && Self::skips_guided_json_when_prompt_injected(reasoning_parser);
-        let bypass_reasoning_for_bare_guided_json =
-            inspect_force_reasoning_guided_output || inspect_prompt_injected_guided_output;
+            && (Self::skips_guided_json_when_prompt_injected(reasoning_parser)
+                || (is_structured_response
+                    && Self::skips_structured_response_when_prompt_injected(reasoning_parser)));
+        let inspect_unsupported_structured_response_reasoning_gate = is_structured_response
+            && !uses_tool_call_structural_tag
+            && !Self::structured_response_supports_sglang_reasoning_gate(reasoning_parser);
+        let bypass_reasoning_for_bare_guided_json = inspect_force_reasoning_guided_output
+            || inspect_prompt_injected_guided_output
+            || inspect_unsupported_structured_response_reasoning_gate;
         // Preserve the legacy bypass for force-reasoning parsers not yet opted in.
-        let skip_reasoning_for_guided_json = is_guided_tool_choice
+        let skip_reasoning_for_guided_json = is_guided_output
             && !uses_tool_call_structural_tag
             && Self::is_force_reasoning_parser(reasoning_parser)
             && !inspect_force_reasoning_guided_output;
@@ -2246,11 +2247,9 @@ impl OpenAIPreprocessor {
         // Try to parse reasoning content only if parser is configured.
         let should_parse_reasoning = self.runtime_config.reasoning_parser.is_some()
             && !reasoning_disabled_by_request
-            && !suppress_reasoning_after_tool
             && !skip_reasoning_for_guided_json;
         let should_strip_disabled_reasoning_start = reasoning_disabled_by_request
             && Self::is_nemotron_force_reasoning(self.runtime_config.reasoning_parser.as_deref())
-            && !suppress_reasoning_after_tool
             && !skip_reasoning_for_guided_json;
         let guided_reasoning_start_token =
             if should_parse_reasoning && bypass_reasoning_for_bare_guided_json {
@@ -2992,6 +2991,7 @@ impl OpenAIPreprocessor {
                     | "step3"
                     | "kimi_k25"
                     | "mistral"
+                    | "minimax_m2"
                     | "minimax_append_think"
                     | "nemotron_nano"
                     | "nemotron3"
@@ -3011,6 +3011,7 @@ impl OpenAIPreprocessor {
                     | "step3"
                     | "kimi_k25"
                     | "mistral"
+                    | "minimax_m2"
                     | "nemotron_nano"
                     | "nemotron3"
                     | "nemotron_v3"
@@ -3118,7 +3119,8 @@ impl OpenAIPreprocessor {
                 !Self::deepseek_renderer_reasoning_enabled(chat_template_args, false)
             }
             Some(
-                "deepseek_r1" | "deepseek_v3_2" | "deepseek_v4" | "deepseek-v4" | "deepseekv4",
+                "deepseek_r1" | "deepseek_v3_2" | "deepseek_v4" | "deepseek-v4" | "deepseekv4"
+                | "minimax_m2",
             ) => !Self::deepseek_renderer_reasoning_enabled(chat_template_args, true),
             Some("gemma4") | Some("gemma-4") => {
                 if let Some(enabled) = dynamo_renderer::thinking_bool_from_args(chat_template_args)
@@ -3636,6 +3638,10 @@ impl
         request.enable_usage_for_nonstreaming(original_stream_flag);
 
         request.inner.stream = Some(true);
+        Self::normalize_thinking_arg(
+            &mut request,
+            self.runtime_config.reasoning_parser.as_deref(),
+        );
 
         // create a response generator
         let response_generator = request.response_generator(request_id.clone());
@@ -4290,6 +4296,7 @@ mod tests {
             "step3",
             "kimi_k25",
             "mistral",
+            "minimax_m2",
             "nemotron_nano",
             "nemotron3",
             "nemotron_v3",
@@ -4334,7 +4341,8 @@ mod tests {
                 }))
                 .unwrap();
 
-            let extra_args = OpenAIPreprocessor::backend_extra_args(&request, true).unwrap();
+            let extra_args =
+                OpenAIPreprocessor::backend_extra_args(&request, true, Some(false)).unwrap();
 
             assert_eq!(
                 extra_args["reasoning_parser_kwargs"]["chat_template_kwargs"],
@@ -4343,6 +4351,7 @@ mod tests {
                     "reasoning_effort": "high"
                 })
             );
+            assert_eq!(extra_args["reasoning_ended"], false);
         }
     }
 
@@ -4358,10 +4367,12 @@ mod tests {
         }))
         .unwrap();
 
-        let extra_args = OpenAIPreprocessor::backend_extra_args(&request, false).unwrap();
+        let extra_args =
+            OpenAIPreprocessor::backend_extra_args(&request, false, Some(false)).unwrap();
 
         assert_eq!(extra_args["sampling_options"]["detokenize"], false);
         assert!(extra_args.get("reasoning_parser_kwargs").is_none());
+        assert!(extra_args.get("reasoning_ended").is_none());
     }
 
     #[test]
@@ -4372,7 +4383,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(OpenAIPreprocessor::backend_extra_args(&request, true).is_none());
+        assert!(OpenAIPreprocessor::backend_extra_args(&request, true, None).is_none());
     }
 
     #[test]
@@ -4472,7 +4483,7 @@ mod tests {
         }))
         .unwrap();
 
-        let extra_args = OpenAIPreprocessor::backend_extra_args(&request, false).unwrap();
+        let extra_args = OpenAIPreprocessor::backend_extra_args(&request, false, None).unwrap();
 
         assert_eq!(extra_args["nvext"]["cache_salt"], "step_7");
         assert_eq!(
@@ -4872,6 +4883,110 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_kimi_thinking_normalization_keeps_template_and_gates_in_sync() {
+        let template: dynamo_renderer::ChatTemplate = serde_json::from_value(serde_json::json!({
+            "chat_template": "{% if thinking == true and enable_thinking == true %}<think>{% elif thinking == false and enable_thinking == false %}<chat>{% else %}<mismatch>{% endif %}"
+        }))
+        .unwrap();
+        let formatter = dynamo_renderer::PromptFormatter::from_parts(
+            template,
+            dynamo_renderer::ContextMixins::default(),
+            false,
+        )
+        .unwrap();
+        let cases = [
+            (serde_json::json!(true), true, "true"),
+            (serde_json::json!("true"), true, "string true"),
+            (serde_json::json!("TRUE"), true, "uppercase true"),
+            (serde_json::json!("1"), true, "string one"),
+            (serde_json::json!("yes"), true, "yes"),
+            (serde_json::json!("on"), true, "on"),
+            (serde_json::json!(1), true, "one"),
+            (serde_json::json!(false), false, "false"),
+            (serde_json::json!("false"), false, "string false"),
+            (serde_json::json!("no"), false, "no"),
+            (serde_json::json!("off"), false, "off"),
+            (serde_json::json!(0), false, "zero"),
+        ];
+
+        let assert_case =
+            |key: Option<&str>, value: Option<&serde_json::Value>, expected, description| {
+                let mut request: NvCreateChatCompletionRequest =
+                    serde_json::from_value(serde_json::json!({
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "model": "moonshotai/Kimi-K2.5-Instruct"
+                    }))
+                    .unwrap();
+                if let (Some(key), Some(value)) = (key, value) {
+                    request.chat_template_args = Some(std::collections::HashMap::from([(
+                        key.to_string(),
+                        value.clone(),
+                    )]));
+                }
+
+                OpenAIPreprocessor::normalize_thinking_arg(&mut request, Some("kimi_k25"));
+                let args = request.chat_template_args.as_ref();
+                assert_eq!(
+                    dynamo_renderer::thinking_bool_from_args(args),
+                    Some(expected),
+                    "renderer helper mismatch for {description}"
+                );
+                assert_eq!(
+                    OpenAIPreprocessor::sglang_effective_reasoning_enabled(Some("kimi_k25"), args),
+                    expected,
+                    "SGLang gate mismatch for {description}"
+                );
+                assert_eq!(
+                    !OpenAIPreprocessor::is_reasoning_disabled_by_request(Some("kimi_k25"), args),
+                    expected,
+                    "postprocessor gate mismatch for {description}"
+                );
+
+                let rendered = match &formatter {
+                    dynamo_renderer::PromptFormatter::OAI(formatter) => {
+                        formatter.render(&request).unwrap()
+                    }
+                };
+                assert_eq!(
+                    rendered,
+                    if expected { "<think>" } else { "<chat>" },
+                    "rendered prompt mismatch for {description}"
+                );
+            };
+
+        for key in ["thinking", "enable_thinking"] {
+            for (value, expected, description) in &cases {
+                assert_case(Some(key), Some(value), *expected, *description);
+            }
+        }
+        assert_case(None, None, true, "omitted Kimi default");
+
+        let mut conflicting_request: NvCreateChatCompletionRequest =
+            serde_json::from_value(serde_json::json!({
+                "messages": [{"role": "user", "content": "hello"}],
+                "model": "moonshotai/Kimi-K2.5-Instruct",
+                "chat_template_kwargs": {
+                    "thinking": "true",
+                    "enable_thinking": false
+                }
+            }))
+            .unwrap();
+        OpenAIPreprocessor::normalize_thinking_arg(&mut conflicting_request, Some("kimi_k25"));
+        let args = conflicting_request.chat_template_args.as_ref().unwrap();
+        assert_eq!(args.get("thinking"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            args.get("enable_thinking"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let rendered = match &formatter {
+            dynamo_renderer::PromptFormatter::OAI(formatter) => {
+                formatter.render(&conflicting_request).unwrap()
+            }
+        };
+        assert_eq!(rendered, "<think>");
+    }
+
     /// PRE.2 — Per-request reasoning gate. See `lib/llm/PREPROCESSOR_CASES.md`.
     #[test]
     fn test_is_reasoning_disabled_by_request() {
@@ -5052,6 +5167,24 @@ mod tests {
                 Some(&thinking_false),
                 true,
                 "deepseek_v3_2 + thinking=false → disabled",
+            ),
+            (
+                Some("minimax_m2"),
+                Some(&thinking_false),
+                true,
+                "minimax_m2 + thinking=false → disabled",
+            ),
+            (
+                Some("minimax_m2"),
+                Some(&thinking_true),
+                false,
+                "minimax_m2 + thinking=true → enabled",
+            ),
+            (
+                Some("minimax_m2"),
+                None,
+                false,
+                "minimax_m2 + no args → enabled",
             ),
             (
                 Some("basic"),
