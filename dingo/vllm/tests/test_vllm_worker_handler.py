@@ -65,9 +65,7 @@ def _make_config(
     config.multimodal_embedding_cache_capacity_gb = (
         multimodal_embedding_cache_capacity_gb
     )
-    config.engine_args.create_model_config.return_value.get_diff_sampling_param.return_value = (
-        {}
-    )
+    config.engine_args.create_model_config.return_value.get_diff_sampling_param.return_value = {}
     return config
 
 
@@ -211,7 +209,45 @@ class TestResponseFormatSamplingParams:
         assert params.top_p == 0.8
         assert params.seed == 42
         assert params.max_tokens == 17
-        assert params.skip_special_tokens is False
+        # The worker returns token IDs; detokenization belongs to the frontend.
+        assert params.detokenize is False
+        assert request["output_options"]["skip_special_tokens"] is False
+
+    def test_native_structural_tag_survives_wire_transport(self):
+        tag = json.dumps(
+            {
+                "type": "structural_tag",
+                "format": {
+                    "type": "tag",
+                    "begin": "<tool_call>get_weather",
+                    "content": {"type": "const_string", "value": "杭州"},
+                    "end": "</tool_call>",
+                },
+            },
+            ensure_ascii=False,
+        )
+        request = _make_raw_frontend_request()
+        request["sampling_options"] = {"guided_decoding": {"structural_tag": tag}}
+        request["output_options"] = {"skip_special_tokens": False}
+        request["extra_args"] = {
+            "reasoning_ended": False,
+            "reasoning_parser_kwargs": {
+                "chat_template_kwargs": {"enable_thinking": True}
+            },
+        }
+        transported = json.loads(json.dumps(request))
+        params = mod.build_sampling_params(transported, default_sampling_params={})
+        assert params.structured_outputs.structural_tag == tag
+        assert params.structured_outputs.json is None
+        assert params.structured_outputs.regex is None
+        assert params.structured_outputs.grammar is None
+        assert not params.structured_outputs.json_object
+        assert params.detokenize is False
+        assert transported["output_options"]["skip_special_tokens"] is False
+        assert mod._request_reasoning_metadata(transported) == (
+            False,
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        )
 
     def test_missing_guidance_does_not_add_structured_outputs(self):
         params = mod.build_sampling_params(

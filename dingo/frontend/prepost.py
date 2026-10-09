@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +15,7 @@ from vllm.entrypoints.chat_utils import make_tool_call_id
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.reasoning import ReasoningParser
 from vllm.renderers import ChatParams
-from vllm.sampling_params import SamplingParams
+from vllm.sampling_params import SamplingParams, StructuredOutputsParams
 from vllm.tokenizers import TokenizerLike
 from vllm.tool_parsers import ToolParser
 from vllm.utils.async_utils import make_async
@@ -44,8 +45,7 @@ class _Renderer(Protocol):
 
     async def render_messages_async(
         self, messages: Any, params: ChatParams
-    ) -> tuple[Any, dict[str, Any]]:
-        ...
+    ) -> tuple[Any, dict[str, Any]]: ...
 
 
 @dataclass
@@ -124,7 +124,13 @@ def _validate_chat_completion_request(
     ):
         # model_validate(model) can return an unvalidated model_construct instance
         # unchanged. Revalidate its fields instead to normalize nested objects.
-        payload = dict(request) if isinstance(request, ChatCompletionRequest) else request
+        # Serializing the whole partially constructed model can invoke nested
+        # tool serializers on raw dicts. Only normalize the typed named choice,
+        # which vLLM's before-validator requires to be a dict.
+        payload = dict(request)
+        tool_choice = payload.get("tool_choice")
+        if hasattr(tool_choice, "model_dump"):
+            payload["tool_choice"] = tool_choice.model_dump(by_alias=True)
         return ChatCompletionRequest.model_validate(payload)
     return validated_request
 
@@ -154,6 +160,77 @@ def _guided_decoding_from_structured_outputs(
     if structured_outputs.whitespace_pattern is not None:
         guided_decoding["whitespace_pattern"] = structured_outputs.whitespace_pattern
     return guided_decoding
+
+
+def _is_forced_tool_choice(tool_choice: Any) -> bool:
+    return tool_choice == "required" or getattr(tool_choice, "type", None) == "function"
+
+
+def _request_with_native_tool_guidance(
+    request: ChatCompletionRequest,
+    tool_parser_class: type[ToolParser] | None,
+) -> ChatCompletionRequest | None:
+    # alaya-release builds generic JSON for forced tools even for GLM parsers,
+    # whose output extractor only understands native XML tool calls.
+    if not (
+        _is_forced_tool_choice(request.tool_choice)
+        and getattr(tool_parser_class, "supports_required_and_named", None) is False
+        and getattr(tool_parser_class, "structural_tag_model", None) == "glm_4_7"
+    ):
+        return None
+
+    try:
+        # Validate even typed/model_construct input before discarding answer
+        # constraints. Do not extract/merge response_format with those constraints:
+        # valid individual formats may conflict, but forced tools supersede both.
+        request = ChatCompletionRequest.model_validate(
+            request.model_dump(by_alias=True, exclude_unset=True)
+        )
+        if request.response_format is not None:
+            # Preserve standalone format errors (e.g. a missing JSON schema)
+            # without combining two constraints that tools will supersede.
+            request.model_copy(
+                update={"structured_outputs": None}
+            ).extract_structured_outputs()
+        if not request.tools:
+            raise ValueError("Forced tool choice requires a nonempty tools list")
+        names = {tool.function.name for tool in request.tools}
+        if not all(names):
+            raise ValueError("Forced tools must have nonempty function names")
+        if request.tool_choice != "required" and (
+            request.tool_choice.function.name not in names
+        ):
+            raise ValueError("Forced tool choice must name an available function")
+
+        from vllm.tool_parsers.structural_tag_registry import get_model_structural_tag
+
+        tag = get_model_structural_tag(
+            model="glm_4_7",
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            reasoning=False,
+        )
+        if tag is None:
+            raise ValueError("The structural tag registry returned no constraint")
+        request.structured_outputs = StructuredOutputsParams(
+            structural_tag=(
+                tag if isinstance(tag, str) else json.dumps(tag.model_dump())
+            )
+        )
+        request.response_format = None
+    except (
+        ImportError,
+        AttributeError,
+        KeyError,
+        NotImplementedError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(
+            f"Cannot enforce native GLM forced tool calling: {exc}"
+        ) from exc
+    return request
 
 
 def _reasoning_parser_enabled(
@@ -213,10 +290,10 @@ def _prepare_request(
         )
         else None
     )
-    raw_ctk = (
-        request.get("chat_template_args") if isinstance(request, dict) else None
+    raw_ctk = request.get("chat_template_args") if isinstance(request, dict) else None
+    chat_template_kwargs = dict(
+        request_for_sampling.chat_template_kwargs or raw_ctk or {}
     )
-    chat_template_kwargs = dict(request_for_sampling.chat_template_kwargs or raw_ctk or {})
     chat_template_kwargs["reasoning_effort"] = request_for_sampling.reasoning_effort
 
     if _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs):
@@ -277,7 +354,14 @@ async def preprocess_chat_request(
     enable_auto_tool_choice: bool = False,
 ) -> PreprocessResult:
     validated_request = _validate_chat_completion_request(request)
-    # Capture caller intent before either parser can mutate the request.
+    native_request = _request_with_native_tool_guidance(
+        validated_request, tool_parser_class
+    )
+    native_guidance_installed = native_request is not None
+    if native_request is not None:
+        validated_request = native_request
+    # Capture caller intent before either parser can mutate the request. Native
+    # forced guidance has already replaced (not merged) the answer constraints.
     client_guidance = deepcopy(
         _guided_decoding_from_structured_outputs(
             validated_request.extract_structured_outputs()
@@ -286,11 +370,7 @@ async def preprocess_chat_request(
     client_structured_guidance = deepcopy(
         _guided_decoding_from_structured_outputs(validated_request.structured_outputs)
     )
-    tool_choice = validated_request.tool_choice
-    is_forced_tool_choice = tool_choice == "required" or (
-        getattr(tool_choice, "type", None) == "function"
-        and bool(getattr(getattr(tool_choice, "function", None), "name", None))
-    )
+    is_forced_tool_choice = _is_forced_tool_choice(validated_request.tool_choice)
     guidance_snapshots: dict[str, Any] = {}
     (
         request_for_sampling,
@@ -316,7 +396,15 @@ async def preprocess_chat_request(
     # can combine a parser grammar with the caller's now-stale response_format.
     # A reasoning rewrite wins over caller constraints, unlike automatic tool
     # guidance; independent snapshots also detect in-place schema changes.
-    if (
+    if native_guidance_installed:
+        # Never silently lose native enforcement to a tool/reasoning adjustment,
+        # nor drop it merely because the caller supplied the identical tag.
+        if adjusted_guidance != client_structured_guidance:
+            raise ValueError(
+                "A parser adjustment replaced native GLM forced tool guidance"
+            )
+        guided_decoding = adjusted_guidance
+    elif (
         _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs)
         and adjusted_guidance != guidance_snapshots["after_tool_parser"]
     ):

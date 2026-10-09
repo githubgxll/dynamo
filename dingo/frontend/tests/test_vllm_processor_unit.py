@@ -10,12 +10,13 @@ tool_choice='none' and the exclude_tools_when_tool_choice_none flag.
 import json
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine as _FakeRoutedEngine
 from transformers import AutoTokenizer
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
+from vllm.exceptions import VLLMValidationError
 from vllm.sampling_params import StructuredOutputsParams
 from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
@@ -75,9 +76,9 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
             tool_parser_class=None,
             exclude_tools_when_tool_choice_none=True,
         )
-        assert (
-            chat_params.chat_template_kwargs["tools"] is None
-        ), "tool_choice=none with exclude flag should strip tools from template"
+        assert chat_params.chat_template_kwargs["tools"] is None, (
+            "tool_choice=none with exclude flag should strip tools from template"
+        )
 
     def test_tool_choice_none_keeps_tools_when_flag_off(self, tokenizer):
         """When exclude flag is off, tool_choice=none still includes tools in template kwargs."""
@@ -88,9 +89,9 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
             exclude_tools_when_tool_choice_none=False,
         )
         tools = chat_params.chat_template_kwargs["tools"]
-        assert (
-            tools is not None and len(tools) == 1
-        ), "tool_choice=none with flag off should keep tools in template"
+        assert tools is not None and len(tools) == 1, (
+            "tool_choice=none with flag off should keep tools in template"
+        )
 
     def test_tool_choice_auto_keeps_tools(self, tokenizer):
         """tool_choice=auto should always include tools regardless of flag."""
@@ -101,9 +102,9 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
             exclude_tools_when_tool_choice_none=True,
         )
         tools = chat_params.chat_template_kwargs["tools"]
-        assert (
-            tools is not None and len(tools) == 1
-        ), "tool_choice=auto should keep tools in template"
+        assert tools is not None and len(tools) == 1, (
+            "tool_choice=auto should keep tools in template"
+        )
 
     def test_tool_choice_required_keeps_tools(self, tokenizer):
         """tool_choice=required should always include tools regardless of flag."""
@@ -114,9 +115,9 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
             exclude_tools_when_tool_choice_none=True,
         )
         tools = chat_params.chat_template_kwargs["tools"]
-        assert (
-            tools is not None and len(tools) == 1
-        ), "tool_choice=required should keep tools in template"
+        assert tools is not None and len(tools) == 1, (
+            "tool_choice=required should keep tools in template"
+        )
 
     def test_no_tools_in_request(self, tokenizer):
         """Request without tools should produce None tools in template kwargs."""
@@ -126,9 +127,9 @@ class TestPrepareRequestToolStripping:  # FRONTEND.1 + FRONTEND.3 — tool strip
             tool_parser_class=None,
             exclude_tools_when_tool_choice_none=True,
         )
-        assert (
-            chat_params.chat_template_kwargs["tools"] is None
-        ), "No tools in request should produce None tools in template"
+        assert chat_params.chat_template_kwargs["tools"] is None, (
+            "No tools in request should produce None tools in template"
+        )
 
 
 _RESPONSE_SCHEMA = {
@@ -375,6 +376,205 @@ class TestResponseFormatGuidance:
         assert result.request_for_sampling.skip_special_tokens is True
 
 
+_NATIVE_TAG = json.dumps(
+    {
+        "type": "structural_tag",
+        "format": {
+            "type": "const_string",
+            "value": "<tool_call>get_weather</tool_call>",
+        },
+    }
+)
+_FORCED_CHOICES = [
+    "required",
+    {"type": "function", "function": {"name": "get_weather"}},
+]
+
+
+class _NativeGLMToolParser:
+    supports_required_and_named = False
+    structural_tag_model = "glm_4_7"
+
+    def __init__(self, tokenizer, tools):
+        self.tools = tools
+        self.adjusted = False
+
+    def adjust_request(self, request):
+        # Release adjust_request would otherwise install generic JSON here.
+        assert request.structured_outputs.structural_tag == _NATIVE_TAG
+        assert request.structured_outputs.json is None
+        assert request.structured_outputs.regex is None
+        assert request.response_format is None
+        request.skip_special_tokens = False
+        self.adjusted = True
+        return request
+
+
+@pytest.fixture
+def native_registry(monkeypatch):
+    from vllm.tool_parsers import structural_tag_registry
+
+    registry = Mock(return_value=_NATIVE_TAG)
+    monkeypatch.setattr(structural_tag_registry, "get_model_structural_tag", registry)
+    return registry
+
+
+@pytest.mark.asyncio
+class TestNativeGLMGuidance:
+    @pytest.mark.parametrize("skip_validation", [False, True])
+    @pytest.mark.parametrize("request_kind", ["raw", "validated", "constructed"])
+    @pytest.mark.parametrize("tool_choice", _FORCED_CHOICES)
+    async def test_native_tag_installed_before_adjust(
+        self, monkeypatch, native_registry, skip_validation, request_kind, tool_choice
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        request = _structured_request(
+            tools=TOOL_REQUEST["tools"], tool_choice=tool_choice
+        )
+        if request_kind == "validated":
+            request = ChatCompletionRequest.model_validate(request)
+        elif request_kind == "constructed":
+            request = ChatCompletionRequest.model_construct(**request)
+        result = await _preprocess_structured(
+            request, tool_parser_class=_NativeGLMToolParser
+        )
+        assert result.guided_decoding == {"structural_tag": _NATIVE_TAG}
+        assert result.tool_parser.adjusted
+        assert result.request_for_sampling.skip_special_tokens is False
+        native_registry.assert_called_once()
+        # Registry must receive normalized OpenAI models, not raw nested dicts.
+        call = native_registry.call_args
+        model = call.kwargs.get("model", call.args[0] if call.args else None)
+        tools = call.kwargs.get("tools", call.args[1] if len(call.args) > 1 else None)
+        choice = call.kwargs.get(
+            "tool_choice", call.args[2] if len(call.args) > 2 else None
+        )
+        assert model == "glm_4_7"
+        assert tools[0].function.name == "get_weather"
+        assert tools[0].function.strict is None
+        assert choice == "required" or choice.function.name == "get_weather"
+        assert call.kwargs["reasoning"] is False
+
+    @pytest.mark.parametrize("tool_choice", _FORCED_CHOICES)
+    @pytest.mark.parametrize(
+        "existing", [{"grammar": 'root ::= "yes"'}, {"structural_tag": _NATIVE_TAG}]
+    )
+    async def test_forced_tag_replaces_conflicting_and_identical_guidance(
+        self, native_registry, tool_choice, existing
+    ):
+        result = await _preprocess_structured(
+            _structured_request(
+                tools=TOOL_REQUEST["tools"],
+                tool_choice=tool_choice,
+                structured_outputs=existing,
+            ),
+            tool_parser_class=_NativeGLMToolParser,
+            reasoning_parser_class=_PassthroughReasoningParser,
+        )
+        assert result.guided_decoding == {"structural_tag": _NATIVE_TAG}
+        assert result.request_for_sampling.response_format is None
+        assert result.request_for_sampling.structured_outputs.json is None
+        assert result.request_for_sampling.structured_outputs.regex is None
+        assert result.request_for_sampling.skip_special_tokens is False
+
+    @pytest.mark.parametrize(
+        "failure", ["none", "error", "missing-tools", "unknown-name"]
+    )
+    async def test_failure_precedes_renderer(self, native_registry, failure):
+        request = _structured_request(
+            tools=TOOL_REQUEST["tools"], tool_choice="required"
+        )
+        if failure == "none":
+            native_registry.return_value = None
+        elif failure == "error":
+            native_registry.side_effect = RuntimeError("registry failed")
+        elif failure == "missing-tools":
+            request["tools"] = []
+        else:
+            request["tool_choice"] = {
+                "type": "function",
+                "function": {"name": "unknown"},
+            }
+        renderer = _fake_renderer()
+        expected_error = (
+            (ValueError, VLLMValidationError)
+            if failure in ("missing-tools", "unknown-name")
+            else ValueError
+        )
+        with pytest.raises(expected_error):
+            await prepost_module.preprocess_chat_request(
+                request,
+                tokenizer=object(),
+                renderer=renderer,
+                tool_parser_class=_NativeGLMToolParser,
+            )
+        renderer.render_messages_async.assert_not_awaited()
+
+    async def test_unavailable_registry_fails_before_renderer(self, monkeypatch):
+        import sys
+
+        monkeypatch.setitem(
+            sys.modules, "vllm.tool_parsers.structural_tag_registry", None
+        )
+        renderer = _fake_renderer()
+        with pytest.raises(ValueError):
+            await prepost_module.preprocess_chat_request(
+                _structured_request(
+                    tools=TOOL_REQUEST["tools"], tool_choice="required"
+                ),
+                tokenizer=object(),
+                renderer=renderer,
+                tool_parser_class=_NativeGLMToolParser,
+            )
+        renderer.render_messages_async.assert_not_awaited()
+
+    async def test_reasoning_cannot_remove_forced_constraint(self, native_registry):
+        renderer = _fake_renderer()
+        with pytest.raises(ValueError):
+            await prepost_module.preprocess_chat_request(
+                _structured_request(
+                    tools=TOOL_REQUEST["tools"], tool_choice="required"
+                ),
+                tokenizer=object(),
+                renderer=renderer,
+                tool_parser_class=_NativeGLMToolParser,
+                reasoning_parser_class=_RewritingReasoningParser,
+            )
+        renderer.render_messages_async.assert_not_awaited()
+
+    @pytest.mark.parametrize("tool_choice", ["auto", "none"])
+    async def test_optional_choices_do_not_call_registry(
+        self, native_registry, tool_choice
+    ):
+        class OptionalGLMParser(_GrammarToolParser):
+            supports_required_and_named = False
+            structural_tag_model = "glm_4_7"
+
+        result = await _preprocess_structured(
+            _structured_request(tools=TOOL_REQUEST["tools"], tool_choice=tool_choice),
+            tool_parser_class=OptionalGLMParser,
+        )
+        assert result.guided_decoding == {"json": {"type": "object"}}
+        native_registry.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "supports,model", [(True, "glm_4_7"), (False, "qwen3_coder"), (False, "hy_v4")]
+    )
+    async def test_other_parser_capabilities_unchanged(
+        self, native_registry, supports, model
+    ):
+        class OtherParser(_GrammarToolParser):
+            supports_required_and_named = supports
+            structural_tag_model = model
+
+        result = await _preprocess_structured(
+            _structured_request(tools=TOOL_REQUEST["tools"], tool_choice="required"),
+            tool_parser_class=OtherParser,
+        )
+        assert result.guided_decoding == {"grammar": 'root ::= "<tool_call>"'}
+        native_registry.assert_not_called()
+
+
 class TestReasoningParserMetadata:
     def test_no_reasoning_parser_returns_none(self):
         from dingo.frontend.vllm_processor import _build_reasoning_parser_metadata
@@ -544,14 +744,21 @@ async def _run_generate(processor, preproc, *, mm_routing_info=None, context=Non
 class TestRoutedEnginePath:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("response_format", "schema"), _RESPONSE_FORMATS)
+    @pytest.mark.parametrize("native_tools", [False, True])
     async def test_generator_routes_response_format_and_reasoning_metadata(
-        self, vllm_processor_module, monkeypatch, response_format, schema
+        self,
+        vllm_processor_module,
+        monkeypatch,
+        response_format,
+        schema,
+        native_registry,
+        native_tools,
     ):
         module = vllm_processor_module
         routed_engine = _FakeRoutedEngine()
         processor = _make_processor(module, routed_engine)
         processor.tokenizer = SimpleNamespace(eos_token_id=2)
-        processor.tool_parser_class = None
+        processor.tool_parser_class = _NativeGLMToolParser if native_tools else None
         processor.reasoning_parser_class = _PassthroughReasoningParser
         processor.exclude_tools_when_tool_choice_none = True
         processor.enable_auto_tool_choice = False
@@ -588,11 +795,17 @@ class TestRoutedEnginePath:
             chat_template_kwargs={"enable_thinking": True},
         )
 
+        if native_tools:
+            request.update(
+                tools=deepcopy(TOOL_REQUEST["tools"]), tool_choice="required"
+            )
+
         _ = [chunk async for chunk in processor._generator_inner(request)]
 
         assert len(routed_engine.requests) == 1
         payload = routed_engine.requests[0]
-        assert payload["sampling_options"]["guided_decoding"] == {"json": schema}
+        expected = {"structural_tag": _NATIVE_TAG} if native_tools else {"json": schema}
+        assert payload["sampling_options"]["guided_decoding"] == expected
         assert payload["sampling_options"]["temperature"] == 0.25
         assert payload["sampling_options"]["top_p"] == 0.8
         assert payload["sampling_options"]["seed"] == 42
