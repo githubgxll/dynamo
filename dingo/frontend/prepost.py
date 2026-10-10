@@ -105,6 +105,17 @@ def _materialize_assistant_tool_calls(
 def _validate_chat_completion_request(
     request: dict[str, Any] | ChatCompletionRequest,
 ) -> ChatCompletionRequest:
+    # With no tools, explicit auto is equivalent to omitting tool_choice, but
+    # vLLM rejects it. Normalize before either validation path, without mutating
+    # the caller's payload (including partially constructed typed requests).
+    if isinstance(request, ChatCompletionRequest):
+        if not request.tools and request.tool_choice == "auto":
+            request = dict(request)
+    if isinstance(request, dict) and not request.get("tools"):
+        if request.get("tool_choice") == "auto":
+            request = request.copy()
+            request.pop("tool_choice")
+
     if isinstance(request, ChatCompletionRequest):
         validated_request = request
     elif not SKIP_REQUEST_VALIDATION:

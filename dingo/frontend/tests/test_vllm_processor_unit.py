@@ -191,6 +191,136 @@ async def _preprocess_structured(request, **kwargs):
     )
 
 
+@pytest.mark.parametrize("skip_validation", [False, True])
+@pytest.mark.parametrize("request_kind", ["raw", "constructed"])
+@pytest.mark.parametrize("tools_payload", [{}, {"tools": None}, {"tools": []}])
+class TestAutoToolChoiceWithoutTools:
+    def test_normalizes_without_mutating_input(
+        self, monkeypatch, skip_validation, request_kind, tools_payload
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Hello"}],
+            **tools_payload,
+        }
+        expected = prepost_module._validate_chat_completion_request(payload)
+        request = {**payload, "tool_choice": "auto"}
+        if request_kind == "constructed":
+            request = ChatCompletionRequest.model_construct(**request)
+        original = deepcopy(dict(request))
+
+        result = prepost_module._validate_chat_completion_request(request)
+
+        assert result.tool_choice == expected.tool_choice
+        assert result.tools == expected.tools
+        assert result.messages == original["messages"]
+        assert dict(request) == original
+
+    @pytest.mark.asyncio
+    async def test_streaming_title_schema_survives_nested_revalidation(
+        self, monkeypatch, skip_validation, request_kind, tools_payload
+    ):
+        monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+        schema = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+        request = _structured_request(
+            messages=[{"role": "user", "content": "Generate a session title."}],
+            stream=True,
+            tool_choice="auto",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "title", "strict": True, "schema": schema},
+            },
+            **tools_payload,
+        )
+        if request_kind == "constructed":
+            request = ChatCompletionRequest.model_construct(**request)
+        original = deepcopy(dict(request))
+        renderer = _fake_renderer()
+
+        result = await prepost_module.preprocess_chat_request(
+            request, tokenizer=object(), renderer=renderer, tool_parser_class=None
+        )
+
+        assert result.guided_decoding == {"json": schema}
+        assert result.request_for_sampling.stream is True
+        assert result.request_for_sampling.tool_choice != "auto"
+        assert not isinstance(result.request_for_sampling.response_format, dict)
+        assert result.tool_parser is None
+        assert result.prompt_token_ids == [1, 2, 3]
+        assert (
+            renderer.render_messages_async.call_args.args[1].chat_template_kwargs[
+                "tools"
+            ]
+            is None
+        )
+        assert dict(request) == original
+
+
+@pytest.mark.parametrize("skip_validation", [False, True])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "auto",
+        "required",
+        "none",
+        {"type": "function", "function": {"name": "get_weather"}},
+    ],
+)
+def test_validation_preserves_tool_choice_with_tools(
+    monkeypatch, skip_validation, tool_choice
+):
+    monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+    request = deepcopy({**TOOL_REQUEST, "tool_choice": tool_choice})
+    original = deepcopy(request)
+    result = prepost_module._validate_chat_completion_request(request)
+    choice = result.tool_choice
+    if hasattr(choice, "model_dump"):
+        choice = choice.model_dump()
+    assert choice == tool_choice
+    assert result.tools[0].function.name == "get_weather"
+    assert request == original
+
+
+@pytest.mark.parametrize("tools_payload", [{}, {"tools": None}, {"tools": []}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    ["required", {"type": "function", "function": {"name": "get_weather"}}],
+)
+def test_validation_rejects_forced_tool_choice_without_tools(
+    monkeypatch, tools_payload, tool_choice
+):
+    monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", False)
+    request = _structured_request(tool_choice=tool_choice, **tools_payload)
+    with pytest.raises((ValueError, VLLMValidationError)):
+        prepost_module._validate_chat_completion_request(request)
+
+
+@pytest.mark.parametrize("skip_validation", [False, True])
+@pytest.mark.parametrize("tools_payload", [{}, {"tools": None}, {"tools": []}])
+def test_validation_preserves_explicit_none_without_tools(
+    monkeypatch, skip_validation, tools_payload
+):
+    monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+    result = prepost_module._validate_chat_completion_request(
+        _structured_request(tool_choice="none", **tools_payload)
+    )
+    assert result.tool_choice == "none"
+
+
+def test_skip_validation_preserves_trusted_required_without_tools(monkeypatch):
+    monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", True)
+    result = prepost_module._validate_chat_completion_request(
+        {"model": MODEL, "messages": [], "tool_choice": "required", "tools": []}
+    )
+    assert result.tool_choice == "required"
+
+
 class _GrammarToolParser:
     """Adapted from main's focused adjust_request grammar-parser fake."""
 
