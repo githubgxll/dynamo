@@ -113,9 +113,12 @@ ARG AWS_SDK_CPP_VERSION={{ context.vllm.aws_sdk_cpp_version }}
 {% endif %}
 {%- endif -%}
 
-{% if framework in ["vllm", "sglang"] -%}
+{% if framework == "vllm" -%}
 # ModelExpress Python client for model loading (optional)
-ARG MODELEXPRESS_VERSION={{ context[framework].modelexpress_version }}
+ARG MODELEXPRESS_VERSION={{ context.vllm.modelexpress_version }}
+{% elif framework == "sglang" -%}
+# ModelExpress source ref for the SGLang remote-instance loader (optional)
+ARG MODELEXPRESS_REF={{ context.sglang.modelexpress_ref }}
 {%- endif -%}
 
 {% if framework == "sglang" and device == "xpu" -%}

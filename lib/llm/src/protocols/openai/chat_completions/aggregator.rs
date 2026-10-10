@@ -422,6 +422,42 @@ impl DeltaAggregator {
                 }
             }
         }
+        // If the worker did not report reasoning_tokens in usage, compute it
+        // from the accumulated reasoning_content length. GLM-5.3 and similar
+        // reasoning models put all thinking in reasoning_content; the sglang
+        // worker does not break out reasoning_tokens in its usage, so we fill
+        // it here for billing transparency.
+        if let Some(usage) = &mut aggregator.usage {
+            let needs_reasoning_tokens = usage
+                .completion_tokens_details
+                .as_ref()
+                .is_none_or(|d| d.reasoning_tokens.is_none());
+            if needs_reasoning_tokens {
+                let total_reasoning_chars: usize = aggregator
+                    .choices
+                    .values()
+                    .filter_map(|c| c.reasoning_content.as_ref())
+                    .map(|s| s.chars().count())
+                    .sum();
+                let content_chars: usize = aggregator
+                    .choices
+                    .values()
+                    .map(|c| c.text.chars().count() + c.content_parts.len())
+                    .sum();
+                let total_chars = total_reasoning_chars + content_chars;
+                let details = usage
+                    .completion_tokens_details
+                    .get_or_insert_with(Default::default);
+                if total_chars > 0 {
+                    details.reasoning_tokens = Some(
+                        (usage.completion_tokens as usize * total_reasoning_chars
+                            / total_chars) as u32,
+                    );
+                } else {
+                    details.reasoning_tokens = Some(0);
+                }
+            }
+        }
 
         // Extract aggregated choices and sort them by index.
         let mut choices: Vec<_> = aggregator
