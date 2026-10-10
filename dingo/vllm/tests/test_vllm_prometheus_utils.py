@@ -8,6 +8,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from dingo.common.utils.prometheus import get_prometheus_expfmt
+from dingo.vllm.main import (
+    _VLLM_ENGINE_METRIC_PREFIXES,
+    _VLLM_IN_MEMORY_METRIC_PREFIXES,
+    _VLLM_MULTIPROCESS_METRIC_PREFIXES,
+)
 
 pytestmark = [
     pytest.mark.unit,
@@ -34,6 +39,9 @@ vllm:request_success_total{finished_reason="stop",model_name="meta-llama/Llama-3
 # TYPE vllm:time_to_first_token_seconds histogram
 vllm:time_to_first_token_seconds_bucket{le="0.005",model_name="meta-llama/Llama-3.1-8B"} 5.0
 vllm:time_to_first_token_seconds_count{model_name="meta-llama/Llama-3.1-8B"} 165.0
+# HELP vllm_omni:num_requests_running Pipeline-global in-flight requests
+# TYPE vllm_omni:num_requests_running gauge
+vllm_omni:num_requests_running{model_name="MiniMax-H3"} 1.0
 """
 
     def test_vllm_use_case(self):
@@ -63,6 +71,28 @@ vllm:time_to_first_token_seconds_count{model_name="meta-llama/Llama-3.1-8B"} 165
         assert 'finished_reason="stop"' in result
         assert 'model_name="meta-llama/Llama-3.1-8B"' in result
         assert result.endswith("\n")
+
+    def test_vllm_omni_metrics_are_forwarded_from_in_memory_registry(self):
+        registry = Mock()
+
+        with patch(
+            "prometheus_client.generate_latest",
+            return_value=self.SAMPLE_METRICS.encode("utf-8"),
+        ):
+            result = get_prometheus_expfmt(
+                registry,
+                metric_prefix_filters=_VLLM_ENGINE_METRIC_PREFIXES,
+            )
+
+        assert "vllm:request_success_total" in result
+        assert "vllm_omni:num_requests_running" in result
+        assert "python_gc_objects_collected_total" not in result
+        assert _VLLM_IN_MEMORY_METRIC_PREFIXES == [
+            "vllm:",
+            "vllm_omni:",
+            "dingo_video_worker_",
+        ]
+        assert "vllm_omni:" not in _VLLM_MULTIPROCESS_METRIC_PREFIXES
 
     def test_error_handling(self):
         """Test error handling when registry fails."""

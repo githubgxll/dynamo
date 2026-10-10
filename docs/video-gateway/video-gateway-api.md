@@ -322,7 +322,14 @@ Gateway 始终检查上传参考文件的签名、声明的 MIME 类型以及媒
 | `reference_visual_encode` | 参考图片和视频的视觉条件/VAE 编码合计；当前原生计时不拆图片与视频 |
 | `reference_audio_encode` | 参考视频内音轨及独立音频的条件编码合计 |
 
-完整源码契约、JSON Schema 导出命令及客户端兼容规则见[模型计时 Schema](model-timing-schemas.md)。
+原生字段一一映射、计时边界、空调用说明、JSON Schema 导出命令及客户端兼容规则见
+[模型阶段计时规范](model-timing-schemas.md)。
+
+Gateway 还会在结果成功交接进入 `finalizing` 时，将这些阶段汇总到
+`/metrics` 的 `dingo_video_model_stage_duration_seconds` Histogram，标签为
+`pool`、`schema`、`stage`，可用于 Grafana 平均值/P95 展示。不包含 `task_id`，
+缺失阶段不补零，不回填历史任务，也不增加 etcd 查询。该指标按交接记录时间统计，
+不是按阶段开始时间统计；父子阶段不能相加。详见[Gateway 指标说明](../../dingo/video_gateway/METRICS.md)。
 
 模型阶段来自 `MiniMaxH3Pipeline` 的原生 profiler，需要 Worker 开启
 `--enable-diffusion-pipeline-profiler`。该 profiler 会同步 GPU，可能影响性能；Gateway 不额外

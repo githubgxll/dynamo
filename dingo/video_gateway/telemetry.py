@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
 import time
 from collections import Counter
@@ -15,7 +16,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from dingo.video_gateway.models import TERMINAL_STATUSES, VideoTask
+from dingo.common.video_timing_schemas import (
+    MODEL_EXECUTION_KEY,
+    normalize_model_execution,
+)
+from dingo.video_gateway.models import TERMINAL_STATUSES, TaskStatus, VideoTask
+from dingo.video_gateway.performance import performance_record
 
 audit_logger = logging.getLogger("dingo.video_gateway.audit")
 
@@ -254,6 +260,11 @@ class GatewayTelemetry:
             payload.update(
                 {key: value for key, value in timing.items() if value is not None}
             )
+        if (
+            event in {"completed", "failed", "cancelled"}
+            and os.environ.get("DINGO_VIDEO_PERFORMANCE_RECORDS", "0") == "1"
+        ):
+            payload["performance"] = performance_record(task)
         if extra:
             payload.update(extra)
         audit_logger.info(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -276,6 +287,27 @@ class GatewayTelemetry:
             revision=revision,
             reason=reason,
         )
+        # Only the successful result-handoff transition observes model timings.
+        # Polls, CAS retries and FINALIZING -> COMPLETED must not count again.
+        if (
+            before.status == TaskStatus.IN_PROGRESS
+            and after.status == TaskStatus.FINALIZING
+        ):
+            timing = normalize_model_execution(
+                after.normalized_request.get(MODEL_EXECUTION_KEY)
+            )
+            if timing is not None:
+                for stage, seconds in timing["stages"].items():
+                    self.observe(
+                        "dingo_video_model_stage_duration_seconds",
+                        seconds,
+                        labels={
+                            "pool": after.pool_id,
+                            "schema": timing["schema"],
+                            "stage": stage,
+                        },
+                        buckets=_TASK_DURATION_BUCKETS,
+                    )
         if before.status != after.status and after.status in TERMINAL_STATUSES:
             self.record_terminal(after)
 

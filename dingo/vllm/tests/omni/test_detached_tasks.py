@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 
 from dingo.vllm.omni.detached_tasks import (
     DetachedOmniTaskManager,
@@ -106,6 +107,16 @@ def _write_manifest(root: Path, task_id: str = "01TASK") -> None:
     )
 
 
+def _metric_value(name: str, **labels: str) -> float:
+    for family in REGISTRY.collect():
+        for sample in family.samples:
+            if sample.name == name and all(
+                sample.labels.get(key) == value for key, value in labels.items()
+            ):
+                return float(sample.value)
+    raise AssertionError(f"metric sample not found: {name} {labels}")
+
+
 async def test_capabilities_are_explicit_and_do_not_create_task_files(tmp_path):
     from dingo.common.video_task_protocol import (
         ENVELOPE_KEY,
@@ -124,6 +135,62 @@ async def test_capabilities_are_explicit_and_do_not_create_task_files(tmp_path):
             manager,
             {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities", "payload": {}}},
         )
+    await manager.shutdown()
+
+
+async def test_detached_metrics_track_execution_prefetch_and_terminal(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler,
+        tmp_path,
+        execution_capacity=1,
+        prefetch_capacity=1,
+        drain_timeout_s=1,
+        binary_results=False,
+        inline_results=False,
+    )
+    for task_id in ("metrics-1", "metrics-2"):
+        _write_manifest(tmp_path, task_id)
+    completed_before = _metric_value(
+        "dingo_video_worker_detached_tasks_total", outcome="completed"
+    )
+    queue_count_before = _metric_value(
+        "dingo_video_worker_detached_queue_wait_seconds_count"
+    )
+    execution_count_before = _metric_value(
+        "dingo_video_worker_detached_execution_seconds_count"
+    )
+
+    await _one(manager, _request(task_id="metrics-1", payload={}))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+    await _one(manager, _request(task_id="metrics-2", payload={}))
+    await asyncio.sleep(0)
+
+    assert _metric_value("dingo_video_worker_detached_execution_capacity") == 1
+    assert _metric_value("dingo_video_worker_detached_prefetch_capacity") == 1
+    assert _metric_value("dingo_video_worker_detached_execution_active") == 1
+    assert _metric_value("dingo_video_worker_detached_prefetch_waiting") == 1
+
+    handler.release.set()
+    await asyncio.gather(*(item.execution for item in manager._running.values()))
+    await asyncio.sleep(0)
+
+    assert _metric_value("dingo_video_worker_detached_execution_active") == 0
+    assert _metric_value("dingo_video_worker_detached_prefetch_waiting") == 0
+    assert (
+        _metric_value(
+            "dingo_video_worker_detached_tasks_total", outcome="completed"
+        )
+        == completed_before + 2
+    )
+    assert (
+        _metric_value("dingo_video_worker_detached_queue_wait_seconds_count")
+        == queue_count_before + 2
+    )
+    assert (
+        _metric_value("dingo_video_worker_detached_execution_seconds_count")
+        == execution_count_before + 2
+    )
     await manager.shutdown()
 
 

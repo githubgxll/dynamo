@@ -57,6 +57,7 @@ def _make_config(**parallel_overrides):
     cfg.stage_configs_path = None
     cfg.output_modalities = None
     cfg.engine_args.trust_remote_code = False
+    cfg.engine_args.disable_log_stats = False
     cfg.diffusion = OmniDiffusionKwargs()
     cfg.parallel = dataclasses.replace(OmniParallelKwargs(), **parallel_overrides)
     return cfg
@@ -80,6 +81,15 @@ def test_step_execution_and_capacity_forwarded():
 def test_unset_capacity_preserves_upstream_default():
     kwargs = _build_kwargs(_make_config())
     assert "max_num_seqs" not in kwargs
+
+
+def test_log_stats_follows_vllm_disable_log_stats():
+    enabled = _make_config()
+    assert _build_kwargs(enabled)["log_stats"] is True
+
+    disabled = _make_config()
+    disabled.engine_args.disable_log_stats = True
+    assert _build_kwargs(disabled)["log_stats"] is False
 
 
 class TestDiffusionParallelConfigCoverage:

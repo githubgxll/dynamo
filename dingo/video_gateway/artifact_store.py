@@ -153,8 +153,22 @@ class FileArtifactStore:
         return await run_file_io(_discard)
 
     async def capacity(self) -> ArtifactCapacity:
-        usage = await run_file_io(shutil.disk_usage, self.root)
-        return ArtifactCapacity(usage.total, usage.used, usage.free)
+        def _capacity() -> ArtifactCapacity:
+            # CephFS statfs may report stale quota usage on different clients.
+            # The quota root's recursive byte count is current across mounts.
+            try:
+                quota = int(os.getxattr(self.root, "ceph.quota.max_bytes"))
+                used = int(os.getxattr(self.root, "ceph.dir.rbytes"))
+            except (OSError, ValueError):
+                pass
+            else:
+                if quota > 0 and used >= 0:
+                    return ArtifactCapacity(quota, used, max(0, quota - used))
+
+            usage = shutil.disk_usage(self.root)
+            return ArtifactCapacity(usage.total, usage.used, usage.free)
+
+        return await run_file_io(_capacity)
 
     async def cleanup_orphan_uploads(
         self,

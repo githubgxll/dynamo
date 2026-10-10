@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# 模型阶段计时 Schema
+# 模型阶段计时规范
 
 任务 API 的 `metrics` 包含 Gateway/Worker 通用耗时，模型专用计时放在
 `metrics.model_execution`。诊断接口包含相同对象。没有可用模型计时时整个对象省略。
@@ -61,21 +61,65 @@ python -m dingo.common.video_timing_schemas minimax_h3.v1 > /tmp/minimax_h3.v1.s
 它表示引擎返回的 profiler 样本，不保证是所有 GPU rank 的最大值或总和。
 step 模式交错执行的逐请求隔离尚未验收，不能用此契约宣称该场景具有准确归因。
 
-| 阶段 | 定义 | 父阶段 |
-|---|---|---|
-| `encode_prompt` | 提示词/条件编码，可能包含视觉输入处理 | — |
-| `diffuse` | 去噪阶段 | — |
-| `decode` | 输出视频/音频解码总阶段 | — |
-| `video_decode` | Video VAE 解码 | `decode` |
-| `audio_decode` | Audio VAE 解码 | `decode` |
-| `reference_video_prepare` | 参考视频准备方法，包括在该处执行的探测、校验及转码 | — |
-| `reference_visual_encode` | 参考图片与视频的视觉/VAE条件编码合计 | — |
-| `reference_audio_encode` | 视频内音轨及独立参考音频的条件编码合计 | — |
+### 原生字段与公开字段映射
+
+原生字段来自 vLLM-Omni 输出中的 `stage_durations`。Worker 按下表映射到
+`metrics.model_execution.stages`，统一使用 `minimax_h3.v1`；这些原生值已经以秒为单位，
+当前映射不进行毫秒换算，也不重新测量模型阶段。两种 workflow 使用同一张映射表，
+具体返回的阶段取决于原生 profiler 实际记录了哪些方法调用。
+
+| vLLM-Omni 原生字段 | 公开字段 | 定义 | 父阶段 |
+|---|---|---|---|
+| `MiniMaxH3Pipeline.encode_prompt` | `encode_prompt` | 提示词/条件编码，可能包含视觉输入处理 | — |
+| `MiniMaxH3Pipeline.diffuse` | `diffuse` | 去噪阶段 | — |
+| `MiniMaxH3Pipeline.decode` | `decode` | 输出视频/音频解码总阶段 | — |
+| `MiniMaxH3Pipeline.video_vae.decode_latent` | `video_decode` | 输出视频的 Video VAE 解码，不是参考视频输入解码 | `decode` |
+| `MiniMaxH3Pipeline.audio_vae.decode_latent` | `audio_decode` | 输出音频的 Audio VAE 解码，不是参考音频输入编码 | `decode` |
+| `MiniMaxH3Pipeline._prepare_reference_videos` | `reference_video_prepare` | 参考视频准备方法，包括在该处执行的探测、校验及转码 | — |
+| `MiniMaxH3Pipeline._encode_visual_conditions` | `reference_visual_encode` | 参考图片与视频的视觉/VAE条件编码合计，当前不拆分两者 | — |
+| `MiniMaxH3Pipeline._encode_reference_audio_conditions` | `reference_audio_encode` | 视频内音轨及独立参考音频的条件编码合计 | — |
+
+只有表内且通过数值校验的字段才进入这个 Schema。其他原生字段，例如
+`stage_0_gen_ms`，不会自动加入；它们的单位及计时边界不属于这份模型阶段契约。
+
+### 空调用与计时边界
 
 原生 `_prepare_reference_videos` 仅 rank 0 做实际工作，其他 rank 可快速返回；该数值不是
 跨 rank 汇总。方法被调用但没有实际输入时也可能有近零值，不能仅凭键是否存在推断输入类型。
+例如 vLLM-Omni 0.29 的 H3 pipeline 在处理参考图片时，也会调用
+`_encode_reference_audio_conditions`；没有参考音频或视频音轨时，内部编码函数直接返回，
+但原生 profiler 仍记录这次调用。FL2VA 因而也可能出现 `reference_audio_encode`，
+这不代表任务引用了音频。当前适配保留原生有效计时，不按输入类型或耗时阈值过滤空调用。
+判断实际输入应使用任务的引用元数据或性能分析的输入维度。
+
+保留声音的 FL2VA 任务出现 `audio_decode` 是输出生成的一部分，与是否引用音频无关。
+模型阶段不包含 Gateway 排队、Worker 预取等待、MP4 编码/混音、制品发布和下载，
+也不能将所有阶段相加作为端到端耗时；相关通用计时见[接口使用说明](video-gateway-api.md)。
+
+### 开关与指标展示
+
 需要开启 `--enable-diffusion-pipeline-profiler` 才能取得这些模型阶段；它与
-Gateway 的 `DINGO_VIDEO_MEDIA_TIMING` 日志开关独立。
+Gateway 的 `DINGO_VIDEO_MEDIA_TIMING` 日志开关独立。原生 profiler 在方法边界执行
+GPU 同步，可能影响性能，计时包含该方法结束时同步等待的开销。
+
+Gateway 在成功交接结果、任务从 `in_progress` 转为 `finalizing` 时，将这些阶段观测到
+`dingo_video_model_stage_duration_seconds` Histogram，标签为 `pool`、`schema`、`stage`。
+它不带 `task_id`，不增加 etcd 查询，也不回填历史任务。跨 Gateway 平均值应合并
+Histogram 的 sum/count，P95 应合并 bucket 后计算，不直接平均各 Pod 的 P95。
+
+Prometheus 看板按记录交接事件的时间统计，而不是按阶段实际开始时间统计。当前模型阶段
+诊断使用最近 5 分钟的 rate 窗口；所选时间范围内没有有效样本时，不补零、不延续旧耗时。
+性能分析页面使用单任务 SQL 样本，按终态事件时间和请求参数筛选，统计口径与上述曲线不同。
+
+Worker 转发的 `vllm_omni:*` 原生 Prometheus 指标保持原名，不经过上表的映射。
+Worker 的 `dingo_video_worker_*` 执行、预取和终态指标由任务管理层统计，也不属于模型阶段。
+
+## 升级 vLLM-Omni
+
+升级后核对原生 profiler 字段名、单位、计时边界及实际请求的返回值。字段改名时更新
+`NATIVE_STAGE_NAMES`；当前适配只按已知名称提取，改名未适配会表现为相关阶段缺失。
+单位或阶段含义发生不兼容变化时，增加 Schema 版本并更新适配，避免把不同含义的样本混用。
+新增原生字段不会自动进入公开 Schema，需要明确注册并补充映射。
 
 ## 新增模型或引擎
 

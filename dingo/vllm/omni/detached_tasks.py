@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from prometheus_client import Counter, Gauge, Histogram
+
 from dingo.common.video_result_file import (
     BINARY_RESULT_WRITER,
     INLINE_RESULT_FORMAT,
@@ -45,6 +47,75 @@ from dingo.common.video_task_protocol import (
 logger = logging.getLogger(__name__)
 
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
+_DETACHED_EXECUTION_ACTIVE = Gauge(
+    "dingo_video_worker_detached_execution_active",
+    "Detached video tasks currently executing in the Omni engine.",
+)
+_DETACHED_PREFETCH_WAITING = Gauge(
+    "dingo_video_worker_detached_prefetch_waiting",
+    "Accepted detached video tasks waiting for an Omni execution permit.",
+)
+_DETACHED_EXECUTION_CAPACITY = Gauge(
+    "dingo_video_worker_detached_execution_capacity",
+    "Configured detached video execution capacity.",
+)
+_DETACHED_PREFETCH_CAPACITY = Gauge(
+    "dingo_video_worker_detached_prefetch_capacity",
+    "Configured detached video prefetch capacity.",
+)
+_DETACHED_TASKS = Counter(
+    "dingo_video_worker_detached_tasks",
+    "Durably persisted detached video terminal outcomes.",
+    ("outcome",),
+)
+_DETACHED_QUEUE_WAIT = Histogram(
+    "dingo_video_worker_detached_queue_wait_seconds",
+    "Time accepted detached video tasks wait for an Omni execution permit.",
+    buckets=(
+        0.001,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10,
+        30,
+        60,
+        120,
+        300,
+        600,
+        1200,
+        1800,
+    ),
+)
+_DETACHED_EXECUTION_DURATION = Histogram(
+    "dingo_video_worker_detached_execution_seconds",
+    "Worker wall time for detached video execution and terminal persistence.",
+    buckets=(
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1,
+        2.5,
+        5,
+        10,
+        30,
+        60,
+        120,
+        300,
+        600,
+        1200,
+        1800,
+    ),
+)
 
 
 class _DetachedContext:
@@ -136,6 +207,12 @@ class DetachedOmniTaskManager:
         self.prefetch_capacity = prefetch_capacity
         self._execution_slots = asyncio.Semaphore(execution_capacity)
         self._direct_running = 0
+        _DETACHED_EXECUTION_ACTIVE.set(0)
+        _DETACHED_PREFETCH_WAITING.set(0)
+        _DETACHED_EXECUTION_CAPACITY.set(execution_capacity)
+        _DETACHED_PREFETCH_CAPACITY.set(prefetch_capacity)
+        for outcome in _TERMINAL:
+            _DETACHED_TASKS.labels(outcome=outcome).inc(0)
         self.binary_results = (
             os.getenv("DINGO_VIDEO_BINARY_RESULTS") == "1"
             if binary_results is None
@@ -490,6 +567,9 @@ class DetachedOmniTaskManager:
         running = self._running.get(identity.key)
         if running is not None:
             running.persisted_terminal = copy.deepcopy(status)
+        state = status.get("state")
+        if state in _TERMINAL:
+            _DETACHED_TASKS.labels(outcome=state).inc()
         self._log_task_timing("terminal", identity, status)
 
     async def _execute(
@@ -512,6 +592,8 @@ class DetachedOmniTaskManager:
         acquire = asyncio.create_task(self._execution_slots.acquire())
         stopped = context.async_killed_or_stopped()
         cancel_watch = asyncio.create_task(self._watch_cancel(identity, context))
+        waiting_metric_active = True
+        _DETACHED_PREFETCH_WAITING.inc()
         try:
             timeout = (
                 None
@@ -541,6 +623,8 @@ class DetachedOmniTaskManager:
                     },
                 )
                 return
+            _DETACHED_PREFETCH_WAITING.dec()
+            waiting_metric_active = False
             await self._execute_started(
                 identity, payload, context, queued_at_ms=queued_at_ms
             )
@@ -553,6 +637,8 @@ class DetachedOmniTaskManager:
                 )
             raise
         finally:
+            if waiting_metric_active:
+                _DETACHED_PREFETCH_WAITING.dec()
             if not acquire.done():
                 acquire.cancel()
             cancel_watch.cancel()
@@ -567,6 +653,30 @@ class DetachedOmniTaskManager:
             await context.close()
 
     async def _execute_started(
+        self,
+        identity: DetachedTaskIdentity,
+        payload: dict[str, Any],
+        context: _DetachedContext,
+        *,
+        queued_at_ms: int | None = None,
+    ) -> None:
+        metric_started = time.monotonic()
+        if queued_at_ms is not None:
+            _DETACHED_QUEUE_WAIT.observe(
+                max(0.0, (int(time.time() * 1000) - queued_at_ms) / 1000)
+            )
+        _DETACHED_EXECUTION_ACTIVE.inc()
+        try:
+            await self._execute_started_inner(
+                identity, payload, context, queued_at_ms=queued_at_ms
+            )
+        finally:
+            _DETACHED_EXECUTION_ACTIVE.dec()
+            _DETACHED_EXECUTION_DURATION.observe(
+                max(0.0, time.monotonic() - metric_started)
+            )
+
+    async def _execute_started_inner(
         self,
         identity: DetachedTaskIdentity,
         payload: dict[str, Any],

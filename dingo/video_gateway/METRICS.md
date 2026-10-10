@@ -1,5 +1,40 @@
 # Multi-slot capacity and statistics
 
+## Task-level performance analysis
+
+`DINGO_VIDEO_PERFORMANCE_RECORDS=1` adds a versioned `performance` object to
+existing completed/failed/cancelled lifecycle log records. It defaults off.
+The summary contains generation parameters, reference counts, known reference
+dimensions and upload sizes, current-attempt model timings and common task
+timings. Prompt text, file paths and media contents are omitted. No additional
+file probing or etcd lookup is performed. Missing sizes/frame counts stay null.
+Reference FPS multiplied by duration is not reported as an exact frame count.
+
+The test monitoring project collects these logs into a separate SQL store for
+Grafana parameter filters. These task dimensions are not Prometheus labels.
+The collector deduplicates `(deployment,task_id,attempt)`; collection gaps and
+ephemeral-store loss prevent treating this as a complete audit record.
+
+## Model-stage timings
+
+`dingo_video_model_stage_duration_seconds` is a Histogram with bounded
+`pool`, `schema` and `stage` labels. It aggregates the existing
+`metrics.model_execution` payload when a successful result handoff transitions
+the current attempt from `in_progress` to `finalizing`. Subsequent finalization
+does not observe the sample again. Missing/invalid stages are omitted, not zero.
+There is no task-ID label, additional etcd query, or historical-task scan.
+These are Worker timings reported by Gateway, not Gateway processing times;
+parent and child stages may overlap and must not be summed.
+
+Across Gateway replicas, average latency is
+`sum by(pool,schema,stage)(rate(dingo_video_model_stage_duration_seconds_sum[5m])) /
+sum by(pool,schema,stage)(rate(dingo_video_model_stage_duration_seconds_count[5m]))`.
+P95 uses `histogram_quantile(0.95, sum by(pool,schema,stage,le)
+(rate(dingo_video_model_stage_duration_seconds_bucket[5m])))`.
+Samples are recorded at handoff time, not stage start time. Counters are local
+and restart with the Gateway; unobserved events during crashes may be lost.
+No retrospective backfill or exact audit-count guarantee is provided.
+
 All metrics below use the `dingo_video_` prefix and a bounded `pool` label.
 
 | Metric suffix | Meaning |

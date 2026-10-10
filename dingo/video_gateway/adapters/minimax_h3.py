@@ -1142,6 +1142,7 @@ class MiniMaxH3VideoAdapter:
                     "height": probe.height,
                     "fps": probe.fps,
                     "duration_s": probe.duration_s,
+                    "bytes": upload.size,
                     "content_type": probe.content_type or upload.content_type,
                 }
                 for upload, probe in zip(uploads, probes)

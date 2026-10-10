@@ -71,6 +71,7 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         omni_kwargs: Dict[str, Any] = {
             "model": config.model,
             "trust_remote_code": config.engine_args.trust_remote_code,
+            "log_stats": not config.engine_args.disable_log_stats,
         }
         if config.output_modalities:
             omni_kwargs["output_modalities"] = config.output_modalities

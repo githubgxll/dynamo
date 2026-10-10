@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Video Gateway
 
-模型阶段的版本契约和客户端对接方式见[模型计时 Schema](model-timing-schemas.md)。
+模型阶段的原生字段映射、版本契约和客户端对接方式见[模型阶段计时规范](model-timing-schemas.md)。
 
 Dingo Video Gateway 是面向视频生成业务的持久化任务入口。它位于客户端与
 vLLM-Omni Worker 之间，为耗时较长、结果文件较大的视频任务提供统一的提交、排队、

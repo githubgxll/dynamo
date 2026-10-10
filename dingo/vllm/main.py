@@ -70,6 +70,16 @@ logger = logging.getLogger(__name__)
 shutdown_endpoints: list = []
 SPEC_DECODE_RUNTIME_KEY = "spec_decode"
 MX_LOAD_FORMATS = {"modelexpress", "mx"}
+_VLLM_IN_MEMORY_METRIC_PREFIXES = [
+    "vllm:",
+    "vllm_omni:",
+    "dingo_video_worker_",
+]
+_VLLM_ENGINE_METRIC_PREFIXES = [
+    *_VLLM_IN_MEMORY_METRIC_PREFIXES,
+    "lmcache:",
+]
+_VLLM_MULTIPROCESS_METRIC_PREFIXES = ["vllm:", "lmcache:"]
 
 
 def uses_modelexpress_load_format(config: Config) -> bool:
@@ -288,7 +298,7 @@ def setup_metrics_collection(
                 register_engine_metrics_callback(
                     endpoint=generate_endpoint,
                     registry=REGISTRY,
-                    metric_prefix_filters=["vllm:", "lmcache:"],
+                    metric_prefix_filters=_VLLM_ENGINE_METRIC_PREFIXES,
                     namespace_name=config.namespace,
                     component_name=config.component,
                     endpoint_name=config.endpoint,
@@ -308,7 +318,7 @@ def setup_metrics_collection(
                 register_engine_metrics_callback(
                     endpoint=generate_endpoint,
                     registry=REGISTRY,
-                    metric_prefix_filters=["vllm:"],
+                    metric_prefix_filters=_VLLM_IN_MEMORY_METRIC_PREFIXES,
                     namespace_name=config.namespace,
                     component_name=config.component,
                     endpoint_name=config.endpoint,
@@ -318,7 +328,7 @@ def setup_metrics_collection(
                 register_engine_metrics_callback(
                     endpoint=generate_endpoint,
                     registry=multiproc_registry,
-                    metric_prefix_filters=["vllm:", "lmcache:"],
+                    metric_prefix_filters=_VLLM_MULTIPROCESS_METRIC_PREFIXES,
                     namespace_name=config.namespace,
                     component_name=config.component,
                     endpoint_name=config.endpoint,
@@ -334,7 +344,7 @@ def setup_metrics_collection(
             register_engine_metrics_callback(
                 endpoint=generate_endpoint,
                 registry=REGISTRY,
-                metric_prefix_filters=["vllm:", "lmcache:"],
+                metric_prefix_filters=_VLLM_ENGINE_METRIC_PREFIXES,
                 namespace_name=config.namespace,
                 component_name=config.component,
                 endpoint_name=config.endpoint,

@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 
 import pytest
 
@@ -22,6 +23,65 @@ class _Consumer:
 
     def consume(self, value):
         self.values.append(value)
+
+
+def test_capacity_uses_cephfs_quota_and_recursive_bytes(tmp_path, monkeypatch):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    values = {
+        "ceph.quota.max_bytes": b"1000000",
+        "ceph.dir.rbytes": b"250000",
+    }
+    monkeypatch.setattr(os, "getxattr", lambda _path, name: values[name])
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda _path: pytest.fail("stale statfs must not be used for CephFS"),
+    )
+
+    capacity = asyncio.run(store.capacity())
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+        1_000_000,
+        250_000,
+        750_000,
+    )
+
+
+def test_capacity_falls_back_for_filesystems_without_cephfs_quota(
+    tmp_path, monkeypatch
+):
+    store = FileArtifactStore(tmp_path / "artifacts")
+
+    def no_ceph_quota(_path, _name):
+        raise OSError("no CephFS quota")
+
+    monkeypatch.setattr(os, "getxattr", no_ceph_quota)
+
+    capacity = asyncio.run(store.capacity())
+    usage = shutil.disk_usage(store.root)
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+        usage.total,
+        usage.used,
+        usage.free,
+    )
+
+
+def test_capacity_clamps_cephfs_free_bytes_at_zero(tmp_path, monkeypatch):
+    store = FileArtifactStore(tmp_path / "artifacts")
+    values = {
+        "ceph.quota.max_bytes": b"100",
+        "ceph.dir.rbytes": b"120",
+    }
+    monkeypatch.setattr(os, "getxattr", lambda _path, name: values[name])
+
+    capacity = asyncio.run(store.capacity())
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+        100,
+        120,
+        0,
+    )
 
 
 async def test_detached_status_and_response_are_identity_and_checksum_checked(tmp_path):
