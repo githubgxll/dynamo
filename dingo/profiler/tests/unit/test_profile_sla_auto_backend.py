@@ -21,20 +21,20 @@ pytestmark = [
 
 def test_autoscale_sim_resolves_auto_to_default() -> None:
     """_run_autoscale_sim must resolve 'auto' to _DEFAULT_NAIVE_BACKEND before
-    constructing TaskConfig, since BackendName('auto') is not a valid enum value.
+    constructing Task, since BackendName('auto') is not a valid enum value.
     """
     import inspect
 
     from dingo.profiler.rapid import _run_autoscale_sim
 
     src = inspect.getsource(_run_autoscale_sim)
-    # The function must guard against "auto" before TaskConfig is constructed.
-    assert (
-        'backend == "auto"' in src
-    ), "_run_autoscale_sim must resolve backend='auto' before constructing TaskConfig"
-    assert (
-        "_DEFAULT_NAIVE_BACKEND" in src
-    ), "_run_autoscale_sim must fall back to _DEFAULT_NAIVE_BACKEND when backend='auto'"
+    # The function must guard against "auto" before Task is constructed.
+    assert 'backend == "auto"' in src, (
+        "_run_autoscale_sim must resolve backend='auto' before constructing Task"
+    )
+    assert "_DEFAULT_NAIVE_BACKEND" in src, (
+        "_run_autoscale_sim must fall back to _DEFAULT_NAIVE_BACKEND when backend='auto'"
+    )
 
 
 def test_autoscale_sim_returns_resolved_backend() -> None:
@@ -46,9 +46,9 @@ def test_autoscale_sim_returns_resolved_backend() -> None:
     from dingo.profiler.rapid import _run_autoscale_sim
 
     src = inspect.getsource(_run_autoscale_sim)
-    assert (
-        '"resolved_backend"' in src
-    ), "_run_autoscale_sim must return 'resolved_backend' in its result dict"
+    assert '"resolved_backend"' in src, (
+        "_run_autoscale_sim must return 'resolved_backend' in its result dict"
+    )
 
 
 def test_naive_fallback_resolves_auto_to_default() -> None:
@@ -63,9 +63,9 @@ def test_naive_fallback_resolves_auto_to_default() -> None:
     from dingo.profiler.rapid import _run_naive_fallback
 
     src = inspect.getsource(_run_naive_fallback)
-    assert (
-        'backend == "auto"' in src
-    ), "_run_naive_fallback must resolve backend='auto' before calling AIC helpers"
+    assert 'backend == "auto"' in src, (
+        "_run_naive_fallback must resolve backend='auto' before calling AIC helpers"
+    )
     assert "_DEFAULT_NAIVE_BACKEND" in src
 
 
@@ -81,12 +81,52 @@ def test_default_sim_returns_resolved_backend() -> None:
     from dingo.profiler.rapid import _run_default_sim
 
     src = inspect.getsource(_run_default_sim)
-    assert (
-        '"resolved_backend"' in src
-    ), "_run_default_sim must return 'resolved_backend' in its result dict"
+    assert '"resolved_backend"' in src, (
+        "_run_default_sim must return 'resolved_backend' in its result dict"
+    )
 
 
 def test_default_naive_backend_is_concrete() -> None:
     """_DEFAULT_NAIVE_BACKEND must be a concrete backend string, not 'auto'."""
     assert _DEFAULT_NAIVE_BACKEND != "auto"
     assert _DEFAULT_NAIVE_BACKEND in ("vllm", "sglang")
+
+
+@pytest.mark.parametrize("backends", [("trtllm", "vllm", "sglang"), ("trtllm",)])
+def test_auto_sim_only_evaluates_supported_backends(monkeypatch, backends):
+    from types import SimpleNamespace
+    from dingo.profiler import rapid
+
+    tasks = {
+        f"agg_{backend}": SimpleNamespace(primary_backend_name=backend)
+        for backend in backends
+    }
+    monkeypatch.setattr(rapid, "build_default_tasks", lambda **kwargs: tasks)
+    monkeypatch.setattr(rapid, "resolve_model_path", lambda dgdr: "test-model")
+    evaluated = []
+
+    class SimulationReached(Exception):
+        pass
+
+    def execute(selected, **kwargs):
+        evaluated.extend(task.primary_backend_name for task in selected.values())
+        raise SimulationReached
+
+    monkeypatch.setattr(rapid, "_execute_tasks", execute)
+    expected = [backend for backend in backends if backend != "trtllm"]
+    error = SimulationReached if expected else ValueError
+    with pytest.raises(error):
+        rapid._run_default_sim(
+            SimpleNamespace(),
+            "test-model",
+            "h200_sxm",
+            "auto",
+            8,
+            128,
+            32,
+            2000.0,
+            50.0,
+            None,
+            "default",
+        )
+    assert evaluated == expected

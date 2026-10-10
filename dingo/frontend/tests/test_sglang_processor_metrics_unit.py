@@ -1,6 +1,3 @@
-#  SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#  SPDX-License-Identifier: Apache-2.0
-
 """Metrics-focused SGLang processor tests with lightweight SGLang stubs."""
 
 import asyncio
@@ -8,7 +5,6 @@ import importlib
 import json
 import sys
 import types
-from typing import Any
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine
@@ -21,6 +17,8 @@ pytestmark = [
 ]
 
 _MISSING = object()
+
+from typing import Any
 
 
 @pytest.fixture
@@ -78,6 +76,9 @@ def _install_sglang_stubs(install_module):
     class _JsonArrayParser:
         pass
 
+    class _GptOssDetector:
+        pass
+
     class _ReasoningParser:
         pass
 
@@ -120,6 +121,11 @@ def _install_sglang_stubs(install_module):
     _install_module(install_module, "sglang.srt.parser")
     _install_module(
         install_module,
+        "sglang.srt.parser.conversation",
+        chat_template_exists=lambda *_args, **_kwargs: False,
+    )
+    _install_module(
+        install_module,
         "sglang.srt.parser.jinja_template_utils",
         detect_jinja_template_content_format=lambda *args, **kwargs: "string",
         process_content_for_template_format=lambda content, *_args, **_kwargs: content,
@@ -128,6 +134,7 @@ def _install_sglang_stubs(install_module):
         install_module,
         "sglang.srt.parser.reasoning_parser",
         ReasoningParser=_ReasoningParser,
+        GptOssDetector=_GptOssDetector,
     )
     _install_module(install_module, "sglang.srt.utils")
     _install_module(
@@ -140,8 +147,11 @@ def _install_sglang_stubs(install_module):
 
 
 class _PostProcessor:
-    def pop_reasoning_token_count(self) -> int:
-        return 1
+    locally_finished = False
+
+    has_pending_stop_text = False
+
+    local_stop_reason = None
 
     def process_output(self, mapped_response):
         return {
@@ -150,11 +160,35 @@ class _PostProcessor:
             "finish_reason": mapped_response["finish_reason"],
         }
 
+    def pop_reasoning_token_count(self) -> int:
+        return 1
+
 
 def _load_processor_module(module_stubs):
     install_module, remove_module = module_stubs
     _install_sglang_stubs(install_module)
     _install_module(install_module, "dynamo._internal", ModelDeploymentCard=object)
+    _install_module(install_module, "dingo.common.multimodal")
+    _install_module(
+        install_module,
+        "dingo.common.multimodal.cache_uuid",
+        reject_unsupported_multimodal_uuids=lambda *_args, **_kwargs: None,
+    )
+    _install_module(
+        install_module,
+        "dingo.frontend.sglang_prepost",
+        ReasoningParser=object,
+        SglangStreamingPostProcessor=object,
+        ToolCallParserType=object,
+        _client_wants_separate_reasoning=lambda *_args, **_kwargs: False,
+        _get_history_tool_calls_count=lambda *_args, **_kwargs: 0,
+        _guided_output_requires_reasoning=lambda *_args, **_kwargs: False,
+        convert_tools=lambda *_args, **_kwargs: None,
+        create_parsers=lambda *_args, **_kwargs: (None, None),
+        detect_force_reasoning_from_template=lambda *_args, **_kwargs: False,
+        preprocess_chat_request=lambda *_args, **_kwargs: None,
+        resolve_skip_special_tokens=lambda *_args, **_kwargs: True,
+    )
     _install_module(
         install_module,
         "dingo.frontend.frontend_args",
@@ -170,6 +204,7 @@ def _load_processor_module(module_stubs):
     _install_module(
         install_module,
         "dynamo.llm.exceptions",
+        HttpError=type("HttpError", (Exception,), {}),
         InvalidArgument=type("InvalidArgument", (Exception,), {}),
         Unknown=type("Unknown", (Exception,), {}),
     )
@@ -178,7 +213,7 @@ def _load_processor_module(module_stubs):
     return importlib.import_module("dingo.frontend.sglang_processor")
 
 
-def test_stream_emits_llm_metrics_annotation(module_stubs):
+def test_stream_embeds_typed_llm_metrics(module_stubs):
     module = _load_processor_module(module_stubs)
     completion_usage = {
         "prompt_tokens": 10,
@@ -215,19 +250,80 @@ def test_stream_emits_llm_metrics_annotation(module_stubs):
         ]
 
     items = asyncio.run(collect())
-    metric_items = [item for item in items if item.get("event") == "llm_metrics"]
-
-    assert len(metric_items) == 1
-    envelope = metric_items[0]
+    assert len(items) == 1
+    envelope = items[0]
     assert envelope["_dynamo_annotated"] is True
     assert envelope["data"]["usage"] == completion_usage
-    metrics = json.loads(envelope["comment"][0])
-    assert metrics == {
+    assert "event" not in envelope
+    assert "comment" not in envelope
+    # Zero counts are omitted (text-only request), mirroring the Rust skip-zero behavior.
+    assert envelope["data"]["llm_metrics"] == {
         "input_tokens": 10,
         "output_tokens": 3,
         "chunk_tokens": 3,
         "cached_tokens": 4,
     }
+
+
+def test_stream_emits_multimodal_counts(module_stubs):
+    # Mixed-media request: assert the SGLang extraction branch reports nonzero
+    # counts (2 images + 1 video), mirroring the vLLM processor test so the
+    # extract_mm_urls wiring cannot silently regress to zero.
+    module = _load_processor_module(module_stubs)
+    processor = module.SglangProcessor(
+        tokenizer=None,
+        routed_engine=FakeRoutedEngine(
+            items=[
+                {
+                    "token_ids": [101, 102, 103],
+                    "finish_reason": "stop",
+                    "completion_usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3,
+                        "total_tokens": 13,
+                    },
+                }
+            ]
+        ),
+        tool_call_parser_name=None,
+        reasoning_parser_name=None,
+        eos_token_ids=None,
+    )
+
+    request = {
+        "model": "test-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "compare"},
+                    {"type": "image_url", "image_url": {"url": "http://x/a.png"}},
+                    {"type": "image_url", "image_url": {"url": "http://x/b.png"}},
+                    {"type": "video_url", "video_url": {"url": "http://x/c.mp4"}},
+                ],
+            }
+        ],
+    }
+
+    async def collect():
+        return [
+            item
+            async for item in processor._generate_and_stream(
+                "req-mm-counts",
+                request,
+                {},
+                list(range(10)),
+                _PostProcessor(),
+            )
+        ]
+
+    items = asyncio.run(collect())
+    assert len(items) == 1
+    metrics = items[0]["data"]["llm_metrics"]
+    assert metrics["image_count"] == 2
+    assert metrics["video_count"] == 1
+    # audio has zero parts, so the key is omitted from the emitted metrics.
+    assert metrics.get("audio_count") is None
 
 
 @pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])
@@ -316,10 +412,11 @@ def test_terminal_tool_payload_precedes_finish(
     assert choice["finish_reason"] == finish_reason
     assert choice["delta"]["tool_calls"] == tool_calls
     metrics = [
-        json.loads(item["comment"][0])
+        item["data"]["llm_metrics"]
         for item in items
-        if item.get("event") == "llm_metrics"
+        if "llm_metrics" in item.get("data", {})
     ]
     assert len(metrics) == 1
     assert metrics[0]["chunk_tokens"] == metrics[0]["output_tokens"] == 3
-    assert items[0]["event"] == "llm_metrics"
+    assert "llm_metrics" in items[0]["data"]
+    assert "llm_metrics" not in items[1]["data"]

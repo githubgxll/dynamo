@@ -9,7 +9,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-RUST_TOOLCHAIN="1.93.1"
+RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-$(sed -n 's/^channel = "\(.*\)"/\1/p' "$(dirname "${BASH_SOURCE[0]}")/../../rust-toolchain.toml")}"
 PROTOC_VERSION="21.12"
 PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip"
 PY_VERSION="3.11"

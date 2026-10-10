@@ -10,7 +10,7 @@
 # This builder intentionally does not inherit dynamo_base or the reusable CUDA
 # Builder. It builds a text-only ai-dingo-runtime wheel with the Rust crate's
 # default features disabled, which excludes KVBM, CUDA, NIXL and UCX.
-FROM rust:1.93.1-slim-bookworm AS router_wheel_builder
+FROM rust:1.96.1-slim-bookworm AS router_wheel_builder
 
 ARG CARGO_BUILD_JOBS
 

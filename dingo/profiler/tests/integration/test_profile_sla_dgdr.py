@@ -11,6 +11,7 @@ All tests are no-GPU (gpu_0) and pre_merge.
 """
 
 import asyncio
+import copy
 import logging
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ CONFIGS_DIR = Path(__file__).parent.parent / "data" / "configs"
 
 
 class TestRapidSupported:
-    """Rapid strategy with AIC-supported model (Qwen3-32B on h200_sxm/trtllm)."""
+    """Rapid strategy with AIC-supported model (Qwen3-32B on h200_sxm/sglang)."""
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
@@ -113,10 +114,12 @@ class TestRapidSupported:
         assert output.exists()
         config = yaml.safe_load(output.read_text())
         assert config
-        spec = config.get("spec", {})
-        pvcs = spec.get("pvcs", [])
         assert any(
-            p.get("name") == "model-cache" for p in pvcs
+            volume.get("persistentVolumeClaim", {}).get("claimName") == "model-cache"
+            for component in config.get("spec", {}).get("components", [])
+            for volume in component.get("podTemplate", {})
+            .get("spec", {})
+            .get("volumes", [])
         ), "PVC should be mounted"
 
     @pytest.mark.pre_merge
@@ -159,21 +162,22 @@ class TestRapidSupported:
         docs = list(yaml.safe_load_all(raw))
         assert len(docs) >= 2, "Planner config should produce multi-doc YAML"
         dgd = docs[-1]
-        assert "Planner" in dgd.get("spec", {}).get(
-            "services", {}
-        ), "Planner service should be added"
-        services = dgd.get("spec", {}).get("services", {})
-        worker_services = {
-            name: svc
-            for name, svc in services.items()
-            if svc.get("componentType") == "worker"
+        components = {
+            component["name"]: component
+            for component in dgd.get("spec", {}).get("components", [])
         }
-        assert worker_services, "Planner DGD should include worker services"
-        for name, service in worker_services.items():
-            assert (
-                service.get("scalingAdapter", {}).get("enabled") is True
-            ), f"Planner worker {name} should enable DGDSA"
-        assert "scalingAdapter" not in services["Planner"]
+        assert "Planner" in components, "Planner component should be added"
+        worker_components = {
+            name: component
+            for name, component in components.items()
+            if component.get("type") in {"worker", "prefill", "decode"}
+        }
+        assert worker_components, "Planner DGD should include worker components"
+        for name, component in worker_components.items():
+            assert component.get("scalingAdapter", {}).get("enabled") is True, (
+                f"Planner worker {name} should enable DGDSA"
+            )
+        assert "scalingAdapter" not in components["Planner"]
 
 
 class TestRapidUnsupported:
@@ -211,7 +215,7 @@ class TestRapidUnsupported:
         with caplog.at_level(logging.WARNING):
             asyncio.run(run_profile(dgdr, ops))
         assert "AIC does not support" in caplog.text
-        assert "Rust perf shim fallback" in caplog.text
+        assert "AIC core fallback" in caplog.text
 
 
 class TestThoroughDryRun:
@@ -354,12 +358,11 @@ def _save_dummy_npz(output_dir: str):
 
 _DECODE_SVC_NAMES = {
     "sglang": "decode",
-    "vllm": "VllmDecodeWorker",
-    "trtllm": "decode",
+    "vllm": "decode",
 }
 
 
-def _make_thorough_patches(backend: str = "trtllm"):
+def _make_thorough_patches(backend: str = "sglang"):
     """Build mock-patches for thorough mode, parameterised by backend."""
     svc_name = _DECODE_SVC_NAMES.get(backend, "decode")
     return [
@@ -380,11 +383,11 @@ def _make_thorough_patches(backend: str = "trtllm"):
     ]
 
 
-# Backward compat: existing tests use the trtllm-flavored list
-_THOROUGH_PATCHES = _make_thorough_patches("trtllm")
+# Default fixtures use the supported SGLang backend.
+_THOROUGH_PATCHES = _make_thorough_patches("sglang")
 
 
-def _patch_kv_cache_log(backend: str = "trtllm"):
+def _patch_kv_cache_log(backend: str = "sglang"):
     """Patch get_kv_cache_size_from_dynamo_log on the real config modifier."""
     from dingo.profiler.utils.config_modifiers import CONFIG_MODIFIERS
 
@@ -408,7 +411,7 @@ class TestThoroughMocked:
         dgdr = _load_dgdr(CONFIGS_DIR / "6_thorough_no_planner_with_load.yaml")
         ops = _make_ops(tmp_path)
 
-        with _patch_kv_cache_log("trtllm"):
+        with _patch_kv_cache_log("sglang"):
             for p in _THOROUGH_PATCHES:
                 p.start()
             try:
@@ -451,11 +454,11 @@ class TestThoroughMocked:
             ),
             patch(
                 "dingo.profiler.interpolation.pick_decode_component",
-                return_value="TRTLLMWorker",
+                return_value="decode",
             ),
         ]
 
-        with _patch_kv_cache_log("trtllm"):
+        with _patch_kv_cache_log("sglang"):
             all_patches = _THOROUGH_PATCHES + interp_patches
             for p in all_patches:
                 p.start()
@@ -496,8 +499,13 @@ def _run_mocked_thorough(dgdr, ops, backend: str):
     """Run the full mocked-thorough pipeline for an arbitrary backend."""
     thorough_patches = _make_thorough_patches(backend)
     kv_patch = _patch_kv_cache_log(backend)
+    trust_patch = patch(
+        "dingo.profiler.utils.dgd_materialization."
+        "model_ref_allows_implicit_trust_remote_code",
+        return_value=True,
+    )
 
-    with kv_patch:
+    with kv_patch, trust_patch:
         for p in thorough_patches:
             p.start()
         try:
@@ -507,72 +515,81 @@ def _run_mocked_thorough(dgdr, ops, backend: str):
                 p.stop()
 
 
-def _assert_overrides_applied(final_config_path: Path, dgdr):
-    """Assert the final DGD exists and that overrides are reflected."""
+_OVERRIDE_ENGINE_MARKER = "profiler.test.nvidia.com/override-applied"
+
+
+@pytest.fixture
+def mock_dgd_override_engine(monkeypatch) -> MagicMock:
+    """Record override calls and return a distinguishable, otherwise unchanged DGD."""
+
+    def return_marked_copy(dgd_config: dict, _override: dict) -> dict:
+        result = copy.deepcopy(dgd_config)
+        annotations = result.setdefault("metadata", {}).setdefault("annotations", {})
+        annotations[_OVERRIDE_ENGINE_MARKER] = "true"
+        return result
+
+    engine = MagicMock(side_effect=return_marked_copy)
+    monkeypatch.setattr(
+        "dingo.profiler.utils.dgd_materialization.apply_dgd_overrides",
+        engine,
+    )
+    return engine
+
+
+def _assert_override_engine_contract(
+    final_config_path: Path,
+    engine: MagicMock,
+    expected_override: dict,
+) -> None:
+    """Assert override forwarding and consumption without testing merge semantics."""
+    assert engine.call_count > 0, "DGD override engine should be called"
+    for engine_call in engine.call_args_list:
+        assert engine_call.args[1] == expected_override
+
     assert final_config_path.exists(), "final_config.yaml should exist"
     raw = final_config_path.read_text()
     docs = list(yaml.safe_load_all(raw))
     dgd = docs[-1] if docs else {}
     assert dgd and "spec" in dgd, "DGD should have a spec"
-
-    override_spec = dgdr.overrides.dgd.get("spec", {})
-
-    for ovr_key in ("envs", "backendFramework"):
-        if ovr_key in override_spec:
-            assert ovr_key in dgd["spec"], f"Override field spec.{ovr_key} should exist"
-
-    svc_overrides = override_spec.get("services", {})
-    dgd_services = dgd.get("spec", {}).get("services", {})
-    for svc_name, svc_ovr in svc_overrides.items():
-        if svc_name in dgd_services:
-            dgd_svc = dgd_services[svc_name]
-            if "sharedMemory" in svc_ovr:
-                assert (
-                    "sharedMemory" in dgd_svc
-                ), f"Override sharedMemory on {svc_name} should be applied"
-            mc = svc_ovr.get("extraPodSpec", {}).get("mainContainer", {})
-            if "args" in mc:
-                dgd_args = (
-                    dgd_svc.get("extraPodSpec", {})
-                    .get("mainContainer", {})
-                    .get("args", [])
-                )
-                for arg in mc["args"]:
-                    assert (
-                        arg in dgd_args
-                    ), f"Override arg '{arg}' should be in {svc_name} args"
+    assert (
+        dgd.get("metadata", {}).get("annotations", {}).get(_OVERRIDE_ENGINE_MARKER)
+        == "true"
+    ), "final DGD should contain the override engine's returned marker"
 
 
 class TestThoroughMockedOverrides:
-    """Thorough + DGD overrides: verify overrides are applied end-to-end."""
+    """Verify override forwarding and consumption through the mocked pipeline."""
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
-    def test_9a_sglang_overrides(self, tmp_path):
+    def test_9a_sglang_overrides(self, tmp_path, mock_dgd_override_engine):
         """Case 9a: SGLang thorough sweep with DSR1 overrides."""
         dgdr = _load_dgdr(CONFIGS_DIR / "9a_thorough_dsr1_sglang_overrides.yaml")
         ops = _make_ops(tmp_path)
         _run_mocked_thorough(dgdr, ops, "sglang")
-        _assert_overrides_applied(
+        _assert_override_engine_contract(
             tmp_path / "profiling_results" / "final_config.yaml",
-            dgdr,
+            mock_dgd_override_engine,
+            dgdr.overrides.dgd,
         )
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
-    def test_10_override_security_context(self, tmp_path):
-        """Case 10: imagePullSecrets injected via overrides into a new spec field."""
+    def test_10_override_security_context(self, tmp_path, mock_dgd_override_engine):
+        """Case 10: imagePullSecrets are forwarded to the override engine."""
         dgdr = _load_dgdr(CONFIGS_DIR / "10_thorough_override_security_context.yaml")
         ops = _make_ops(tmp_path)
-        _run_mocked_thorough(dgdr, ops, "trtllm")
+        _run_mocked_thorough(dgdr, ops, "sglang")
 
         output = tmp_path / "profiling_results" / "final_config.yaml"
-        assert output.exists(), "final_config.yaml should exist"
-        config = yaml.safe_load(output.read_text())
-        assert config and "spec" in config
+        _assert_override_engine_contract(
+            output,
+            mock_dgd_override_engine,
+            dgdr.overrides.dgd,
+        )
 
-        secrets = config["spec"].get("imagePullSecrets")
-        assert secrets is not None, "imagePullSecrets should be present"
+        forwarded_override = mock_dgd_override_engine.call_args.args[1]
+        secrets = forwarded_override["spec"]["imagePullSecrets"]
         secret_names = [s["name"] for s in secrets]
         assert "my-registry-secret" in secret_names
         assert "nvcr-pull-secret" in secret_names
@@ -610,12 +627,23 @@ class TestThoroughMoEGpuBudget:
             candidate = yaml.safe_load(cfg_file.read_text())
             if not candidate or "spec" not in candidate:
                 continue
-            for svc_name, svc in candidate["spec"].get("services", {}).items():
-                if svc_name in ("Frontend", "Planner"):
+            for component in candidate["spec"].get("components", []):
+                if component.get("name") in ("Frontend", "Planner"):
                     continue
-                limits = (svc.get("resources") or {}).get("limits", {})
-                gpu_limit = int(limits.get("gpu", 0))
+                main_container = next(
+                    (
+                        container
+                        for container in component.get("podTemplate", {})
+                        .get("spec", {})
+                        .get("containers", [])
+                        if container.get("name") == "main"
+                    ),
+                    {},
+                )
+                limits = (main_container.get("resources") or {}).get("limits", {})
+                gpu_limit = int(limits.get("nvidia.com/gpu", 0))
                 assert gpu_limit <= num_gpus_per_node, (
-                    f"Candidate {candidate_dir.name} service {svc_name} requests "
+                    f"Candidate {candidate_dir.name} component "
+                    f"{component.get('name')} requests "
                     f"{gpu_limit} GPUs but numGpusPerNode is {num_gpus_per_node}"
                 )

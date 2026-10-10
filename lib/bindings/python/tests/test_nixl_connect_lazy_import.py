@@ -13,7 +13,7 @@ bindings is exercised (today: constructing a `Connector` → `Connection`).
 
 import importlib
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,30 +24,21 @@ pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
 @pytest.fixture(scope="module")
 def nixl_connect_no_nixl():
-    """Re-import dynamo.nixl_connect exactly once with nixl masked.
+    """Mask only NIXL module entries, preserving native imports made by the test.
 
-    Uses `patch.dict(sys.modules, ...)` (auto-restoring) to mask nixl —
-    same pattern as `test_nixl_connect_unit.py`. Setting
-    `sys.modules[name] = None` causes `import name` to raise
-    ModuleNotFoundError, matching the real AMD-host behavior.
-
-    Scope is `module` (not `function`) on purpose: re-executing the
-    `dynamo.nixl_connect` module body twice in a single session triggers
-    a `_has_torch_function already has a docstring` RuntimeError from
-    `torch.overrides`. One re-import per file is safe; per-test re-import
-    is not. Per-test state is handled via `monkeypatch.setattr` below.
+    A wholesale patch.dict(sys.modules) restore removes newly imported torch
+    modules and leaves their native state registered. Targeted patches avoid
+    unsafe extension re-imports and restore the parent package attribute too.
     """
-    saved = sys.modules.get("dynamo.nixl_connect")
-    with patch.dict(
-        sys.modules,
-        {"nixl": None, "nixl._api": None, "nixl._bindings": None},
-    ):
-        sys.modules.pop("dynamo.nixl_connect", None)
+    parent = importlib.import_module("dynamo")
+    with pytest.MonkeyPatch.context() as patcher:
+        for name in ("nixl", "nixl._api", "nixl._bindings"):
+            patcher.setitem(sys.modules, name, None)
+        # Track even an originally absent entry so teardown removes the import.
+        patcher.setitem(sys.modules, "dynamo.nixl_connect", None)
+        patcher.delitem(sys.modules, "dynamo.nixl_connect")
+        patcher.setattr(parent, "nixl_connect", None, raising=False)
         yield importlib.import_module("dynamo.nixl_connect")
-    if saved is None:
-        sys.modules.pop("dynamo.nixl_connect", None)
-    else:
-        sys.modules["dynamo.nixl_connect"] = saved
 
 
 def test_module_imports_without_nixl(nixl_connect_no_nixl):

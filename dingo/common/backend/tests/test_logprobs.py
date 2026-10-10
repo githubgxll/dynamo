@@ -1,17 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the shared logprob helpers.
-
-The legacy per-backend extraction logic moved into this module; these
-tests cover the contract directly so both the unified engines and the
-legacy handlers (which now delegate here) get verified at the same time.
-"""
-
 from __future__ import annotations
 
+"""Tests for the shared logprob helpers and active handler adapters."""
+
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -33,10 +27,14 @@ pytestmark = [
     pytest.mark.pre_merge,
 ]
 
+"""Tests for the shared logprob helpers.
 
-# ---------------------------------------------------------------------------
-# parse_logprob_options
-# ---------------------------------------------------------------------------
+The legacy per-backend extraction logic moved into this module; these
+tests cover the contract directly so both the unified engines and the
+legacy handlers (which now delegate here) get verified at the same time.
+"""
+
+from typing import Optional
 
 
 def test_parse_options_returns_both_when_present():
@@ -62,11 +60,6 @@ def test_parse_options_drops_non_integer():
     assert parse_logprob_options({"logprobs": "abc"}) == (None, None)
 
 
-# ---------------------------------------------------------------------------
-# extract_from_completion_output (vLLM/TRT-LLM shape)
-# ---------------------------------------------------------------------------
-
-
 def _logprob(lp: float, rank: int = 1, decoded: str | None = None):
     return SimpleNamespace(logprob=lp, rank=rank, decoded_token=decoded)
 
@@ -74,6 +67,37 @@ def _logprob(lp: float, rank: int = 1, decoded: str | None = None):
 def test_extract_completion_returns_none_when_logprobs_absent():
     output = SimpleNamespace(token_ids=[1, 2], logprobs=None)
     assert extract_from_completion_output(output, 0) == (None, None)
+
+
+class _ExplodingTokenIds:
+    """Stands in for `token_ids` and fails the test if anything reads it.
+
+    Non-empty, so it survives the `or []` fallback and would reach the copy;
+    iterating it, which is what copying does, raises instead.
+    """
+
+    def __len__(self) -> int:
+        return 2
+
+    def __iter__(self):
+        raise AssertionError("token_ids copied though no logprobs were requested")
+
+
+def test_extract_completion_skips_token_ids_when_logprobs_empty():
+    """When no logprobs were requested, return without ever reading `token_ids`.
+
+    TRT-LLM leaves `logprobs` at its `[]` default whenever the client did not ask
+    for logprobs. That is falsy but not None, so the early return has to test
+    truthiness for this case to fire at all.
+
+    Asserting only the return value would not catch a regression, because the
+    older `is None` check returned `(None, None)` too -- it just copied
+    `token_ids` on the way. `token_ids` holds every token the request has emitted
+    so far, so that copy grows as the request runs and is then thrown away.
+    Hence a `token_ids` that raises if anything touches it.
+    """
+    output = SimpleNamespace(token_ids=_ExplodingTokenIds(), logprobs=[])
+    assert extract_from_completion_output(output, 1) == (None, None)
 
 
 def test_extract_completion_returns_none_past_end_of_tokens():
@@ -189,13 +213,13 @@ def test_extract_completion_uses_tokenizer_when_decoded_missing():
     assert top_logprobs[0][0]["token"] == "<7>"
 
 
-# ---------------------------------------------------------------------------
-# extract_prompt_logprobs_from_completion_output (vLLM/TRT-LLM shape)
-# ---------------------------------------------------------------------------
-
-
 def test_prompt_logprobs_completion_returns_none_when_absent():
     output = SimpleNamespace(prompt_logprobs=None)
+    assert extract_prompt_logprobs_from_completion_output(output) is None
+
+
+def test_prompt_logprobs_completion_returns_none_when_empty():
+    output = SimpleNamespace(prompt_logprobs=[])
     assert extract_prompt_logprobs_from_completion_output(output) is None
 
 
@@ -243,11 +267,6 @@ def test_prompt_logprobs_completion_falls_back_to_tokenizer():
     assert payload[1]["9"]["decoded_token"] == "<9>"
 
 
-# ---------------------------------------------------------------------------
-# extract_prompt_logprobs_from_sglang_meta
-# ---------------------------------------------------------------------------
-
-
 def test_prompt_logprobs_sglang_returns_none_when_absent():
     assert extract_prompt_logprobs_from_sglang_meta({}) is None
     assert (
@@ -255,28 +274,39 @@ def test_prompt_logprobs_sglang_returns_none_when_absent():
     )
 
 
-def test_prompt_logprobs_sglang_prepends_none_for_bos():
-    # SGLang's `input_token_logprobs` starts at prompt position 1; we
-    # add `None` at index 0 to align with the Rust PromptLogprobs
-    # invariant (BOS has no logprob).
+def test_prompt_logprobs_sglang_preserves_engine_bos_none():
+    # Current SGLang versions include the BOS position as a tuple with a null
+    # logprob, and align input_top_logprobs to that same position.
     meta = {
         "input_token_logprobs": [
+            (None, 6, None),
             (-0.5, 7, "a"),
-            (-0.6, 8, "b"),
-        ]
+        ],
+        "input_top_logprobs": [
+            None,
+            [(-0.5, 7, "a"), (-1.5, 70, "A")],
+        ],
     }
     payload = extract_prompt_logprobs_from_sglang_meta(meta)
     assert payload == [
         None,
-        {"7": {"logprob": -0.5, "decoded_token": "a"}},
-        {"8": {"logprob": -0.6, "decoded_token": "b"}},
+        {
+            "7": {"logprob": -0.5, "decoded_token": "a"},
+            "70": {"logprob": -1.5, "decoded_token": "A"},
+        },
     ]
 
 
 def test_prompt_logprobs_sglang_merges_input_top_logprobs():
     meta = {
-        "input_token_logprobs": [(-0.5, 7, "a")],
-        "input_top_logprobs": [[(-0.5, 7, "a"), (-1.5, 70, "A")]],
+        "input_token_logprobs": [
+            (None, 6, None),
+            (-0.5, 7, "a"),
+        ],
+        "input_top_logprobs": [
+            None,
+            [(-0.5, 7, "a"), (-1.5, 70, "A")],
+        ],
     }
     payload = extract_prompt_logprobs_from_sglang_meta(meta)
     assert payload[1] == {
@@ -286,14 +316,14 @@ def test_prompt_logprobs_sglang_merges_input_top_logprobs():
 
 
 def test_prompt_logprobs_sglang_handles_missing_decoded_token():
-    meta = {"input_token_logprobs": [(-0.7, 9, None)]}
+    meta = {
+        "input_token_logprobs": [
+            (None, 6, None),
+            (-0.7, 9, None),
+        ]
+    }
     payload = extract_prompt_logprobs_from_sglang_meta(meta)
     assert payload[1] == {"9": {"logprob": -0.7}}
-
-
-# ---------------------------------------------------------------------------
-# build_sglang_logprob_kwargs
-# ---------------------------------------------------------------------------
 
 
 def test_sglang_kwargs_empty_when_no_options():
@@ -301,7 +331,7 @@ def test_sglang_kwargs_empty_when_no_options():
 
 
 def test_sglang_kwargs_logprobs_zero_allowed_without_gate():
-    # Chosen-token-only logprobs are available even when top-k is disabled.
+    # The default gate forbids logprobs >= 1; logprobs=0 always works.
     kwargs = build_sglang_logprob_kwargs({"logprobs": 0}, allow_top_logprobs=False)
     assert kwargs == {"return_logprob": True, "top_logprobs_num": 0}
 
@@ -348,23 +378,24 @@ def test_sglang_gate_reads_env(monkeypatch):
     assert sglang_top_logprobs_allowed() is True
 
 
-# ---------------------------------------------------------------------------
-# extract_from_sglang_meta
-# ---------------------------------------------------------------------------
-
-
 def test_sglang_extract_returns_none_when_meta_empty():
-    assert extract_from_sglang_meta({}, 0) == (None, None, 0)
+    assert extract_from_sglang_meta({}) == (None, None)
 
 
-def test_sglang_extract_slices_cumulative_array():
+def test_sglang_extract_supports_incremental_streaming_metadata():
+    # Current SGLang slices output logprobs to the same disjoint token chunk.
     meta = {
-        "output_token_logprobs": [(-0.1, 1, "a"), (-0.2, 2, "b"), (-0.3, 3, "c")],
+        "output_token_logprobs": [(-0.2, 2, "b")],
+        "output_top_logprobs": [[(-0.2, 2, "b"), (-1.2, 20, "B")]],
     }
-    log_probs, top_logprobs, new_total = extract_from_sglang_meta(meta, 1)
-    assert log_probs == [-0.2, -0.3]
-    assert top_logprobs is None
-    assert new_total == 3
+    log_probs, top_logprobs = extract_from_sglang_meta(meta)
+    assert log_probs == [-0.2]
+    assert top_logprobs == [
+        [
+            {"rank": 1, "token_id": 2, "token": "b", "logprob": -0.2},
+            {"rank": 2, "token_id": 20, "token": "B", "logprob": -1.2},
+        ]
+    ]
 
 
 def test_sglang_extract_with_top():
@@ -372,7 +403,7 @@ def test_sglang_extract_with_top():
         "output_token_logprobs": [(-0.1, 101, "a")],
         "output_top_logprobs": [[(-0.1, 101, "a"), (-0.2, 102, "b")]],
     }
-    log_probs, top_logprobs, _ = extract_from_sglang_meta(meta, 0)
+    log_probs, top_logprobs = extract_from_sglang_meta(meta)
     assert log_probs == [-0.1]
     assert top_logprobs == [
         [
@@ -387,9 +418,7 @@ def test_sglang_extract_return_tokens_as_token_ids():
         "output_token_logprobs": [(-0.1, 101, "a")],
         "output_top_logprobs": [[(-0.1, 101, "a")]],
     }
-    _, top_logprobs, _ = extract_from_sglang_meta(
-        meta, 0, return_tokens_as_token_ids=True
-    )
+    _, top_logprobs = extract_from_sglang_meta(meta, return_tokens_as_token_ids=True)
     assert top_logprobs[0][0]["token"] == "token_id:101"
 
 
@@ -401,11 +430,96 @@ def test_sglang_extract_none_top_position_becomes_empty_list():
         "output_token_logprobs": [(-0.1, 101, "a"), (-0.2, 102, "b")],
         "output_top_logprobs": [None, [(-0.2, 102, "b")]],
     }
-    _, top_logprobs, _ = extract_from_sglang_meta(meta, 0)
+    _, top_logprobs = extract_from_sglang_meta(meta)
     assert top_logprobs == [
         [],
         [{"rank": 1, "token_id": 102, "token": "b", "logprob": -0.2}],
     ]
+
+
+@pytest.mark.vllm
+def test_vllm_handler_matches_shared():
+    # `exc_type=ImportError` also skips on missing native deps (libcuda)
+    # on CPU-only lanes where the wheel is installed but no GPU runtime.
+    pytest.importorskip("vllm", reason="vLLM not installed", exc_type=ImportError)
+    from dingo.vllm.handlers import BaseWorkerHandler
+
+    output = SimpleNamespace(
+        token_ids=[11, 12],
+        logprobs=[
+            {11: _logprob(-0.1, decoded="a"), 110: _logprob(-1.1, decoded="A")},
+            {12: _logprob(-0.2, decoded="b")},
+        ],
+    )
+
+    wrapper_lp, wrapper_top = BaseWorkerHandler._extract_logprobs(output, 0)
+    direct_lp, direct_top = extract_from_completion_output(
+        output, 0, fallback_to_first_on_missing=True, include_bytes=True
+    )
+    assert wrapper_lp == direct_lp
+    assert wrapper_top == direct_top
+
+
+@pytest.mark.sglang
+def test_sglang_extract_handler_matches_shared():
+    pytest.importorskip("sglang", reason="SGLang not installed", exc_type=ImportError)
+    from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
+
+    meta = {
+        "output_token_logprobs": [(-0.1, 101, "a"), (-0.2, 102, "b")],
+        "output_top_logprobs": [
+            [(-0.1, 101, "a"), (-0.5, 105, "x")],
+            [(-0.2, 102, "b")],
+        ],
+    }
+
+    wrapper = DecodeWorkerHandler._extract_logprobs(meta)
+    direct = extract_from_sglang_meta(meta)
+    assert wrapper == direct
+
+
+@pytest.mark.sglang
+def test_sglang_kwargs_handler_matches_shared(monkeypatch):
+    pytest.importorskip("sglang", reason="SGLang not installed", exc_type=ImportError)
+    from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
+
+    # Gate off — both must reject logprobs >= 1 identically.
+    monkeypatch.delenv(DYN_SGL_ALLOW_TOP_LOGPROBS_ENV, raising=False)
+    request = {"output_options": {"logprobs": 0, "prompt_logprobs": 0}}
+
+    wrapper_kwargs = DecodeWorkerHandler._build_logprob_kwargs(request)
+    direct_kwargs = build_sglang_logprob_kwargs(
+        request["output_options"], allow_top_logprobs=False
+    )
+    assert wrapper_kwargs == direct_kwargs
+
+
+def test_prompt_logprobs_sglang_prepends_none_for_bos():
+    # SGLang's `input_token_logprobs` starts at prompt position 1; we
+    # add `None` at index 0 to align with the Rust PromptLogprobs
+    # invariant (BOS has no logprob).
+    meta = {
+        "input_token_logprobs": [
+            (-0.5, 7, "a"),
+            (-0.6, 8, "b"),
+        ]
+    }
+    payload = extract_prompt_logprobs_from_sglang_meta(meta)
+    assert payload == [
+        None,
+        {"7": {"logprob": -0.5, "decoded_token": "a"}},
+        {"8": {"logprob": -0.6, "decoded_token": "b"}},
+    ]
+
+
+def test_sglang_extract_slices_cumulative_array():
+    meta = {
+        "output_token_logprobs": [(-0.1, 1, "a"), (-0.2, 2, "b"), (-0.3, 3, "c")],
+    }
+    log_probs, top_logprobs, new_total = extract_from_sglang_meta(meta, 1)
+    assert log_probs == [-0.2, -0.3]
+    assert top_logprobs is None
+    assert new_total == 3
 
 
 def test_sglang_extract_returns_offset_unchanged_when_no_new_entries():
@@ -450,15 +564,6 @@ def test_sglang_extract_incremental_no_top_logprobs():
     assert log_probs == [-0.1]
     assert top_logprobs is None
     assert new_total == 1
-
-# ---------------------------------------------------------------------------
-# Legacy ↔ unified behavioural parity corner cases.
-#
-# The legacy handlers and unified engines call the same shared helpers, so
-# the call sites should produce byte-identical output for any given input.
-# The tests below simulate each engine's wire format and confirm parity by
-# driving both call patterns side-by-side.
-# ---------------------------------------------------------------------------
 
 
 def _vllm_legacy_call(output, num_so_far, tokenizer=None):
@@ -697,22 +802,8 @@ def test_parity_sglang_kwargs_rejects_top_logprobs_consistently():
         {"prompt_logprobs": 2},
         {"logprobs": 0, "prompt_logprobs": 3},
     ):
-        with pytest.raises(
-            ValueError, match="SGLang top-k logprobs are disabled"
-        ):
+        with pytest.raises(ValueError, match="SGLang top-k logprobs are disabled"):
             build_sglang_logprob_kwargs(opts, allow_top_logprobs=False)
-
-
-# ---------------------------------------------------------------------------
-# Direct wrapper-vs-shared parity. These tests import the legacy static
-# methods on each engine's handler class and assert byte-identical output
-# vs a direct shared call with the same flags. They catch wrapper rot —
-# e.g. someone editing the static method to drop a flag.
-#
-# `pytest.importorskip` skips when the engine package isn't installed
-# (developer machines without vllm/sglang/trtllm). CI envs with the
-# engines will execute them.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.vllm
@@ -770,13 +861,6 @@ def test_parity_sglang_legacy_kwargs_wrapper_matches_shared(monkeypatch):
         request["output_options"], allow_top_logprobs=False
     )
     assert wrapper_kwargs == direct_kwargs
-
-
-# ---------------------------------------------------------------------------
-# Whole-stream parity. Drive a simulated multi-chunk generation through both
-# paths and confirm not just the per-chunk logprobs, but the byte-identical
-# top-logprob dict shape (rank/token_id/token/logprob/bytes) lines up.
-# ---------------------------------------------------------------------------
 
 
 def test_parity_vllm_full_stream_byte_identical_top_logprobs():
@@ -969,3 +1053,15 @@ def test_parity_sglang_cumulative_two_chunks_yields_full_stream():
     # First chunk: 1 entry; second chunk: 2 new entries. Total 3.
     assert len(extracted_top) == 3
     assert offset == 3
+
+
+def test_prompt_logprobs_legacy_bos_keeps_top_logprobs_aligned():
+    payload = extract_prompt_logprobs_from_sglang_meta(
+        {
+            "input_token_logprobs": [(-0.5, 7, "a"), (-0.6, 8, "b")],
+            "input_top_logprobs": [[(-1.0, 70, "A")], [(-1.1, 80, "B")]],
+        }
+    )
+    assert payload[0] is None
+    assert set(payload[1]) == {"7", "70"}
+    assert set(payload[2]) == {"8", "80"}

@@ -1,18 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for OmniConfig validation."""
+"""Unit tests for OmniConfig validation and omni argument parsing."""
 
+import argparse
+import contextlib
 import dataclasses
+import logging
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 try:
+    import vllm.platforms as vllm_platforms
+    from vllm.engine.arg_utils import _compute_kwargs
+    from vllm.platforms.interface import UnspecifiedPlatform
+
+    from dingo.vllm import main as vllm_main
     from dingo.vllm.omni.args import (
+        FlexibleArgumentParser,
+        OmniArgGroup,
         OmniConfig,
         OmniDiffusionKwargs,
+        OmniEngineArgs,
         OmniParallelKwargs,
+        parse_omni_args,
     )
 except ImportError:
     pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
@@ -20,7 +33,11 @@ except ImportError:
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.vllm,
-    pytest.mark.gpu_1,
+    pytest.mark.multimodal,
+    pytest.mark.gpu_0,
+    # Building the vLLM argument parser resolves a device; on an accelerator-less
+    # host that raises unless a platform is pinned first.
+    pytest.mark.usefixtures("vllm_cpu_platform_when_no_accelerator"),
     pytest.mark.xpu_1,
     pytest.mark.pre_merge,
     pytest.mark.profiled_vram_gib(0),
@@ -28,38 +45,27 @@ pytestmark = [
 ]
 
 _DIFFUSION_FIELDS = {f.name for f in dataclasses.fields(OmniDiffusionKwargs)}
+
 _PARALLEL_FIELDS = {f.name for f in dataclasses.fields(OmniParallelKwargs)}
 
+_PLATFORM_UNSET = object()
 
-@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
-def test_rejects_invalid_diffusion_capacity(capacity):
-    config = _make_omni_config(max_num_seqs=capacity)
-    with pytest.raises(ValueError, match="max-num-seqs"):
-        config.validate()
+try:
+    import vllm.platforms as vllm_platforms
+    from vllm.engine.arg_utils import _compute_kwargs
+    from vllm.platforms.interface import UnspecifiedPlatform
 
-
-def test_concurrent_h3_requires_step_execution():
-    config = _make_omni_config(
-        request_adapter="minimax_h3", request_adapter_workflow="fl2va", max_num_seqs=2
+    from dingo.vllm import main as vllm_main
+    from dingo.vllm.omni.args import (
+        FlexibleArgumentParser,
+        OmniConfig,
+        OmniDiffusionKwargs,
+        OmniEngineArgs,
+        OmniParallelKwargs,
+        parse_omni_args,
     )
-    with pytest.raises(ValueError, match="requires --step-execution"):
-        config.validate()
-
-
-def test_concurrent_h3_step_execution_valid():
-    config = _make_omni_config(
-        request_adapter="minimax_h3",
-        request_adapter_workflow="fl2va",
-        max_num_seqs=2,
-        step_execution=True,
-    )
-    config.validate()
-
-
-def test_step_execution_rejects_cache_backend():
-    config = _make_omni_config(step_execution=True, cache_backend="cache_dit")
-    with pytest.raises(ValueError, match="cannot be combined"):
-        config.validate()
+except ImportError:
+    pytest.skip("vLLM omni dependencies not available", allow_module_level=True)
 
 
 def _make_omni_config(**overrides) -> OmniConfig:
@@ -85,7 +91,6 @@ def _make_omni_config(**overrides) -> OmniConfig:
         "event_plane": "nats",
         "connector": [],
         "enable_local_indexer": True,
-        "durable_kv_events": False,
         "dyn_tool_call_parser": None,
         "dyn_reasoning_parser": None,
         "custom_jinja_template": None,
@@ -127,6 +132,439 @@ def _make_omni_config(**overrides) -> OmniConfig:
 def test_omni_config_valid_defaults():
     config = _make_omni_config()
     config.validate()
+
+
+def test_startup_lora_paths_parse_as_diffusion_options():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(
+        ["--lora-path", "/models/fast-a.safetensors", "/models/fast-b.safetensors"]
+    )
+
+    assert args.lora_path == [
+        "/models/fast-a.safetensors",
+        "/models/fast-b.safetensors",
+    ]
+
+
+def test_ulysses_a2a_permute_parses_as_parallel_option():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--ulysses-a2a-permute"])
+
+    assert args.ulysses_a2a_permute is True
+
+
+def test_fastvideo_vsa_topk_parses_as_diffusion_option():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--fastvideo-vsa-topk", "64"])
+
+    assert args.fastvideo_vsa_topk == 64
+
+
+def test_diffusion_only_options_remain_unset_when_omitted():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args([])
+
+    assert {
+        "enable_layerwise_offload": args.enable_layerwise_offload,
+        "layerwise_num_gpu_layers": args.layerwise_num_gpu_layers,
+        "vae_use_slicing": args.vae_use_slicing,
+        "vae_use_tiling": args.vae_use_tiling,
+        "boundary_ratio": args.boundary_ratio,
+        "enable_cache_dit_summary": args.enable_cache_dit_summary,
+        "enable_cpu_offload": args.enable_cpu_offload,
+    } == {
+        "enable_layerwise_offload": None,
+        "layerwise_num_gpu_layers": None,
+        "vae_use_slicing": None,
+        "vae_use_tiling": None,
+        "boundary_ratio": None,
+        "enable_cache_dit_summary": None,
+        "enable_cpu_offload": None,
+    }
+
+
+
+
+def test_diffusion_bool_option_preserves_explicit_false():
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args(["--no-vae-use-tiling"])
+
+    assert args.vae_use_tiling is False
+
+
+def test_diffusion_bool_environment_option_is_parsed(monkeypatch):
+    monkeypatch.setenv("DYN_OMNI_VAE_USE_TILING", "false")
+    parser = argparse.ArgumentParser()
+    OmniArgGroup().add_arguments(parser)
+
+    args = parser.parse_args([])
+
+    assert args.vae_use_tiling is False
+
+
+@pytest.mark.parametrize("fps", [0, -1, -100])
+def test_omni_config_invalid_video_fps(fps):
+    config = _make_omni_config(default_video_fps=fps)
+    with pytest.raises(ValueError, match="--default-video-fps must be > 0"):
+        config.validate()
+
+
+@pytest.mark.parametrize(
+    ("field", "flag"),
+    [
+        ("ulysses_degree", "--ulysses-degree"),
+        ("ring_degree", "--ring-degree"),
+        ("text_encoder_tp_size", "--text-encoder-tp-size"),
+    ],
+)
+@pytest.mark.parametrize("degree", [0, -1])
+def test_omni_config_invalid_parallel_degree(field, flag, degree):
+    config = _make_omni_config(**{field: degree})
+    with pytest.raises(ValueError, match=rf"{flag} must be > 0"):
+        config.validate()
+
+
+@pytest.mark.parametrize("ratio", [0, -0.1, 1.01, 2.0])
+def test_omni_config_invalid_boundary_ratio(ratio):
+    config = _make_omni_config(boundary_ratio=ratio)
+    with pytest.raises(ValueError, match=r"--boundary-ratio must be in \(0, 1\]"):
+        config.validate()
+
+
+@pytest.mark.parametrize("ratio", [0.001, 0.5, 0.875, 1.0])
+def test_omni_config_valid_boundary_ratio(ratio):
+    config = _make_omni_config(boundary_ratio=ratio)
+    config.validate()
+
+
+@pytest.mark.parametrize("topk", [0, -1])
+def test_omni_config_invalid_fastvideo_vsa_topk(topk):
+    config = _make_omni_config(fastvideo_vsa_topk=topk)
+    with pytest.raises(ValueError, match="--fastvideo-vsa-topk must be > 0"):
+        config.validate()
+
+
+def test_negative_stage_id_rejected():
+    config = _make_omni_config(stage_id=-1, stage_configs_path="/fake/path.yaml")
+    with pytest.raises(ValueError, match="--stage-id must be >= 0"):
+        config.validate()
+
+
+def test_stage_id_requires_stage_configs_path():
+    config = _make_omni_config(stage_id=0, stage_configs_path=None)
+    with pytest.raises(ValueError, match="--stage-id requires"):
+        config.validate()
+
+
+def test_omni_router_requires_stage_configs_path():
+    config = _make_omni_config(omni_router=True, stage_configs_path=None)
+    with pytest.raises(ValueError, match="--omni-router requires"):
+        config.validate()
+
+
+def test_stage_id_and_omni_router_mutually_exclusive(tmp_path):
+    config = _make_omni_config(
+        stage_id=0, omni_router=True, stage_configs_path=str(tmp_path / "stages.yaml")
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        config.validate()
+
+
+def test_stage_id_with_stage_configs_path_valid(tmp_path):
+    config = _make_omni_config(
+        stage_id=0, stage_configs_path=str(tmp_path / "stages.yaml")
+    )
+    config.validate()
+
+
+def test_omni_router_with_stage_configs_path_valid(tmp_path):
+    config = _make_omni_config(
+        omni_router=True, stage_configs_path=str(tmp_path / "stages.yaml")
+    )
+    config.validate()
+
+
+@contextlib.contextmanager
+def _no_accelerator():
+    """Pin the platform a host with no accelerator resolves to.
+
+    Every builtin plugin declines there and vLLM falls back to
+    ``UnspecifiedPlatform``, whose ``device_type`` is the empty string -- the
+    state ``DeviceConfig.__post_init__`` raises on. Restores exactly the way
+    ``vllm_cpu_platform_when_no_accelerator`` does: *delete* the module-dict
+    entry when there was none, so the PEP 562 lazy ``__getattr__`` in
+    ``vllm.platforms`` is re-armed for later tests on this worker.
+    """
+    previous = vllm_platforms.__dict__.get("current_platform", _PLATFORM_UNSET)
+    # Cached parser defaults include DeviceConfig from the previous platform.
+    _compute_kwargs.cache_clear()
+    vllm_platforms.current_platform = UnspecifiedPlatform()
+    try:
+        yield
+    finally:
+        _compute_kwargs.cache_clear()
+        if previous is _PLATFORM_UNSET:
+            del vllm_platforms.current_platform
+        else:
+            vllm_platforms.current_platform = previous
+
+
+def _router_argv(tmp_path, *extra):
+    return [
+        "dingo.vllm.omni",
+        "--stage-configs-path",
+        str(tmp_path / "stages.yaml"),
+        "--model",
+        "test-model",
+        *extra,
+    ]
+
+
+def test_stage_router_parses_without_an_accelerator(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", _router_argv(tmp_path, "--omni-router"))
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.omni_router is True
+    assert config.model == "test-model"
+    assert config.engine_args.model == "test-model"
+    assert config.engine_args.trust_remote_code is False
+
+
+def test_stage_router_selected_by_environment_parses_without_an_accelerator(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DYN_OMNI_ROUTER", "true")
+    monkeypatch.setattr(sys, "argv", _router_argv(tmp_path))
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.omni_router is True
+    assert config.model == "test-model"
+
+
+def test_stage_router_ignores_engine_options_without_logging_values(
+    monkeypatch, tmp_path, caplog
+):
+    secret = "secret-token-value"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _router_argv(
+            tmp_path,
+            "--omni-router",
+            "--hf-token",
+            secret,
+        ),
+    )
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.omni_router is True
+    assert config.model == "test-model"
+    assert "Stage router ignored 2 unrecognized engine argument tokens" in caplog.text
+    assert secret not in caplog.text
+
+
+def test_stage_router_honors_negated_flag_over_environment(monkeypatch, tmp_path):
+    # --no-omni-router must win over a truthy DYN_OMNI_ROUTER; losing that
+    # would route an engine-building worker onto the reduced parser.
+    monkeypatch.setenv("DYN_OMNI_ROUTER", "true")
+    monkeypatch.setattr(sys, "argv", _router_argv(tmp_path, "--no-omni-router"))
+
+    with _no_accelerator(), pytest.raises(RuntimeError, match="Failed to infer device"):
+        parse_omni_args()
+
+
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_stage_worker_still_requires_an_accelerator(monkeypatch, tmp_path, warm_cache):
+    _compute_kwargs.cache_clear()
+    if warm_cache:
+        OmniEngineArgs.add_cli_args(FlexibleArgumentParser(add_help=False))
+    # Negative control: --stage-id builds an engine, so it must keep failing
+    # loudly here rather than being swept up by the router's reduced parser.
+    monkeypatch.setattr(sys, "argv", _router_argv(tmp_path, "--stage-id", "0"))
+
+    with _no_accelerator(), pytest.raises(RuntimeError, match="Failed to infer device"):
+        parse_omni_args()
+
+
+def test_stage_router_ignores_stage_id_after_end_of_options(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys, "argv", _router_argv(tmp_path, "--omni-router", "--", "--stage-id", "0")
+    )
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.omni_router is True
+    assert config.stage_id is None
+    assert config.model == "test-model"
+
+
+def test_stage_router_ignores_negated_flag_after_end_of_options(monkeypatch, tmp_path):
+    monkeypatch.setenv("DYN_OMNI_ROUTER", "true")
+    monkeypatch.setattr(sys, "argv", _router_argv(tmp_path, "--", "--no-omni-router"))
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.omni_router is True
+    assert config.model == "test-model"
+
+
+def test_stage_id_keeps_the_full_parser_alongside_omni_router(monkeypatch, tmp_path):
+    # --stage-id outranks --omni-router in the pre-scan, so this argv must still
+    # build the engine parser. The device error is what observes that choice:
+    # the reduced router parser resolves no device, so it would run on to the
+    # mutual-exclusion ValueError instead -- a result this argv also produces
+    # when the pre-scan is wrong, which is why it is asserted elsewhere.
+    monkeypatch.setattr(
+        sys, "argv", _router_argv(tmp_path, "--stage-id", "0", "--omni-router")
+    )
+
+    with _no_accelerator(), pytest.raises(RuntimeError, match="Failed to infer device"):
+        parse_omni_args()
+
+
+def test_stage_router_accepts_underscore_option_names(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _router_argv(tmp_path, "--omni-router", "--served_model_name", "public-alias"),
+    )
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.served_model_name == "public-alias"
+    assert config.engine_args.served_model_name == ["public-alias"]
+
+
+def test_stage_router_loads_engine_options_from_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "router.yaml"
+    config_path.write_text(
+        "model: config-model\n"
+        "served-model-name: [public-alias]\n"
+        "trust-remote-code: true\n"
+        "revision: test-revision\n"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dingo.vllm.omni",
+            "--stage-configs-path",
+            str(tmp_path / "stages.yaml"),
+            "--omni-router",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    assert config.model == "config-model"
+    assert config.served_model_name == "public-alias"
+    assert config.engine_args.served_model_name == ["public-alias"]
+    assert config.engine_args.trust_remote_code is True
+    assert config.engine_args.revision == "test-revision"
+
+
+def test_stage_router_honors_disable_log_stats(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _router_argv(tmp_path, "--omni-router", "--disable-log-stats"),
+    )
+
+    with _no_accelerator():
+        config = parse_omni_args()
+
+    registered: list[dict] = []
+    monkeypatch.setattr(
+        vllm_main,
+        "register_engine_metrics_callback",
+        lambda **kwargs: registered.append(kwargs),
+    )
+    monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR", raising=False)
+
+    vllm_main.setup_metrics_collection(
+        config, SimpleNamespace(), logging.getLogger(__name__)
+    )
+
+    assert config.engine_args.disable_log_stats is True
+    assert not registered
+
+
+def test_omni_engine_args_importable():
+    from vllm_omni.engine.arg_utils import OmniEngineArgs
+
+    assert hasattr(OmniEngineArgs, "add_cli_args")
+    assert hasattr(OmniEngineArgs, "from_cli_args")
+
+
+def test_omni_engine_args_add_cli_args_no_extra_params():
+    from vllm_omni.engine.arg_utils import OmniEngineArgs
+
+    try:
+        from vllm.utils import FlexibleArgumentParser
+    except ImportError:
+        from vllm.utils.argparse_utils import FlexibleArgumentParser
+    parser = FlexibleArgumentParser(add_help=False)
+    OmniEngineArgs.add_cli_args(parser)
+
+
+def test_omni_config_imports_cleanly():
+    from dingo.vllm.omni.args import OmniConfig, parse_omni_args
+
+    assert OmniConfig is not None
+    assert callable(parse_omni_args)
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+def test_rejects_invalid_diffusion_capacity(capacity):
+    config = _make_omni_config(max_num_seqs=capacity)
+    with pytest.raises(ValueError, match="max-num-seqs"):
+        config.validate()
+
+
+def test_concurrent_h3_requires_step_execution():
+    config = _make_omni_config(
+        request_adapter="minimax_h3", request_adapter_workflow="fl2va", max_num_seqs=2
+    )
+    with pytest.raises(ValueError, match="requires --step-execution"):
+        config.validate()
+
+
+def test_concurrent_h3_step_execution_valid():
+    config = _make_omni_config(
+        request_adapter="minimax_h3",
+        request_adapter_workflow="fl2va",
+        max_num_seqs=2,
+        step_execution=True,
+    )
+    config.validate()
+
+
+def test_step_execution_rejects_cache_backend():
+    config = _make_omni_config(step_execution=True, cache_backend="cache_dit")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        config.validate()
 
 
 def test_request_adapter_is_disabled_by_default():
@@ -189,111 +627,6 @@ def test_detached_video_drain_timeout_must_be_positive(timeout):
     config = _make_omni_config(detached_video_drain_timeout=timeout)
     with pytest.raises(ValueError, match="drain-timeout must be > 0"):
         config.validate()
-
-
-@pytest.mark.parametrize("fps", [0, -1, -100])
-def test_omni_config_invalid_video_fps(fps):
-    config = _make_omni_config(default_video_fps=fps)
-    with pytest.raises(ValueError, match="--default-video-fps must be > 0"):
-        config.validate()
-
-
-@pytest.mark.parametrize("degree", [0, -1])
-def test_omni_config_invalid_ulysses_degree(degree):
-    config = _make_omni_config(ulysses_degree=degree)
-    with pytest.raises(ValueError, match="--ulysses-degree must be > 0"):
-        config.validate()
-
-
-@pytest.mark.parametrize("degree", [0, -1])
-def test_omni_config_invalid_ring_degree(degree):
-    config = _make_omni_config(ring_degree=degree)
-    with pytest.raises(ValueError, match="--ring-degree must be > 0"):
-        config.validate()
-
-
-@pytest.mark.parametrize("ratio", [0, -0.1, 1.01, 2.0])
-def test_omni_config_invalid_boundary_ratio(ratio):
-    config = _make_omni_config(boundary_ratio=ratio)
-    with pytest.raises(ValueError, match=r"--boundary-ratio must be in \(0, 1\]"):
-        config.validate()
-
-
-@pytest.mark.parametrize("ratio", [0.001, 0.5, 0.875, 1.0])
-def test_omni_config_valid_boundary_ratio(ratio):
-    config = _make_omni_config(boundary_ratio=ratio)
-    config.validate()
-
-
-def test_negative_stage_id_rejected():
-    config = _make_omni_config(stage_id=-1, stage_configs_path="/fake/path.yaml")
-    with pytest.raises(ValueError, match="--stage-id must be >= 0"):
-        config.validate()
-
-
-def test_stage_id_requires_stage_configs_path():
-    config = _make_omni_config(stage_id=0, stage_configs_path=None)
-    with pytest.raises(ValueError, match="--stage-id requires"):
-        config.validate()
-
-
-def test_omni_router_requires_stage_configs_path():
-    config = _make_omni_config(omni_router=True, stage_configs_path=None)
-    with pytest.raises(ValueError, match="--omni-router requires"):
-        config.validate()
-
-
-def test_stage_id_and_omni_router_mutually_exclusive(tmp_path):
-    config = _make_omni_config(
-        stage_id=0, omni_router=True, stage_configs_path=str(tmp_path / "stages.yaml")
-    )
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        config.validate()
-
-
-def test_stage_id_with_stage_configs_path_valid(tmp_path):
-    config = _make_omni_config(
-        stage_id=0, stage_configs_path=str(tmp_path / "stages.yaml")
-    )
-    config.validate()
-
-
-def test_omni_router_with_stage_configs_path_valid(tmp_path):
-    config = _make_omni_config(
-        omni_router=True, stage_configs_path=str(tmp_path / "stages.yaml")
-    )
-    config.validate()
-
-
-# --- vllm_omni API compatibility guards ---
-
-
-def test_omni_engine_args_importable():
-    from vllm_omni.engine.arg_utils import OmniEngineArgs
-
-    assert hasattr(OmniEngineArgs, "add_cli_args")
-    assert hasattr(OmniEngineArgs, "from_cli_args")
-
-
-def test_omni_engine_args_add_cli_args_no_extra_params():
-    from vllm_omni.engine.arg_utils import OmniEngineArgs
-
-    try:
-        from vllm.utils import FlexibleArgumentParser
-    except ImportError:
-        from vllm.utils.argparse_utils import FlexibleArgumentParser
-    parser = FlexibleArgumentParser(add_help=False)
-    OmniEngineArgs.add_cli_args(parser)
-
-
-def test_omni_config_imports_cleanly():
-    from dingo.vllm.omni.args import OmniConfig, parse_omni_args
-
-    assert OmniConfig is not None
-    assert callable(parse_omni_args)
-
-
-# --- vLLM-Omni diffusion / parallel CLI passthrough (runtime wrapper removal) ---
 
 
 def test_diffusion_kwargs_expose_runtime_wrapper_fields():

@@ -328,9 +328,9 @@ class RingBuffer:
 
         # If the allocation will go over end boundary, simply try allocate from the start
         if self.free_start_idx + size > self.end_idx:
-            # Not enough space even after wrap around, reject the allocation early
-            # so we don't mark the remaining space "used"
-            if self.allocated_start_idx < size:
+            # A wrapped allocation already occupies the start of the buffer.
+            # Reject before changing cursors or marking the tail as freed.
+            if self.wrapped_around or self.allocated_start_idx < size:
                 return None, None
             # add artificial entry to freed_list to treat the remaining space to be
             # allocated and released.
@@ -463,9 +463,9 @@ class NixlWriteEmbeddingSender(AbstractEmbeddingSender):
                             # mark the transfer as completed to unblock the sender.
                             self._complete_transfer(tensor_id)
                             continue
-                        self.remote_agents[
-                            remote_agent_id
-                        ] = self.nixl_agent.add_remote_agent(remote_agent_metadata)
+                        self.remote_agents[remote_agent_id] = (
+                            self.nixl_agent.add_remote_agent(remote_agent_metadata)
+                        )
 
                     # initiate NIXL WRITE transfer
                     source_tensor, source_desc, _ = self.transfer_tracker[tensor_id]
@@ -686,10 +686,10 @@ class NixlWriteEmbeddingReceiver(AbstractEmbeddingReceiver):
                 raise ValueError(
                     f"Missing agent metadata for new sender {nixl_request.sender_agent_id}"
                 )
-            self.remote_agents[
-                nixl_request.sender_agent_id
-            ] = self.nixl_agent.add_remote_agent(
-                base64.b64decode(nixl_request.agent_metadata)
+            self.remote_agents[nixl_request.sender_agent_id] = (
+                self.nixl_agent.add_remote_agent(
+                    base64.b64decode(nixl_request.agent_metadata)
+                )
             )
 
         # Allocate tensor to be written into.

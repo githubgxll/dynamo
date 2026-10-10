@@ -18,6 +18,21 @@ pub(super) type SharedNode = Arc<Node>;
 /// stored here, keeping the map compact and correct across concurrent splits.
 pub(super) type WorkerLookup = FxHashMap<ExternalSequenceBlockHash, SharedNode>;
 
+#[derive(Clone, Copy)]
+pub(super) enum WorkerRemovalTarget {
+    WorkerId(WorkerId),
+    DpRank(WorkerWithDpRank),
+}
+
+impl WorkerRemovalTarget {
+    pub(super) fn matches(self, worker: WorkerWithDpRank) -> bool {
+        match self {
+            Self::WorkerId(worker_id) => worker.worker_id == worker_id,
+            Self::DpRank(target) => worker == target,
+        }
+    }
+}
+
 pub(super) struct MatchWalkResult {
     // NOTE(perf): Replacing this set with a Vec did not improve throughput. Keep
     // uniqueness by construction unless a new profile justifies changing it.
@@ -93,6 +108,7 @@ pub(super) struct FindStepInput<'a, S: HashSequence> {
     pub(super) scores: &'a mut OverlapScores,
     pub(super) last_matched_hashes:
         Option<&'a mut FxHashMap<WorkerWithDpRank, ExternalSequenceBlockHash>>,
+    pub(super) kv_transfer_chain: Option<&'a mut Vec<ExternalSequenceBlockHash>>,
 }
 
 pub(super) struct FindStepOutcome {
@@ -156,12 +172,11 @@ pub(super) struct ChildEdgeScan {
     pub(super) shape_version: u64,
     pub(super) edge_len: usize,
     pub(super) match_len: usize,
-    pub(super) block_hash_mismatch: Option<(ExternalSequenceBlockHash, ExternalSequenceBlockHash)>,
 }
 
 pub(super) enum ParentChildPlan {
-    Stale,
     StaleParent { hash: ExternalSequenceBlockHash },
+    InteriorParent { shape_version: u64 },
     Descend(SharedNode),
     MissingChild { shape_version: u64 },
 }

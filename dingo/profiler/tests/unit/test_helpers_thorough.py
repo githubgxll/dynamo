@@ -8,6 +8,7 @@ require live K8s deployments and are covered by the mocked end-to-end tests
 in test_profile_sla_dgdr.py.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -21,7 +22,9 @@ pytestmark = [
 ]
 
 try:
-    from dingo.profiler.thorough import _pick_thorough_best_config
+    from dingo.profiler.thorough import (
+        _pick_thorough_best_config,
+    )
     from dingo.profiler.utils.aic_dataframe import build_decode_row, build_prefill_row
     from dingo.profiler.utils.dgdr_v1beta1_types import (
         DynamoGraphDeploymentRequestSpec,
