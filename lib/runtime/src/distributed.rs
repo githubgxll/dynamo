@@ -8,6 +8,7 @@ use crate::config::environment_names::tcp_response_stream;
 use crate::pipeline::PipelineError;
 use crate::pipeline::network::ResponsePlaneMode;
 use crate::pipeline::network::manager::NetworkManager;
+use crate::protocols::EndpointId;
 use crate::service::{ServiceClient, ServiceSet};
 use crate::storage::kv;
 use crate::{discovery, system_status_server, transports};
@@ -38,8 +39,10 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-type EndpointDiscoverySourceMap = HashMap<Endpoint, Weak<EndpointDiscoverySource>>;
-type RoutingOccupancyMap = HashMap<Endpoint, Weak<RoutingOccupancyState>>;
+// Registry keys must not own a DistributedRuntime through Endpoint: that
+// would create a cycle even though the cached values are weak references.
+type EndpointDiscoverySourceMap = HashMap<EndpointId, Weak<EndpointDiscoverySource>>;
+type RoutingOccupancyMap = HashMap<EndpointId, Weak<RoutingOccupancyState>>;
 
 fn parse_tcp_response_stream_port(value: Option<&str>) -> Result<u16, PipelineError> {
     let Some(port) = value.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -59,6 +62,7 @@ fn parse_tcp_response_stream_port(value: Option<&str>) -> Result<u16, PipelineEr
 mod unit_tests {
     use super::parse_tcp_response_stream_port;
     use crate::pipeline::PipelineError;
+    use crate::protocols::EndpointId;
 
     #[tokio::test]
     async fn completed_runtime_initialization_rejects_shutdown_before_http_bind() {

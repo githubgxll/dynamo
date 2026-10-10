@@ -511,12 +511,10 @@ pub struct Namespace {
     #[builder(default = "crate::MetricsRegistry::new()")]
     metrics_registry: crate::MetricsRegistry,
 
-    /// Cache for components to avoid duplicate registrations and metrics collisions.
-    /// When the same component is requested multiple times, we return the cached instance
-    /// to ensure all endpoints share the same Component and MetricsRegistry.
-    /// Uses DashMap for lock-free reads and automatic handling of concurrent inserts.
+    /// Cache shared component metrics without retaining a Component, whose
+    /// Namespace would point back to this cache and keep the runtime alive.
     #[builder(default = "Arc::new(DashMap::new())")]
-    component_cache: Arc<DashMap<String, Component>>,
+    component_cache: Arc<DashMap<String, MetricsRegistry>>,
 }
 
 impl DistributedRuntimeProvider for Namespace {
@@ -568,28 +566,28 @@ impl Namespace {
     pub fn component(&self, name: impl Into<String>) -> anyhow::Result<Component> {
         let name = name.into();
 
-        // Fast path: Check if component exists in cache
-        // DashMap provides lock-free reads via internal sharding
-        if let Some(cached) = self.component_cache.get(&name) {
-            return Ok(cached.value().clone());
+        // Construct a value handle around the shared registry. Cache entries
+        // contain no Namespace or DistributedRuntime owner.
+        match self.component_cache.entry(name.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => Ok(Component {
+                drt: self.runtime.clone(),
+                name,
+                labels: Vec::new(),
+                namespace: self.clone(),
+                metrics_registry: entry.get().clone(),
+            }),
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                let component = ComponentBuilder::from_runtime(self.runtime.clone())
+                    .name(&name)
+                    .namespace(self.clone())
+                    .build()?;
+                // Only the winning cache initializer registers the child.
+                self.get_metrics_registry()
+                    .add_child_registry(component.get_metrics_registry());
+                entry.insert(component.get_metrics_registry().clone());
+                Ok(component)
+            }
         }
-
-        // Slow path: Create new component
-        let component = ComponentBuilder::from_runtime(self.runtime.clone())
-            .name(&name)
-            .namespace(self.clone())
-            .build()?;
-
-        // Attach component registry so scrapes traverse separate registries (avoids collisions).
-        self.get_metrics_registry()
-            .add_child_registry(component.get_metrics_registry());
-
-        // Cache the component for future calls
-        // DashMap handles race conditions internally - if another thread
-        // inserted the same key concurrently, we just use our created component
-        self.component_cache.insert(name, component.clone());
-
-        Ok(component)
     }
 
     /// Create a [`Namespace`] in the parent namespace

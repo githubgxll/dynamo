@@ -56,7 +56,7 @@ try:
 except ImportError:
     sglang_register = None
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 TEST_DIR = REPO_ROOT / "tests"
 
@@ -2076,6 +2076,7 @@ async def test_register_model_uses_metadata_only_for_sglang_modelexpress(monkeyp
         use_sglang_tokenizer=False,
         frontend_decoding=False,
         custom_jinja_template=None,
+        model_source_uri=None,
     )
 
     result = await sglang_register._register_model_with_runtime_config(
@@ -2165,6 +2166,7 @@ async def test_parse_args_sets_streaming_before_server_args_resolution(
         disaggregation_mode="null",
         dllm_algorithm=None,
         kv_events_config=None,
+        get_model_config=lambda: SimpleNamespace(is_multimodal=False),
     )
 
     def resolve(parsed_args):
@@ -2192,6 +2194,7 @@ async def test_parse_args_sets_dynamo_defaults_before_server_args_resolution(
         dllm_algorithm="dream",
         enable_forward_pass_metrics=True,
         kv_events_config=None,
+        get_model_config=lambda: SimpleNamespace(is_multimodal=False),
         max_running_requests=8,
     )
 

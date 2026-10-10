@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for profiler-owned DGD blueprints."""
+"""Tests for shipped Dingo blueprints (t5 intentionally removed TRT-LLM)."""
 
 import pytest
 
@@ -23,8 +23,6 @@ pytestmark = [
         ("vllm", "disagg"),
         ("sglang", "agg"),
         ("sglang", "disagg"),
-        ("trtllm", "agg"),
-        ("trtllm", "disagg"),
         ("mocker", "disagg"),
     ],
 )
@@ -48,8 +46,6 @@ def test_profiler_blueprints_are_private_and_component_shaped(
         ("vllm", "disagg"),
         ("sglang", "agg"),
         ("sglang", "disagg"),
-        ("trtllm", "agg"),
-        ("trtllm", "disagg"),
         ("mocker", "disagg"),
     ],
 )
@@ -80,7 +76,7 @@ def _component_args(config: dict, component_name: str) -> list[str]:
     return _main_container(config, component_name).get("args", [])
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_production_frontend_has_hf_token_secret(backend: str, mode: str) -> None:
     config = load_dgd_template(backend, mode)
@@ -101,3 +97,12 @@ def test_mocker_blueprint_does_not_reference_unmounted_profile_data() -> None:
 
     for component_name in ("decode", "prefill"):
         assert "--planner-profile-data" not in _component_args(config, component_name)
+
+
+def test_removed_trtllm_blueprints_are_not_shipped():
+    from dingo.profiler.utils.config_modifiers import CONFIG_MODIFIERS
+
+    assert "trtllm" not in CONFIG_MODIFIERS
+    for mode in ("agg", "disagg"):
+        with pytest.raises(FileNotFoundError):
+            load_dgd_template("trtllm", mode)

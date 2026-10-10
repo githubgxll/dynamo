@@ -721,6 +721,17 @@ def test_engine_generate_preserves_native_fields_and_overrides_worker_state(
         "routed_dp_rank": 7,
     }
 
+    if expected_salt and "cache_salt" not in GenerateReqInput.__dataclass_fields__:
+        with pytest.raises(ValueError, match="cache_salt is not supported"):
+            build_native_generate_request(
+                request,
+                input_ids=[7, 8],
+                request_id="internal-request-id",
+                priority=9,
+                cache_salt=routing_salt,
+            )
+        return
+
     native = build_native_generate_request(
         request,
         input_ids=[7, 8],
@@ -736,7 +747,7 @@ def test_engine_generate_preserves_native_fields_and_overrides_worker_state(
     assert native.input_ids == [7, 8]
     assert native.stream is True
     assert native.priority == 9
-    assert native.cache_salt == expected_salt
+    assert getattr(native, "cache_salt", None) == expected_salt
     assert native.session_id == "session-1"
     assert native.return_logprob is True
     assert native.return_text_in_logprobs is True
@@ -754,14 +765,16 @@ def test_engine_generate_preserves_native_fields_and_overrides_worker_state(
 
 
 def test_native_generate_rejects_salt_without_engine_support(monkeypatch):
-    monkeypatch.delitem(GenerateReqInput.__dataclass_fields__, "cache_salt")
+    monkeypatch.delitem(
+        GenerateReqInput.__dataclass_fields__, "cache_salt", raising=False
+    )
     kwargs = {"input_ids": [1], "request_id": "request", "priority": None}
 
     with pytest.raises(ValueError, match="cache_salt is not supported"):
         build_native_generate_request({"cache_salt": "tenant-a"}, **kwargs)
 
     native = build_native_generate_request({"cache_salt": ""}, **kwargs)
-    assert native.cache_salt is None
+    assert getattr(native, "cache_salt", None) is None
 
 
 def test_request_cache_salt_precedence():
@@ -797,10 +810,10 @@ def test_engine_generate_requires_object_sampling_params_for_prefill_override():
         )
 
 
-def test_engine_generate_rejects_top_logprobs_by_default(monkeypatch):
-    monkeypatch.delenv("DYN_SGL_ALLOW_TOP_LOGPROBS", raising=False)
+def test_engine_generate_rejects_top_logprobs_when_explicitly_disabled(monkeypatch):
+    monkeypatch.setenv("DYN_SGL_ALLOW_TOP_LOGPROBS", "0")
 
-    with pytest.raises(ValueError, match="does not currently support logprobs >= 1"):
+    with pytest.raises(ValueError, match="disabled by DYN_SGL_ALLOW_TOP_LOGPROBS=0"):
         build_native_generate_request(
             {"return_logprob": True, "top_logprobs_num": 1},
             input_ids=[1],
@@ -1808,10 +1821,12 @@ def test_build_logprob_kwargs_allows_chosen_token_logprobs(monkeypatch):
     assert kwargs == {"return_logprob": True, "top_logprobs_num": 0}
 
 
-def test_build_logprob_kwargs_rejects_top_logprobs_by_default(monkeypatch):
-    monkeypatch.delenv("DYN_SGL_ALLOW_TOP_LOGPROBS", raising=False)
+def test_build_logprob_kwargs_rejects_top_logprobs_when_explicitly_disabled(
+    monkeypatch,
+):
+    monkeypatch.setenv("DYN_SGL_ALLOW_TOP_LOGPROBS", "0")
 
-    with pytest.raises(ValueError, match="does not currently support logprobs >= 1"):
+    with pytest.raises(ValueError, match="disabled by DYN_SGL_ALLOW_TOP_LOGPROBS=0"):
         DecodeWorkerHandler._build_logprob_kwargs({"output_options": {"logprobs": 1}})
 
 
@@ -2936,7 +2951,8 @@ def test_build_sampling_params_omits_string_stops_without_sglang_tokenizer():
 
     assert "stop" not in sampling_params
     assert "min_new_tokens" not in sampling_params
-    assert sampling_params["stop_token_ids"] == [128001]
+    assert "stop_token_ids" not in sampling_params
+    assert sampling_params["ignore_eos"] is True
 
 
 def test_build_logprob_kwargs_allows_top_logprobs_by_default(monkeypatch):
@@ -2988,7 +3004,6 @@ async def test_process_token_stream_tracks_logprobs_per_choice_index():
                             "id": "request-1",
                             "finish_reason": None,
                             "output_token_logprobs": [
-                                (-0.1, 101, "a"),
                                 (-0.3, 102, "c"),
                             ],
                         },
@@ -3024,12 +3039,12 @@ async def test_process_text_stream_tracks_delta_per_choice_index():
                     },
                     {
                         "index": 0,
-                        "text": "Hello",
+                        "text": "llo",
                         "meta_info": {"id": "request-1", "finish_reason": None},
                     },
                     {
                         "index": 1,
-                        "text": "Good",
+                        "text": "od",
                         "meta_info": {"id": "request-1", "finish_reason": None},
                     },
                 ]
@@ -3063,7 +3078,7 @@ async def test_process_text_stream_buffers_split_stop_string_suffix():
                     },
                     {
                         "index": 0,
-                        "text": "Hello<|user|>",
+                        "text": "er|>",
                         "meta_info": {
                             "id": "request-1",
                             "finish_reason": {
@@ -3181,13 +3196,9 @@ async def test_process_token_stream_buffers_split_hidden_stop_sequence_and_logpr
                                 "matched": [128001, 128009],
                             },
                             "output_token_logprobs": [
-                                (-0.1, 101, "a"),
-                                (-0.2, 128001, "<|open|>"),
                                 (-0.3, 128009, "response"),
                             ],
                             "output_top_logprobs": [
-                                [(-0.1, 101, "a")],
-                                [(-0.2, 128001, "<|open|>")],
                                 [(-0.3, 128009, "response")],
                             ],
                             "prompt_tokens": 3,

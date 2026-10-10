@@ -84,6 +84,17 @@ pub struct TcpStreamServer {
     state: Arc<Mutex<State>>,
 }
 
+impl Drop for TcpStreamServer {
+    fn drop(&mut self) {
+        // Dropping a JoinHandle detaches its task. The accept loop owns State,
+        // so it must be stopped when the last server owner releases the server.
+        // Established connection tasks keep their own state and can finish.
+        if let Some(handle) = self.state.lock().handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 // pub struct TcpStreamReceiver {
 //     address: TcpStreamConnectionInfo,
 //     state: Arc<Mutex<State>>,
@@ -1451,6 +1462,39 @@ mod tests {
     use crate::utils::ip_resolver::test_support::{ProbeOutcome, StubResolver};
     use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
     use tokio::net::TcpStream;
+
+    #[tokio::test]
+    async fn last_server_owner_releases_listener_and_state() {
+        let options = ServerOptions::builder()
+            .port(0)
+            .interface(Some("127.0.0.1".to_string()))
+            .build()
+            .unwrap();
+        let server = TcpStreamServer::new(options).await.unwrap();
+        let address = server.local_address().unwrap();
+        let state = Arc::downgrade(&server.state);
+        let listener_task = server.state.lock().handle.as_ref().unwrap().abort_handle();
+        let other_owner = server.clone();
+        drop(server);
+
+        assert!(!listener_task.is_finished());
+        assert_eq!(
+            bind_listener(address).unwrap_err().kind(),
+            std::io::ErrorKind::AddrInUse,
+            "a remaining server owner must keep the listener bound"
+        );
+
+        drop(other_owner);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !listener_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("last server drop must stop the accept loop");
+        assert!(state.upgrade().is_none(), "listener state must be released");
+        let _rebound = bind_listener(address).expect("server port must be reusable");
+    }
 
     #[test]
     fn build_tls_acceptor_no_env_vars_is_plaintext() {

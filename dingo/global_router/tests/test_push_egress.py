@@ -35,6 +35,12 @@ from typing import ClassVar
 
 import pytest
 
+# t5 commit 8088b02fee intentionally removed the Python TRT-LLM backend.
+from pathlib import Path as _BackendPath
+
+if not (_BackendPath(__file__).resolve().parents[2] / "trtllm").is_dir():
+    pytest.skip("TRT-LLM backend is not shipped in Dingo t5", allow_module_level=True)
+
 # ---------------------------------------------------------------------------
 # Load the module under test by path.
 # ---------------------------------------------------------------------------
@@ -281,9 +287,9 @@ class TestShapeClaim:
 
     def test_pull_mode_returns_async_generator(self):
         result = self._make_pull_result()
-        assert hasattr(
-            result, "__anext__"
-        ), "pull mode fallback returned something without __anext__"
+        assert hasattr(result, "__anext__"), (
+            "pull mode fallback returned something without __anext__"
+        )
 
     def test_drive_push_egress_stream_is_async_generator_function(self):
         assert inspect.isasyncgenfunction(drive_push_egress_stream), (
@@ -362,9 +368,9 @@ class TestTermination:
     def test_zero_chunk_stream_closes_sender(self):
         sender = FakeSender()
         run(drive_push_egress(gen(), sender))
-        assert (
-            sender.close_count == 1
-        ), f"empty stream: expected 1 close, got {sender.close_count}"
+        assert sender.close_count == 1, (
+            f"empty stream: expected 1 close, got {sender.close_count}"
+        )
         assert sender.error_close_count == 0
 
     @pytest.mark.parametrize(
@@ -434,9 +440,9 @@ class TestTermination:
     def test_at_most_one_close_total(self):
         sender = FakeSender()
         run(drive_push_egress(gen("x"), sender))
-        assert (
-            sender.total_closes == 1
-        ), f"stream closed {sender.total_closes} times (expected exactly 1)"
+        assert sender.total_closes == 1, (
+            f"stream closed {sender.total_closes} times (expected exactly 1)"
+        )
 
     def test_send_raising_propagates(self):
         """A failing `send` is how the consumer-gone case surfaces.
@@ -539,9 +545,9 @@ class TestFallbackPath:
             decorated(dummy, request={}, context=None)
 
         notices = [r for r in caplog.records if "response_sender" in r.message]
-        assert (
-            len(notices) == 1
-        ), f"expected exactly 1 notice about missing sender, got {len(notices)}"
+        assert len(notices) == 1, (
+            f"expected exactly 1 notice about missing sender, got {len(notices)}"
+        )
         assert notices[0].levelno == logging.INFO, (
             "the pull arm is a normal path, not a fault; logging it at "
             f"{notices[0].levelname} cries wolf on every health check"

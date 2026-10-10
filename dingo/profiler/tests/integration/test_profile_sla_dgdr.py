@@ -71,7 +71,7 @@ CONFIGS_DIR = Path(__file__).parent.parent / "data" / "configs"
 
 
 class TestRapidSupported:
-    """Rapid strategy with AIC-supported model (Qwen3-32B on h200_sxm/trtllm)."""
+    """Rapid strategy with AIC-supported model (Qwen3-32B on h200_sxm/sglang)."""
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
@@ -174,9 +174,9 @@ class TestRapidSupported:
         }
         assert worker_components, "Planner DGD should include worker components"
         for name, component in worker_components.items():
-            assert (
-                component.get("scalingAdapter", {}).get("enabled") is True
-            ), f"Planner worker {name} should enable DGDSA"
+            assert component.get("scalingAdapter", {}).get("enabled") is True, (
+                f"Planner worker {name} should enable DGDSA"
+            )
         assert "scalingAdapter" not in components["Planner"]
 
 
@@ -359,11 +359,10 @@ def _save_dummy_npz(output_dir: str):
 _DECODE_SVC_NAMES = {
     "sglang": "decode",
     "vllm": "decode",
-    "trtllm": "decode",
 }
 
 
-def _make_thorough_patches(backend: str = "trtllm"):
+def _make_thorough_patches(backend: str = "sglang"):
     """Build mock-patches for thorough mode, parameterised by backend."""
     svc_name = _DECODE_SVC_NAMES.get(backend, "decode")
     return [
@@ -384,11 +383,11 @@ def _make_thorough_patches(backend: str = "trtllm"):
     ]
 
 
-# Backward compat: existing tests use the trtllm-flavored list
-_THOROUGH_PATCHES = _make_thorough_patches("trtllm")
+# Default fixtures use the supported SGLang backend.
+_THOROUGH_PATCHES = _make_thorough_patches("sglang")
 
 
-def _patch_kv_cache_log(backend: str = "trtllm"):
+def _patch_kv_cache_log(backend: str = "sglang"):
     """Patch get_kv_cache_size_from_dynamo_log on the real config modifier."""
     from dingo.profiler.utils.config_modifiers import CONFIG_MODIFIERS
 
@@ -412,7 +411,7 @@ class TestThoroughMocked:
         dgdr = _load_dgdr(CONFIGS_DIR / "6_thorough_no_planner_with_load.yaml")
         ops = _make_ops(tmp_path)
 
-        with _patch_kv_cache_log("trtllm"):
+        with _patch_kv_cache_log("sglang"):
             for p in _THOROUGH_PATCHES:
                 p.start()
             try:
@@ -455,11 +454,11 @@ class TestThoroughMocked:
             ),
             patch(
                 "dingo.profiler.interpolation.pick_decode_component",
-                return_value="TRTLLMWorker",
+                return_value="decode",
             ),
         ]
 
-        with _patch_kv_cache_log("trtllm"):
+        with _patch_kv_cache_log("sglang"):
             all_patches = _THOROUGH_PATCHES + interp_patches
             for p in all_patches:
                 p.start()
@@ -580,7 +579,7 @@ class TestThoroughMockedOverrides:
         """Case 10: imagePullSecrets are forwarded to the override engine."""
         dgdr = _load_dgdr(CONFIGS_DIR / "10_thorough_override_security_context.yaml")
         ops = _make_ops(tmp_path)
-        _run_mocked_thorough(dgdr, ops, "trtllm")
+        _run_mocked_thorough(dgdr, ops, "sglang")
 
         output = tmp_path / "profiling_results" / "final_config.yaml"
         _assert_override_engine_contract(

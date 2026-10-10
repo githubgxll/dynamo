@@ -5,7 +5,7 @@
 # Verifies that overrides can inject new spec-level fields (imagePullSecrets)
 # that do not exist in the base DGD template.
 model: "Qwen/Qwen3-32B"
-backend: trtllm
+backend: sglang
 image: "nvcr.io/nvidia/dynamo:latest"
 hardware:
   gpuSku: h200_sxm

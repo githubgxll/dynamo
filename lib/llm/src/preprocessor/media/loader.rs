@@ -1061,6 +1061,7 @@ mod tests_non_nixl {
         }
     }
 
+    #[cfg(feature = "nixl-media")]
     #[test]
     fn test_cache_key_is_stable_per_url() {
         // Same URL → same key, every time. Different URLs → different keys.
@@ -1079,6 +1080,7 @@ mod tests_non_nixl {
         );
     }
 
+    #[cfg(feature = "nixl-media")]
     #[test]
     fn test_cache_budget_from_env_default_zero() {
         const GIB: u64 = 1024 * 1024 * 1024;

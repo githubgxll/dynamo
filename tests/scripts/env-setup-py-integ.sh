@@ -6,25 +6,17 @@
 # 幂等：已满足的步骤会跳过。
 set -euo pipefail
 
-PY="/usr/bin/python3.11"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/python-env.sh"
 
 echo "=== [0/6] 调用 Python 单元测试环境准备（含通用 Rust 环境） ==="
 bash "${SCRIPT_DIR}/env-setup-py.sh"
 
-# SKIP_RUNTIME_BUILD=1（如 CI 无 libclang）时跳过一切 Python 集成测试环境准备
-if [ "${SKIP_RUNTIME_BUILD:-0}" = "1" ]; then
-    echo "SKIP: SKIP_RUNTIME_BUILD=1，跳过 Python 集成测试环境准备（etcd/nats-server/模型 均不安装）"
-    echo
-    echo "=== Python 集成测试环境准备跳过（SKIP_RUNTIME_BUILD=1）==="
-    exit 0
-fi
-
 echo "=== [1/6] 安装 Python 集成测试依赖 ==="
 # nats-py/etcd3/psutil/requests/aiohttp/filelock/huggingface_hub（下载模型用）
-$PY -m pip install --quiet nats-py etcd3 psutil requests aiohttp filelock huggingface_hub 2>&1 | tail -2 || true
-# etcd3 与新版 protobuf 不兼容，降级 protobuf（<3.21）使 import 通过。
-$PY -m pip install --quiet "protobuf<3.21" 2>&1 | tail -1 || true
+$PY -m pip install --quiet nats-py etcd3 psutil requests aiohttp filelock huggingface_hub
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 $PY -c "import nats, etcd3, psutil, requests, aiohttp, filelock, huggingface_hub; print('py integ deps OK')" 2>&1 | tail -1
 
 echo "=== [2/6] 安装 etcd ==="
@@ -68,23 +60,7 @@ else
     echo "默认不下载模型（DOWNLOAD_MODEL=1 可启用下载并跑命令 06/07/08）"
 fi
 
-echo "=== [5/6] （可选）重新构建含 slot-tracker 的 ai-dingo-runtime ==="
-# test_standalone_slot_tracker 需要 dynamo.slot_tracker，要求 binding 以 --features slot-tracker 构建。
-# 默认跳过（该功能可能拖入额外依赖）；如需启用，设环境变量 REBUILD_WITH_SLOT_TRACKER=1。
-if [ "${REBUILD_WITH_SLOT_TRACKER:-0}" = "1" ]; then
-    export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH}"
-    if [ -x /usr/local/gcc-12/bin/gcc ]; then
-        export LD_LIBRARY_PATH="/usr/local/gcc-12/lib64:${LD_LIBRARY_PATH:-}"
-        export LIBRARY_PATH="/usr/local/gcc-12/lib64:${LIBRARY_PATH:-}"
-    fi
-    unset RUSTFLAGS
-    SRC_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-    echo "重新构建 ai-dingo-runtime（包含 slot-tracker feature）..."
-    $PY -m maturin build --manifest-path "${SRC_ROOT}/lib/bindings/python/Cargo.toml" --features slot-tracker --interpreter "$PY" 2>&1 | tail -3
-    $PY -m pip install --quiet --force-reinstall "${SRC_ROOT}/lib/bindings/python/" 2>&1 | tail -2 || true
-else
-    echo "跳过（设 REBUILD_WITH_SLOT_TRACKER=1 可启用；test_standalone_slot_tracker 将因此失败）"
-fi
+echo "slot-tracker feature was installed by env-setup-py.sh"
 
 echo "=== [6/6] 环境变量说明 ==="
 echo "run-python-integ-tests.sh 已固化：PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python、HF_HUB_OFFLINE=1、--models-dir=${MODELS_DIR}"

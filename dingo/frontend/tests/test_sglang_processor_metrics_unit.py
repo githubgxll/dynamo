@@ -412,10 +412,11 @@ def test_terminal_tool_payload_precedes_finish(
     assert choice["finish_reason"] == finish_reason
     assert choice["delta"]["tool_calls"] == tool_calls
     metrics = [
-        json.loads(item["comment"][0])
+        item["data"]["llm_metrics"]
         for item in items
-        if item.get("event") == "llm_metrics"
+        if "llm_metrics" in item.get("data", {})
     ]
     assert len(metrics) == 1
     assert metrics[0]["chunk_tokens"] == metrics[0]["output_tokens"] == 3
-    assert items[0]["event"] == "llm_metrics"
+    assert "llm_metrics" in items[0]["data"]
+    assert "llm_metrics" not in items[1]["data"]

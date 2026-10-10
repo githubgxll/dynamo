@@ -35,7 +35,7 @@ from dingo.vllm.headless import build_headless_namespace
 from dingo.vllm.tests.conftest import make_cli_args_fixture
 
 # Get path relative to this test file
-REPO_ROOT = Path(__file__).resolve().parents[5]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 TEST_DIR = REPO_ROOT / "tests"
 # Now construct the full path to the shared test fixture
 JINJA_TEMPLATE_PATH = str(

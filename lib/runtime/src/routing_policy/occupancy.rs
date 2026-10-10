@@ -242,15 +242,15 @@ pub(crate) async fn get_or_create_routing_occupancy_state(
     let registry = drt.routing_occupancy_states();
     let mut registry = registry.lock().await;
 
-    if let Some(weak) = registry.get(endpoint) {
+    if let Some(weak) = registry.get(&endpoint.id()) {
         if let Some(state) = weak.upgrade() {
             return state;
         }
-        registry.remove(endpoint);
+        registry.remove(&endpoint.id());
     }
 
     let state = Arc::new(RoutingOccupancyState::default());
-    registry.insert(endpoint.clone(), Arc::downgrade(&state));
+    registry.insert(endpoint.id(), Arc::downgrade(&state));
     state
 }
 

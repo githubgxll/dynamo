@@ -10,6 +10,12 @@ from unittest import mock
 
 import pytest
 
+# t5 commit 8088b02fee intentionally removed the Python TRT-LLM backend.
+from pathlib import Path as _BackendPath
+
+if not (_BackendPath(__file__).resolve().parents[2] / "trtllm").is_dir():
+    pytest.skip("TRT-LLM backend is not shipped in Dingo t5", allow_module_level=True)
+
 from dynamo.trtllm.constants import DisaggregationMode
 
 pytestmark = [

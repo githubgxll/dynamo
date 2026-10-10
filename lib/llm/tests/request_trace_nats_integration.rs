@@ -22,7 +22,12 @@
 //! ```
 
 #[cfg(test)]
+#[path = "../../runtime/src/test_utils.rs"]
+mod test_utils;
+
+#[cfg(test)]
 mod tests {
+    use super::test_utils;
     use dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionRequest;
     use dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionResponse;
     use dynamo_llm::request_trace::init_from_env_with_shutdown;
@@ -141,6 +146,13 @@ mod tests {
     #[tokio::test]
     #[ignore] // Manual testing only - requires NATS on localhost:4222
     async fn test_request_trace_nats_basic_flow() {
+        // Request-trace policy and sink workers are process-global.
+        if test_utils::run_isolated(
+            concat!(module_path!(), "::test_request_trace_nats_basic_flow"),
+            &[("NATS_SERVER", "nats://127.0.0.1:4222")],
+        ) {
+            return;
+        }
         const TEST_SUBJECT: &str = "test.request_trace.basic";
         // Core test: request_payload records are published to NATS with correct structure
         async_with_vars(
@@ -207,6 +219,16 @@ mod tests {
     #[tokio::test]
     #[ignore] // Manual testing only - requires NATS on localhost:4222
     async fn test_request_trace_nats_request_payload_records_ignore_store_flag() {
+        // Request-trace policy and sink workers are process-global.
+        if test_utils::run_isolated(
+            concat!(
+                module_path!(),
+                "::test_request_trace_nats_request_payload_records_ignore_store_flag"
+            ),
+            &[("NATS_SERVER", "nats://127.0.0.1:4222")],
+        ) {
+            return;
+        }
         // Test that request_payload records are emitted regardless of store.
         const TEST_SUBJECT: &str = "test.request_trace.request_payload";
 

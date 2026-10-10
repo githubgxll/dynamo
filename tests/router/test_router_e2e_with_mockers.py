@@ -49,7 +49,6 @@ from tests.router.e2e_harness import (
 )
 from tests.router.helper import (
     generate_random_suffix,
-    get_runtime,
     managed_runtime,
     parse_sse_json_chunks,
     poll_for_worker_instances,
@@ -1323,60 +1322,64 @@ def test_disagg_topology_required_prefill_pin_match_and_mismatch(
         request_plane="tcp",
         env_overrides=prefill_zone_a_env,
     ):
-        runtime = get_runtime()
-        prefill_endpoint = runtime.endpoint(f"{shared_namespace}.prefill.generate")
-        prefill_zone_a_ids = asyncio.run(poll_for_worker_instances(prefill_endpoint, 1))
-        assert len(prefill_zone_a_ids) == 1
-        prefill_zone_a_id = prefill_zone_a_ids[0]
-        logger.info("Prefill zone-a worker id: %s", prefill_zone_a_id)
-
-        with DisaggMockerProcess(
-            request,
-            namespace=shared_namespace,
-            worker_type="prefill",
-            mocker_args=mocker_args,
-            num_mockers=1,
-            request_plane="tcp",
-            env_overrides=prefill_zone_b_env,
-        ):
-            prefill_ids = asyncio.run(poll_for_worker_instances(prefill_endpoint, 2))
-            prefill_zone_b_ids = sorted(set(prefill_ids) - {prefill_zone_a_id})
-            assert len(prefill_zone_b_ids) == 1, (
-                f"Expected one new zone-b prefill worker, got all={prefill_ids}, "
-                f"zone_a={prefill_zone_a_id}"
+        with managed_runtime() as runtime:
+            prefill_endpoint = runtime.endpoint(f"{shared_namespace}.prefill.generate")
+            prefill_zone_a_ids = asyncio.run(
+                poll_for_worker_instances(prefill_endpoint, 1)
             )
-            prefill_zone_b_id = prefill_zone_b_ids[0]
-            logger.info("Prefill zone-b worker id: %s", prefill_zone_b_id)
+            assert len(prefill_zone_a_ids) == 1
+            prefill_zone_a_id = prefill_zone_a_ids[0]
+            logger.info("Prefill zone-a worker id: %s", prefill_zone_a_id)
 
             with DisaggMockerProcess(
                 request,
                 namespace=shared_namespace,
-                worker_type="decode",
+                worker_type="prefill",
                 mocker_args=mocker_args,
-                num_mockers=2,
+                num_mockers=1,
                 request_plane="tcp",
-                env_overrides=decode_zone_a_env,
-            ) as decode_workers:
-                decode_endpoint = runtime.endpoint(
-                    f"{shared_namespace}.backend.generate"
+                env_overrides=prefill_zone_b_env,
+            ):
+                prefill_ids = asyncio.run(
+                    poll_for_worker_instances(prefill_endpoint, 2)
                 )
-                decode_ids = sorted(
-                    asyncio.run(poll_for_worker_instances(decode_endpoint, 2))
+                prefill_zone_b_ids = sorted(set(prefill_ids) - {prefill_zone_a_id})
+                assert len(prefill_zone_b_ids) == 1, (
+                    f"Expected one new zone-b prefill worker, got all={prefill_ids}, "
+                    f"zone_a={prefill_zone_a_id}"
                 )
-                logger.info("Decode zone-a worker ids: %s", decode_ids)
+                prefill_zone_b_id = prefill_zone_b_ids[0]
+                logger.info("Prefill zone-b worker id: %s", prefill_zone_b_id)
 
-                frontend_port = allocate_frontend_ports(request, 1)[0]
-                _test_disagg_topology_required_prefill_pin_match_and_mismatch(
-                    decode_workers=decode_workers,
-                    block_size=BLOCK_SIZE,
-                    request=request,
-                    frontend_port=frontend_port,
-                    test_payload=TEST_PAYLOAD,
-                    prefill_zone_a_id=prefill_zone_a_id,
-                    prefill_zone_b_id=prefill_zone_b_id,
-                    shared_namespace=shared_namespace,
+                with DisaggMockerProcess(
+                    request,
+                    namespace=shared_namespace,
+                    worker_type="decode",
+                    mocker_args=mocker_args,
+                    num_mockers=2,
                     request_plane="tcp",
-                )
+                    env_overrides=decode_zone_a_env,
+                ) as decode_workers:
+                    decode_endpoint = runtime.endpoint(
+                        f"{shared_namespace}.backend.generate"
+                    )
+                    decode_ids = sorted(
+                        asyncio.run(poll_for_worker_instances(decode_endpoint, 2))
+                    )
+                    logger.info("Decode zone-a worker ids: %s", decode_ids)
+
+                    frontend_port = allocate_frontend_ports(request, 1)[0]
+                    _test_disagg_topology_required_prefill_pin_match_and_mismatch(
+                        decode_workers=decode_workers,
+                        block_size=BLOCK_SIZE,
+                        request=request,
+                        frontend_port=frontend_port,
+                        test_payload=TEST_PAYLOAD,
+                        prefill_zone_a_id=prefill_zone_a_id,
+                        prefill_zone_b_id=prefill_zone_b_id,
+                        shared_namespace=shared_namespace,
+                        request_plane="tcp",
+                    )
 
 
 @pytest.mark.parametrize(

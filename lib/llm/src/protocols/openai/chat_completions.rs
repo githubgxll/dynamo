@@ -492,11 +492,13 @@ pub struct NvCreateChatCompletionStreamResponse {
 ///
 /// `inner` is serialized first so its `#[serde(flatten)]` fields land at the
 /// root, then `nvext` (with the internal key stripped) and `sglext` are added
-/// when present. Both response types share this so the wire shape stays
-/// identical across unary and streaming paths.
+/// when present. Unary prompt logprobs and streaming transport evidence are
+/// projected separately, while preserving the local SGLang extension contract.
 fn serialize_chat_completion_response<S, Inner>(
     inner: &Inner,
     nvext: &Option<serde_json::Value>,
+    prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
+    tool_call_completion: &[ToolCallCompletion],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -522,6 +524,19 @@ where
         map.insert("sglext".to_string(), sglext);
     }
 
+    if let Some(prompt_logprobs) = prompt_logprobs {
+        map.insert(
+            "prompt_logprobs".to_string(),
+            serde_json::to_value(prompt_logprobs).map_err(serde::ser::Error::custom)?,
+        );
+    }
+    if !tool_call_completion.is_empty() {
+        map.insert(
+            "tool_call_completion".to_string(),
+            serde_json::to_value(tool_call_completion).map_err(serde::ser::Error::custom)?,
+        );
+    }
+
     let mut ser_map = serializer.serialize_map(Some(map.len()))?;
     for (key, value) in map {
         ser_map.serialize_entry(&key, &value)?;
@@ -531,15 +546,27 @@ where
 
 impl Serialize for NvCreateChatCompletionResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_chat_completion_response(&self.inner, &self.nvext, serializer)
+        serialize_chat_completion_response(
+            &self.inner,
+            &self.nvext,
+            self.prompt_logprobs.as_deref(),
+            &[],
+            serializer,
+        )
     }
 }
 
 impl Serialize for NvCreateChatCompletionStreamResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // `llm_metrics` is `#[serde(skip)]` and must never reach the client; it
-        // is intentionally not serialized here.
-        serialize_chat_completion_response(&self.inner, &self.nvext, serializer)
+        // Metrics and prompt logprobs stay internal. Tool completion evidence
+        // crosses transport boundaries and is stripped by the HTTP SSE converter.
+        serialize_chat_completion_response(
+            &self.inner,
+            &self.nvext,
+            None,
+            &self.tool_call_completion,
+            serializer,
+        )
     }
 }
 
@@ -1142,6 +1169,8 @@ mod tests {
             },
             nvext: Some(json!({"stop_reason": "eos", INTERNAL_SGLEXT_KEY: payload})),
             llm_metrics: None,
+            prompt_logprobs: None,
+            tool_call_completion: Vec::new(),
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1169,6 +1198,8 @@ mod tests {
             },
             nvext: None,
             llm_metrics: None,
+            prompt_logprobs: None,
+            tool_call_completion: Vec::new(),
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1193,6 +1224,7 @@ mod tests {
                 usage: None,
             },
             nvext: Some(json!({INTERNAL_SGLEXT_KEY: payload})),
+            prompt_logprobs: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();

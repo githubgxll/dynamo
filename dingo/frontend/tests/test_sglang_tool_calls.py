@@ -203,6 +203,9 @@ class TestKimiToolCallIds:  # FRONTEND.4 — Kimi-specific tool-call ID format o
                 self.parameters = parameters
 
         class DummyParser:
+            def has_tool_call(self, text):
+                return False
+
             tool_call_parser = "kimi_k2"
             detector = type("Detector", (), {"_buffer": ""})()
 
@@ -570,6 +573,8 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
         dummy_tc = self.DummyToolCall
 
         class DummyParser:
+            detector = None
+
             def parse_stream_chunk(self, text):
                 return "", [dummy_tc(0, "evil_tool", '{"x": 1}')]
 
@@ -603,6 +608,8 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
         dummy_tc = self.DummyToolCall
 
         class DummyParser:
+            detector = None
+
             def parse_stream_chunk(self, text):
                 # Known name with malformed (unrecoverable) arguments.
                 return "", [dummy_tc(0, "get_weather", '{"city": "Paris"')]
@@ -909,6 +916,8 @@ class TestToolStreamingRecoveryRegression:
             return "".join(chr(token) for token in token_ids)
 
     class Parser:
+        detector = None
+
         def __init__(
             self, events: list[list[ToolCallItem]], recovered: list[ToolCallItem]
         ) -> None:

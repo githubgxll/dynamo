@@ -111,7 +111,7 @@ def _make_component(
     }
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_build_dgd_config_preserves_type_meta(backend: str, mode: str) -> None:
     dgd_config = CONFIG_MODIFIERS[backend].build_dgd_config(
@@ -178,7 +178,6 @@ def test_dgd_serialization_omits_unset_optional_fields() -> None:
     [
         ("vllm", "worker"),
         ("sglang", "decode"),
-        ("trtllm", "TRTLLMWorker"),
     ],
 )
 def test_aggregate_worker_lookup_resolves_generic_component(
@@ -199,7 +198,6 @@ def test_aggregate_worker_lookup_resolves_generic_component(
     [
         ("vllm", "worker"),
         ("sglang", "decode"),
-        ("trtllm", "TRTLLMWorker"),
     ],
 )
 @pytest.mark.parametrize("target", [EngineType.PREFILL, EngineType.DECODE])
@@ -916,13 +914,23 @@ async def test_run_profile_applies_override_once_to_each_consumed_dgd(tmp_path) 
 
     pick_result = {
         "dgd_config": base_dgd,
-        "resolved_backend": "trtllm",
+        "resolved_backend": "vllm",
         "chosen_exp": "disagg",
         "best_config_df": None,
         "best_latencies": {"ttft": 0.0, "tpot": 0.0, "request_latency": 0.0},
     }
 
+    # This orchestration test uses a fictitious model. Keep metadata reads
+    # deterministic and independent of Hub access or the local model cache.
     with (
+        patch(
+            "dingo.profiler.profile_sla.get_model_config_from_model_path",
+            return_value={"max_position_embeddings": 8000},
+        ),
+        patch(
+            "dingo.profiler.utils.dgd_materialization.model_has_auto_map",
+            return_value=False,
+        ),
         patch("dingo.profiler.profile_sla.valid_dgdr_spec"),
         patch("dingo.profiler.profile_sla.validate_dgdr_dynamo_features"),
         patch(
@@ -933,7 +941,7 @@ async def test_run_profile_applies_override_once_to_each_consumed_dgd(tmp_path) 
             "dingo.profiler.profile_sla._extract_profiler_params",
             return_value=(
                 "test/model",
-                "trtllm",
+                "vllm",
                 "h100_sxm",
                 8,
                 4000,
@@ -984,7 +992,7 @@ async def test_run_profile_applies_override_once_to_each_consumed_dgd(tmp_path) 
     assert interpolation_kwargs, "run_interpolation was never called"
     disagg_config = interpolation_kwargs["disagg_config"]
 
-    # Tolerations and TRT-LLM runtime defaults must be present before interpolation.
+    # Overrides must be present before interpolation on a supported backend.
     decode_component = _components_by_name(disagg_config)["decode"]
     pod_spec = _pod_spec(decode_component)
     assert pod_spec["tolerations"] == [_TOLERATION]
@@ -993,10 +1001,8 @@ async def test_run_profile_applies_override_once_to_each_consumed_dgd(tmp_path) 
     main_container = _main_container(decode_component)
     assert main_container["image"] == "my-image"
     assert main_container["args"].count("--override-applied") == 1
-    chunked_prefill_idx = main_container["args"].index(
-        "--trtllm.enable_chunked_prefill"
-    )
-    assert main_container["args"][chunked_prefill_idx + 1] == "true"
+    assert "--trust-remote-code" not in main_container["args"]
+    assert "--trtllm.enable_chunked_prefill" not in main_container["args"]
 
     # GhostService (absent from base DGD) must be silently skipped.
     assert "GhostService" not in _components_by_name(disagg_config)
@@ -1108,7 +1114,7 @@ def test_build_dgd_config_pvc_with_model_path_uses_pvc_path(backend) -> None:
         assert args[args.index("--served-model-name") + 1] == model_name
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_update_model_from_pvc_absolute_path_inside_mount_is_not_doubled(
     backend,
 ) -> None:
@@ -1148,7 +1154,7 @@ def test_update_model_from_pvc_absolute_path_inside_mount_is_not_doubled(
 
 @pytest.mark.parametrize(
     "backend,model_arg",
-    [("vllm", "--model"), ("sglang", "--model-path"), ("trtllm", "--model-path")],
+    [("vllm", "--model"), ("sglang", "--model-path")],
 )
 def test_update_model_from_pvc_canonicalizes_duplicate_model_args(
     backend, model_arg

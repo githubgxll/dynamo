@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import aiohttp
-
 from dynamo.llm import KvRouter
 from dynamo.prometheus_names import kv_publisher, name_prefix
 from dynamo.runtime import DistributedRuntime
+
 from tests.utils.prometheus import sum_metric_samples
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ async def get_stored_kv_event_counts(
 
 def generate_random_suffix() -> str:
     """Generate a 10-character random alphabetic suffix for namespace isolation."""
-    return "".join(random.choices(string.ascii_lowercase, k=10))  # noqa: S311
+    return "".join(random.choices(string.ascii_lowercase, k=10))
 
 
 def get_kv_indexer_command() -> list[str]:
@@ -289,19 +289,19 @@ async def wait_for_frontend_ready(
                 f"expected={expected_num_workers}, configured={configured_workers}"
             )
 
-        runtime = get_runtime(
+        with managed_runtime(
             store_backend=store_backend,
             request_plane=request_plane,
-        )
-        for group in worker_groups:
-            endpoint = runtime.endpoint(
-                f"{group.namespace}.{group.component_name}.generate"
-            )
-            await poll_for_worker_instances(
-                endpoint,
-                group.num_workers,
-                max_wait_time=timeout,
-            )
+        ) as runtime:
+            for group in worker_groups:
+                endpoint = runtime.endpoint(
+                    f"{group.namespace}.{group.component_name}.generate"
+                )
+                await poll_for_worker_instances(
+                    endpoint,
+                    group.num_workers,
+                    max_wait_time=timeout,
+                )
 
     models_url = f"{frontend_url}/v1/models"
     chat_url = f"{frontend_url}/v1/chat/completions"
@@ -689,11 +689,22 @@ def managed_runtime(
     request_plane: str = "tcp",
     event_plane: Optional[str] = None,
 ):
-    runtime = get_runtime(store_backend, request_plane, event_plane)
+    owned_loop = None
     try:
-        yield runtime
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        owned_loop = loop = asyncio.new_event_loop()
+    try:
+        runtime = DistributedRuntime(
+            loop, store_backend, request_plane, event_plane=event_plane
+        )
+        try:
+            yield runtime
+        finally:
+            runtime.shutdown()
     finally:
-        runtime.shutdown()
+        if owned_loop is not None:
+            owned_loop.close()
 
 
 async def send_inflight_requests(urls: list, payload: dict, num_requests: int):

@@ -3,7 +3,7 @@
 
 # Case 11: Auto backend, rapid, without planner, no input load
 model: "Qwen/Qwen3-32B"
-image: "hongkuanz196/trtllm-runtime:hzhou-0224"
+image: "nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.3.0"
 hardware:
   gpuSku: h200_sxm
   totalGpus: 8

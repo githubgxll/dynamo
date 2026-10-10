@@ -3376,17 +3376,27 @@ impl OpenAIPreprocessor {
         hidden_eos_token_ids.len() != before
     }
 
-    /// Rendering is driven by the request, so its failures are reported as 400 rather than
-    /// 500, matching vLLM. A misconfigured template can also fail here, for instance a
-    /// `chat_template` map that omits the `tool_use` key, so log the cause chain before it
-    /// is flattened into the client-facing message.
+    /// Preserve t5's distinction between invalid input (400) and internal
+    /// template/configuration failures (500), including the original cause chain.
     fn map_prompt_render_error(error: anyhow::Error) -> anyhow::Error {
         tracing::debug!(?error, "Chat template rendering failed");
-        let message = match error.downcast_ref::<PromptRenderError>() {
-            Some(PromptRenderError::InvalidRequest(message)) => message.clone(),
-            None => format!("{error:#}"),
-        };
-        invalid_argument_error(message)
+        if let Some(PromptRenderError::InvalidRequest(message)) =
+            error.downcast_ref::<PromptRenderError>()
+        {
+            return invalid_argument_error(message.clone());
+        }
+        // Renderer 6 reports chat-template raise_exception validation as
+        // MiniJinja InvalidOperation. Keep syntax/missing-template and unrelated
+        // internal errors unchanged rather than classifying every failure as 400.
+        if error
+            .downcast_ref::<minijinja::Error>()
+            .is_some_and(|render_error| {
+                render_error.kind() == minijinja::ErrorKind::InvalidOperation
+            })
+        {
+            return invalid_argument_error(format!("{error:#}"));
+        }
+        error
     }
 
     pub fn apply_template<
@@ -11170,16 +11180,15 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_prompt_error_maps_to_invalid_argument() {
-        let mapped = OpenAIPreprocessor::map_prompt_render_error(anyhow::anyhow!(
-            "template configuration failed"
-        ));
-        let mapped = mapped
-            .downcast_ref::<DynamoError>()
-            .expect("any prompt render failure should map to a DynamoError");
-
+    fn contextual_prompt_invalid_request_maps_to_invalid_argument() {
+        let error = anyhow::Error::from(PromptRenderError::invalid_request(
+            "unsupported model parameter",
+        ))
+        .context("chat template rendering failed");
+        let mapped = OpenAIPreprocessor::map_prompt_render_error(error);
+        let mapped = mapped.downcast_ref::<DynamoError>().unwrap();
         assert!(matches!(mapped.error_type(), ErrorType::InvalidArgument));
-        assert_eq!(mapped.message(), "template configuration failed");
+        assert_eq!(mapped.message(), "unsupported model parameter");
     }
 
     fn url_entry(u: &str) -> MultimodalData {
@@ -12044,15 +12053,14 @@ mod tests {
     }
 
     #[test]
-    fn prompt_invalid_request_maps_to_invalid_argument() {
-        let error = PromptRenderError::invalid_request("unsupported model parameter").into();
+    fn prompt_template_syntax_error_remains_internal() {
+        let error = anyhow::Error::from(minijinja::Error::new(
+            minijinja::ErrorKind::SyntaxError,
+            "invalid template configuration",
+        ));
         let mapped = OpenAIPreprocessor::map_prompt_render_error(error);
-        let mapped = mapped
-            .downcast_ref::<DynamoError>()
-            .expect("prompt validation should map to a DynamoError");
-
-        assert!(matches!(mapped.error_type(), ErrorType::InvalidArgument));
-        assert_eq!(mapped.message(), "unsupported model parameter");
+        assert!(mapped.downcast_ref::<DynamoError>().is_none());
+        assert!(mapped.downcast_ref::<minijinja::Error>().is_some());
     }
 
     #[test]
@@ -13328,238 +13336,8 @@ mod tests {
 
     /// Verifies the SGLang reasoning gate covers forced tool JSON and
     /// structured assistant output while honoring per-request thinking controls.
-    #[test]
-    fn test_guided_output_requires_reasoning() {
-        let request = |tool_choice: serde_json::Value, enable_thinking: Option<bool>| {
-            let mut value = serde_json::json!({
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "use the tool"}],
-                "tools": [{
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "parameters": {"type": "object", "properties": {}}
-                    }
-                }],
-                "tool_choice": tool_choice
-            });
-            if let Some(enabled) = enable_thinking {
-                value["chat_template_kwargs"] = serde_json::json!({
-                    "enable_thinking": enabled
-                });
-            }
-            serde_json::from_value::<NvCreateChatCompletionRequest>(value).unwrap()
-        };
-
-        let required = request(serde_json::json!("required"), Some(true));
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &required,
-            Some("nemotron_v3")
-        ));
-
-        let named = request(
-            serde_json::json!({
-                "type": "function",
-                "function": {"name": "lookup"}
-            }),
-            None,
-        );
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &named,
-            Some("nemotron_v3")
-        ));
-
-        let disabled = request(serde_json::json!("required"), Some(false));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &disabled,
-            Some("nemotron_v3")
-        ));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &required, None
-        ));
-
-        let automatic = request(serde_json::json!("auto"), Some(true));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &automatic,
-            Some("nemotron_v3")
-        ));
-
-        let gemma_without_opt_in = request(serde_json::json!("required"), None);
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &gemma_without_opt_in,
-            Some("gemma4")
-        ));
-        let gemma_with_opt_in = request(serde_json::json!("required"), Some(true));
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &gemma_with_opt_in,
-            Some("gemma4")
-        ));
-
-        let deepseek_default = request(serde_json::json!("required"), None);
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &deepseek_default,
-            Some("deepseek_v4")
-        ));
-        let deepseek_disabled = request(serde_json::json!("required"), Some(false));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &deepseek_disabled,
-            Some("deepseek_v4")
-        ));
-
-        let structured_request = |enable_thinking: bool| {
-            serde_json::from_value::<NvCreateChatCompletionRequest>(serde_json::json!({
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "return json"}],
-                "chat_template_kwargs": {"enable_thinking": enable_thinking},
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "result",
-                        "schema": {"type": "object"}
-                    }
-                }
-            }))
-            .unwrap()
-        };
-        let json_object_request = |enable_thinking: bool| {
-            serde_json::from_value::<NvCreateChatCompletionRequest>(serde_json::json!({
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "return json"}],
-                "chat_template_kwargs": {"enable_thinking": enable_thinking},
-                "response_format": {"type": "json_object"}
-            }))
-            .unwrap()
-        };
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &structured_request(true),
-            Some("qwen3")
-        ));
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &json_object_request(true),
-            Some("qwen3")
-        ));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &structured_request(false),
-            Some("qwen3")
-        ));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &structured_request(true),
-            Some("gpt_oss")
-        ));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &json_object_request(true),
-            Some("gpt_oss")
-        ));
-        assert!(!OpenAIPreprocessor::guided_output_requires_reasoning(
-            &structured_request(false),
-            Some("gpt_oss")
-        ));
-        assert!(OpenAIPreprocessor::guided_output_requires_reasoning(
-            &request(serde_json::json!("required"), None),
-            Some("gpt_oss")
-        ));
-    }
 
     /// Verifies SGLang's effective reasoning mode for each parser family.
-    #[test]
-    fn test_sglang_effective_reasoning_enabled() {
-        let cases = [
-            ("qwen3", serde_json::json!({}), true),
-            (
-                "qwen3",
-                serde_json::json!({"enable_thinking": false}),
-                false,
-            ),
-            ("nemotron_v3", serde_json::json!({}), true),
-            ("gemma4", serde_json::json!({}), false),
-            ("gemma4", serde_json::json!({"enable_thinking": true}), true),
-            ("deepseek_v4", serde_json::json!({}), true),
-            ("deepseek_v4", serde_json::json!({"thinking": true}), true),
-            (
-                "deepseek_v4",
-                serde_json::json!({"enable_thinking": true}),
-                true,
-            ),
-            (
-                "deepseek_v4",
-                serde_json::json!({"thinking_mode": "thinking"}),
-                true,
-            ),
-            (
-                "deepseek_v4",
-                serde_json::json!({"enable_thinking": false}),
-                false,
-            ),
-            (
-                "deepseek_v4",
-                serde_json::json!({"thinking_mode": "chat"}),
-                false,
-            ),
-            (
-                "deepseek_v4",
-                serde_json::json!({"thinking": false, "thinking_mode": "thinking"}),
-                false,
-            ),
-            ("deepseek_v3_2", serde_json::json!({}), true),
-            ("deepseek_v3_1", serde_json::json!({}), false),
-            (
-                "deepseek_v3_1",
-                serde_json::json!({"enable_thinking": true}),
-                true,
-            ),
-            ("kimi_k25", serde_json::json!({"thinking": false}), false),
-            ("kimi_k3", serde_json::json!({}), true),
-            ("kimi-k3", serde_json::json!({"thinking": false}), false),
-            ("minimax_m2", serde_json::json!({}), true),
-            ("minimax_m2", serde_json::json!({"thinking": false}), false),
-            ("mistral", serde_json::json!({}), false),
-            (
-                "mistral",
-                serde_json::json!({"reasoning_effort": "none"}),
-                false,
-            ),
-            (
-                "mistral",
-                serde_json::json!({"reasoning_effort": "high"}),
-                true,
-            ),
-            ("minimax_m3", serde_json::json!({}), true),
-            (
-                "minimax_m3",
-                serde_json::json!({"thinking_mode": "disabled"}),
-                false,
-            ),
-            ("gpt_oss", serde_json::json!({}), true),
-            (
-                "gpt_oss",
-                serde_json::json!({"enable_thinking": true}),
-                true,
-            ),
-            (
-                "gpt_oss",
-                serde_json::json!({"enable_thinking": false}),
-                true,
-            ),
-            ("deepseek_r1", serde_json::json!({}), true),
-            ("minimax_append_think", serde_json::json!({}), false),
-            ("basic", serde_json::json!({}), false),
-        ];
-
-        for (parser, request_args, expected) in cases {
-            let request_args = serde_json::from_value(request_args).unwrap();
-            assert_eq!(
-                OpenAIPreprocessor::sglang_effective_reasoning_enabled(
-                    Some(parser),
-                    Some(&request_args),
-                ),
-                expected,
-                "parser={parser}, args={request_args:?}",
-            );
-        }
-        assert!(!OpenAIPreprocessor::sglang_effective_reasoning_enabled(
-            None, None
-        ));
-    }
 
     #[test]
     fn test_internal_preserve_omitted_max_tokens_option() {

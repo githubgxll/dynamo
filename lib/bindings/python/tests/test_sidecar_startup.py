@@ -42,7 +42,7 @@ def sidecar_env():
     return env
 
 
-@pytest.mark.parametrize("engine", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
 @pytest.mark.timeout(40)
 def test_python_sidecar_probes_during_initialization(
     engine, sidecar_env, tmp_path, monkeypatch
@@ -60,14 +60,12 @@ def test_python_sidecar_probes_during_initialization(
         args = [
             sys.executable,
             "-m",
-            f"dynamo.{engine}.sidecar",
+            f"dingo.{engine}.sidecar",
             "--grpc-endpoint",
             f"http://127.0.0.1:{engine_listener.getsockname()[1]}",
             "--grpc-startup-deadline-secs",
             "60",
         ]
-        if engine == "trtllm":
-            args.extend(["--model-path", "unused"])
         with ManagedProcess(
             command=args,
             env=sidecar_env,

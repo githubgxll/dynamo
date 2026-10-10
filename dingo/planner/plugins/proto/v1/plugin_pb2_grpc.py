@@ -41,22 +41,22 @@ class PluginRegistryStub(object):
             channel: A grpc.Channel.
         """
         self.Register = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginRegistry/Register',
+                '/dynamo.planner.plugin.v1.PluginRegistry/Register',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.RegisterRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.RegisterResponse.FromString,
                 _registered_method=True)
         self.Heartbeat = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginRegistry/Heartbeat',
+                '/dynamo.planner.plugin.v1.PluginRegistry/Heartbeat',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.HeartbeatRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.HeartbeatResponse.FromString,
                 _registered_method=True)
         self.Unregister = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginRegistry/Unregister',
+                '/dynamo.planner.plugin.v1.PluginRegistry/Unregister',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.UnregisterRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.UnregisterResponse.FromString,
                 _registered_method=True)
         self.ListPlugins = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginRegistry/ListPlugins',
+                '/dynamo.planner.plugin.v1.PluginRegistry/ListPlugins',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ListPluginsRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ListPluginsResponse.FromString,
                 _registered_method=True)
@@ -125,9 +125,9 @@ def add_PluginRegistryServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.PluginRegistry', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.PluginRegistry', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.PluginRegistry', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.PluginRegistry', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -152,7 +152,7 @@ class PluginRegistry(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginRegistry/Register',
+            '/dynamo.planner.plugin.v1.PluginRegistry/Register',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.RegisterRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.RegisterResponse.FromString,
             options,
@@ -179,7 +179,7 @@ class PluginRegistry(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginRegistry/Heartbeat',
+            '/dynamo.planner.plugin.v1.PluginRegistry/Heartbeat',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.HeartbeatRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.HeartbeatResponse.FromString,
             options,
@@ -206,7 +206,7 @@ class PluginRegistry(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginRegistry/Unregister',
+            '/dynamo.planner.plugin.v1.PluginRegistry/Unregister',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.UnregisterRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.UnregisterResponse.FromString,
             options,
@@ -233,7 +233,7 @@ class PluginRegistry(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginRegistry/ListPlugins',
+            '/dynamo.planner.plugin.v1.PluginRegistry/ListPlugins',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ListPluginsRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ListPluginsResponse.FromString,
             options,
@@ -261,7 +261,7 @@ class PredictPluginStub(object):
             channel: A grpc.Channel.
         """
         self.Predict = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PredictPlugin/Predict',
+                '/dynamo.planner.plugin.v1.PredictPlugin/Predict',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.PredictStageRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.PredictStageResponse.FromString,
                 _registered_method=True)
@@ -290,9 +290,9 @@ def add_PredictPluginServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.PredictPlugin', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.PredictPlugin', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.PredictPlugin', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.PredictPlugin', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -317,7 +317,7 @@ class PredictPlugin(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PredictPlugin/Predict',
+            '/dynamo.planner.plugin.v1.PredictPlugin/Predict',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.PredictStageRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.PredictStageResponse.FromString,
             options,
@@ -341,7 +341,7 @@ class ProposePluginStub(object):
             channel: A grpc.Channel.
         """
         self.Propose = channel.unary_unary(
-                '/dingo.planner.plugin.v1.ProposePlugin/Propose',
+                '/dynamo.planner.plugin.v1.ProposePlugin/Propose',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ProposeStageRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ProposeStageResponse.FromString,
                 _registered_method=True)
@@ -366,9 +366,9 @@ def add_ProposePluginServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.ProposePlugin', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.ProposePlugin', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.ProposePlugin', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.ProposePlugin', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -389,7 +389,7 @@ class ProposePlugin(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.ProposePlugin/Propose',
+            '/dynamo.planner.plugin.v1.ProposePlugin/Propose',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ProposeStageRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ProposeStageResponse.FromString,
             options,
@@ -413,7 +413,7 @@ class ReconcilePluginStub(object):
             channel: A grpc.Channel.
         """
         self.Reconcile = channel.unary_unary(
-                '/dingo.planner.plugin.v1.ReconcilePlugin/Reconcile',
+                '/dynamo.planner.plugin.v1.ReconcilePlugin/Reconcile',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ReconcileStageRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ReconcileStageResponse.FromString,
                 _registered_method=True)
@@ -438,9 +438,9 @@ def add_ReconcilePluginServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.ReconcilePlugin', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.ReconcilePlugin', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.ReconcilePlugin', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.ReconcilePlugin', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -461,7 +461,7 @@ class ReconcilePlugin(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.ReconcilePlugin/Reconcile',
+            '/dynamo.planner.plugin.v1.ReconcilePlugin/Reconcile',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ReconcileStageRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ReconcileStageResponse.FromString,
             options,
@@ -485,7 +485,7 @@ class ConstrainPluginStub(object):
             channel: A grpc.Channel.
         """
         self.Constrain = channel.unary_unary(
-                '/dingo.planner.plugin.v1.ConstrainPlugin/Constrain',
+                '/dynamo.planner.plugin.v1.ConstrainPlugin/Constrain',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ConstrainStageRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ConstrainStageResponse.FromString,
                 _registered_method=True)
@@ -510,9 +510,9 @@ def add_ConstrainPluginServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.ConstrainPlugin', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.ConstrainPlugin', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.ConstrainPlugin', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.ConstrainPlugin', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -533,7 +533,7 @@ class ConstrainPlugin(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.ConstrainPlugin/Constrain',
+            '/dynamo.planner.plugin.v1.ConstrainPlugin/Constrain',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ConstrainStageRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ConstrainStageResponse.FromString,
             options,
@@ -566,12 +566,12 @@ class PluginLifecycleStub(object):
             channel: A grpc.Channel.
         """
         self.Bootstrap = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginLifecycle/Bootstrap',
+                '/dynamo.planner.plugin.v1.PluginLifecycle/Bootstrap',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.BootstrapRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.BootstrapResponse.FromString,
                 _registered_method=True)
         self.Reset = channel.unary_unary(
-                '/dingo.planner.plugin.v1.PluginLifecycle/Reset',
+                '/dynamo.planner.plugin.v1.PluginLifecycle/Reset',
                 request_serializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ResetRequest.SerializeToString,
                 response_deserializer=dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ResetResponse.FromString,
                 _registered_method=True)
@@ -621,9 +621,9 @@ def add_PluginLifecycleServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'dingo.planner.plugin.v1.PluginLifecycle', rpc_method_handlers)
+            'dynamo.planner.plugin.v1.PluginLifecycle', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('dingo.planner.plugin.v1.PluginLifecycle', rpc_method_handlers)
+    server.add_registered_method_handlers('dynamo.planner.plugin.v1.PluginLifecycle', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -653,7 +653,7 @@ class PluginLifecycle(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginLifecycle/Bootstrap',
+            '/dynamo.planner.plugin.v1.PluginLifecycle/Bootstrap',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.BootstrapRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.BootstrapResponse.FromString,
             options,
@@ -680,7 +680,7 @@ class PluginLifecycle(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/dingo.planner.plugin.v1.PluginLifecycle/Reset',
+            '/dynamo.planner.plugin.v1.PluginLifecycle/Reset',
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ResetRequest.SerializeToString,
             dingo_dot_planner_dot_plugins_dot_proto_dot_v1_dot_plugin__pb2.ResetResponse.FromString,
             options,

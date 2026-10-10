@@ -199,7 +199,8 @@ def extract_prompt_logprobs_from_sglang_meta(
     or None)``) and merges any ``input_top_logprobs`` alternatives. The pinned
     SGLang release and its N-1 predecessor both include the leading
     ``None``-logprob prompt position, which is preserved as Dynamo's BOS=None
-    ``PromptLogprobs`` entry.
+    ``PromptLogprobs`` entry. Legacy Dingo adapters omit that position;
+    normalize those arrays by adding one leading ``None``.
     """
     input_logprobs = meta.get("input_token_logprobs")
     if not input_logprobs:
@@ -207,7 +208,9 @@ def extract_prompt_logprobs_from_sglang_meta(
 
     input_top_logprobs = meta.get("input_top_logprobs") or []
 
-    payload: list[Optional[dict[str, dict[str, Any]]]] = []
+    payload: list[Optional[dict[str, dict[str, Any]]]] = (
+        [] if input_logprobs[0][0] is None else [None]
+    )
     for idx, item in enumerate(input_logprobs):
         logprob, tok_id, decoded_token = item
         if logprob is None:
@@ -321,7 +324,10 @@ def extract_from_sglang_meta(
     *,
     return_tokens_as_token_ids: bool = False,
     incremental: bool | None = None,
-) -> tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]]] | tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]], int]:
+) -> (
+    tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]]]
+    | tuple[Optional[list[float]], Optional[list[list[dict[str, Any]]]], int]
+):
     """Extract logprobs from SGLang's ``meta_info`` dict.
 
     When ``incremental_streaming_output`` is False (the SGLang default),
@@ -341,7 +347,11 @@ def extract_from_sglang_meta(
     num_output_logprobs_so_far = num_output_logprobs_so_far or 0
     output_token_logprobs = meta_info.get("output_token_logprobs")
     if not output_token_logprobs:
-        return (None, None) if direct_incremental else (None, None, num_output_logprobs_so_far)
+        return (
+            (None, None)
+            if direct_incremental
+            else (None, None, num_output_logprobs_so_far)
+        )
 
     if incremental:
         new_logprobs = output_token_logprobs
@@ -372,9 +382,7 @@ def extract_from_sglang_meta(
                 for rank_idx, entry in enumerate(position_entries):
                     tok_id = entry[1]
                     token_str = (
-                        f"token_id:{tok_id}"
-                        if return_tokens_as_token_ids
-                        else entry[2]
+                        f"token_id:{tok_id}" if return_tokens_as_token_ids else entry[2]
                     )
                     position_list.append(
                         {
@@ -386,4 +394,8 @@ def extract_from_sglang_meta(
                     )
                 top_logprobs.append(position_list)
 
-    return (log_probs, top_logprobs) if direct_incremental else (log_probs, top_logprobs, new_total)
+    return (
+        (log_probs, top_logprobs)
+        if direct_incremental
+        else (log_probs, top_logprobs, new_total)
+    )

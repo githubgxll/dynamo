@@ -696,7 +696,11 @@ class TestEnableVllmBenchmarkMode:
         assert _benchmark_mode(worker) == "agg"
 
     def test_real_agg_template_sets_single_worker(self):
-        repository_root = Path(__file__).resolve().parents[6]
+        repository_root = next(
+            parent
+            for parent in Path(__file__).resolve().parents
+            if (parent / "pyproject.toml").is_file() and (parent / "examples").is_dir()
+        )
         template_path = repository_root / "examples/backends/vllm/deploy/agg.yaml"
         cfg = yaml.safe_load(template_path.read_text(encoding="utf-8"))
 

@@ -604,7 +604,8 @@ def _is_kimi_k3_request(
 
 
 def _kimi_k3_image_prompt_count(messages: list[dict[str, Any]]) -> int:
-    mm_data = extract_mm_urls(messages) or {}
+    mm_data, _ = extract_mm_urls(messages)
+    mm_data = mm_data or {}
     image_items = mm_data.get("image_url") or []
     return len(image_items)
 
@@ -1737,6 +1738,9 @@ class SglangStreamingPostProcessor:
             for parser in (tool_call_parser, reasoning_parser)
         )
         self._is_json_array_parser = isinstance(tool_call_parser, JsonArrayParser)
+        self._guided_tool_array = (
+            tool_guided_active and not response_format_guided_active
+        )
         self._guided_json_start_chars = _guided_json_start_chars(
             guided_decoding,
             response_format_guided_active=response_format_guided_active,
@@ -2214,7 +2218,12 @@ class SglangStreamingPostProcessor:
             normal_text = normal_text or ""
             reasoning_tokens = (
                 token_count
-                if reasoning_text or (normal_text and not self._saw_normal_output)
+                if reasoning_text
+                or (
+                    normal_text
+                    and not self._saw_normal_output
+                    and self._reasoning_token_count > 0
+                )
                 else 0
             )
             return reasoning_text, normal_text, reasoning_tokens
@@ -2234,9 +2243,22 @@ class SglangStreamingPostProcessor:
             and think_start.startswith(stripped)
         )
 
+        # A tool grammar emits an array of objects. A bare '[' is still
+        # ambiguous with reasoning such as '[check the request]'; wait only
+        # for its first non-whitespace member, within the same prefix bound.
+        tool_array_tail = (
+            stripped[1:].lstrip()
+            if self._guided_tool_array and stripped.startswith("[")
+            else None
+        )
+        incomplete_tool_array = tool_array_tail == ""
+        valid_tool_array = tool_array_tail is None or tool_array_tail.startswith(
+            ("{", "]")
+        )
+
         if (
             not finish_reason
-            and (not stripped or could_be_partial_start)
+            and (not stripped or could_be_partial_start or incomplete_tool_array)
             and len(pending) < self.GUIDED_REASONING_PREFIX_LIMIT
         ):
             return None, "", 0
@@ -2250,6 +2272,7 @@ class SglangStreamingPostProcessor:
             and stripped[0] in self._guided_json_start_chars
             and not starts_reasoning
             and not could_be_partial_start
+            and valid_tool_array
         ):
             self._bypass_reasoning_for_bare_json = True
             return None, pending, 0
@@ -2261,7 +2284,12 @@ class SglangStreamingPostProcessor:
         normal_text = normal_text or ""
         reasoning_tokens = (
             buffered_token_count
-            if reasoning_text or (normal_text and not self._saw_normal_output)
+            if reasoning_text
+            or (
+                normal_text
+                and not self._saw_normal_output
+                and self._reasoning_token_count > 0
+            )
             else 0
         )
         return reasoning_text, normal_text, reasoning_tokens

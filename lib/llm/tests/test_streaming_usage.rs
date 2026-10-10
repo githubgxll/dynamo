@@ -146,10 +146,12 @@ fn build_backend_outputs_with_cached_tokens(cached_tokens: Option<u32>) -> Vec<B
             finish_reason: Some(FinishReason::Stop),
             stop_reason: None,
             index: Some(0),
+            // Worker usage describes all three generated tokens. Completions
+            // deliberately treats the worker count as authoritative (t5 contract).
             completion_usage: cached_tokens.map(|ct| AoaiCompletionUsage {
                 prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
+                completion_tokens: 3,
+                total_tokens: 3,
                 prompt_tokens_details: Some(PromptTokensDetails {
                     audio_tokens: None,
                     cached_tokens: Some(ct),
