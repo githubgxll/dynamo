@@ -233,8 +233,13 @@ def test_stream_emits_llm_metrics_annotation(module_stubs):
 @pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])
 @pytest.mark.parametrize("tool_count", [1, 2])
 @pytest.mark.parametrize("stream_interval", [1, 20])
+@pytest.mark.parametrize("continuous", [False, True])
 def test_terminal_tool_payload_precedes_finish(
-    module_stubs: Any, finish_reason: str, tool_count: int, stream_interval: int
+    module_stubs: Any,
+    finish_reason: str,
+    tool_count: int,
+    stream_interval: int,
+    continuous: bool,
 ) -> None:
     module = _load_processor_module(module_stubs)
     tool_calls = [
@@ -287,7 +292,15 @@ def test_terminal_tool_payload_precedes_finish(
             item
             async for item in processor._generate_and_stream(
                 "req-tools",
-                {"model": "glm-5.3", "nvext": {"extra_fields": ["stop_reason"]}},
+                {
+                    "model": "glm-5.3",
+                    "stream": True,
+                    "stream_options": {
+                        "include_usage": True,
+                        "continuous_usage_stats": continuous,
+                    },
+                    "nvext": {"extra_fields": ["stop_reason"]},
+                },
                 {},
                 list(range(10)),
                 Post(),
@@ -299,7 +312,11 @@ def test_terminal_tool_payload_precedes_finish(
     data, terminal = [item["data"] for item in items]
     assert data["choices"] == [{**choice, "finish_reason": None}]
     assert terminal["choices"] == [{**choice, "delta": {}}]
-    assert "usage" not in data and "nvext" not in data
+    if continuous:
+        assert data["usage"] == terminal["usage"]
+        assert data["nvext"] == terminal["nvext"]
+    else:
+        assert "usage" not in data and "nvext" not in data
     assert terminal["usage"] == {
         **usage,
         "completion_tokens_details": {"reasoning_tokens": 1},
@@ -323,3 +340,198 @@ def test_terminal_tool_payload_precedes_finish(
     assert len(metrics) == 1
     assert metrics[0]["chunk_tokens"] == metrics[0]["output_tokens"] == 3
     assert items[0]["event"] == "llm_metrics"
+
+
+class _ByteTokenizer:
+    def decode(self, ids, **kwargs):
+        return bytes(ids).decode("utf-8", errors="replace")
+
+
+def _usage_chunk(ids, count, *, finish=None, cached=4):
+    usage = {
+        "prompt_tokens": 10,
+        "completion_tokens": count,
+        "total_tokens": 10 + count,
+        "prompt_tokens_details": (
+            {"cached_tokens": cached} if cached is not None else None
+        ),
+    }
+    return {
+        "token_ids": ids,
+        "finish_reason": finish,
+        "completion_usage": usage,
+    }
+
+
+def _usage_processor(module, chunks, *, interval=1):
+    processor = module.SglangProcessor(
+        tokenizer=_ByteTokenizer(),
+        routed_engine=FakeRoutedEngine(items=chunks),
+        tool_call_parser_name=None,
+        reasoning_parser_name=None,
+        eos_token_ids=None,
+    )
+    processor.stream_interval = interval
+    post = module.SglangStreamingPostProcessor(
+        tokenizer=processor.tokenizer,
+        tool_call_parser=None,
+        reasoning_parser=None,
+    )
+    return processor, post
+
+
+def _usage_request(options=None, *, stream=True):
+    request = {"model": "test-model", "stream": stream}
+    if options is not None:
+        request["stream_options"] = options
+    return request
+
+
+_CONTINUOUS_USAGE = {"include_usage": True, "continuous_usage_stats": True}
+
+
+@pytest.mark.parametrize(
+    "options,expected_counts",
+    [
+        (None, [4]),
+        ({"include_usage": True}, [4]),
+        ({"continuous_usage_stats": True}, [4]),
+        (_CONTINUOUS_USAGE, [1, 2, 3, 4]),
+    ],
+)
+def test_usage_survives_buffered_utf8_without_changing_text(
+    module_stubs, options, expected_counts
+):
+    module = _load_processor_module(module_stubs)
+    chunks = [
+        _usage_chunk([byte], index, finish="stop" if index == 4 else None)
+        for index, byte in enumerate("你!".encode("utf-8"), start=1)
+    ]
+    chunks[0]["engine_data"] = {
+        "cached_tokens_details": {"device": 2, "host": 2}
+    }
+    processor, post = _usage_processor(module, chunks)
+
+    async def collect():
+        return [
+            item
+            async for item in processor._generate_and_stream(
+                "req-buffered", _usage_request(options), {}, list(range(10)), post
+            )
+        ]
+
+    events = asyncio.run(collect())
+    data = [event["data"] for event in events if "data" in event]
+    assert "".join(
+        choice["delta"].get("content", "")
+        for item in data
+        for choice in item["choices"]
+    ) == "你!"
+    usages = [item["usage"] for item in data if "usage" in item]
+    assert [usage["completion_tokens"] for usage in usages] == expected_counts
+    assert [usage["total_tokens"] for usage in usages] == [
+        10 + count for count in expected_counts
+    ]
+    assert all(usage["prompt_tokens_details"]["cached_tokens"] == 4 for usage in usages)
+    if options == _CONTINUOUS_USAGE:
+        assert data[0]["choices"] == data[1]["choices"] == []
+        assert data[0]["nvext"][module._INTERNAL_SGLEXT_KEY] == {
+            "cached_tokens_details": {"device": 2, "host": 2}
+        }
+    assert data[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_running_usage_preserves_batching_and_engine_terminal_count(module_stubs):
+    module = _load_processor_module(module_stubs)
+    chunks = [
+        _usage_chunk([byte], index)
+        for index, byte in enumerate(b"ABCDE", start=1)
+    ]
+    # The engine counted a hidden stop token; do not replace its authoritative
+    # completion count with the number of visible token IDs.
+    chunks.append(_usage_chunk([], 6, finish="stop"))
+    processor, post = _usage_processor(module, chunks, interval=3)
+
+    async def collect():
+        return [
+            item
+            async for item in processor._generate_and_stream(
+                "req-batched",
+                _usage_request(_CONTINUOUS_USAGE),
+                {},
+                list(range(10)),
+                post,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    data = [event["data"] for event in events if "data" in event]
+    assert [
+        item["choices"][0]["delta"].get("content", "") for item in data
+    ] == ["A", "BCD", "E"]
+    assert [item["usage"]["completion_tokens"] for item in data] == [1, 4, 6]
+    assert [item["usage"]["total_tokens"] for item in data] == [11, 14, 16]
+    # Metrics describe token delivery, not a sum of cumulative usage snapshots.
+    assert sum(json.loads(event["comment"][0])["chunk_tokens"] for event in events) == 5
+
+
+@pytest.mark.parametrize("cached", [0, 4, None])
+def test_first_content_usage_remains_available_without_draining_stream(
+    module_stubs, cached
+):
+    module = _load_processor_module(module_stubs)
+    chunks = [
+        _usage_chunk([65], 1, cached=cached),
+        _usage_chunk([66], 2, finish="stop", cached=cached),
+    ]
+    processor, post = _usage_processor(module, chunks)
+
+    async def disconnect():
+        stream = processor._generate_and_stream(
+            "req-disconnect",
+            _usage_request(_CONTINUOUS_USAGE),
+            {},
+            list(range(10)),
+            post,
+        )
+        first = await anext(stream)
+        await stream.aclose()
+        return first["data"]
+
+    first = asyncio.run(disconnect())
+    assert first["choices"][0]["delta"]["content"] == "A"
+    assert first["choices"][0]["finish_reason"] is None
+    assert first["usage"] == {
+        "prompt_tokens": 10,
+        "completion_tokens": 1,
+        "total_tokens": 11,
+        "prompt_tokens_details": (
+            {"cached_tokens": cached} if cached is not None else None
+        ),
+    }
+
+
+def test_empty_token_report_emits_usage_without_waiting_for_finish(module_stubs):
+    module = _load_processor_module(module_stubs)
+    processor, post = _usage_processor(
+        module,
+        [_usage_chunk([], 1), _usage_chunk([65], 2, finish="stop")],
+        interval=8,
+    )
+
+    async def first_event():
+        stream = processor._generate_and_stream(
+            "req-no-visible-token",
+            _usage_request(_CONTINUOUS_USAGE),
+            {},
+            list(range(10)),
+            post,
+        )
+        first = await anext(stream)
+        await stream.aclose()
+        return first
+
+    event = asyncio.run(first_event())
+    assert event["data"]["choices"] == []
+    assert event["data"]["usage"]["completion_tokens"] == 1
+    assert json.loads(event["comment"][0])["chunk_tokens"] == 0

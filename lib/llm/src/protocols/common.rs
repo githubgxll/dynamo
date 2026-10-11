@@ -557,6 +557,11 @@ pub struct OutputOptions {
     /// When true, logprob token fields are returned as "token_id:<id>"
     /// instead of decoded text.
     pub return_tokens_as_token_ids: Option<bool>,
+
+    /// Request cumulative engine usage on intermediate responses.
+    /// Used by custom processors that assemble their own OpenAI stream.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continuous_usage_stats: bool,
 }
 
 // Struct for log probability information

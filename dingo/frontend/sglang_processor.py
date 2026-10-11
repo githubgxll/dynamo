@@ -66,7 +66,7 @@ def _cached_tokens_details_from_engine_data(
     """Extract and normalize cached_tokens_details from engine_data.
 
     The decode handler copies sglang's ``meta_info.cached_tokens_details`` into
-    ``engine_data.cached_tokens_details`` on the finish chunk. This normalizes
+    ``engine_data.cached_tokens_details`` on usage-bearing chunks. This normalizes
     the shape so the carrier payload matches sglang's native ``sglext`` field.
     Returns ``None`` when the detail is absent or malformed.
     """
@@ -95,6 +95,15 @@ def _cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
         return None
     cached_tokens = prompt_details.get("cached_tokens")
     return cached_tokens if isinstance(cached_tokens, int) else None
+
+
+def _continuous_usage_requested(request: dict[str, Any]) -> bool:
+    options = request.get("stream_options") or {}
+    return bool(
+        request.get("stream")
+        and options.get("include_usage")
+        and options.get("continuous_usage_stats")
+    )
 
 
 def _normalize_eos_token_ids(value: Any) -> list[int]:
@@ -428,6 +437,7 @@ def _build_dynamo_preproc(
                 tool_call_parser is None and reasoning_parser is None
             ),
             "return_tokens_as_token_ids": request.get("return_tokens_as_token_ids"),
+            "continuous_usage_stats": _continuous_usage_requested(request),
         },
         "eos_token_ids": _normalize_eos_token_ids(eos_token_ids),
         "annotations": [],
@@ -705,6 +715,7 @@ class SglangProcessor:
         post_proc_total_ms = 0.0
         created_ts = int(time.time())
         stream_interval = self.stream_interval
+        continuous_usage = _continuous_usage_requested(request)
 
         try:
             dynamo_stream = await self.routed_engine.generate(
@@ -771,7 +782,11 @@ class SglangProcessor:
                 # Flush on finish or when we've accumulated enough tokens.
                 # First chunk flushes immediately (si=1) to minimize TTFT.
                 flush_threshold = 1 if first_chunk else stream_interval
-                if finish_reason or len(pending_token_ids) >= flush_threshold:
+                if (
+                    finish_reason
+                    or len(pending_token_ids) >= flush_threshold
+                    or (continuous_usage and pending_usage and not pending_token_ids)
+                ):
                     usage_for_metrics = pending_usage
                     mapped_response = {
                         "token_ids": pending_token_ids,
@@ -791,10 +806,10 @@ class SglangProcessor:
                         token_count += len(pending_token_ids)
 
                     envelope: dict[str, Any] = {"_dynamo_annotated": True}
-                    if choice:
+                    if choice or (continuous_usage and pending_usage):
                         dynamo_out: dict[str, Any] = {
                             "id": request_id,
-                            "choices": [choice],
+                            "choices": [choice] if choice else [],
                             "created": created_ts,
                             "model": request["model"],
                             "object": "chat.completion.chunk",
@@ -814,7 +829,7 @@ class SglangProcessor:
                                 pending_usage["completion_tokens_details"] = {
                                     "reasoning_tokens": reasoning_tokens
                                 }
-                        if pending_usage:
+                        if pending_usage and (finish_reason or continuous_usage):
                             dynamo_out["usage"] = pending_usage
                             pending_usage = None
                         response_nvext: dict[str, Any] = {}
@@ -827,15 +842,9 @@ class SglangProcessor:
                         ):
                             response_nvext["engine_data"] = engine_data
                         
-                        # Promote SGLang's cached_tokens_details to the
-                        # sglext carrier on the finish chunk. The decode
-                        # handler only populates engine_data.cached_tokens_details
-                        # on the terminal chunk, so this naturally fires once.
-                        # Routed as an internal nvext key that the Rust
-                        # serializer lifts to a top-level `sglext` field,
-                        # matching sglang's native protocol — independent of
-                        # the client's engine_data opt-in.
-                        if finish_reason:
+                        # Preserve the engine's cache breakdown alongside running
+                        # usage, including parser-buffered usage-only chunks.
+                        if finish_reason or continuous_usage:
                             cached_tokens_details = (
                                 _cached_tokens_details_from_engine_data(engine_data)
                             )
@@ -874,6 +883,10 @@ class SglangProcessor:
                             for key, value in dynamo_out.items()
                             if key not in ("usage", "nvext")
                         }
+                        if continuous_usage and "usage" in dynamo_out:
+                            payload["usage"] = dynamo_out["usage"]
+                            if "nvext" in dynamo_out:
+                                payload["nvext"] = dynamo_out["nvext"]
                         payload["choices"] = [{**choice, "finish_reason": None}]
                         # The logprobs payload rides with the tool-call
                         # payload only; duplicating it onto the pure finish

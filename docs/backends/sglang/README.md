@@ -162,6 +162,49 @@ curl localhost:8000/v1/chat/completions \
     "max_tokens": 30
   }'
 ```
+
+### DingoRouter continuous streaming usage
+
+The DingoRouter custom frontend (`--dyn-chat-processor sglang`) can request
+engine-reported cumulative usage from the SGLang token worker, for both
+aggregated serving and the disaggregated decode handler:
+
+```json
+{
+  "stream": true,
+  "stream_options": {
+    "include_usage": true,
+    "continuous_usage_stats": true
+  }
+}
+```
+
+Both options must be true to enable intermediate usage. Other requests retain
+the existing terminal/non-streaming behavior. This path requires the updated
+Python frontend and worker **and** rebuilt `ai-dingo-runtime` bindings: the
+internal `OutputOptions.continuous_usage_stats` field must survive every Rust
+request-serialization boundary. Installing SMG is not required.
+
+Usage snapshots come from the engine's `meta_info`, not from re-tokenizing
+visible text or adding together previous snapshots. `prompt_tokens_details.cached_tokens`
+preserves an engine-reported zero; an unavailable cache count stays absent/null.
+Previously reported cache metadata is retained when a later update omits it.
+The SGLang cache breakdown, when provided, is exposed through `sglext`.
+
+If the decoder/parser withholds text (for example an incomplete UTF-8 character
+or tool-call syntax), a usage-only chunk with `choices: []` may arrive before
+visible text. Consumers must accept these chunks without treating them as end
+of stream. `DYN_SGLANG_STREAM_INTERVAL` still controls token batching: each emitted
+usage snapshot is cumulative, not a guarantee of one SSE event per GPU decode step.
+
+For disconnect billing, retain the last valid usage snapshot and settle once;
+never sum snapshots or treat repeated terminal/tool chunks as additional usage.
+No usage is invented before the engine supplies counters or after cancellation.
+This does not provide final engine consumption after a disconnected stream, nor
+does it implement billing settlement in Nexus. The custom frontend still accepts
+only `n=1`. Separate native-tokenizer/text-mode and unified backend entry points
+are outside this custom-processor feature.
+
 ### Disaggregated Serving
 
 Launch a disaggregated Qwen3-0.6B deployment (smallest model, useful for plumbing validation):
