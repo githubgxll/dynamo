@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
+from dingo.common.constants import DisaggregationMode
 from dingo.common.metadata_upload import MetadataUploader
 from dingo.sglang.request_handlers.llm.decode_handler import (
     DecodeWorkerHandler,
@@ -582,6 +584,313 @@ async def test_metadata_upload_normalizes_numpy_values(tmp_path):
     assert uploaded_array["dtype"] == "float32"
     assert uploaded_array["shape"] == [2, 2]
     assert uploaded_array["data"] == expected.tobytes()
+
+
+def _usage_update(
+    token_ids,
+    completion_tokens,
+    *,
+    index=0,
+    cached_tokens=0,
+    finish_reason=None,
+    cached_tokens_details=None,
+):
+    meta_info = {
+        "id": "request-1",
+        "finish_reason": finish_reason,
+        "prompt_tokens": 8,
+        "completion_tokens": completion_tokens,
+        "cached_tokens": cached_tokens,
+    }
+    if cached_tokens_details is not None:
+        meta_info["cached_tokens_details"] = cached_tokens_details
+    return {"index": index, "output_ids": token_ids, "meta_info": meta_info}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "serving_mode", [DisaggregationMode.AGGREGATED, DisaggregationMode.DECODE]
+)
+@pytest.mark.parametrize("continuous_usage_stats", [None, False, True])
+@pytest.mark.parametrize("cached_tokens", [0, 6, None])
+async def test_generate_emits_cumulative_usage_only_when_requested(
+    serving_mode, continuous_usage_stats, cached_tokens
+):
+    handler = _new_decode_handler()
+    handler.serving_mode = serving_mode
+    handler.enable_trace = False
+    handler._routed_experts_kwargs = {}
+    handler._enable_frontend_decoding = False
+    handler._mm_hashes_supported = False
+    handler._get_input_param = lambda request: {"input_ids": request["token_ids"]}
+    handler._resolve_lora = lambda request: None
+    handler._session_kwargs = lambda request: {}
+    handler._priority_kwargs = lambda priority: {}
+    cache_details = {"device": cached_tokens} if cached_tokens is not None else None
+
+    async def generate(**kwargs):
+        return _stream(
+            [
+                _usage_update(
+                    [101],
+                    1,
+                    cached_tokens=cached_tokens,
+                    cached_tokens_details=cache_details,
+                ),
+                _usage_update([102, 103, 104], 4, cached_tokens=cached_tokens),
+                _usage_update(
+                    [],
+                    4,
+                    cached_tokens=cached_tokens,
+                    finish_reason={"type": "stop"},
+                ),
+            ]
+        )
+
+    handler.engine = SimpleNamespace(async_generate=generate)
+    request = {
+        "token_ids": list(range(8)),
+        "stop_conditions": {"max_tokens": 4},
+        "bootstrap_info": {
+            "bootstrap_host": "localhost",
+            "bootstrap_port": 1234,
+            "bootstrap_room": 42,
+        },
+    }
+    if continuous_usage_stats is not None:
+        request["output_options"] = {
+            "continuous_usage_stats": continuous_usage_stats,
+        }
+    context = _Context()
+    context.id = lambda: "request-1"
+    context.trace_id = "trace-1"
+
+    chunks = await _collect(handler.generate(request, context))
+
+    assert [chunk["token_ids"] for chunk in chunks] == [[101], [102, 103, 104], []]
+    assert ["finish_reason" in chunk for chunk in chunks] == [False, False, True]
+    assert chunks[-1]["finish_reason"] == "stop"
+    expected_details = (
+        {"cached_tokens": cached_tokens}
+        if cached_tokens is not None and (continuous_usage_stats or cached_tokens > 0)
+        else None
+    )
+    for chunk, count in zip(chunks, [1, 4, 4]):
+        if continuous_usage_stats or "finish_reason" in chunk:
+            assert chunk["completion_usage"] == {
+                "prompt_tokens": 8,
+                "completion_tokens": count,
+                "total_tokens": 8 + count,
+                "prompt_tokens_details": expected_details,
+            }
+            if cache_details is not None:
+                assert chunk["engine_data"]["cached_tokens_details"] == cache_details
+            else:
+                assert "engine_data" not in chunk
+        else:
+            assert "completion_usage" not in chunk
+            assert "engine_data" not in chunk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuous_usage_stats", [False, True])
+async def test_process_token_stream_preserves_empty_usage_updates(continuous_usage_stats):
+    handler = _new_decode_handler()
+    missing_usage = {
+        "output_ids": [],
+        "meta_info": {"id": "request-1", "finish_reason": None},
+    }
+    partial_usage = {
+        "output_ids": [101],
+        "meta_info": {
+            "id": "request-1",
+            "finish_reason": None,
+            "prompt_tokens": 8,
+        },
+    }
+    chunks = await _collect(
+        handler._process_token_stream(
+            _stream(
+                [
+                    missing_usage,
+                    _usage_update([], 0),
+                    partial_usage,
+                    _usage_update([], 1, finish_reason={"type": "stop"}),
+                ]
+            ),
+            _Context(),
+            continuous_usage_stats=continuous_usage_stats,
+        )
+    )
+
+    assert [chunk["token_ids"] for chunk in chunks] == (
+        [[], [101], []] if continuous_usage_stats else [[101], []]
+    )
+    assert "completion_usage" not in chunks[-2]
+    if continuous_usage_stats:
+        assert chunks[0]["completion_usage"]["completion_tokens"] == 0
+        assert chunks[0]["completion_usage"]["total_tokens"] == 8
+        assert "finish_reason" not in chunks[0]
+    assert chunks[-1]["completion_usage"]["completion_tokens"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuous_usage_stats", [False, True])
+async def test_process_token_stream_keeps_buffered_usage_and_cache_per_choice(
+    continuous_usage_stats,
+):
+    handler = _new_decode_handler()
+    chunks = await _collect(
+        handler._process_token_stream(
+            _stream(
+                [
+                    _usage_update(
+                        [128001],
+                        1,
+                        cached_tokens=6,
+                        cached_tokens_details={"device": 6},
+                    ),
+                    _usage_update(
+                        [201],
+                        1,
+                        index=1,
+                        cached_tokens_details={"device": 0},
+                    ),
+                    _usage_update(
+                        [128009],
+                        2,
+                        cached_tokens=6,
+                        finish_reason={
+                            "type": "stop",
+                            "matched": [128001, 128009],
+                        },
+                    ),
+                    _usage_update(
+                        [202, 203],
+                        3,
+                        index=1,
+                        cached_tokens_details={"device": 0, "host": 0},
+                    ),
+                    _usage_update(
+                        [], 3, index=1, finish_reason={"type": "length"}
+                    ),
+                ]
+            ),
+            _Context(),
+            suppressed_stop_token_ids={128001, 128009},
+            continuous_usage_stats=continuous_usage_stats,
+        )
+    )
+
+    assert [chunk["index"] for chunk in chunks] == (
+        [0, 1, 0, 1, 1] if continuous_usage_stats else [1, 0, 1, 1]
+    )
+    assert [chunk["token_ids"] for chunk in chunks] == (
+        [[], [201], [], [202, 203], []]
+        if continuous_usage_stats
+        else [[201], [], [202, 203], []]
+    )
+    usage_chunks = [chunk for chunk in chunks if "completion_usage" in chunk]
+    assert [chunk["completion_usage"]["completion_tokens"] for chunk in usage_chunks] == (
+        [1, 1, 2, 3, 3] if continuous_usage_stats else [2, 3]
+    )
+    for chunk in usage_chunks:
+        cached = 6 if chunk["index"] == 0 else 0
+        details = chunk["completion_usage"]["prompt_tokens_details"]
+        assert details == (
+            {"cached_tokens": cached} if continuous_usage_stats or cached else None
+        )
+        assert chunk["engine_data"]["cached_tokens_details"]["device"] == cached
+    assert chunks[-1]["engine_data"]["cached_tokens_details"] == {"device": 0, "host": 0}
+    assert chunks[-1]["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuous_usage_stats", [False, True])
+@pytest.mark.parametrize("cancelled_token_ids", [[], [128001], [102]])
+async def test_process_token_stream_cancellation_aborts_without_terminal_usage(
+    continuous_usage_stats, cancelled_token_ids
+):
+    handler = _new_decode_handler()
+    # Exercise the real cancellation monitor, not the no-op fixture.
+    del handler._cancellation_monitor
+    handler.shutdown_event = None
+    aborted = []
+    handler.engine = SimpleNamespace(
+        tokenizer_manager=SimpleNamespace(
+            abort_request=lambda **kwargs: aborted.append(kwargs)
+        )
+    )
+    cancellation = asyncio.get_running_loop().create_future()
+    context = SimpleNamespace(
+        id=lambda: "request-1",
+        is_stopped=lambda: cancellation.done(),
+        async_killed_or_stopped=lambda: cancellation,
+    )
+
+    async def cancelled_stream():
+        yield _usage_update([101], 1)
+        cancellation.set_result(None)
+        yield _usage_update(cancelled_token_ids, 2)
+        pytest.fail("Cancelled generation must not drain further engine updates")
+
+    chunks = await asyncio.wait_for(
+        _collect(
+            handler._process_token_stream(
+                cancelled_stream(),
+                context,
+                suppressed_stop_token_ids={128001},
+                continuous_usage_stats=continuous_usage_stats,
+            )
+        ),
+        timeout=1,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["token_ids"] == [101]
+    assert "finish_reason" not in chunks[0]
+    assert ("completion_usage" in chunks[0]) is continuous_usage_stats
+    if continuous_usage_stats:
+        assert chunks[0]["completion_usage"]["completion_tokens"] == 1
+    assert aborted == [{"rid": "request-1", "abort_all": False}]
+
+
+@pytest.mark.asyncio
+async def test_process_token_stream_retains_sparse_cache_usage_before_metadata_cleanup(
+    tmp_path,
+):
+    handler = _new_decode_handler()
+    uploader = MetadataUploader(url=(tmp_path / "usage-metadata").as_uri())
+    updates = [
+        _usage_update([101], 1, cached_tokens=None),
+        _usage_update([102], 2, cached_tokens=6),
+        _usage_update([103], 3, cached_tokens=None),
+        _usage_update([104], 4, cached_tokens=0),
+        _usage_update([], 4, cached_tokens=None, finish_reason={"type": "stop"}),
+    ]
+    chunks = await _collect(
+        handler._process_token_stream(
+            _stream(updates),
+            _Context(),
+            metadata_uploader=uploader,
+            continuous_usage_stats=True,
+        )
+    )
+    assert [
+        chunk["completion_usage"]["prompt_tokens_details"] for chunk in chunks
+    ] == [
+        None,
+        {"cached_tokens": 6},
+        {"cached_tokens": 6},
+        {"cached_tokens": 0},
+        {"cached_tokens": 0},
+    ]
+    assert [
+        chunk["completion_usage"]["completion_tokens"] for chunk in chunks
+    ] == [1, 2, 3, 4, 4]
+    assert all(update["meta_info"] == {} for update in updates)
+    payload = _read_zstd_payload(tmp_path / "usage-metadata/choice_0.msgpack.zst")
+    assert payload["metadata"]["completion_tokens"] == 4
 
 
 @pytest.mark.asyncio
