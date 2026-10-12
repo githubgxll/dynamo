@@ -5,20 +5,136 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
-from _routed_engine_fakes import FakeRoutedItem
+from _routed_engine_fakes import FakeRoutedEngine, FakeRoutedItem
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 
+import dingo.frontend.sglang_processor as processor_module
 from dingo.frontend.sglang_prepost import SglangStreamingPostProcessor
 from dingo.frontend.sglang_processor import (
     DEFAULT_SGLANG_MAX_TOKENS,
     SglangProcessor,
     _build_dynamo_preproc,
+    _infer_reasoning_parser_name,
     _request_stop_strings,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.sglang, pytest.mark.gpu_0]
+
+
+@pytest.mark.parametrize(
+    "model_type,expected",
+    [
+        ("glm_moe_dsa", "glm45"),
+        ("glm5_next", "glm45"),
+        ("qwen3", None),
+        ("qwen3_moe", None),
+        ("qwen3_next", None),
+        ("unknown", None),
+    ],
+)
+def test_infer_reasoning_parser_requires_known_model_and_thinking_template(
+    tmp_path, model_type, expected
+):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
+    assert (
+        _infer_reasoning_parser_name(str(tmp_path), "<|assistant|><think>") == expected
+    )
+    assert _infer_reasoning_parser_name(str(tmp_path), "plain assistant") is None
+
+
+def test_infer_reasoning_parser_missing_config(tmp_path):
+    assert _infer_reasoning_parser_name(str(tmp_path), "<|assistant|><think>") is None
+
+
+@pytest.mark.parametrize(
+    "model_type,expected,source",
+    [
+        ("glm5_next", "glm45", "inferred"),
+        ("glm_moe_dsa", "glm45", "inferred"),
+        ("glm5_next", "glm45", "frontend"),
+        ("glm5_next", "glm45", "worker"),
+        ("qwen3", "qwen3", "frontend"),
+        ("qwen3", "qwen3", "worker"),
+    ],
+)
+def test_factory_selects_parser_and_preserves_reasoning_before_stop(
+    tmp_path, monkeypatch, model_type, expected, source
+):
+    # Exercise discovery -> factory -> parser -> preprocessing/streaming.
+    # No model weights or tokenizer downloads are needed.
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
+    tokenizer = TextTokenizer()
+    tokenizer.chat_template = "<|assistant|><think>"
+    monkeypatch.setattr(processor_module, "_load_tokenizer", lambda *_: tokenizer)
+    monkeypatch.setattr(
+        processor_module, "_resolve_model_eos_token_ids", lambda **_: []
+    )
+    monkeypatch.setattr(
+        processor_module, "PythonAsyncEngine", lambda generator, _: generator
+    )
+    configured = "qwen3"
+    selected = expected if source == "inferred" else configured
+    factory = processor_module.SglangEngineFactory(
+        SimpleNamespace(
+            trust_remote_code=False,
+            preprocess_workers=0,
+            exclude_tools_when_tool_choice_none=True,
+        ),
+        reasoning_parser_name=configured if source == "frontend" else None,
+    )
+    mdc = SimpleNamespace(
+        model_type=lambda: SimpleNamespace(supports_chat=lambda: True),
+        local_dir=lambda: str(tmp_path),
+        name=lambda: "custom-serving-alias",
+        runtime_config=lambda: (
+            {"reasoning_parser": configured} if source == "worker" else {}
+        ),
+    )
+    engine = FakeRoutedEngine(
+        [
+            {"token_ids": list(map(ord, "thinking\nmore thinking\n"))},
+            {"token_ids": list(map(ord, "</think>ALPHA\nBETA"))},
+        ]
+    )
+
+    async def run():
+        generator = await factory.chat_engine_factory(None, mdc, engine)
+        processor = generator.__self__
+        assert processor.reasoning_parser_name == selected
+        request = {"model": "custom-serving-alias", "stop": ["\n"]}
+        parser = ReasoningParser(
+            model_type=processor.reasoning_parser_name,
+            stream_reasoning=True,
+            force_reasoning=True,
+        )
+        preproc = _build_dynamo_preproc(
+            request, [1], request["model"], None, reasoning_parser=parser
+        )
+        assert preproc["stop_conditions"]["stop"] == []
+        post = SglangStreamingPostProcessor(
+            tokenizer=tokenizer,
+            tool_call_parser=None,
+            reasoning_parser=parser,
+            stop_strings={"\n"},
+        )
+        return [
+            x
+            async for x in processor._generate_and_stream(
+                "test", request, preproc, [1], post
+            )
+        ]
+
+    items = asyncio.run(run())
+    choices = [c for item in items for c in item.get("data", {}).get("choices", [])]
+    assert (
+        "".join(c["delta"].get("reasoning_content", "") for c in choices)
+        == "thinking\nmore thinking\n"
+    )
+    assert "".join(c["delta"].get("content", "") for c in choices) == "ALPHA"
+    assert choices[-1]["finish_reason"] == "stop"
 
 
 class TextTokenizer:

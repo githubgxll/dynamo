@@ -31,3 +31,11 @@ applicable). Stops split across chunks are supported; `include_stop_str_in_outpu
 controls whether the matched string is retained. EOS and `stop_token_ids` remain
 worker-side conditions. Without a reasoning parser, including requests that set
 `separate_reasoning: false`, string stops retain their worker-side behavior.
+
+When no reasoning parser is explicitly configured on the frontend or in worker
+metadata, the frontend selects `glm45` for GLM-5.3 / GLM-5.3-Flash if their chat
+template opens a thinking block. Qwen3 continues to require explicit `qwen3`
+reasoning parser configuration.
+Detection uses the discovered model's `config.json`, so serving aliases do not
+affect it. Explicit parser settings take precedence. Unknown model types with
+thinking templates produce a warning requesting explicit parser configuration.
