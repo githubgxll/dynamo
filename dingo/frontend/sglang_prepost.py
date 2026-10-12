@@ -1415,6 +1415,8 @@ class SglangStreamingPostProcessor:
         reasoning_parser_name: str | None = None,
         eos_token_ids: list[int] | None = None,
         stop_strings: set[str] | None = None,
+        include_stop_str_in_output: bool = False,
+        min_tokens: int = 0,
         guided_decoding: dict[str, Any] | None = None,
         response_format_guided_active: bool = False,
         tool_guided_active: bool = False,
@@ -1458,6 +1460,10 @@ class SglangStreamingPostProcessor:
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
         self._pending_stop_text = ""
+        self._include_stop_str_in_output = include_stop_str_in_output
+        self._min_tokens = min_tokens
+        self._generated_token_count = 0
+        self.matched_stop: str | None = None
 
         self._all_token_ids: list[int] = []
         # Logprob records built for chunks that emit no visible delta (e.g.
@@ -1663,6 +1669,32 @@ class SglangStreamingPostProcessor:
             return text[:-pending_len]
         return text
 
+    def _filter_answer_stop(self, text: str, finish_reason: str | None) -> str:
+        """Match strings after reasoning separation, including split chunks."""
+        text = self._pending_stop_text + text
+        self._pending_stop_text = ""
+        if self._generated_token_count < self._min_tokens:
+            return text
+        matches = [
+            (pos, -len(stop), stop)
+            for stop in self._stop_strings
+            if (pos := text.find(stop)) >= 0
+        ]
+        if matches:
+            pos, _, self.matched_stop = min(matches)
+            end = (
+                pos + len(self.matched_stop)
+                if self._include_stop_str_in_output
+                else pos
+            )
+            return text[:end]
+        if not finish_reason:
+            pending_len = _trailing_stop_prefix_len(text, self._stop_strings)
+            if pending_len:
+                self._pending_stop_text = text[-pending_len:]
+                return text[:-pending_len]
+        return text
+
     def _parse_reasoning_delta(
         self,
         delta_text: str,
@@ -1840,8 +1872,11 @@ class SglangStreamingPostProcessor:
         Returns:
             OpenAI choice dict or ``None`` if nothing to emit yet.
         """
+        if self.matched_stop is not None:
+            return None
         raw_ids = engine_response.get("token_ids")
         token_ids = raw_ids if isinstance(raw_ids, list) else list(raw_ids or [])
+        self._generated_token_count += len(token_ids)
         finish_reason = engine_response.get("finish_reason")
         finished = finish_reason is not None
         if finished:
@@ -1871,7 +1906,8 @@ class SglangStreamingPostProcessor:
             if token_ids or finished
             else ""
         )
-        delta_text = self._filter_stop_string_delta(delta_text, finish_reason)
+        if self.reasoning_parser is None:
+            delta_text = self._filter_stop_string_delta(delta_text, finish_reason)
         if self._is_kimi_k3 and delta_text:
             self._kimi_k3_raw_text_parts.append(delta_text)
 
@@ -1903,6 +1939,10 @@ class SglangStreamingPostProcessor:
                 len(token_ids),
             )
             self._reasoning_token_count += reasoning_tokens
+        if self.reasoning_parser is not None:
+            normal_text = self._filter_answer_stop(normal_text, finish_reason)
+            if self.matched_stop is not None:
+                finish_reason = "stop"
         if self._is_kimi_k3:
             reasoning_text = _strip_kimi_k3_control_markers(reasoning_text) or None
 
@@ -2155,6 +2195,7 @@ class SglangStreamingPostProcessor:
         if (
             finish_reason
             and self._is_kimi_k3
+            and self.matched_stop is None
             and not self._saw_normal_output
             and not self._tool_call_names
         ):
