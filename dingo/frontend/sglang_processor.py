@@ -51,6 +51,8 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_SGLANG_STREAM_INTERVAL: int = 1
+# Bound reasoning and answer tokens together when the client omits both limits.
+DEFAULT_SGLANG_MAX_TOKENS: int = 8192
 
 # Internal carrier key mirroring the Rust constant in
 # lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
@@ -121,8 +123,10 @@ def _normalize_eos_token_ids(value: Any) -> list[int]:
     return []
 
 
-def _request_stop_strings(request: dict[str, Any]) -> set[str]:
-    if request.get("include_stop_str_in_output") is True:
+def _request_stop_strings(
+    request: dict[str, Any], *, match_visible: bool = False
+) -> set[str]:
+    if request.get("include_stop_str_in_output") is True and not match_visible:
         return set()
     stop = request.get("stop")
     if isinstance(stop, str):
@@ -376,7 +380,24 @@ def _build_dynamo_preproc(
     require_reasoning: bool = False,
 ) -> dict[str, Any]:
     """Build the Dynamo preprocessed request dict from request fields."""
-    max_tokens = request.get("max_completion_tokens") or request.get("max_tokens")
+    max_tokens = request.get("max_completion_tokens")
+    if max_tokens is None:
+        max_tokens = request.get("max_tokens")
+    if max_tokens is None:
+        max_tokens = DEFAULT_SGLANG_MAX_TOKENS
+
+    frequency_penalty = request.get("frequency_penalty", 0.0)
+    # GLM-5.3 compatibility policy: accept negative values without rewarding
+    # repetition. Official API probes complete normally with -2; this is our
+    # compatibility choice, not a claim about the provider's implementation.
+    # Match the exact model ID (also accepting a repository-qualified ID),
+    # rather than applying the policy to every model using the GLM parser.
+    if (
+        model_name.rsplit("/", 1)[-1].lower() == "glm-5.3"
+        and isinstance(frequency_penalty, (int, float))
+        and frequency_penalty < 0
+    ):
+        frequency_penalty = 0.0
 
     stop = request.get("stop")
     stop_token_ids = request.get("stop_token_ids", [])
@@ -388,6 +409,12 @@ def _build_dynamo_preproc(
         stop_token_ids = [*stop_token_ids, *stop]
         stop = []
     elif stop is None:
+        stop = []
+
+    # The worker sees the unsplit reasoning/answer stream. String stops belong
+    # to the frontend when a reasoning parser is active; token stops and EOS
+    # remain backend-owned.
+    if reasoning_parser is not None:
         stop = []
 
     # Handle logprobs
@@ -415,7 +442,7 @@ def _build_dynamo_preproc(
         "sampling_options": {
             "n": request.get("n", 1),
             "presence_penalty": request.get("presence_penalty", 0.0),
-            "frequency_penalty": request.get("frequency_penalty", 0.0),
+            "frequency_penalty": frequency_penalty,
             "repetition_penalty": request.get("repetition_penalty", 1.0),
             "temperature": request.get("temperature", 1.0),
             "top_p": request.get("top_p", 1.0),
@@ -596,7 +623,11 @@ class SglangProcessor:
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(request),
+            stop_strings=_request_stop_strings(
+                request, match_visible=pre.reasoning_parser is not None
+            ),
+            include_stop_str_in_output=request.get("include_stop_str_in_output", False),
+            min_tokens=request.get("min_tokens", 0),
             guided_decoding=pre.guided_decoding,
             response_format_guided_active=pre.response_format_guided_active,
             tool_guided_active=pre.tool_guided_active,
@@ -670,7 +701,11 @@ class SglangProcessor:
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=self.reasoning_parser_name,
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(request),
+            stop_strings=_request_stop_strings(
+                request, match_visible=reasoning_parser is not None
+            ),
+            include_stop_str_in_output=request.get("include_stop_str_in_output", False),
+            min_tokens=request.get("min_tokens", 0),
             guided_decoding=preproc_result.dynamo_preproc.get(
                 "sampling_options", {}
             ).get("guided_decoding"),
@@ -716,6 +751,8 @@ class SglangProcessor:
         created_ts = int(time.time())
         stream_interval = self.stream_interval
         continuous_usage = _continuous_usage_requested(request)
+        dynamo_stream = None
+        terminal_items: list[dict[str, Any]] = []
 
         try:
             dynamo_stream = await self.routed_engine.generate(
@@ -799,6 +836,19 @@ class SglangProcessor:
                         t_pp0 = time.monotonic()
 
                     choice = post.process_output(mapped_response)
+                    local_stop = getattr(post, "matched_stop", None)
+                    if local_stop is not None:
+                        finish_reason = "stop"
+                        stop_reason = local_stop
+                        # Workers normally attach usage to their terminal
+                        # chunk. A frontend stop happens before that chunk.
+                        pending_usage = dict(pending_usage or {})
+                        prompt_tokens = pending_usage.get("prompt_tokens", input_tokens)
+                        pending_usage.update(
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=cumulative_output_tokens,
+                            total_tokens=prompt_tokens + cumulative_output_tokens,
+                        )
 
                     if self.debug_perf:
                         t_pp1 = time.monotonic()
@@ -897,16 +947,35 @@ class SglangProcessor:
                         dynamo_out["choices"] = [
                             {**choice, "delta": {}, "logprobs": None}
                         ]
-                        yield {**envelope, "data": payload}
-                        yield {"_dynamo_annotated": True, "data": dynamo_out}
+                        outgoing = [
+                            {**envelope, "data": payload},
+                            {"_dynamo_annotated": True, "data": dynamo_out},
+                        ]
                     else:
-                        yield envelope
+                        outgoing = [envelope]
+
+                    if local_stop is not None:
+                        terminal_items = outgoing
+                        break
+                    for item in outgoing:
+                        yield item
 
                     pending_token_ids = []
                     pending_log_probs = None
                     pending_top_logprobs = None
                     pending_usage = None
                     first_chunk = False
+
+            # Break releases the async-for iterator reference. Dropping the
+            # native stream closes its receiver; RoutedEngine signals only
+            # the child generation context, leaving HTTP completion intact.
+            if dynamo_stream is not None:
+                close = getattr(dynamo_stream, "aclose", None)
+                if close is not None:
+                    await close()
+                dynamo_stream = None
+            for item in terminal_items:
+                yield item
         except Unknown:
             raise
         except Exception as e:
@@ -915,6 +984,11 @@ class SglangProcessor:
                 f"Error generating response for request {request_id}: {e}"
             ) from e
         finally:
+            if dynamo_stream is not None:
+                close = getattr(dynamo_stream, "aclose", None)
+                if close is not None:
+                    await close()
+                dynamo_stream = None
             if self.debug_perf and token_count > 0:
                 logger.info(
                     "[perf] sglang stream done: request=%s tokens=%d "
