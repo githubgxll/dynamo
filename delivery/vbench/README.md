@@ -2,6 +2,8 @@
 
 本包已准备具体脚本。当前配置为 **prepare**：首次由组内 Linux Runner 完成依赖解析、模型资产下载、CPU禁网加载和许可扫描，导出可复用版本锁，**不上传镜像**。导入并解决报告中的真实问题后，切换为 publish，才会构建并上传 Harbor。Windows 本机不需要 Docker、WSL 或 GPU。
 
+**2026-10-12当前流程：**基础镜像已在 `container/vbench/base-image.json` 固定为重新核验过的原始CUDA12.1 amd64 digest；prepare先离线校验这个记录，再由Runner的Docker daemon实际拉取和校验，不再每次通过Buildx客户端解析tag。完整原因、检查结果和故障交接见 [基础镜像流程复查](BASE-PIPELINE-REVIEW-20261012.md)。本文后半部分按日期保留的是历史诊断，当前操作以本节和第一至第四步为准。
+
 ## 镜像位置与执行环境
 
 目标：`registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-testing/vench:v0.1.5-fd18b3d-cu121-r1-<提交前12位>`。
@@ -30,7 +32,7 @@ cd /d D:\AI\dynamo-vbench
 call delivery\vbench\01-check.cmd
 ```
 
-此脚本解析代码和工作流、运行准备脚本回归检查、确认默认matrix只有VBench，并检查Git空白错误。使用已有 `D:\AI\_workspace\H3_Omni030_Image_20260929\tools-venv\Scripts\python.exe`；需要换解释器时先设置 `VBENCH_PY`，必须是带PyYAML和pytest的工具环境，而非目标GPU环境。
+此脚本解析代码和工作流、运行准备脚本回归检查、确认默认matrix只有VBench、验证基础镜像pin，并检查Git空白错误。使用已有 `D:\AI\_workspace\H3_Omni030_Image_20260929\tools-venv\Scripts\python.exe`；需要换解释器时先设置 `VBENCH_PY`，必须是带PyYAML和pytest的工具环境，而非目标GPU环境。
 
 看到 `PASS_LOCAL_ONLY` 才继续。它不表示Docker构建、依赖安装、模型加载或GPU评分成功。记录保存到 `D:\AI\_workspace\VBench_Image_20260930`。
 
@@ -50,7 +52,7 @@ call delivery\vbench\02-submit-prepare.cmd
 
 Linux Runner自动执行：
 
-1. 解析官方CUDA12.1基础镜像的linux/amd64 digest，再分别通过Buildx客户端与Docker daemon检查同一digest。daemon实际预拉取并核对平台和RepoDigests后才进入构建。
+1. `Validate pinned VBench preparation base image` 离线校验版本控制中的CUDA12.1 linux/amd64 pin，生成本次base.lock；`PASS_PIN_VALIDATION_ONLY` 只表示配置校验通过。随后 `Check and pull locked VBench base with Docker daemon` 实际按同一digest拉取，核对平台和RepoDigests后才进入构建。Buildx客户端探测默认不执行，仅供维护者按需诊断。
 2. 为Python3.10生成完整传递依赖锁和哈希，安装后执行两套依赖检查；另在禁网层用临时合成MP4验证FFmpeg、OpenCV、Decord和Decord→Torch桥接。
 3. 准备七个评价权重、固定VBench/DINO源码、配置和Torch hub缓存映射。
 4. 在BuildKit `--network=none` 中检查文件和加载全部六维模型。这里没有视频评分，也没有GPU验收。
@@ -67,7 +69,7 @@ Python取包来源统一记录在 `container/vbench/package-sources.json`：普�
 
 ## 第三步 下载并导入准备制品
 
-准备任务结束后，在运行详情页的 **Artifacts** 下载 `vbench-prepare-...` ZIP；不要下载误认为镜像的 `.dockerbuild` 文件。如果任务失败，制品可能只有workflow-status和base.lock；这不够继续发布，需要保留第一个失败步骤的日志。
+准备任务结束后，在运行详情页的 **Artifacts** 下载 `vbench-prepare-...` ZIP；不要下载误认为镜像的 `.dockerbuild` 文件。如果任务失败，制品可能只有workflow-status、base-prepare、base-pull或base.lock中的部分文件；这不够继续发布，需要保留第一个失败步骤的日志。工作流在失败时仍尝试收集这些已存在的证据；若Runner退出或上传自身失败，仍需保存Actions原日志。
 
 在Windows CMD执行，ZIP路径替换为实际下载文件：
 
@@ -78,13 +80,13 @@ call delivery\vbench\03-import-preparation.cmd "C:\Users\admin\Downloads\vbench-
 
 脚本验证ZIP CRC、路径、源码身份和输入指纹后，将完整证据保存到本机交付目录，并导入五项：
 
-- `base.lock.json`：基础镜像digest。
+- `base.lock.json`：基础镜像digest；必须与当前 `container/vbench/base-image.json` 一致，不能只满足JSON格式。
 - `requirements.lock`：Linux环境实际解析的Python依赖与哈希。
 - `assets.lock.json`：七个权重及源码/配置的实际SHA256与路径。
 - `input-fingerprint.json`：本次构建脚本和策略的指纹。
 - `preparation-license-status.json`：许可策略结果。
 
-**导入不会commit、push或切换阶段。** 基础镜像、模型资产和Python锁确定后，评测程序的改动需要按新来源重新验证。apt系统包版本另存 `dpkg-packages.tsv`；本包不宣称完整OS软件源已做历史快照或镜像可逐字节重建。
+**导入不会commit、push或切换阶段。** `base-image.json` 自动参与输入指纹；修改pin、构建脚本或协议后必须重新prepare，旧制品不能通过当前导入和发布校验。基础镜像、模型资产和Python锁确定后，评测程序的改动需要按新来源重新验证。apt系统包版本另存 `dpkg-packages.tsv`；本包不宣称完整OS软件源已做历史快照或镜像可逐字节重建。
 
 重点查看制品中的 `dependency-checks.json`、`pip-check.txt`、`uv-pip-check.txt`、`decord-patch.json`、`media-smoke.json`、`cpu-check.json`、`legal/license-status.json`。两套依赖检查退出码均应为0；媒体解码检查应为 `PASS_CPU_MEDIA_DECODE_ONLY`；CPU模型检查应为 `PASS_MODEL_LOAD_ONLY` 且六项模型均已加载。合成视频解码通过不代表真实H3视频评分通过。许可报告与准备任务是否成功是两个独立结果。
 
@@ -183,8 +185,8 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 | 最先失败的位置 | 应提供的非敏感信息 |
 | --- | --- |
 | 本机Git push | 完整报错、当前分支和HEAD；403看账号写权限，连接失败看本机17890代理 |
-| Resolve base | 基础镜像tag和imagetools错误；这是Runner拉取层 |
-| Check and pull locked VBench base with Docker daemon | 制品中base-pull目录；客户端检查、daemon拉取及本地镜像身份分别记录。无需自己SSH登录Runner |
+| Validate pinned VBench preparation base image | base-prepare/base-prepare-summary.json；这是离线配置校验，失败先查当前pin文件，不需要测试外网 |
+| Check and pull locked VBench base with Docker daemon | base-pull目录、失败命令的脱敏正文和base-pull-summary.json；默认client_probe为not_requested属正常。无需自己SSH登录Runner |
 | foundation中的Python工具安装 | 第一处ReadTimeout/SSL/HTTP错误及实际索引地址；索引超时后的No matching distribution不能证明版本不存在 |
 | prepare_environment | uv依赖冲突正文、pip-check；不能靠删除默认依赖通过 |
 | prepare_assets | 失败资产ID/host与HTTP、reason_type、errno或hash错误；不要发signed URL或token |
@@ -193,7 +195,7 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 | K8s Pending/ImagePull | Pod describe中的调度或镜像拉取事件；不据此修改同事节点 |
 | GPU维度失败 | 对应dimension.log、worker-evidence及run-manifest；保留原始输入与失败目录 |
 
-## 基础镜像HEAD请求反复EOF：本次检查与操作
+## 2026-09-30历史记录：基础镜像HEAD请求反复EOF
 
 2026-09-30已对比H3成功任务（run181/job109755487555）与VBench重跑失败任务（run186/job109817114361）：实际Runner均为dingo-gxl-runner、同一Machine，Docker记录的代理均为10.201.136.68:1080。该值是日志中的观察记录，没有写入本包的代理配置。
 
@@ -201,34 +203,7 @@ kubectl --context "%VBENCH_CONTEXT%" -n "%VBENCH_NAMESPACE%" exec "%VBENCH_POD%"
 
 本机经127.0.0.1:17890匿名验证了报错中的精确CUDA digest，HEAD/GET均200且清单内容SHA匹配。因此镜像存在且公开可读取；Runner的EOF仍可能涉及代理/出网访问控制，但日志没有给出GitHub或Harbor权限不足的证据。本机检查不替代Runner检查。
 
-本次改动为VBench增加 `Check and pull locked VBench base with Docker daemon` 步骤：
-
-- 客户端读取同一digest，保留独立结果；不是只检查父tag。
-- daemon按linux/amd64拉同一digest，只对EOF/超时等临时故障进行最多3次有限重试。每次拉取上限10分钟，间隔10秒；明确拒绝、镜像不存在或证书错误不循环重试。
-- 拉取后核对OS、架构和RepoDigests。通过后VBench使用pull:false，允许使用同一个Docker daemon的本地内容；固定digest不变。pull:false并不保证BuildKit绝不访问registry。
-- native框架原有流程保持不变，未更改账号、代理、TLS或GPU环境。失败报告经过脱敏，随prepare制品导出。
-
-提交本次改动仍在 **Windows CMD**：
-
-```cmd
-cd /d D:\AI\dynamo-vbench
-call delivery\vbench\01-check.cmd
-call delivery\vbench\02-submit-prepare.cmd
-```
-
-这会生成新提交并触发新运行。GitHub里重跑旧run186仍使用旧提交4500a8e5f，不会带上这些新检查。当前仍是prepare，不发布Harbor。
-
-如果新检查失败，下载 `vbench-prepare-...` 制品，查看 `base-pull/base-pull-summary.json` 和对应的客户端/daemon日志。失败制品不能用于03导入完整准备锁。
-
-| 新证据 | 后续定位 |
-| --- | --- |
-| 客户端成功，daemon失败 | 同事检查Runner Docker服务的代理、DNS、出口和镜像仓库访问策略；不能只看Runner shell中的export |
-| 客户端与daemon都失败 | 看错误类型核对目标仓库/清单、公共认证服务及共同出网链路 |
-| 明确unauthorized/denied | 针对实际报错域名检查认证、失效的已有Docker Hub凭据或代理授权；不把Harbor管理员密码用于Docker Hub |
-| 429/toomanyrequests | Docker Hub限流；由Runner维护者处理账号或镜像缓存策略 |
-| daemon拉取和身份检查成功，随后FROM仍失败 | 单独检查BuildKit解析/缓存路径；已拉取不代表构建自动通过 |
-
-交给同事的最少信息：对应job链接、失败阶段、base-pull-summary.json、脱敏错误和精确digest。请其确认这个Runner Docker实际使用的出口、Docker Hub相关域名（registry-1.docker.io/auth.docker.io及实际blob下载目标）是否可用，以及是否已有组内批准的Harbor基础镜像缓存。不要发送密码或令牌，不要随机替换基础版本或关闭证书校验。
+当时增加了客户端与daemon对比和预拉取，但仍在前置步骤每次在线解析tag。2026-10-12的新失败暴露了这个遗漏：tag解析先失败时，后续daemon检查根本没有执行，且错误正文被捕获后未输出。当前已改为先使用经过独立核验的固定pin，再由daemon获取镜像；历史的“客户端先探测”不再是默认操作。当前步骤、证据文件和交给同事的最少信息统一见 [基础镜像流程复查](BASE-PIPELINE-REVIEW-20261012.md)。
 
 ## 2026-10-08：基础镜像之后的PyPI超时修正
 

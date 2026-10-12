@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import importlib.util
 import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,7 +30,7 @@ def module(name):
 matrix_helper = module("prepare_dingo_image_matrix")
 ci = module("vbench_ci")
 SHA = "a" * 40
-DIGEST = "sha256:" + "b" * 64
+DIGEST = ci.load_base_definition()["digest"]
 
 
 class VBenchWorkflowTests(unittest.TestCase):
@@ -111,6 +113,17 @@ class VBenchWorkflowTests(unittest.TestCase):
         self.assertIn("pull-base", base_pull["run"])
         self.assertIn(".vbench-base/pull-evidence", base_pull["run"])
         self.assertLess(steps.index(base_pull), steps.index(prep))
+        base_prepare = next(step for step in steps if step.get("id") == "vbench_prepare_base")
+        self.assertIn("prepare-base", base_prepare["run"])
+        self.assertNotIn("resolve-base", base_prepare["run"])
+        self.assertIn("--evidence .vbench-base/prepare-evidence", base_prepare["run"])
+        self.assertLess(steps.index(base_prepare), steps.index(base_pull))
+        self.assertNotIn("--probe-client", base_pull["run"])
+        collect = by_name["Collect available VBench preparation evidence"]
+        self.assertIn("always()", collect["if"])
+        self.assertIn(".vbench-base/prepare-evidence", collect["run"])
+        self.assertIn("BASE_PREPARE_OUTCOME", collect["env"])
+        self.assertIn("BASE_PREPARE_OUTCOME", collect["run"])
         uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact")]
         self.assertTrue(all("always()" in step["if"] for step in uploads))
 
@@ -135,6 +148,47 @@ class VBenchEvidenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci.validate_base_lock(lock)
 
+    def test_base_lock_rejects_a_well_formed_but_different_pin_or_source(self):
+        for changes in ({"source_tag": "nvidia/cuda:12.2.0-runtime-ubuntu22.04"},
+                        {"digest": "sha256:" + "a" * 64, "image": "nvidia/cuda@sha256:" + "a" * 64},
+                        {"image": "registry.example.test/mirror/cuda@" + DIGEST}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                ci.validate_base_lock({**self.base(), **changes})
+
+    def test_base_definition_rejects_invalid_identity_before_any_subprocess(self):
+        definition = ci.load_base_definition()
+        for key, value in (("schema_version", 999), ("platform", "linux/arm64"),
+                           ("digest", DIGEST + "\noutput=bad"), ("image", ci.BASE_TAG),
+                           ("source_tag", "nvidia/cuda:latest")):
+            with self.subTest(key=key), patch.object(ci, "read_json", return_value={**definition, key: value}), \
+                    patch.object(ci.subprocess, "run") as run, self.assertRaises(ValueError):
+                ci.load_base_definition()
+            run.assert_not_called()
+
+    def test_prepare_materializes_reviewed_pin_offline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(ci.subprocess, "run") as run:
+                self.assertEqual(ci.prepare_base(root / "base.lock.json", root / "output", root / "evidence"), 0)
+            run.assert_not_called()
+            lock = json.loads((root / "base.lock.json").read_text())
+            self.assertEqual(ci.validate_base_lock(lock), f"nvidia/cuda@{DIGEST}")
+            self.assertEqual((root / "output").read_text(), f"base_image=nvidia/cuda@{DIGEST}\n")
+            summary = json.loads((root / "evidence/base-prepare-summary.json").read_text())
+            self.assertEqual(summary["status"], "PASS_PIN_VALIDATION_ONLY")
+
+    def test_invalid_preparation_does_not_emit_usable_lock_or_github_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(ci, "load_base_definition", side_effect=ValueError("invalid reviewed base identity")), \
+                    patch.object(ci.subprocess, "run") as run:
+                self.assertEqual(ci.prepare_base(root / "base.lock.json", root / "output", root / "evidence"), 1)
+            run.assert_not_called()
+            self.assertFalse((root / "base.lock.json").exists())
+            self.assertFalse((root / "output").exists())
+            summary = json.loads((root / "evidence/base-prepare-summary.json").read_text())
+            self.assertEqual(summary["status"], "FAILED")
+
     def test_publish_requires_all_locks_and_license_review(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -147,6 +201,10 @@ class VBenchEvidenceTests(unittest.TestCase):
             ci.write_json(root / "preparation-license-status.json", {"policy_pass": False})
             with self.assertRaisesRegex(ValueError, "license review has not passed"):
                 ci.verify_locks(root, root / "output")
+            ci.write_json(root / "preparation-license-status.json", {"policy_pass": True, "violations": ["unresolved"]})
+            with self.assertRaises(ValueError):
+                ci.verify_locks(root, root / "output")
+            self.assertFalse((root / "output").exists())
             ci.write_json(root / "preparation-license-status.json", {"policy_pass": True})
             ci.verify_locks(root, root / "output")
             self.assertEqual((root / "output").read_text(), f"base_image=nvidia/cuda@{DIGEST}\n")
@@ -172,16 +230,46 @@ class VBenchBasePullTests(unittest.TestCase):
         doc.update(changes)
         return self.result(stdout=json.dumps(doc).encode())
 
-    def run_pull(self, responses, expected):
+    def run_pull(self, responses, expected, *, probe_client=True):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lock = root / "base.lock.json"
             ci.write_json(lock, {"schema_version": 1, "source_tag": ci.BASE_TAG, "platform": "linux/amd64", "digest": DIGEST, "image": "nvidia/cuda@" + DIGEST})
             with patch.object(ci.subprocess, "run", side_effect=responses) as run, patch.object(ci.time, "sleep") as sleep:
-                self.assertEqual(ci.pull_base(lock, root / "evidence"), expected)
+                if probe_client:
+                    status = ci.pull_base(lock, root / "evidence", probe_client=True)
+                else:
+                    # Omit the argument to cover the production default itself.
+                    status = ci.pull_base(lock, root / "evidence")
+                self.assertEqual(status, expected)
             summary = json.loads((root / "evidence/base-pull-summary.json").read_text())
             files = {p.name: p.read_text() for p in (root / "evidence").glob("*") if p.is_file()}
             return summary, run.call_args_list, sleep.call_args_list, files
+
+    def test_default_uses_only_daemon_and_immutable_digest(self):
+        summary, calls, sleeps, files = self.run_pull([self.result(), self.identity()], 0, probe_client=False)
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].args[0][:2], ["docker", "pull"])
+        self.assertEqual(calls[1].args[0][:3], ["docker", "image", "inspect"])
+        self.assertTrue(all(call.args[0][-1] == "nvidia/cuda@" + DIGEST for call in calls))
+        self.assertFalse(sleeps)
+        self.assertFalse(any(name.startswith("client-inspect") for name in files))
+
+    def test_daemon_failure_is_visible_and_redacted_without_client_probe(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        message = b'authorization denied https://alice:secretpassword@registry.test/v2?token=signedsecret access_token="plainsecret"'
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            summary, calls, sleeps, files = self.run_pull([self.result(1, stderr=message)], 1, probe_client=False)
+        visible = stdout.getvalue() + stderr.getvalue()
+        self.assertIn("registry.test/v2?REDACTED", visible)
+        self.assertIn("authorization denied", visible)
+        combined = visible + "\n".join(files.values())
+        for secret in ("alice", "secretpassword", "signedsecret", "plainsecret"):
+            self.assertNotIn(secret, combined)
+        self.assertEqual(summary["category"], "authentication_or_permission")
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(sleeps)
 
     def test_transient_eof_recovers_using_same_digest_without_mutable_tag(self):
         summary, calls, sleeps, files = self.run_pull([

@@ -200,14 +200,15 @@ jobs:
 
       # VBench uses a static Dockerfile, its own CUDA base, and no native
       # Dynamo builder or GPU. Preparation exports evidence but never pushes.
-      - name: Resolve VBench preparation base image
+      - name: Validate pinned VBench preparation base image
         if: matrix.framework == 'vbench' && matrix.vbench_phase == 'prepare'
         id: vbench_prepare_base
         shell: bash
         run: |
-          python3 .github/scripts/vbench_ci.py resolve-base \
+          python3 .github/scripts/vbench_ci.py prepare-base \
             --lock .vbench-base/base.lock.json \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}" \
+            --evidence .vbench-base/prepare-evidence
 
       - name: Validate reviewed VBench publish locks
         if: matrix.framework == 'vbench' && matrix.vbench_phase == 'publish'
@@ -315,6 +316,8 @@ jobs:
           PREPARE_OUTCOME: ${{ steps.vbench_prepare.outcome }}
           PUBLISH_OUTCOME: ${{ steps.vbench_image.outcome }}
           BASE_PULL_OUTCOME: ${{ steps.vbench_base_pull.outcome }}
+          BASE_PREPARE_OUTCOME: ${{ steps.vbench_prepare_base.outcome }}
+          BASE_LOCKS_OUTCOME: ${{ steps.vbench_publish_base.outcome }}
           VBENCH_PHASE: ${{ matrix.vbench_phase }}
         run: |
           mkdir -p .vbench-preparation
@@ -324,12 +327,16 @@ jobs:
           if [ -d .vbench-base/pull-evidence ]; then
             cp -R .vbench-base/pull-evidence .vbench-preparation/base-pull
           fi
+          if [ -d .vbench-base/prepare-evidence ]; then
+            cp -R .vbench-base/prepare-evidence .vbench-preparation/base-prepare
+          fi
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           data = {key: os.environ.get(key, '') for key in (
               'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
-              'VBENCH_PHASE', 'BASE_PULL_OUTCOME', 'PREPARE_OUTCOME', 'PUBLISH_OUTCOME')}
+              'VBENCH_PHASE', 'BASE_PREPARE_OUTCOME', 'BASE_LOCKS_OUTCOME',
+              'BASE_PULL_OUTCOME', 'PREPARE_OUTCOME', 'PUBLISH_OUTCOME')}
           Path('.vbench-preparation/workflow-status.json').write_text(json.dumps(data, indent=2) + '\n')
           PY
           if [ "${VBENCH_PHASE}" = prepare ]; then

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_tag": "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04",
+  "platform": "linux/amd64",
+  "digest": "sha256:810756cab1c28ce693499a5c2ebb66f6d10a61d026998c8606bad449643a4c49",
+  "image": "nvidia/cuda@sha256:810756cab1c28ce693499a5c2ebb66f6d10a61d026998c8606bad449643a4c49",
+  "verification": {
+    "observed_utc": "2026-10-12T03:36:23.400654+00:00",
+    "registry": "registry-1.docker.io",
+    "index_digest": "sha256:f4d8e1264366940438f0353da6f289c7bef069d993d111f8106086ccd18c4a30",
+    "config_digest": "sha256:02f0c5f1a54bd88a5242a21ef690ab6826c7d36eb2b8134b32860a258427d97e",
+    "scope": "Official index, amd64 manifest and image config verified; Runner pull and GPU qualification are separate."
+  }
+}

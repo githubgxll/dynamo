@@ -64,6 +64,10 @@ def current_fingerprint():
     return m.collect(ROOT/'container/vbench', ROOT/'container/compliance')
 
 
+def base_helper():
+    return load_module('vbench_ci_base_validation', ROOT/'.github/scripts/vbench_ci.py')
+
+
 def check():
     import yaml
     files = list((ROOT/'container/vbench').rglob('*.py')) + list((ROOT/'delivery/vbench').glob('*.py'))
@@ -72,6 +76,7 @@ def check():
         ast.parse(f.read_text(encoding='utf-8'), filename=str(f))
     yaml.load((ROOT/'.github/workflows/dingo-router-ci.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
     cfg = json.loads(CONFIG.read_text(encoding='utf-8'))
+    base_helper().load_base_definition()
     matrix = load_module('vbench_matrix', ROOT/'.github/scripts/prepare_dingo_image_matrix.py')
     rows = matrix.build_matrix(cfg, git('rev-parse', 'HEAD'), 'configured')
     if len(rows) != 1 or rows[0]['framework'] != 'vbench' or not rows[0]['image'].startswith(IMAGE_REPO+':'):
@@ -136,6 +141,7 @@ def import_preparation(archive):
         if identity.get('phase') != 'prepare' or identity.get('dynamo_source_commit') != git('rev-parse', 'HEAD'):
             raise ValueError('Artifact is not a preparation for current HEAD')
         base = json.loads((src/'base.lock.json').read_text(encoding='utf-8'))
+        base_helper().validate_base_lock(base)
         if base.get('image') != identity.get('base_image') or base.get('platform') != 'linux/amd64':
             raise ValueError('Base identity mismatch')
         asset = json.loads((src/'assets.lock.json').read_text(encoding='utf-8'))
@@ -162,6 +168,7 @@ def verify_imported_locks():
     for name in ['base.lock.json', 'requirements.lock', 'assets.lock.json', 'input-fingerprint.json', 'preparation-license-status.json']:
         if not (LOCKS/name).is_file():
             raise ValueError('Missing '+name+'; run prepare and import its artifact first')
+    base_helper().validate_base_lock(json.loads((LOCKS/'base.lock.json').read_text(encoding='utf-8')))
     if json.loads((LOCKS/'input-fingerprint.json').read_text(encoding='utf-8')) != current_fingerprint():
         raise ValueError('Build inputs changed; prepare again')
     report = json.loads((LOCKS/'preparation-license-status.json').read_text(encoding='utf-8'))

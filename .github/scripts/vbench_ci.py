@@ -16,6 +16,8 @@ from urllib.parse import urlsplit, urlunsplit
 BASE_TAG = "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04"
 BASE_REPOSITORY = "nvidia/cuda"
 PLATFORM = "linux/amd64"
+BASE_DEFINITION = Path(__file__).resolve().parents[2] / "container/vbench/base-image.json"
+BASE_IDENTITY_FIELDS = ("schema_version", "source_tag", "platform", "digest", "image")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_TAG = re.compile(r"^[a-z0-9][a-z0-9.:-]*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
@@ -47,13 +49,31 @@ def amd64_digest(manifest: dict) -> str:
     return matching[0]["digest"]
 
 
-def validate_base_lock(lock: dict) -> str:
+def validate_base_identity(lock: dict) -> str:
+    if not isinstance(lock, dict):
+        raise ValueError("Base identity must be a JSON object")
     digest = lock.get("digest", "")
-    if (lock.get("schema_version") != 1 or lock.get("source_tag") != BASE_TAG
-            or lock.get("platform") != PLATFORM or not DIGEST.fullmatch(digest)
+    if (type(lock.get("schema_version")) is not int or lock.get("schema_version") != 1
+            or lock.get("source_tag") != BASE_TAG or lock.get("platform") != PLATFORM
+            or not isinstance(digest, str) or not DIGEST.fullmatch(digest)
             or lock.get("image") != f"{BASE_REPOSITORY}@{digest}"):
-        raise ValueError("base.lock.json must pin the expected CUDA 12.1 Linux/amd64 image by digest")
+        raise ValueError("Base identity must pin the expected CUDA 12.1 Linux/amd64 image by digest")
     return lock["image"]
+
+
+def load_base_definition() -> dict:
+    """The reviewed pin is an input, not a tag resolved during every build."""
+    definition = read_json(BASE_DEFINITION)
+    validate_base_identity(definition)
+    return definition
+
+
+def validate_base_lock(lock: dict) -> str:
+    image = validate_base_identity(lock)
+    definition = load_base_definition()
+    if any(lock.get(key) != definition.get(key) for key in BASE_IDENTITY_FIELDS):
+        raise ValueError("base.lock.json differs from the reviewed base-image.json; prepare again")
+    return image
 
 
 def write_base_output(image: str, path: Path) -> None:
@@ -62,20 +82,31 @@ def write_base_output(image: str, path: Path) -> None:
         output.write(f"base_image={image}\n")
 
 
-def resolve_base(lock_path: Path, output_path: Path) -> None:
-    result = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", "--raw", BASE_TAG],
-        check=True, capture_output=True, text=True,
-    )
-    digest = amd64_digest(json.loads(result.stdout))
-    lock = {
-        "schema_version": 1, "source_tag": BASE_TAG, "platform": PLATFORM,
-        "digest": digest, "image": f"{BASE_REPOSITORY}@{digest}",
-        "resolved_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    write_json(lock_path, lock)
-    write_base_output(validate_base_lock(lock), output_path)
-    print(f"Resolved {BASE_TAG} ({PLATFORM}) to {lock['image']}")
+def prepare_base(lock_path: Path, output_path: Path, evidence: Path) -> int:
+    """Materialize the reviewed pin offline; actual daemon pull follows separately."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    summary = {"schema_version": 1, "status": "RUNNING", "mode": "reviewed_pin",
+               "started_utc": datetime.now(timezone.utc).isoformat(),
+               "network_used": False, "runtime_pull_verified": False}
+    try:
+        definition = load_base_definition()
+        lock = {key: definition[key] for key in BASE_IDENTITY_FIELDS}
+        image = validate_base_lock(lock)
+        lock["resolved_utc"] = datetime.now(timezone.utc).isoformat()
+        lock["resolution_method"] = "version_controlled_pin"
+        summary.update(image=image, platform=PLATFORM,
+                       definition_sha256=hashlib.sha256(BASE_DEFINITION.read_bytes()).hexdigest())
+        write_json(evidence / "base-definition.json", definition)
+        write_json(lock_path, lock)
+        write_base_output(image, output_path)
+        summary.update(status="PASS_PIN_VALIDATION_ONLY")
+        print(f"Using reviewed base pin: {image} ({PLATFORM}); no tag lookup", flush=True)
+    except (ValueError, OSError, TypeError) as error:
+        summary.update(status="FAILED", category="invalid_base_definition", error=sanitized(str(error)))
+        print("Base preparation failed: " + summary["error"], flush=True)
+    summary["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    write_json(evidence / "base-prepare-summary.json", summary)
+    return 0 if summary["status"] == "PASS_PIN_VALIDATION_ONLY" else 1
 
 
 def verify_locks(directory: Path, output_path: Path) -> None:
@@ -86,7 +117,8 @@ def verify_locks(directory: Path, output_path: Path) -> None:
         if name.endswith(".json"):
             read_json(path)
     image = validate_base_lock(read_json(directory / "base.lock.json"))
-    if read_json(directory / "preparation-license-status.json").get("policy_pass") is not True:
+    license_status = read_json(directory / "preparation-license-status.json")
+    if license_status.get("policy_pass") is not True or license_status.get("violations"):
         raise ValueError("Preparation license review has not passed; publish is blocked")
     write_base_output(image, output_path)
     print("Lock files present; Docker build will enforce fingerprints, hashes and license decisions.")
@@ -158,8 +190,19 @@ def save_diagnostics(directory: Path, name: str, stdout, stderr) -> None:
         (directory / f"{name}.{channel}.txt").write_text(sanitized(output), encoding="utf-8")
 
 
-def pull_base(lock_path: Path, evidence: Path) -> int:
-    """Compare the Buildx client path with the daemon pull path by one digest."""
+def report_failed_command(name: str, status: dict, stdout, stderr) -> None:
+    if status["return_code"] == 0:
+        return
+    print(f"=== {name}: {status['category']} (exit={status['return_code']}) ===", flush=True)
+    for channel, raw in (("stdout", stdout), ("stderr", stderr)):
+        cleaned = sanitized(raw)
+        if cleaned:
+            print(channel + ":\n" + cleaned[-8192:], flush=True)
+    print(f"=== end {name}; full redacted output is in the artifact ===", flush=True)
+
+
+def pull_base(lock_path: Path, evidence: Path, probe_client: bool = False) -> int:
+    """Pull the fixed digest with the build daemon; client inspection is opt-in."""
     evidence.mkdir(parents=True, exist_ok=True)
     summary_path = evidence / "base-pull-summary.json"
     summary = {"schema_version": 1, "status": "RUNNING", "started_utc": datetime.now(timezone.utc).isoformat(),
@@ -175,20 +218,21 @@ def pull_base(lock_path: Path, evidence: Path) -> int:
         print("Base pull failed: invalid_base_lock; see " + str(summary_path))
         return 1
     summary.update(image=image, platform=PLATFORM, expected_digest=lock["digest"])
-    print("Checking locked base with the Buildx client (timeout: 60 seconds)", flush=True)
-    client, stdout, stderr = diagnostic_command(["docker", "buildx", "imagetools", "inspect", "--raw", image], 60)
-    if client["timed_out"]:
-        print("Buildx client check reached its 60-second timeout; continuing with daemon comparison", flush=True)
-    save_diagnostics(evidence, "client-inspect", stdout, stderr)
-    raw = stdout.encode() if isinstance(stdout, str) else stdout
-    client["raw_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
-    client["raw_sha256_matches_expected"] = client["raw_sha256"] == lock["digest"]
-    try:
-        body = json.loads(raw)
-        client["valid_manifest_json"] = isinstance(body, dict) and body.get("schemaVersion") == 2
-    except (ValueError, UnicodeError):
-        client["valid_manifest_json"] = False
-    client["raw_hash_scope"] = "Diagnostic only: CLI formatting may alter bytes; daemon digest identity decides success"
+    client = {"category": "not_requested", "reason": "Pinned prepare/publish do not depend on Buildx client registry access"}
+    if probe_client:
+        print("Checking locked base with the Buildx client (timeout: 60 seconds)", flush=True)
+        client, stdout, stderr = diagnostic_command(["docker", "buildx", "imagetools", "inspect", "--raw", image], 60)
+        save_diagnostics(evidence, "client-inspect", stdout, stderr)
+        report_failed_command("client-inspect", client, stdout, stderr)
+        raw = stdout.encode() if isinstance(stdout, str) else stdout
+        client["raw_sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+        client["raw_sha256_matches_expected"] = client["raw_sha256"] == lock["digest"]
+        try:
+            body = json.loads(raw)
+            client["valid_manifest_json"] = isinstance(body, dict) and body.get("schemaVersion") == 2
+        except (ValueError, UnicodeError):
+            client["valid_manifest_json"] = False
+        client["raw_hash_scope"] = "Diagnostic only: CLI formatting may alter bytes; daemon digest identity decides success"
     summary["client_probe"] = client
     write_json(summary_path, summary)
     for number in range(1, 4):
@@ -197,6 +241,7 @@ def pull_base(lock_path: Path, evidence: Path) -> int:
         if attempt["timed_out"]:
             print(f"Docker daemon pull attempt {number} reached its 600-second timeout", flush=True)
         save_diagnostics(evidence, f"daemon-pull-{number}", stdout, stderr)
+        report_failed_command(f"daemon-pull-{number}", attempt, stdout, stderr)
         attempt["attempt"] = number
         summary["daemon_attempts"].append(attempt)
         write_json(summary_path, summary)
@@ -214,6 +259,7 @@ def pull_base(lock_path: Path, evidence: Path) -> int:
         identity_status, stdout, stderr = diagnostic_command(["docker", "image", "inspect", "--format", template, image], 60)
         # stdout is validated/projected below rather than saved as a raw object.
         (evidence / "daemon-image-inspect.stderr.txt").write_text(sanitized(stderr), encoding="utf-8")
+        report_failed_command("daemon-image-inspect", identity_status, b"", stderr)
         identity = {}
         try:
             parsed = json.loads(stdout)
@@ -266,15 +312,17 @@ def record_image(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    resolve = sub.add_parser("resolve-base")
+    resolve = sub.add_parser("prepare-base", help="Validate and reuse the reviewed base pin without a registry lookup")
     resolve.add_argument("--lock", type=Path, required=True)
     resolve.add_argument("--github-output", type=Path, required=True)
+    resolve.add_argument("--evidence", type=Path, required=True)
     verify = sub.add_parser("verify-locks")
     verify.add_argument("--directory", type=Path, required=True)
     verify.add_argument("--github-output", type=Path, required=True)
     pull = sub.add_parser("pull-base")
     pull.add_argument("--lock", type=Path, required=True)
     pull.add_argument("--evidence", type=Path, required=True)
+    pull.add_argument("--probe-client", action="store_true", help="Optional client/daemon comparison; never required for building a fixed pin")
     record = sub.add_parser("record-image")
     for name in ("image", "digest", "source-commit", "run-id", "run-attempt", "dockerfile"):
         record.add_argument("--" + name, required=True)
@@ -282,12 +330,12 @@ def main() -> None:
     record.add_argument("--output", type=Path, required=True)
     record.add_argument("--summary", type=Path)
     args = parser.parse_args()
-    if args.command == "resolve-base":
-        resolve_base(args.lock, args.github_output)
+    if args.command == "prepare-base":
+        raise SystemExit(prepare_base(args.lock, args.github_output, args.evidence))
     elif args.command == "verify-locks":
         verify_locks(args.directory, args.github_output)
     elif args.command == "pull-base":
-        raise SystemExit(pull_base(args.lock, args.evidence))
+        raise SystemExit(pull_base(args.lock, args.evidence, args.probe_client))
     else:
         record_image(args)
 
