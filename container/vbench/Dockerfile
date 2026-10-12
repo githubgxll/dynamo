@@ -28,11 +28,19 @@ FROM foundation AS environment
 ARG VBENCH_PHASE=prepare
 COPY container/vbench/requirements.in /opt/vbench-build/requirements.in
 COPY container/vbench/scripts/prepare_environment.py /opt/vbench-build/scripts/prepare_environment.py
+COPY container/vbench/scripts/decord_wheel.py /opt/vbench-build/scripts/decord_wheel.py
 COPY container/vbench/locks/ /opt/vbench-build/locks/
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     UV_LINK_MODE=copy python /opt/vbench-build/scripts/prepare_environment.py --phase "${VBENCH_PHASE}" \
       --inputs /opt/vbench-build/requirements.in --lock /opt/vbench-build/locks/requirements.lock \
       --evidence /opt/vbench-build-info
+
+# Exercise native media decoding before model loading; asset downloads may run in parallel.
+# Only a synthetic temporary clip is generated; evaluation input videos are never changed.
+COPY container/vbench/scripts/media_smoke.py /opt/vbench-build/scripts/media_smoke.py
+COPY container/vbench/scripts/offline_guard.py /opt/vbench-build/scripts/offline_guard.py
+RUN --network=none python /opt/vbench-build/scripts/media_smoke.py \
+      --output /opt/vbench-build-info/media-smoke.json
 
 FROM foundation AS assets
 ARG VBENCH_PHASE=prepare

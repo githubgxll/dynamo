@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Resolve/install the full six-metric Python closure; no VBench setup.py GPU probe.
 
-The sole metadata adjustment replaces facexlib's GUI OpenCV distribution with
-its headless equivalent. All importable code and bundled licenses are unchanged.
-The local version and wheel manifest expose this adjustment to later audits.
+Reviewed metadata repairs select headless OpenCV for facexlib and correct the
+internal CPython tag of the official decord wheel. Importable code, native
+libraries and bundled licenses are unchanged; local versions expose the repairs.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ import zipfile
 from pathlib import Path
 
 from package_sources import load_sources
+from decord_wheel import prepare_decord
 
 ORIGINAL_SHA256 = "245d58861537b820c616e8b3ef618ccfad2a24724a2d74be2b0542643c01a878"
 ORIGINAL_FILENAME = "facexlib-0.3.0-py3-none-any.whl"
@@ -188,6 +189,7 @@ def main() -> None:
     print(f"Dependency Python index: {sources['python_index']}; Torch index: {sources['torch_index']}", flush=True)
     wheels = Path("/opt/vbench-build/wheels")
     patch_facexlib(acquire_original(wheels, sources), wheels, args.evidence)
+    prepare_decord(wheels, args.evidence, sources)
     if args.phase == "prepare":
         args.lock.parent.mkdir(parents=True, exist_ok=True)
         # Re-preparation after a reviewed policy change resolves anew inside the

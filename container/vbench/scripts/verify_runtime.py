@@ -22,7 +22,7 @@ EXPECTED = {
     "pyiqa": "0.1.13", "timm": "1.0.12", "transformers": "4.37.2",
     "accelerate": "0.28.0", "bitsandbytes": "0.43.1", "huggingface-hub": "0.23.5",
     "tokenizers": "0.15.2", "safetensors": "0.4.3", "opencv-python-headless": "4.10.0.84",
-    "facexlib": "0.3.0+vbench1", "Pillow": "10.4.0", "decord": "0.6.0",
+    "facexlib": "0.3.0+vbench1", "Pillow": "10.4.0", "decord": "0.6.0+vbench1",
     "openai-clip": "1.0.1", "omegaconf": "2.3.0", "easydict": "1.13", "imageio": "2.35.1",
 }
 
@@ -80,7 +80,7 @@ def verify_paths() -> dict:
         if os.environ.get(name) != value:
             raise RuntimeError(f"{name} must be {value}; overriding the image cache can cause lazy downloads")
     result = {}
-    for name in ("torch", "torchvision", "cv2", "pyiqa", "clip"):
+    for name in ("torch", "torchvision", "cv2", "decord", "pyiqa", "clip"):
         module = importlib.import_module(name)
         path = Path(module.__file__).resolve()
         if not path.is_relative_to(Path("/opt/venv")):

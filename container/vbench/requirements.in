@@ -15,7 +15,9 @@ safetensors==0.4.3
 opencv-python-headless==4.10.0.84
 facexlib @ file:///opt/vbench-build/wheels/facexlib-0.3.0+vbench1-py3-none-any.whl
 Pillow==10.4.0
-decord==0.6.0
+# Reviewed upstream Linux wheel has an incorrect internal cp36 tag. Only its
+# packaging metadata is repaired; Python/native payloads remain byte-identical.
+decord @ file:///opt/vbench-build/wheels/decord-0.6.0+vbench1-py3-none-manylinux2010_x86_64.whl
 openai-clip==1.0.1
 omegaconf==2.3.0
 easydict==1.13

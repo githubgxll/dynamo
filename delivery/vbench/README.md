@@ -51,7 +51,7 @@ call delivery\vbench\02-submit-prepare.cmd
 Linux Runner自动执行：
 
 1. 解析官方CUDA12.1基础镜像的linux/amd64 digest，再分别通过Buildx客户端与Docker daemon检查同一digest。daemon实际预拉取并核对平台和RepoDigests后才进入构建。
-2. 为Python3.10生成完整传递依赖锁和哈希，安装后执行两套依赖检查。
+2. 为Python3.10生成完整传递依赖锁和哈希，安装后执行两套依赖检查；另在禁网层用临时合成MP4验证FFmpeg、OpenCV、Decord和Decord→Torch桥接。
 3. 准备七个评价权重、固定VBench/DINO源码、配置和Torch hub缓存映射。
 4. 在BuildKit `--network=none` 中检查文件和加载全部六维模型。这里没有视频评分，也没有GPU验收。
 5. 复用仓库许可扫描器，补入第三方源码、模型资产及pyIQA真实许可记录。
@@ -61,7 +61,9 @@ Linux Runner自动执行：
 
 依赖采用独立Python3.10、PyTorch2.3.1/CUDA12.1环境，不继承H3的vLLM/Omni环境。保留pyIQA完整声明依赖；其中facexlib原声明普通OpenCV，而pyIQA要求headless版，两者会同时提供 `cv2`。脚本将facexlib固定wheel的这一条依赖改为headless并增加本地版本号，保留所有Python代码及许可，导出原/新wheel哈希、METADATA差异和文件清单。它没有修改六维评分算法，也没有用 `--no-deps` 隐去依赖冲突。
 
-Python取包来源统一记录在 `container/vbench/package-sources.json`：普通包沿用组内SGLang已使用的清华HTTPS镜像，Torch/torchvision继续使用官方CUDA12.1索引。工具bootstrap、uv解析/安装和facexlib原始wheel获取读取同一配置。facexlib取包时的 `pip download --no-deps` 只下载一个带固定SHA256的原始wheel，不执行环境安装；最终uv步骤仍检查完整依赖。配置文件参与构建输入指纹，改变来源后必须重新prepare。
+Decord官方0.6.0 Linux wheel的文件名声明 `py3-none`，内部却误写 `cp36-cp36m`；Python3.10的两套依赖检查因此失败。本包固定原始SHA256，仅修正该标签、增加本地版本号 `0.6.0+vbench1` 并重建RECORD；Python代码、原生库和许可证保持原字节。构建时保留 `decord-patch.json` 和差异，随后执行实际禁网解码，不能只凭元数据修正就判断可运行。详见 [2026-10-09依赖与配置复查](DEPENDENCY-AUDIT-20261009.md)。
+
+Python取包来源统一记录在 `container/vbench/package-sources.json`：普通包沿用组内SGLang已使用的清华HTTPS镜像，Torch/torchvision继续使用官方CUDA12.1索引。工具bootstrap、uv解析/安装以及facexlib、decord原始wheel获取读取同一配置。两项修复取包时的 `pip download --no-deps` 只下载带固定SHA256的原始wheel，不执行环境安装；最终uv步骤仍检查完整依赖。配置文件参与构建输入指纹，改变来源后必须重新prepare。
 
 ## 第三步 下载并导入准备制品
 
@@ -84,7 +86,7 @@ call delivery\vbench\03-import-preparation.cmd "C:\Users\admin\Downloads\vbench-
 
 **导入不会commit、push或切换阶段。** 基础镜像、模型资产和Python锁确定后，评测程序的改动需要按新来源重新验证。apt系统包版本另存 `dpkg-packages.tsv`；本包不宣称完整OS软件源已做历史快照或镜像可逐字节重建。
 
-重点查看制品中的 `cpu-check.json`、`pip-check.txt`、`uv-pip-check.txt`、`legal/license-status.json`。CPU检查应为 `PASS_MODEL_LOAD_ONLY` 且六项模型均已加载。许可报告与准备任务是否成功是两个独立结果。
+重点查看制品中的 `dependency-checks.json`、`pip-check.txt`、`uv-pip-check.txt`、`decord-patch.json`、`media-smoke.json`、`cpu-check.json`、`legal/license-status.json`。两套依赖检查退出码均应为0；媒体解码检查应为 `PASS_CPU_MEDIA_DECODE_ONLY`；CPU模型检查应为 `PASS_MODEL_LOAD_ONLY` 且六项模型均已加载。合成视频解码通过不代表真实H3视频评分通过。许可报告与准备任务是否成功是两个独立结果。
 
 ## 当前已知的许可检查项
 
@@ -317,7 +319,7 @@ call delivery\vbench\02-submit-prepare.cmd
 - 整体流程测试：第三资产失败时前两项保留；新一轮prepare只下载缺失项；publish禁止下载仍复现原锁；失败解压产生的测试ghost文件不进入最终源码。
 - 本机完整检查：93 passed、67 subtests passed；2个需要真实符号链接的测试因Windows权限跳过，另有模拟symlink/junction拒绝检查通过。
 - 本机实际下载约1.8MB的官方LAION归档：注入一次TLS EOF后第二次成功，哈希与原权重一致；后续禁止下载仍能从缓存按原锁复现。结果：`D:\AI\_workspace\VBench_Image_20260930\diagnostics-20261008\asset-recovery-20261008T103325766060Z\result.json`。
-- 本机未发现可用docker命令，未验证完整Linux镜像、Runner出口、大模型完整下载、CPU模型加载或GPU评分。上述小资产验证通过本机127.0.0.1:17890代理，不能替代Runner验证。
+- 当时仅在Windows PATH中未发现docker命令，未验证完整Linux镜像、Runner出口、大模型完整下载、CPU模型加载或GPU评分。2026-10-09补查发现WSL Ubuntu内有可用Docker；本轮实际验证范围见依赖复查报告。上述小资产下载通过本机127.0.0.1:17890代理，不能替代Runner验证。
 
 ### 操作位置与下一次检查
 
