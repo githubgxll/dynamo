@@ -246,6 +246,29 @@ def _runtime_config_parser_name(
     return value if isinstance(value, str) and value else None
 
 
+def _infer_reasoning_parser_name(source_path: str, chat_template: str | None) -> str | None:
+    """Infer known think-tag parsers from the discovered model, not its alias."""
+    if not detect_force_reasoning_from_template(chat_template):
+        return None
+    try:
+        with open(os.path.join(source_path, "config.json"), encoding="utf-8") as f:
+            model_config = json.load(f)
+    except (OSError, ValueError):
+        logger.warning("Cannot infer reasoning parser from %s/config.json", source_path)
+        return None
+    parser = {
+        "glm_moe_dsa": "glm45",
+        "glm5_next": "glm45",
+    }.get(model_config.get("model_type"))
+    if parser is None:
+        logger.warning(
+            "Thinking template detected for model_type=%r without a reasoning parser; "
+            "configure --dyn-reasoning-parser to separate reasoning and answer stops",
+            model_config.get("model_type"),
+        )
+    return parser
+
+
 def _unsupported_n_message(n: int) -> str:
     return f"Unsupported value: 'n={n}'. " "This endpoint currently supports only n=1."
 
@@ -1073,6 +1096,9 @@ class SglangEngineFactory:
         reasoning_parser_name = (
             self.reasoning_parser_name
             or _runtime_config_parser_name(mdc, "reasoning_parser")
+            or _infer_reasoning_parser_name(
+                local_dir, getattr(tokenizer, "chat_template", None)
+            )
         )
 
         if tool_call_parser_name:
