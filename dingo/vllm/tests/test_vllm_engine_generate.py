@@ -14,6 +14,11 @@ pytestmark = [
     pytest.mark.pre_merge,
     pytest.mark.vllm,
     pytest.mark.core,
+    # vLLM 0.29 decodes inline msgpack bytes through torch.frombuffer and
+    # immediately clones the result; this warning does not indicate aliasing.
+    pytest.mark.filterwarnings(
+        "ignore:The given buffer is not writable.*:UserWarning:vllm.v1.serial_utils"
+    ),
     pytest.mark.gpu_0,
     pytest.mark.skipif(
         importlib.util.find_spec("vllm") is None,
@@ -315,7 +320,7 @@ def test_tito_adapter_rejects_unsupported_execution_paths(
 def test_tito_adapter_rejects_asymmetric_image_feature_objects(features):
     from dingo.vllm.engine_generate import adapt_engine_generate_request
 
-    with pytest.raises(ValidationError):
+    with pytest.raises((ValidationError, TypeError), match="image|modality"):
         adapt_engine_generate_request(
             _request(features=features, sampling_params={"max_tokens": 1}),
             enable_multimodal=True,

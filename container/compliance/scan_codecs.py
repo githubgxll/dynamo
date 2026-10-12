@@ -99,26 +99,36 @@ class CodecPolicy:
                 raise ValueError(
                     f"codec policy {path}: each exception needs glob, reason, and owner"
                 )
+            images = exc.get("images")
+            if images is not None and (
+                not isinstance(images, list)
+                or not all(isinstance(image, str) and image for image in images)
+            ):
+                raise ValueError(
+                    f"codec policy {path}: exception images must be a list of non-empty strings"
+                )
         return cls(doc)
 
-    def classify(self, abspath: str) -> tuple[str, str | None]:
-        """Return (verdict, detail) for a path already known to hit a deny glob.
-        verdict is 'allowed' | 'exception' | 'violation'."""
+    def classify(self, abspath: str, image: str = "") -> tuple[str, str | None]:
+        """Classify a denied path, honoring exceptions scoped to an image."""
         if any(abspath.startswith(p) for p in self.allow_paths):
             return "allowed", None
         for exc in self.exceptions:
+            images = exc.get("images") or []
+            if images and image not in images:
+                continue
             if fnmatch.fnmatch(abspath, _glob_to_fullpath_pattern(exc.get("glob", ""))):
                 return "exception", (exc.get("reason") or "").strip()
         return "violation", None
 
-    def violates(self, abspath: str) -> bool:
+    def violates(self, abspath: str, image: str = "") -> bool:
         """True if `abspath` hits a deny glob and is neither allowed nor excepted."""
         if _matches_any(abspath, self.deny_globs) is None:
             return False
-        return self.classify(abspath)[0] == "violation"
+        return self.classify(abspath, image=image)[0] == "violation"
 
 
-def scan_filesystem(root: Path, policy: CodecPolicy):
+def scan_filesystem(root: Path, policy: CodecPolicy, image: str = ""):
     """Walk `root`, returning (violations, exceptions, allowed) lists of dicts."""
     violations, exceptions, allowed = [], [], []
     root_str = os.path.normpath(str(root))
@@ -136,7 +146,7 @@ def scan_filesystem(root: Path, policy: CodecPolicy):
             hit = _matches_any(abspath, policy.deny_globs)
             if not hit:
                 continue
-            verdict, detail = policy.classify(abspath)
+            verdict, detail = policy.classify(abspath, image=image)
             entry = {"path": abspath, "glob": hit, "detail": detail}
             {"allowed": allowed, "exception": exceptions, "violation": violations}[
                 verdict
@@ -170,6 +180,15 @@ def scan_sbom(sbom_path: Path, policy: CodecPolicy) -> list[dict]:
             continue
         version = str(comp.get("version") or "")
         floor = rule.get("min_fixed_version")
+        purl = str(comp.get("purl") or "")
+        ignored_types = rule.get("skip_version_floor_purl_types", []) or []
+        # The floor is an upstream FFmpeg release floor, not a Debian package
+        # version floor. Ubuntu versions include a dpkg epoch and distro
+        # revision (for example, 7:6.1.1-3ubuntu5), which are not PEP 440 and
+        # must not be compared as if they were upstream release numbers. This
+        # runtime intentionally preserves the upstream Ubuntu FFmpeg stack.
+        if floor and any(purl.startswith(f"pkg:{t}/") for t in ignored_types):
+            continue
         if floor:
             # No version ⇒ we cannot prove the component is at/above the fixed
             # floor, so flag it rather than let an unversioned denied component
@@ -248,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     policy = CodecPolicy.load(args.policy)
-    violations, exceptions, allowed = scan_filesystem(args.root, policy)
+    violations, exceptions, allowed = scan_filesystem(args.root, policy, image=args.image)
     if args.sbom:
         # An explicitly-supplied SBOM that is missing must fail loudly — silently
         # skipping it would disable the version-floor gate without anyone noticing.

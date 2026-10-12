@@ -1053,3 +1053,15 @@ def test_parity_sglang_cumulative_two_chunks_yields_full_stream():
     # First chunk: 1 entry; second chunk: 2 new entries. Total 3.
     assert len(extracted_top) == 3
     assert offset == 3
+
+
+def test_prompt_logprobs_legacy_bos_keeps_top_logprobs_aligned():
+    payload = extract_prompt_logprobs_from_sglang_meta(
+        {
+            "input_token_logprobs": [(-0.5, 7, "a"), (-0.6, 8, "b")],
+            "input_top_logprobs": [[(-1.0, 70, "A")], [(-1.1, 80, "B")]],
+        }
+    )
+    assert payload[0] is None
+    assert set(payload[1]) == {"7", "70"}
+    assert set(payload[2]) == {"8", "80"}

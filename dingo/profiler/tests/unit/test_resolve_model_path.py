@@ -562,7 +562,7 @@ class TestThoroughResolvesModelPath:
                 "default",
                 _HF_ID,
                 "h200_sxm",
-                "trtllm",
+                "sglang",
                 8,
                 4000,
                 1000,
@@ -583,7 +583,7 @@ class TestThoroughResolvesModelPath:
                 "purpose": DGDMaterializationPurpose.BENCHMARK_CANDIDATE,
                 "override": None,
                 "tolerations": [],
-                "runtime_backend": "trtllm",
+                "runtime_backend": "sglang",
                 "model_name_or_path": _HF_ID,
                 "trust_remote_code": False,
             }

@@ -1,9 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{future::Future, sync::Arc};
+use std::{future::Future, ops::Deref, sync::Arc};
 
 use anyhow::Result;
+
+/// Keeps a dedicated transport executor alive while any client still uses it.
+/// The executor itself is owned and dropped by its dedicated OS thread, never
+/// by a caller running inside another Tokio runtime.
+#[derive(Clone, Debug)]
+pub struct TransportRuntime {
+    handle: tokio::runtime::Handle,
+    _lease: Arc<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Deref for TransportRuntime {
+    type Target = tokio::runtime::Handle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
+}
 
 pub async fn build_in_runtime<
     T: Send + Sync + 'static,
@@ -11,15 +28,12 @@ pub async fn build_in_runtime<
 >(
     f: F,
     num_threads: usize,
-) -> Result<(T, Arc<tokio::runtime::Runtime>)> {
+) -> Result<(T, TransportRuntime)> {
     let (mut tx, rx) = tokio::sync::oneshot::channel();
-
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(num_threads)
-            .enable_all()
-            .build()?,
-    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_threads)
+        .enable_all()
+        .build()?;
 
     std::thread::spawn(move || {
         runtime.block_on(async {
@@ -30,27 +44,26 @@ pub async fn build_in_runtime<
             };
             match result {
                 Ok(value) => {
-                    // A successful send may still be dropped unread when the
-                    // caller is cancelled. Keep the runtime only after receipt.
-                    // Tuple drop order releases the runtime Arc before closing
-                    // the receipt channel, so its last owner stays on this thread.
-                    let (receipt, received) = tokio::sync::oneshot::channel();
-                    if tx.send(Ok((value, runtime.clone(), receipt))).is_ok()
-                        && received.await.is_ok()
-                    {
-                        std::future::pending::<()>().await;
+                    let (lease, released) = tokio::sync::oneshot::channel();
+                    let executor = TransportRuntime {
+                        handle: runtime.handle().clone(),
+                        _lease: Arc::new(lease),
+                    };
+                    // Dropping an unread result also releases the lease. A
+                    // successful receiver keeps it only as long as its clients.
+                    if tx.send(Ok((value, executor))).is_ok() {
+                        let _ = released.await;
                     }
                 }
                 Err(error) => {
                     let _ = tx.send(Err(error));
                 }
             }
-        })
+        });
+        runtime.shutdown_background();
     });
 
-    let (value, runtime, receipt) = rx.await??;
-    let _ = receipt.send(());
-    Ok((value, runtime))
+    rx.await?
 }
 
 #[cfg(test)]
@@ -120,7 +133,7 @@ mod tests {
             .await
             .expect("producer queues the result and wakes its receiver");
         // Never poll again: the successful result stays in the oneshot channel
-        // until cancellation drops its value, runtime Arc, and receipt sender.
+        // until cancellation drops its value and executor lease.
         assert!(!runtime_dropped.is_cancelled());
         drop(construction);
         tokio::time::timeout(
@@ -129,5 +142,31 @@ mod tests {
         )
         .await
         .expect("unread result must not retain the dedicated runtime");
+    }
+
+    #[tokio::test]
+    async fn successful_runtime_stops_after_last_client_release() {
+        let dropped = tokio_util::sync::CancellationToken::new();
+        let guard = dropped.clone().drop_guard();
+        let (_, runtime) = build_in_runtime(
+            async move {
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    std::future::pending::<()>().await;
+                });
+                Ok(())
+            },
+            1,
+        )
+        .await
+        .unwrap();
+        let other_client = runtime.clone();
+        drop(runtime);
+        assert_eq!(other_client.spawn(async { 42 }).await.unwrap(), 42);
+        assert!(!dropped.is_cancelled());
+        drop(other_client);
+        tokio::time::timeout(std::time::Duration::from_secs(5), dropped.cancelled())
+            .await
+            .expect("last client release must stop transport tasks");
     }
 }

@@ -894,7 +894,7 @@ impl Client {
                 if prune_shared_occupancy {
                     let registry = endpoint.drt().routing_occupancy_states();
                     if let Ok(registry) = registry.try_lock()
-                        && let Some(weak) = registry.get(&endpoint)
+                        && let Some(weak) = registry.get(&endpoint.id())
                         && let Some(state) = weak.upgrade()
                     {
                         state.retain(snapshot.discovered_ids());
@@ -944,7 +944,11 @@ impl Client {
     ) -> Result<Arc<EndpointDiscoverySource>> {
         let sources = endpoint.drt().endpoint_discovery_sources();
 
-        let existing = sources.lock().await.get(endpoint).and_then(Weak::upgrade);
+        let existing = sources
+            .lock()
+            .await
+            .get(&endpoint.id())
+            .and_then(Weak::upgrade);
         if let Some(source) = existing {
             return Ok(source);
         }
@@ -964,10 +968,10 @@ impl Client {
         // Another caller can register a source for this endpoint while this watch is
         // established. Every later client shares that source, and this one drops, which stops
         // both the watcher task it spawned and the backend watch it established.
-        if let Some(source) = sources.get(endpoint).and_then(Weak::upgrade) {
+        if let Some(source) = sources.get(&endpoint.id()).and_then(Weak::upgrade) {
             return Ok(source);
         }
-        sources.insert(endpoint.clone(), Arc::downgrade(&discovery_source));
+        sources.insert(endpoint.id(), Arc::downgrade(&discovery_source));
         Ok(discovery_source)
     }
 
@@ -1070,6 +1074,44 @@ mod tests {
     };
     use crate::{DistributedRuntime, Runtime, distributed::DistributedConfig};
     use futures::future::try_join_all;
+
+    #[tokio::test]
+    async fn endpoint_registries_do_not_retain_shutdown_runtime() {
+        use crate::metrics::MetricsHierarchy;
+        let rt = Runtime::from_current().unwrap();
+        let drt = DistributedRuntime::new(rt.clone(), DistributedConfig::process_local())
+            .await
+            .unwrap();
+        let sources = Arc::downgrade(&drt.endpoint_discovery_sources());
+        let occupancy = Arc::downgrade(&drt.routing_occupancy_states());
+        let namespace = drt.namespace("registry-release").unwrap();
+        let component = namespace.component("backend").unwrap();
+        let repeated = namespace.component("backend").unwrap();
+        assert!(Arc::ptr_eq(
+            &component.get_metrics_registry().prometheus_registry,
+            &repeated.get_metrics_registry().prometheus_registry,
+        ));
+        drop(repeated);
+        let endpoint = component.endpoint("generate");
+        drop(component);
+        drop(namespace);
+        let client = endpoint.client().await.unwrap();
+        let state = crate::routing_policy::get_or_create_routing_occupancy_state(&endpoint).await;
+        assert_eq!(sources.upgrade().unwrap().lock().await.len(), 1);
+        assert_eq!(occupancy.upgrade().unwrap().lock().await.len(), 1);
+        drt.shutdown();
+        drop(client);
+        drop(state);
+        drop(endpoint);
+        drop(drt);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while sources.upgrade().is_some() || occupancy.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("endpoint registry keys must not retain their runtime");
+    }
 
     /// A backend whose watch producer, like the Kubernetes watcher, parks on its own feed and ends
     /// only when the token it was given cancels. A test sends events to a watch through `feeds`.

@@ -326,9 +326,6 @@ impl Router {
         let routing_constraints = extract_routing_constraints(request.nvext.as_ref());
         let cache_namespace = cache_namespace_from_request(request, headers);
 
-        let priority_jump = extract_priority_jump(request);
-        let strict_priority = extract_strict_priority(request);
-
         let encoding = match self.preprocessor.apply_template(request)? {
             Some(prompt) => self.preprocessor.tokenize_rendered_prompt(&prompt)?,
             None => self.preprocessor.tokenize("")?,

@@ -84,20 +84,33 @@ ENV PATH=/opt/uv/bin:${PATH}
 # the distro archives. --only-upgrade skips anything not already installed, so
 # no new packages are added; versions are left unpinned so a cache-busted
 # rebuild picks up the newest patch level (BuildKit reuses this layer otherwise).
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
-        dirmngr \
-        gnupg \
-        gnupg-utils \
-        gnupg2 \
-        gpg \
-        gpg-agent \
-        gpgconf \
-        gpgsm \
-        gpgv \
-        keyboxd \
-        libssl3t64 \
-        openssl && \
+RUN set -eux; \
+    printf '%s\n' \
+        'deb http://archive.ubuntu.com/ubuntu noble main universe' \
+        'deb http://archive.ubuntu.com/ubuntu noble-updates main universe' \
+        'deb http://security.ubuntu.com/ubuntu noble-security main universe' \
+        > /tmp/dingo-ubuntu.list; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get \
+            -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+            -o Dir::Etc::sourceparts=- \
+            -o Acquire::Retries=5 \
+            -o APT::Update::Error-Mode=any \
+            update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done && \
+    for attempt in 1 2 3 4 5; do \
+        if DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+            -o Dir::Etc::sourceparts=- \
+            -o Acquire::Retries=5 \
+            install -y --no-install-recommends --only-upgrade \
+            dirmngr gnupg gnupg-utils gnupg2 gpg gpg-agent gpgconf gpgsm gpgv keyboxd libssl3t64 openssl; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done && \
+    rm -f /tmp/dingo-ubuntu.list; \
     rm -rf /var/lib/apt/lists/*
 {% endif %}
 
@@ -241,6 +254,19 @@ RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.
         if [ -n "$GMS_WHEEL" ]; then uv pip install {{ pip_target }} --no-deps "$GMS_WHEEL"; fi; \
     fi
 
+{% if device == "cuda" and target not in ("dev", "local-dev") %}
+# Replace upstream vLLM's bundled PyNvVideoCodec and imageio-ffmpeg artifacts
+# with the audited versions in requirements.vllm.txt. The base PyNvVideoCodec
+# wheel bundles a full FFmpeg stack; 2.2.3 is checked against the codec policy.
+RUN --mount=type=bind,source=./container/deps/requirements.vllm.txt,target=/tmp/requirements.vllm.txt \
+    --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=locked \
+    export UV_CACHE_DIR=/root/.cache/uv && \
+    uv pip install --system --force-reinstall --no-deps --requirement /tmp/requirements.vllm.txt
+
+RUN --mount=type=bind,source=./container/compliance,target=/tmp/compliance/compliance \
+    PYTHONPATH=/tmp/compliance python3 -m compliance.check_pynvvideocodec --pinned 2.2.3
+{% endif %}
+
 # Launch-script examples use jq for readable curl output like the upstream omni
 # image. SoX is intentionally NOT installed: vLLM-Omni replaced its sox audio path
 # with a pure-numpy peak_normalize() (vllm_omni/utils/audio.py), pysox isn't
@@ -253,21 +279,29 @@ RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.
 # LD_PRELOAD or DYN_FRONTEND_JEMALLOC; it is not preloaded by default.
 RUN set -eux; \
     printf '%s\n' \
-        'deb http://mirrors.aliyun.com/ubuntu noble main' \
-        'deb http://mirrors.aliyun.com/ubuntu noble-updates main' \
-        'deb http://mirrors.aliyun.com/ubuntu noble-security main' \
+        'deb http://archive.ubuntu.com/ubuntu noble main universe' \
+        'deb http://archive.ubuntu.com/ubuntu noble-updates main universe' \
+        'deb http://security.ubuntu.com/ubuntu noble-security main universe' \
         > /tmp/dingo-ubuntu.list; \
-    apt-get \
-        -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
-        -o Dir::Etc::sourceparts=- \
-        -o Acquire::Retries=5 \
-        update; \
-    DEBIAN_FRONTEND=noninteractive apt-get \
-        -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
-        -o Dir::Etc::sourceparts=- \
-        -o Acquire::Retries=5 \
-        install -y --no-install-recommends \
-        jq libturbojpeg libjemalloc2; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get \
+            -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+            -o Dir::Etc::sourceparts=- \
+            -o Acquire::Retries=5 \
+            -o APT::Update::Error-Mode=any \
+            update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done; \
+    for attempt in 1 2 3 4 5; do \
+        if DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Dir::Etc::sourcelist=/tmp/dingo-ubuntu.list \
+            -o Dir::Etc::sourceparts=- \
+            -o Acquire::Retries=5 \
+            install -y --no-install-recommends jq libturbojpeg libjemalloc2; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done; \
     rm -f /tmp/dingo-ubuntu.list; \
     ldconfig; \
     ldconfig -p | grep -q 'libturbojpeg.so.0'; \

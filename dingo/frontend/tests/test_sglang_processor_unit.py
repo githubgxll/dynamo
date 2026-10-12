@@ -44,6 +44,7 @@ from dingo.frontend.sglang_prepost import (
     SglangStreamingPostProcessor,
     _flatten_message_content,
     _guided_output_requires_reasoning,
+    _effective_guidance_requires_reasoning,
     _normalize_assistant_tool_call_arguments,
     _normalize_prompt_token_ids,
     _normalize_sglang_parser_name,
@@ -3491,13 +3492,21 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
         with pytest.raises(ValueError, match="supports only .jinja"):
             _load_chat_template(str(template_file))
 
-    def test_init_worker_propagates_exclude_flag_true(self):
+    def test_init_worker_propagates_exclude_flag_true(self, monkeypatch):
         """_init_worker sets the worker-global exclude_tools flag to True."""
+        # _init_worker writes process globals; restore them after this in-process test.
+        for key, value in vars(sglang_processor_module).copy().items():
+            if key.startswith("_w_"):
+                monkeypatch.setattr(sglang_processor_module, key, value)
         _init_worker(MODEL, None, None, exclude_tools_when_tool_choice_none=True)
         assert sglang_processor_module._w_exclude_tools_when_tool_choice_none is True
 
-    def test_init_worker_propagates_exclude_flag_false(self):
+    def test_init_worker_propagates_exclude_flag_false(self, monkeypatch):
         """_init_worker sets the worker-global exclude_tools flag to False."""
+        # _init_worker writes process globals; restore them after this in-process test.
+        for key, value in vars(sglang_processor_module).copy().items():
+            if key.startswith("_w_"):
+                monkeypatch.setattr(sglang_processor_module, key, value)
         _init_worker(MODEL, None, None, exclude_tools_when_tool_choice_none=False)
         assert sglang_processor_module._w_exclude_tools_when_tool_choice_none is False
         # Reset to default
@@ -3515,6 +3524,10 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
             lambda model_path, trust_remote_code=False: FakeTokenizer(),
         )
 
+        # _init_worker writes process globals; restore them after this in-process test.
+        for key, value in vars(sglang_processor_module).copy().items():
+            if key.startswith("_w_"):
+                monkeypatch.setattr(sglang_processor_module, key, value)
         _init_worker(
             MODEL,
             None,
@@ -4273,7 +4286,7 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
         assert result.reasoning_parser.force_reasoning is expected
 
     @pytest.mark.multimodal
-    def test_kimi_k3_normalizes_template_media_but_forwards_original_url(
+    def test_kimi_k3_preserves_native_template_media_and_original_url(
         self,
         monkeypatch,
     ):
@@ -4327,7 +4340,7 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
             None,
         )
 
-        assert captured["messages"][0]["content"][1]["type"] == "image"
+        assert captured["messages"][0]["content"][1]["type"] == "image_url"
         assert request["messages"][0]["content"][1]["type"] == "image_url"
         assert dynamo_preproc["multi_modal_data"] == {
             "image_url": [{"Url": "https://example.com/k3.png"}]
@@ -4396,9 +4409,8 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
         assert result.tool_guided_active is False
         assert result.dynamo_preproc["require_reasoning"] is True
 
-    def test_response_format_takes_precedence_over_tool_constraint(self, tokenizer):
-        """When both response_format and a guided tool_choice exist, the
-        explicit response_format wins (mirrors upstream fix #10259)."""
+    def test_required_tool_retains_precedence_over_response_format(self, tokenizer):
+        """The local forced-tool contract keeps the tool grammar authoritative."""
         result = preprocess_chat_request(
             {
                 "model": MODEL,
@@ -4423,10 +4435,10 @@ class TestPreprocessChatRequest:  # FRONTEND.1 — chat-template input preproces
             tool_call_parser_name="qwen25",
             reasoning_parser_name=None,
         )
-        assert result.guided_decoding == {"json": {"type": "object"}}
-        assert result.response_format_guided_active is True
-        assert result.tool_guided_active is False
-        assert result.tool_call_parser is None
+        assert result.guided_decoding["json"]["type"] == "array"
+        assert result.response_format_guided_active is False
+        assert result.tool_guided_active is True
+        assert result.tool_call_parser is not None
 
     def test_kimi_k3_defaults_to_thinking_mode(self, tokenizer):
         """Kimi-K3 emits reasoning before its close marker, so force parsing on."""
@@ -4606,6 +4618,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
     def test_logprobs_reconstruct_split_multibyte_character(self):
         """Logprob token strings use context to reconstruct split UTF-8."""
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -4649,6 +4662,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
     def test_logprobs_regular_token_is_unchanged(self):
         """Ordinary tokens keep their decoded text and UTF-8 bytes."""
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -4682,6 +4696,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             stream_interval=20,
         )
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -4884,6 +4899,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             stream_interval=20,
         )
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=(
                 FunctionCallParser(
@@ -5033,6 +5049,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
 
     def test_split_stop_string_logprobs_are_not_emitted(self):
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -5064,6 +5081,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
 
     def test_pending_stop_logprobs_are_flushed_without_match(self):
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -5329,6 +5347,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
 
         tools = convert_tools([parity_tool()])
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=ToolTokenizer(),
             tool_call_parser=FunctionCallParser(
                 tools=tools, tool_call_parser="gpt-oss"
@@ -5360,9 +5379,12 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         )
         assert result["finish_reason"] == "tool_calls"
         calls = result["delta"]["tool_calls"]
-        assert len(calls) == 1
+        assert {call["index"] for call in calls} == {0}
+        assert sum("id" in call for call in calls) == 1
         assert calls[0]["function"]["name"] == "get_weather"
-        assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Paris"}
+        assert json.loads(
+            "".join(call["function"].get("arguments", "") for call in calls)
+        ) == {"city": "Paris"}
         assert not result["delta"].get("content")
         assert "".join(post._tool_text_parts) == wire + closer
         assert (
@@ -5383,6 +5405,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             sglang_tools=tools,
         )
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=parser,
             reasoning_parser=None,
@@ -5404,9 +5427,12 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         )
         assert result["finish_reason"] == "tool_calls"
         calls = result["delta"]["tool_calls"]
-        assert len(calls) == 1
+        assert {call["index"] for call in calls} == {0}
+        assert sum("id" in call for call in calls) == 1
         assert calls[0]["function"]["name"] == "get_weather"
-        assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Paris"}
+        assert json.loads(
+            "".join(call["function"].get("arguments", "") for call in calls)
+        ) == {"city": "Paris"}
         assert not result["delta"].get("content")
         assert (
             "".join(entry["token"] for entry in result["logprobs"]["content"]) == wire
@@ -5503,6 +5529,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             eos_token_ids=None,
         )
         post = SglangStreamingPostProcessor(
+            logprobs_enabled=True,
             tokenizer=self.ByteTokenizer(),
             tool_call_parser=None,
             reasoning_parser=None,
@@ -5627,9 +5654,11 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             [FakeRoutedItem(None, is_error=True, comments=["backend disconnected"])],
         )
         assert len(items) == 1
-        err = items[0]["error"]
-        assert err["type"] == "internal_error"
-        assert "backend disconnected" in err["message"]
+        assert items[0] == {
+            "_dynamo_annotated": True,
+            "event": "error",
+            "comment": ["backend disconnected"],
+        }
 
     """Test the sliding-window incremental detokenizer."""
 
@@ -5652,7 +5681,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         assert final["delta"]["content"] == "Hello<|user|>"
 
     def test_lookback_trimming(self, tokenizer):
-        """Verify _all_token_ids doesn't grow unbounded."""
+        """Verify the incremental decode context stays bounded."""
         post = SglangStreamingPostProcessor(
             tokenizer=tokenizer, tool_call_parser=None, reasoning_parser=None
         )
@@ -5660,10 +5689,10 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         for _ in range(200):
             post.process_output({"token_ids": [1], "finish_reason": None})
         # Should be trimmed, not 200 tokens
-        assert len(post._all_token_ids) < 200
+        assert len(post._decode_context_ids) + len(post._pending_decode_ids) < 200
 
-    def test_strips_all_configured_trailing_eos_token_ids(self, tokenizer):
-        """Any configured EOS id is stripped from the final chunk before decode."""
+    def test_preserves_configured_eos_before_actual_stop(self, tokenizer):
+        """Only the actual final EOS is stripped; preceding generated tokens remain."""
         post = SglangStreamingPostProcessor(
             tokenizer=tokenizer,
             tool_call_parser=None,
@@ -5671,7 +5700,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             eos_token_ids=[2, 3],
         )
 
-        assert post._strip_trailing_eos_token_ids([10, 3, 2]) == [10]
+        assert post._strip_matched_stop_token_ids([10, 3, 2], None) == [10, 3]
 
 
 class TestFastPlainTextPath:  # FRONTEND.6 — fast path that skips parser when no markers
@@ -5786,10 +5815,17 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
             ),
         ],
     )
+    @pytest.mark.parametrize("chunk_size", [1, 3, 20])
     def test_required_tool_distinguishes_bare_json_from_reasoning(
-        self, tokenizer, parser_name, reasoning_output, expected_reasoning, tool_choice
+        self,
+        tokenizer,
+        parser_name,
+        reasoning_output,
+        expected_reasoning,
+        tool_choice,
+        chunk_size,
     ):
-        """Guided tool JSON bypasses only when the complete output is bare JSON."""
+        """Guided tool JSON is separated from reasoning across stream chunk sizes."""
         request = {
             "tools": [
                 {
@@ -5832,7 +5868,8 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
             tool_call_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             sglang_tools=tools,
-            guided_json_is_content=reasoning_output is None,
+            tool_guided_active=True,
+            guided_decoding={"json": {"type": "array"}},
         )
 
         tool_json = json.dumps(
@@ -5844,9 +5881,9 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         content = ""
         tool_calls = []
         finish_reason = None
-        for offset in range(0, len(token_ids), 3):
-            batch = token_ids[offset : offset + 3]
-            is_last = offset + 3 >= len(token_ids)
+        for offset in range(0, len(token_ids), chunk_size):
+            batch = token_ids[offset : offset + chunk_size]
+            is_last = offset + chunk_size >= len(token_ids)
             choice = post.process_output(
                 {"token_ids": batch, "finish_reason": "stop" if is_last else None}
             )
@@ -5860,11 +5897,12 @@ class TestReasoningParsing:  # FRONTEND.9 — reasoning ↔ tool-call orchestrat
         assert reasoning == expected_reasoning
         assert content == ""
         assert finish_reason == "tool_calls"
-        assert len(tool_calls) == 1
+        assert {call["index"] for call in tool_calls} == {0}
+        assert sum("id" in call for call in tool_calls) == 1
         assert tool_calls[0]["function"]["name"] == "get_weather"
-        assert json.loads(tool_calls[0]["function"]["arguments"]) == {
-            "city": "New York"
-        }
+        assert json.loads(
+            "".join(call["function"].get("arguments", "") for call in tool_calls)
+        ) == {"city": "New York"}
 
     @pytest.mark.core
     @pytest.mark.timeout(60)
@@ -6254,7 +6292,7 @@ def test_guided_output_requires_reasoning_uses_exact_source(
     expected,
 ):
     assert (
-        _guided_output_requires_reasoning(
+        _effective_guidance_requires_reasoning(
             force_reasoning=force_reasoning,
             reasoning_parser_name=parser_name,
             response_format_guided_active=response_format_guided_active,
@@ -6780,6 +6818,9 @@ class TestLogprobsStreaming:  # FRONTEND.6 — logprobs passthrough integrity
         counts the terminal tokens exactly once."""
 
         class _TerminalToolCallPost:
+            locally_finished = False
+            local_stop_reason = None
+
             """Post-processor double: every chunk looks like the terminal
             tool-call flush carrying one logprob record."""
 
@@ -7009,7 +7050,9 @@ class TestReasoningTokenAccounting:  # FRONTEND.9 — thinking-token count for u
     def test_plain_content_yields_no_reasoning_count(self):
         from sglang.srt.parser.reasoning_parser import ReasoningParser
 
-        rp = ReasoningParser(model_type="qwen3", stream_reasoning=True)
+        rp = ReasoningParser(
+            model_type="qwen3", stream_reasoning=True, force_reasoning=False
+        )
         post = SglangStreamingPostProcessor(
             tokenizer=self._Tokenizer(),
             tool_call_parser=None,

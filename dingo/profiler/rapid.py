@@ -26,6 +26,7 @@ from aisimulate.legacy_cli.main import _execute_tasks, build_default_tasks
 from aisimulate.sdk.task_v2 import Task
 
 from dingo.profiler.utils.config import clamp_total_gpus_to_budget
+from dingo.profiler.utils.config_modifiers import CONFIG_MODIFIERS
 from dingo.profiler.utils.dgdr_v1beta1_types import DynamoGraphDeploymentRequestSpec
 from dingo.profiler.utils.model_cache_paths import model_cache_path_in_pvc
 from dingo.profiler.utils.profile_common import (
@@ -319,6 +320,17 @@ def _run_default_sim(
         tpot=target_tpot,
         request_latency=request_latency,
     )
+
+    if backend == "auto":
+        # AIS also enumerates backends removed from Dingo. Filter before picking
+        # so an unsupported winner cannot suppress a deployable alternative.
+        task_configs = {
+            name: task
+            for name, task in task_configs.items()
+            if task.primary_backend_name in CONFIG_MODIFIERS
+        }
+        if not task_configs:
+            raise ValueError("AIS produced no tasks for supported Dingo backends")
 
     load_kwargs: dict = {}
     if picking_mode == "load_match" and dgdr.workload is not None:

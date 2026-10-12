@@ -26,7 +26,7 @@ def test_vllm_runtime_includes_working_frontend_video_decoder(tmp_path: Path):
     # MediaDecoder is configuration-only. Importing it proves the Rust extension's
     # external libav* dependencies resolve; decode with the same in-tree FFmpeg to
     # prove its allowlist includes the VP9 codec used by frontend decoding.
-    fixture = Path(__file__).resolve().parents[6] / "lib/llm/tests/data/media/2p_10.mp4"
+    fixture = Path(__file__).resolve().parents[4] / "lib/llm/tests/data/media/2p_10.mp4"
     output = tmp_path / "decoded.webm"
     ffmpeg = os.environ.get("IMAGEIO_FFMPEG_EXE") or "ffmpeg"
     result = subprocess.run(

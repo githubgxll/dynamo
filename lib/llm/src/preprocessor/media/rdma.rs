@@ -433,11 +433,14 @@ pub fn get_nixl_agent() -> Result<NixlAgent> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "nixl-media")]
     use super::{
-        DEFAULT_PROGRESS_THREAD_DELAY_US, DataType, MAX_PROGRESS_THREAD_DELAY_US,
-        canonical_content_hash, progress_thread_delay_or_default,
+        DEFAULT_PROGRESS_THREAD_DELAY_US, MAX_PROGRESS_THREAD_DELAY_US,
+        progress_thread_delay_or_default,
     };
+    use super::{DataType, canonical_content_hash};
 
+    #[cfg(feature = "nixl-media")]
     #[test]
     fn progress_thread_delay_out_of_range_uses_default() {
         assert_eq!(progress_thread_delay_or_default(0), 0);

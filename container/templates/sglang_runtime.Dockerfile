@@ -36,10 +36,16 @@ ENV PATH=/usr/local/bin/etcd:$PATH
 # anything not already installed while keeping both operations in one layer.
 # libjemalloc2 lets Dynamo processes opt into jemalloc via
 # LD_PRELOAD or DYN_FRONTEND_JEMALLOC; it is not preloaded by default.
-RUN apt-get update && \
+RUN set -eux; \
+    sed -i 's|archive.ubuntu.com|mirrors.huaweicloud.com|g; s|security.ubuntu.com|mirrors.huaweicloud.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         libturbojpeg \
-        libjemalloc2 && \
+        libjemalloc2; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade \
         dirmngr \
         gnupg \
@@ -52,20 +58,26 @@ RUN apt-get update && \
         gpgv \
         keyboxd \
         libssl3t64 \
-        openssl && \
-    rm -rf /var/lib/apt/lists/* && \
-    ldconfig && \
+        openssl; \
+    rm -rf /var/lib/apt/lists/*; \
+    ldconfig; \
     ldconfig -p | grep -q 'libturbojpeg.so.0'
 {% else %}
 # Install the TurboJPEG runtime used by frontend JPEG decoding.
 # libjemalloc2 lets Dynamo processes opt into jemalloc via
 # LD_PRELOAD or DYN_FRONTEND_JEMALLOC; it is not preloaded by default.
-RUN apt-get update && \
+RUN set -eux; \
+    sed -i 's|archive.ubuntu.com|mirrors.huaweicloud.com|g; s|security.ubuntu.com|mirrors.huaweicloud.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         libturbojpeg \
-        libjemalloc2 && \
-    rm -rf /var/lib/apt/lists/* && \
-    ldconfig && \
+        libjemalloc2; \
+    rm -rf /var/lib/apt/lists/*; \
+    ldconfig; \
     ldconfig -p | grep -q 'libturbojpeg.so.0'
 {% endif %}
 

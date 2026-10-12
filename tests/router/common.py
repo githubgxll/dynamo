@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import aiohttp
 import requests
-
 from dynamo.llm import AisPerfConfig, KvRouter, KvRouterConfig
 from dynamo.prometheus_names import frontend_service, name_prefix
+
 from tests.router.helper import (
     assert_event_dumps_equal,
     get_runtime,
@@ -423,36 +423,36 @@ def _test_router_override_router_config(
         # Use endpoint polling to make sure all workers are ready before proceeding,
         # the helper functions will send requests for liveness check which may
         # affect counting if workers are partially ready.
-        runtime = get_runtime(store_backend, request_plane)
-        endpoint_obj = runtime.endpoint(endpoint)
-        asyncio.run(
-            poll_for_worker_instances(
-                endpoint_obj, engine_workers.num_workers, frontend_timeout
+        with managed_runtime(store_backend, request_plane) as runtime:
+            endpoint_obj = runtime.endpoint(endpoint)
+            asyncio.run(
+                poll_for_worker_instances(
+                    endpoint_obj, engine_workers.num_workers, frontend_timeout
+                )
             )
-        )
 
-        logger.info("Waiting for workers to register with frontend...")
-        asyncio.run(
-            wait_for_frontend_ready(
-                frontend_url=frontend_url,
-                expected_num_workers=engine_workers.num_workers,
-                timeout=frontend_timeout,
-                engine_workers=engine_workers,
-                store_backend=store_backend,
-                request_plane=request_plane,
+            logger.info("Waiting for workers to register with frontend...")
+            asyncio.run(
+                wait_for_frontend_ready(
+                    frontend_url=frontend_url,
+                    expected_num_workers=engine_workers.num_workers,
+                    timeout=frontend_timeout,
+                    engine_workers=engine_workers,
+                    store_backend=store_backend,
+                    request_plane=request_plane,
+                )
             )
-        )
 
-        logger.info(
-            f"Sending {num_requests} requests via device-aware-weighted routing..."
-        )
-        asyncio.run(
-            send_inflight_requests(
-                [f"{frontend_url}/v1/chat/completions"],
-                test_payload,
-                num_requests,
+            logger.info(
+                f"Sending {num_requests} requests via device-aware-weighted routing..."
             )
-        )
+            asyncio.run(
+                send_inflight_requests(
+                    [f"{frontend_url}/v1/chat/completions"],
+                    test_payload,
+                    num_requests,
+                )
+            )
 
     cpu_count = _read_count(cpu_count_file)
     gpu_count = _read_count(gpu_count_file)
@@ -460,9 +460,9 @@ def _test_router_override_router_config(
     # There is request sent to indicate liveness, so received request count is
     # larger than the number of requests.
     # This test should actually to confirm that no requests are sent to the CPU worker.
-    assert (
-        gpu_count >= num_requests
-    ), f"GPU worker should receive at least {num_requests} requests, got {gpu_count}"
+    assert gpu_count >= num_requests, (
+        f"GPU worker should receive at least {num_requests} requests, got {gpu_count}"
+    )
     assert cpu_count == 0, f"CPU worker should receive 0 requests, got {cpu_count}"
     logger.info(
         f"device-aware-weighted routing verified: GPU={gpu_count}, CPU={cpu_count}"
@@ -736,152 +736,164 @@ def _test_session_affinity(
         urls = [f"http://localhost:{port}/v1/chat/completions" for port in router_ports]
 
         async def run_test() -> None:
-            runtime = get_runtime(store_backend, "nats")
-            endpoint = runtime.endpoint(
-                f"{engine_workers.namespace}.{engine_workers.component_name}.generate"
-            )
-            worker_ids = sorted(
-                await poll_for_worker_instances(endpoint, engine_workers.num_workers)
-            )
-            assert len(worker_ids) >= 2
-            worker_a, worker_b = worker_ids[:2]
-
-            for port in router_ports:
-                await wait_for_frontend_ready(
-                    frontend_url=f"http://localhost:{port}",
-                    expected_num_workers=engine_workers.num_workers,
-                    timeout=120,
-                    engine_workers=engine_workers,
-                    store_backend=store_backend,
-                    request_plane="nats",
+            with managed_runtime(store_backend, "nats") as runtime:
+                endpoint = runtime.endpoint(
+                    f"{engine_workers.namespace}.{engine_workers.component_name}.generate"
                 )
+                worker_ids = sorted(
+                    await poll_for_worker_instances(
+                        endpoint, engine_workers.num_workers
+                    )
+                )
+                assert len(worker_ids) >= 2
+                worker_a, worker_b = worker_ids[:2]
 
-            suffix = uuid.uuid4().hex
-            prefix_a = " ".join([f"affinity-alpha-{suffix}"] * (block_size * 2))
-            prefix_b = " ".join([f"affinity-beta-{suffix}"] * (block_size * 2))
-            session_a_headers = {
-                "x-dynamo-session-id": f"local-affinity-a-{uuid.uuid4()}"
-            }
-            session_b_headers = {
-                "x-dynamo-session-id": f"local-affinity-b-{uuid.uuid4()}"
-            }
+                for port in router_ports:
+                    await wait_for_frontend_ready(
+                        frontend_url=f"http://localhost:{port}",
+                        expected_num_workers=engine_workers.num_workers,
+                        timeout=120,
+                        engine_workers=engine_workers,
+                        store_backend=store_backend,
+                        request_plane="nats",
+                    )
 
-            def payload(content: str, *, query_only: bool = False) -> dict[str, Any]:
-                annotations = ["query_instance_id:"] if query_only else []
-                return {
-                    **test_payload,
-                    "messages": [{"role": "user", "content": content}],
-                    "stream": True,
-                    "max_tokens": 1,
-                    "nvext": {
-                        "annotations": annotations,
-                        "extra_fields": ["worker_id"],
-                    },
+                suffix = uuid.uuid4().hex
+                prefix_a = " ".join([f"affinity-alpha-{suffix}"] * (block_size * 2))
+                prefix_b = " ".join([f"affinity-beta-{suffix}"] * (block_size * 2))
+                session_a_headers = {
+                    "x-dynamo-session-id": f"local-affinity-a-{uuid.uuid4()}"
+                }
+                session_b_headers = {
+                    "x-dynamo-session-id": f"local-affinity-b-{uuid.uuid4()}"
                 }
 
-            async def send(
-                client: aiohttp.ClientSession,
-                url: str,
-                request_payload: dict[str, Any],
-                headers: dict[str, str] | None = None,
-            ) -> tuple[int, int]:
-                async with client.post(
-                    url, json=request_payload, headers=headers
-                ) as response:
-                    body = await response.text()
-                    assert response.status == 200, body
+                def payload(
+                    content: str, *, query_only: bool = False
+                ) -> dict[str, Any]:
+                    annotations = ["query_instance_id:"] if query_only else []
+                    return {
+                        **test_payload,
+                        "messages": [{"role": "user", "content": content}],
+                        "stream": True,
+                        "max_tokens": 1,
+                        "nvext": {
+                            "annotations": annotations,
+                            "extra_fields": ["worker_id"],
+                        },
+                    }
 
-                worker_info = None
-                for chunk in parse_sse_json_chunks(body):
-                    candidate = chunk.get("nvext", {}).get("worker_id")
-                    if candidate:
-                        worker_info = candidate
+                async def send(
+                    client: aiohttp.ClientSession,
+                    url: str,
+                    request_payload: dict[str, Any],
+                    headers: dict[str, str] | None = None,
+                ) -> tuple[int, int]:
+                    async with client.post(
+                        url, json=request_payload, headers=headers
+                    ) as response:
+                        body = await response.text()
+                        assert response.status == 200, body
 
-                assert worker_info is not None, body
-                return (
-                    worker_info["decode_worker_id"],
-                    worker_info["decode_dp_rank"],
-                )
+                    worker_info = None
+                    for chunk in parse_sse_json_chunks(body):
+                        candidate = chunk.get("nvext", {}).get("worker_id")
+                        if candidate:
+                            worker_info = candidate
 
-            async def wait_for_prefix_target(
-                client: aiohttp.ClientSession,
-                url: str,
-                content: str,
-                expected: tuple[int, int],
-            ) -> None:
-                for _ in range(50):
-                    if (
-                        await send(client, url, payload(content, query_only=True))
-                        == expected
-                    ):
-                        return
-                    await asyncio.sleep(0.1)
-                raise AssertionError(
-                    f"KV events did not make prefix target {expected} visible"
-                )
-
-            proposal_a = {
-                **session_a_headers,
-                "x-dynamo-worker-instance-id": str(worker_a),
-                "x-dynamo-dp-rank": "0",
-            }
-            proposal_b = {
-                **session_b_headers,
-                "x-dynamo-worker-instance-id": str(worker_b),
-                "x-dynamo-dp-rank": "0",
-            }
-
-            async with aiohttp.ClientSession() as client:
-                assert await send(client, urls[0], payload(prefix_a), proposal_a) == (
-                    worker_a,
-                    0,
-                )
-                assert await send(client, urls[1], payload(prefix_b), proposal_b) == (
-                    worker_b,
-                    0,
-                )
-
-                await wait_for_prefix_target(client, urls[0], prefix_a, (worker_a, 0))
-                await wait_for_prefix_target(client, urls[1], prefix_b, (worker_b, 0))
-
-                deadline = time.monotonic() + 10
-                observed_b = None
-                observed_a = None
-                while time.monotonic() < deadline:
-                    observed_b = await send(
-                        client,
-                        urls[0],
-                        payload(prefix_a, query_only=True),
-                        session_b_headers,
+                    assert worker_info is not None, body
+                    return (
+                        worker_info["decode_worker_id"],
+                        worker_info["decode_dp_rank"],
                     )
-                    observed_a = await send(
-                        client,
-                        urls[1],
-                        payload(prefix_b, query_only=True),
-                        session_a_headers,
-                    )
-                    if observed_b == (worker_b, 0) and observed_a == (worker_a, 0):
-                        break
 
-                    assert await send(
-                        client, urls[0], payload(prefix_a), session_a_headers
-                    ) == (worker_a, 0)
-                    assert await send(
-                        client, urls[1], payload(prefix_b), session_b_headers
-                    ) == (worker_b, 0)
-                    await asyncio.sleep(0.1)
-                else:
+                async def wait_for_prefix_target(
+                    client: aiohttp.ClientSession,
+                    url: str,
+                    content: str,
+                    expected: tuple[int, int],
+                ) -> None:
+                    for _ in range(50):
+                        if (
+                            await send(client, url, payload(content, query_only=True))
+                            == expected
+                        ):
+                            return
+                        await asyncio.sleep(0.1)
                     raise AssertionError(
-                        "replica affinity did not converge before the deadline: "
-                        f"frontend 1 observed {observed_b}, frontend 2 observed {observed_a}"
+                        f"KV events did not make prefix target {expected} visible"
                     )
 
-                assert await send(
-                    client, urls[0], payload(prefix_a), session_b_headers
-                ) == (worker_b, 0)
-                assert await send(
-                    client, urls[1], payload(prefix_b), session_a_headers
-                ) == (worker_a, 0)
+                proposal_a = {
+                    **session_a_headers,
+                    "x-dynamo-worker-instance-id": str(worker_a),
+                    "x-dynamo-dp-rank": "0",
+                }
+                proposal_b = {
+                    **session_b_headers,
+                    "x-dynamo-worker-instance-id": str(worker_b),
+                    "x-dynamo-dp-rank": "0",
+                }
+
+                async with aiohttp.ClientSession() as client:
+                    assert await send(
+                        client, urls[0], payload(prefix_a), proposal_a
+                    ) == (
+                        worker_a,
+                        0,
+                    )
+                    assert await send(
+                        client, urls[1], payload(prefix_b), proposal_b
+                    ) == (
+                        worker_b,
+                        0,
+                    )
+
+                    await wait_for_prefix_target(
+                        client, urls[0], prefix_a, (worker_a, 0)
+                    )
+                    await wait_for_prefix_target(
+                        client, urls[1], prefix_b, (worker_b, 0)
+                    )
+
+                    deadline = time.monotonic() + 10
+                    observed_b = None
+                    observed_a = None
+                    while time.monotonic() < deadline:
+                        observed_b = await send(
+                            client,
+                            urls[0],
+                            payload(prefix_a, query_only=True),
+                            session_b_headers,
+                        )
+                        observed_a = await send(
+                            client,
+                            urls[1],
+                            payload(prefix_b, query_only=True),
+                            session_a_headers,
+                        )
+                        if observed_b == (worker_b, 0) and observed_a == (worker_a, 0):
+                            break
+
+                        assert await send(
+                            client, urls[0], payload(prefix_a), session_a_headers
+                        ) == (worker_a, 0)
+                        assert await send(
+                            client, urls[1], payload(prefix_b), session_b_headers
+                        ) == (worker_b, 0)
+                        await asyncio.sleep(0.1)
+                    else:
+                        raise AssertionError(
+                            "replica affinity did not converge before the deadline: "
+                            f"frontend 1 observed {observed_b}, frontend 2 observed {observed_a}"
+                        )
+
+                    assert await send(
+                        client, urls[0], payload(prefix_a), session_b_headers
+                    ) == (worker_b, 0)
+                    assert await send(
+                        client, urls[1], payload(prefix_b), session_a_headers
+                    ) == (worker_a, 0)
 
         asyncio.run(run_test())
 
@@ -2644,97 +2656,99 @@ def _test_disagg_topology_required_prefill_pin_match_and_mismatch(
                 request_plane=request_plane,
             )
 
-            runtime = get_runtime(request_plane=request_plane)
-            prefill_endpoint = runtime.endpoint(f"{shared_namespace}.prefill.generate")
+            with managed_runtime(request_plane=request_plane) as runtime:
+                prefill_endpoint = runtime.endpoint(
+                    f"{shared_namespace}.prefill.generate"
+                )
 
-            await poll_for_worker_instances(
-                prefill_endpoint, decode_workers.num_workers
-            )
+                await poll_for_worker_instances(
+                    prefill_endpoint, decode_workers.num_workers
+                )
 
-            async def post_expect_status(
-                session: aiohttp.ClientSession,
-                payload: dict,
-                expected_status: int,
-                message: str,
-                retry_statuses: set[int] | None = None,
-                timeout_s: float = 30.0,
-            ) -> str:
-                retry_statuses = retry_statuses or set()
-                deadline = asyncio.get_running_loop().time() + timeout_s
-                attempt = 0
-                last_status = None
-                last_body = ""
+                async def post_expect_status(
+                    session: aiohttp.ClientSession,
+                    payload: dict,
+                    expected_status: int,
+                    message: str,
+                    retry_statuses: set[int] | None = None,
+                    timeout_s: float = 30.0,
+                ) -> str:
+                    retry_statuses = retry_statuses or set()
+                    deadline = asyncio.get_running_loop().time() + timeout_s
+                    attempt = 0
+                    last_status = None
+                    last_body = ""
 
-                while True:
-                    attempt += 1
-                    async with session.post(chat_url, json=payload) as response:
-                        response_body = await response.text()
-                        if response.status == expected_status:
-                            return response_body
+                    while True:
+                        attempt += 1
+                        async with session.post(chat_url, json=payload) as response:
+                            response_body = await response.text()
+                            if response.status == expected_status:
+                                return response_body
 
-                        last_status = response.status
-                        last_body = response_body
+                            last_status = response.status
+                            last_body = response_body
 
-                    if (
-                        last_status not in retry_statuses
-                        or asyncio.get_running_loop().time() >= deadline
-                    ):
-                        raise AssertionError(
-                            f"{message}, got status={last_status} body={last_body}"
+                        if (
+                            last_status not in retry_statuses
+                            or asyncio.get_running_loop().time() >= deadline
+                        ):
+                            raise AssertionError(
+                                f"{message}, got status={last_status} body={last_body}"
+                            )
+
+                        logger.info(
+                            "%s not ready yet: status=%s attempt=%s; retrying...",
+                            message,
+                            last_status,
+                            attempt,
                         )
+                        await asyncio.sleep(1.0)
 
-                    logger.info(
-                        "%s not ready yet: status=%s attempt=%s; retrying...",
-                        message,
-                        last_status,
-                        attempt,
+                zone_a_payload = {
+                    **test_payload,
+                    "nvext": {
+                        "prefill_worker_id": prefill_zone_a_id,
+                    },
+                }
+                topology_ready_payload = {
+                    **zone_a_payload,
+                    "messages": [{"role": "user", "content": "test"}],
+                    "max_tokens": 1,
+                    "stream": False,
+                }
+                logger.info("Waiting for topology-valid frontend readiness...")
+                await wait_for_frontend_ready(
+                    frontend_url=frontend_url,
+                    expected_num_workers=decode_workers.num_workers,
+                    timeout=120,
+                    test_payload=topology_ready_payload,
+                    engine_workers=decode_workers,
+                    request_plane=request_plane,
+                )
+
+                async with aiohttp.ClientSession() as session:
+                    await post_expect_status(
+                        session,
+                        zone_a_payload,
+                        200,
+                        "Expected required KV-transfer topology match to succeed",
+                        retry_statuses={404},
                     )
-                    await asyncio.sleep(1.0)
 
-            zone_a_payload = {
-                **test_payload,
-                "nvext": {
-                    "prefill_worker_id": prefill_zone_a_id,
-                },
-            }
-            topology_ready_payload = {
-                **zone_a_payload,
-                "messages": [{"role": "user", "content": "test"}],
-                "max_tokens": 1,
-                "stream": False,
-            }
-            logger.info("Waiting for topology-valid frontend readiness...")
-            await wait_for_frontend_ready(
-                frontend_url=frontend_url,
-                expected_num_workers=decode_workers.num_workers,
-                timeout=120,
-                test_payload=topology_ready_payload,
-                engine_workers=decode_workers,
-                request_plane=request_plane,
-            )
-
-            async with aiohttp.ClientSession() as session:
-                await post_expect_status(
-                    session,
-                    zone_a_payload,
-                    200,
-                    "Expected required KV-transfer topology match to succeed",
-                    retry_statuses={404},
-                )
-
-            zone_b_payload = {
-                **test_payload,
-                "nvext": {
-                    "prefill_worker_id": prefill_zone_b_id,
-                },
-            }
-            async with aiohttp.ClientSession() as session:
-                await post_expect_status(
-                    session,
-                    zone_b_payload,
-                    500,
-                    "Expected required KV-transfer topology mismatch to fail",
-                )
+                zone_b_payload = {
+                    **test_payload,
+                    "nvext": {
+                        "prefill_worker_id": prefill_zone_b_id,
+                    },
+                }
+                async with aiohttp.ClientSession() as session:
+                    await post_expect_status(
+                        session,
+                        zone_b_payload,
+                        500,
+                        "Expected required KV-transfer topology mismatch to fail",
+                    )
 
         asyncio.run(run_requests())
 
@@ -3745,93 +3759,95 @@ def _test_disagg_direct_mode(
     ):
         frontend_url = f"http://localhost:{frontend_port}"
         chat_url = f"{frontend_url}/v1/chat/completions"
-        runtime = get_runtime(request_plane=request_plane)
-        prefill_endpoint = runtime.endpoint(
-            f"{decode_workers.namespace}.prefill.generate"
-        )
-        decode_endpoint = runtime.endpoint(
-            f"{decode_workers.namespace}.backend.generate"
-        )
-
-        async def wait_for_direct_frontend():
-            prefill_ids = await poll_for_worker_instances(
-                prefill_endpoint,
-                prefill_workers.num_workers,
+        with managed_runtime(request_plane=request_plane) as runtime:
+            prefill_endpoint = runtime.endpoint(
+                f"{decode_workers.namespace}.prefill.generate"
             )
-            decode_ids = await poll_for_worker_instances(
-                decode_endpoint,
-                decode_workers.num_workers,
+            decode_endpoint = runtime.endpoint(
+                f"{decode_workers.namespace}.backend.generate"
             )
-            headers = {
-                "x-dynamo-worker-instance-id": str(decode_ids[0]),
-                "x-dynamo-prefill-instance-id": str(prefill_ids[0]),
-                "x-dynamo-dp-rank": "0",
-                "x-dynamo-prefill-dp-rank": "0",
-            }
-            await wait_for_frontend_ready(
-                frontend_url=frontend_url,
-                timeout=120,
-                test_payload={**test_payload, "stream": False},
-                request_headers=headers,
-            )
-            return prefill_ids, decode_ids
 
-        prefill_ids, decode_ids = asyncio.run(wait_for_direct_frontend())
-        logger.info(f"Discovered prefill workers: {prefill_ids}")
-        logger.info(f"Discovered decode workers: {decode_ids}")
-
-        target_prefill = prefill_ids[0]
-        target_decode = decode_ids[0]
-
-        async def run_direct_mode_tests():
-            # Test 1: Request WITH correct headers should succeed.
-            # In direct mode the router is a passthrough — it does not have a
-            # KvRouter and does not record worker IDs on the RequestTracker, so
-            # the response's nvext will not contain worker_id info.  We only
-            # verify that the request is routed successfully (HTTP 200) and
-            # produces a valid chat completion response.
-            payload = {
-                **test_payload,
-                "stream": False,
-            }
-            headers = {
-                "x-dynamo-worker-instance-id": str(target_decode),
-                "x-dynamo-prefill-instance-id": str(target_prefill),
-                "x-dynamo-dp-rank": "0",
-                "x-dynamo-prefill-dp-rank": "0",
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    chat_url, json=payload, headers=headers
-                ) as response:
-                    assert response.status == 200, (
-                        "Direct-mode request with headers failed: "
-                        f"status={response.status}, body={await response.text()}"
-                    )
-                    data = await response.json()
-                    assert "choices" in data, "Expected 'choices' in response data"
-                    assert (
-                        len(data["choices"]) > 0
-                    ), "Expected at least one choice in response"
-
-                # Test 2: Request WITHOUT headers should fail (Direct mode
-                # rejects requests that have no worker ID)
-                logger.info(
-                    "Sending request without headers (should fail in Direct mode)..."
+            async def wait_for_direct_frontend():
+                prefill_ids = await poll_for_worker_instances(
+                    prefill_endpoint,
+                    prefill_workers.num_workers,
                 )
-                no_header_payload = {**test_payload, "stream": False}
-                async with session.post(chat_url, json=no_header_payload) as response:
-                    assert response.status != 200, (
-                        f"Expected non-200 status without routing headers in Direct mode, "
-                        f"got {response.status}. Direct mode must reject unaddressed requests."
-                    )
-                    logger.info(
-                        f"Correctly rejected headerless request: status={response.status}"
-                    )
+                decode_ids = await poll_for_worker_instances(
+                    decode_endpoint,
+                    decode_workers.num_workers,
+                )
+                headers = {
+                    "x-dynamo-worker-instance-id": str(decode_ids[0]),
+                    "x-dynamo-prefill-instance-id": str(prefill_ids[0]),
+                    "x-dynamo-dp-rank": "0",
+                    "x-dynamo-prefill-dp-rank": "0",
+                }
+                await wait_for_frontend_ready(
+                    frontend_url=frontend_url,
+                    timeout=120,
+                    test_payload={**test_payload, "stream": False},
+                    request_headers=headers,
+                )
+                return prefill_ids, decode_ids
 
-        asyncio.run(run_direct_mode_tests())
-        logger.info("Direct-mode disagg E2E test passed")
+            prefill_ids, decode_ids = asyncio.run(wait_for_direct_frontend())
+            logger.info(f"Discovered prefill workers: {prefill_ids}")
+            logger.info(f"Discovered decode workers: {decode_ids}")
+
+            target_prefill = prefill_ids[0]
+            target_decode = decode_ids[0]
+
+            async def run_direct_mode_tests():
+                # Test 1: Request WITH correct headers should succeed.
+                # In direct mode the router is a passthrough — it does not have a
+                # KvRouter and does not record worker IDs on the RequestTracker, so
+                # the response's nvext will not contain worker_id info.  We only
+                # verify that the request is routed successfully (HTTP 200) and
+                # produces a valid chat completion response.
+                payload = {
+                    **test_payload,
+                    "stream": False,
+                }
+                headers = {
+                    "x-dynamo-worker-instance-id": str(target_decode),
+                    "x-dynamo-prefill-instance-id": str(target_prefill),
+                    "x-dynamo-dp-rank": "0",
+                    "x-dynamo-prefill-dp-rank": "0",
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        chat_url, json=payload, headers=headers
+                    ) as response:
+                        assert response.status == 200, (
+                            "Direct-mode request with headers failed: "
+                            f"status={response.status}, body={await response.text()}"
+                        )
+                        data = await response.json()
+                        assert "choices" in data, "Expected 'choices' in response data"
+                        assert len(data["choices"]) > 0, (
+                            "Expected at least one choice in response"
+                        )
+
+                    # Test 2: Request WITHOUT headers should fail (Direct mode
+                    # rejects requests that have no worker ID)
+                    logger.info(
+                        "Sending request without headers (should fail in Direct mode)..."
+                    )
+                    no_header_payload = {**test_payload, "stream": False}
+                    async with session.post(
+                        chat_url, json=no_header_payload
+                    ) as response:
+                        assert response.status != 200, (
+                            f"Expected non-200 status without routing headers in Direct mode, "
+                            f"got {response.status}. Direct mode must reject unaddressed requests."
+                        )
+                        logger.info(
+                            f"Correctly rejected headerless request: status={response.status}"
+                        )
+
+            asyncio.run(run_direct_mode_tests())
+            logger.info("Direct-mode disagg E2E test passed")
 
 
 def _test_disagg_per_role_router_modes(

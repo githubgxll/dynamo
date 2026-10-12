@@ -5,6 +5,7 @@
 
 import argparse
 import os
+import warnings
 from typing import List, Optional
 
 from dingo.common.configuration.arg_group import ArgGroup
@@ -254,6 +255,15 @@ class DynamoSGLangConfig(ConfigBase):
         if self.gateway_workers is not None and self.gateway_workers < 1:
             raise ValueError("--gateway-workers must be a positive integer")
         self.validate_multimodal_topology()
+
+        if self.multimodal_worker and not self.enable_multimodal:
+            warnings.warn(
+                "--multimodal-worker is deprecated; use --enable-multimodal "
+                "--dedicated-mm-encoder with --disaggregation-mode=pd, prefill, or decode.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.enable_multimodal = True
 
         self.validate_dedicated_mm_encoder()
 

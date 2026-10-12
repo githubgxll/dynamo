@@ -5,6 +5,7 @@
 Tests for the cancellation example in examples/custom_backend/cancellation
 """
 
+import sys
 import asyncio
 import os
 import subprocess
@@ -33,7 +34,7 @@ def example_dir():
 async def server_process(example_dir):
     """Start the backend server and clean up after test"""
     server_proc = subprocess.Popen(
-        ["python3", "-u", "server.py"],
+        [sys.executable, "-u", "server.py"],
         cwd=example_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -54,7 +55,7 @@ async def server_process(example_dir):
 async def middle_server_process(example_dir, server_process):
     """Start the middle server (depends on backend server) and clean up after test"""
     middle_proc = subprocess.Popen(
-        ["python3", "-u", "middle_server.py"],
+        [sys.executable, "-u", "middle_server.py"],
         cwd=example_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -73,7 +74,7 @@ async def middle_server_process(example_dir, server_process):
 
 def run_client(example_dir, use_middle=False):
     """Run the client and capture its output"""
-    cmd = ["python3", "client.py"]
+    cmd = [sys.executable, "client.py"]
     if use_middle:
         cmd.append("--middle")
 
@@ -116,12 +117,12 @@ async def test_direct_connection_cancellation(
     server_output = stop_process("server_process", server_process)
 
     # Assert expected messages
-    assert (
-        "Client: Cancelling after 3 responses..." in client_output
-    ), f"Client output: {client_output}"
-    assert (
-        "Server: Cancelled at iteration" in server_output
-    ), f"Server output: {server_output}"
+    assert "Client: Cancelling after 3 responses..." in client_output, (
+        f"Client output: {client_output}"
+    )
+    assert "Server: Cancelled at iteration" in server_output, (
+        f"Server output: {server_output}"
+    )
 
 
 @pytest.mark.asyncio
@@ -141,12 +142,12 @@ async def test_middle_server_cancellation(
     middle_output = stop_process("middle_server_process", middle_server_process)
 
     # Assert expected messages
-    assert (
-        "Client: Cancelling after 3 responses..." in client_output
-    ), f"Client output: {client_output}"
-    assert (
-        "Middle server: Forwarding response 2" in middle_output
-    ), f"Middle server output: {middle_output}"
-    assert (
-        "Server: Cancelled at iteration" in server_output
-    ), f"Server output: {server_output}"
+    assert "Client: Cancelling after 3 responses..." in client_output, (
+        f"Client output: {client_output}"
+    )
+    assert "Middle server: Forwarding response 2" in middle_output, (
+        f"Middle server output: {middle_output}"
+    )
+    assert "Server: Cancelled at iteration" in server_output, (
+        f"Server output: {server_output}"
+    )

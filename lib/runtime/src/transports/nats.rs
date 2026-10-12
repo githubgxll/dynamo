@@ -55,7 +55,7 @@ use crate::config::environment_names::nats as env_nats;
 pub use crate::slug::Slug;
 use tracing as log;
 
-use super::utils::build_in_runtime;
+use super::utils::{TransportRuntime, build_in_runtime};
 
 pub const URL_PREFIX: &str = "nats://";
 
@@ -63,6 +63,7 @@ pub const URL_PREFIX: &str = "nats://";
 pub struct Client {
     client: client::Client,
     js_ctx: jetstream::Context,
+    _runtime: TransportRuntime,
 }
 
 impl Client {
@@ -597,7 +598,7 @@ impl ClientOptions {
 
         // async-nats retains this timeout for steady-state reconnect attempts too.
         let options = options.connection_timeout(STARTUP_CONNECT_ATTEMPT_TIMEOUT);
-        let (client, _) = build_in_runtime(
+        let (client, runtime) = build_in_runtime(
             connect_with_startup_retry(options, self.server, self.startup_connect_timeout, token),
             NATS_WORKER_THREADS,
         )
@@ -605,7 +606,11 @@ impl ClientOptions {
 
         let js_ctx = jetstream::new(client.clone());
 
-        Ok(Client { client, js_ctx })
+        Ok(Client {
+            client,
+            js_ctx,
+            _runtime: runtime,
+        })
     }
 }
 

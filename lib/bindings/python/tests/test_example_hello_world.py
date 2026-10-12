@@ -5,6 +5,7 @@
 Tests for the hello_world example in examples/custom_backend/hello_world
 """
 
+import sys
 import asyncio
 import os
 import subprocess
@@ -34,7 +35,7 @@ def example_dir():
 async def server_process(example_dir):
     """Start the hello_world server and clean up after test"""
     server_proc = subprocess.Popen(
-        ["python3", "hello_world.py"],
+        [sys.executable, "hello_world.py"],
         cwd=example_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -54,7 +55,7 @@ async def server_process(example_dir):
 async def run_client(example_dir):
     """Run the client for a specified duration and capture its output"""
     with subprocess.Popen(
-        ["python3", "-u", "client.py"],
+        [sys.executable, "-u", "client.py"],
         cwd=example_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -20,7 +20,7 @@ use crate::protocols::{
 };
 
 const KEY_SIZE: usize = 32;
-const KEYED_XXH3_V1_DOMAIN: &[u8] = b"dingo.router.tracking-hash/keyed-xxh3-v1\0";
+const KEYED_XXH3_V1_DOMAIN: &[u8] = b"dynamo.router.tracking-hash/keyed-xxh3-v1\0";
 
 /// Hash algorithm used only for router-derived active-sequence tracking state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -37,7 +37,7 @@ from .sglang_prepost import (
     ToolCallParserType,
     _client_wants_separate_reasoning,
     _get_history_tool_calls_count,
-    _guided_output_requires_reasoning,
+    _guided_output_requires_reasoning as _guided_output_requires_reasoning,
     convert_tools,
     create_parsers,
     detect_force_reasoning_from_template,
@@ -1108,6 +1108,9 @@ class SglangProcessor:
                         **data,
                         "choices": [{**choice, "delta": {}, "logprobs": None}],
                     }
+                    # The payload owns this segment's token metrics. The empty
+                    # finish frame must not count those tokens a second time.
+                    terminal.pop("llm_metrics", None)
                     yield {**envelope, "data": payload}
                     yield {"_dynamo_annotated": True, "data": terminal}
                 else:

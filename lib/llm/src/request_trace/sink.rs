@@ -9,7 +9,6 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
-use async_nats::jetstream;
 use async_trait::async_trait;
 use dynamo_runtime::config::environment_names::llm::request_trace as env_request_trace;
 use dynamo_runtime::transports::nats;
@@ -70,7 +69,8 @@ impl RequestTraceSink for StderrRequestTraceSink {
 }
 
 pub struct NatsRequestTraceSink {
-    js: jetstream::Context,
+    // Retain the transport executor for the entire sink lifetime.
+    client: nats::Client,
     subject: String,
 }
 
@@ -86,7 +86,7 @@ impl NatsRequestTraceSink {
                 )
             })?;
         Ok(Self {
-            js: nats_client.jetstream().clone(),
+            client: nats_client,
             subject: policy.nats_subject.clone(),
         })
     }
@@ -101,7 +101,12 @@ impl RequestTraceSink for NatsRequestTraceSink {
     async fn emit(&self, record: &RequestTraceRecord) {
         match serde_json::to_vec(record) {
             Ok(bytes) => {
-                if let Err(error) = self.js.publish(self.subject.clone(), bytes.into()).await {
+                if let Err(error) = self
+                    .client
+                    .jetstream()
+                    .publish(self.subject.clone(), bytes.into())
+                    .await
+                {
                     tracing::warn!("request trace nats: publish failed: {error}");
                 }
             }

@@ -72,6 +72,11 @@ deny_globs:
 deny_components:
   - name: ffmpeg
     min_fixed_version: "9.0.1"
+    # This is an upstream FFmpeg release floor; Ubuntu's dpkg version includes
+    # an epoch and distro revision and the CUDA vLLM runtime intentionally
+    # preserves that Ubuntu FFmpeg stack.
+    skip_version_floor_purl_types:
+      - deb
   - name: x264
   - name: x265
   - name: fdk-aac
@@ -83,6 +88,9 @@ allow_paths:
   - "/usr/local/lib/libav"
   - "/usr/local/lib/libsw"
   - "/usr/local/lib/libpostproc"
+  # Auditwheel places our custom, restricted FFmpeg build inside this wheel.
+  - "/usr/local/lib/python3.12/dist-packages/ai_dingo_runtime.libs/libav"
+  - "/usr/local/lib/python3.12/dist-packages/ai_dingo_runtime.libs/libsw"
   - "/usr/local/bin/ffmpeg"
   - "/usr/local/src/ffmpeg"   # retained source tree (kept for legal reasons)
 
@@ -161,3 +169,42 @@ exceptions:
       to parse the input container before NVDEC decode; the package ships no
       libavcodec. Companion waiver to the PyNvVideoCodec libavutil entry above.
     owner: PyNvVideoCodec
+  - glob: "**/av.libs/*"
+    reason: >-
+      PyAV is part of the upstream vLLM CUDA runtime dependency stack. The
+      vLLM runtime intentionally preserves that FFmpeg stack for Ref2VA video
+      preprocessing; its component license review remains enforced separately.
+    owner: vLLM
+    images:
+      - vllm-runtime
+  - glob: "**/opencv_python*.libs/*"
+    reason: >-
+      OpenCV wheels are shipped by the upstream vLLM runtime and carry their
+      FFmpeg shared libraries. This image intentionally retains the upstream
+      media stack required by its video pipeline; license review remains
+      enforced separately.
+    owner: vLLM
+    images:
+      - vllm-runtime
+  - glob: "**/usr/lib/x86_64-linux-gnu/*.so*"
+    reason: >-
+      The upstream vLLM Ubuntu FFmpeg libraries are intentionally preserved:
+      Ref2VA preprocessing requires the software libx264rgb encoder and
+      rawvideo support. License review remains enforced separately.
+    owner: Ubuntu
+    images:
+      - vllm-runtime
+  - glob: "**/usr/bin/ffmpeg"
+    reason: >-
+      The upstream vLLM Ubuntu FFmpeg CLI is part of the intentionally
+      preserved media stack required by Ref2VA preprocessing.
+    owner: Ubuntu
+    images:
+      - vllm-runtime
+  - glob: "**/usr/bin/ffprobe"
+    reason: >-
+      The upstream vLLM Ubuntu ffprobe CLI is part of the intentionally
+      preserved media stack required by Ref2VA preprocessing.
+    owner: Ubuntu
+    images:
+      - vllm-runtime

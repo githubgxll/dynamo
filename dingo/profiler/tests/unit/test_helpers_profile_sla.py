@@ -534,7 +534,7 @@ class TestAssembleFinalConfig:
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0
-    def test_final_trtllm_config_enables_chunked_prefill(self, tmp_path):
+    def test_final_config_does_not_restore_removed_trtllm_defaults(self, tmp_path):
         dgdr = _make_dgdr()
         ops = _make_ops(tmp_path)
         dgd_config = {
@@ -564,8 +564,8 @@ class TestAssembleFinalConfig:
         args = result["spec"]["components"][0]["podTemplate"]["spec"]["containers"][0][
             "args"
         ]
-        idx = args.index("--trtllm.enable_chunked_prefill")
-        assert args[idx + 1] == "true"
+        # t5 removed this backend; shared materialization must not restore its flags.
+        assert "--trtllm.enable_chunked_prefill" not in args
 
     @pytest.mark.pre_merge
     @pytest.mark.gpu_0

@@ -18,8 +18,8 @@ from tests.router.helper import (
     generate_random_suffix,
     get_kv_indexer_command,
     get_kv_indexer_test_env,
-    get_runtime,
     get_select_service_command,
+    managed_runtime,
     poll_for_worker_instances,
     wait_for_indexer_workers_active,
     wait_for_selection_service_ready,
@@ -632,15 +632,15 @@ def wait_for_disagg_workers(
     event_plane: Optional[str],
 ) -> list[int]:
     async def wait_for_workers() -> list[int]:
-        runtime = get_runtime(
+        with managed_runtime(
             store_backend=store_backend,
             request_plane=request_plane,
             event_plane=event_plane,
-        )
-        endpoint = runtime.endpoint(
-            f"{workers.namespace}.{workers.component_name}.generate"
-        )
-        return await poll_for_worker_instances(endpoint, workers.num_workers)
+        ) as runtime:
+            endpoint = runtime.endpoint(
+                f"{workers.namespace}.{workers.component_name}.generate"
+            )
+            return await poll_for_worker_instances(endpoint, workers.num_workers)
 
     return asyncio.run(wait_for_workers())
 

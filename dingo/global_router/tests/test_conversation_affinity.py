@@ -8,6 +8,12 @@ TensorRT-LLM build (including rc19, which lacks the API)."""
 
 import pytest
 
+# t5 commit 8088b02fee intentionally removed the Python TRT-LLM backend.
+from pathlib import Path as _BackendPath
+
+if not (_BackendPath(__file__).resolve().parents[2] / "trtllm").is_dir():
+    pytest.skip("TRT-LLM backend is not shipped in Dingo t5", allow_module_level=True)
+
 from dingo.common.backend.agent_context import session_id_from_request
 from dynamo.trtllm.conversation_affinity import (
     CONVERSATION_PARAMS_AVAILABLE,

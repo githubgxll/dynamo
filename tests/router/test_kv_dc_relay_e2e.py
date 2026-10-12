@@ -5,8 +5,8 @@ import asyncio
 import time
 
 import pytest
-
 from dynamo.llm import KvDcRelay, KvRouter, KvRouterConfig
+
 from tests.router.common import _create_kv_router_with_timeout
 from tests.router.helper import (
     managed_runtime,
@@ -253,15 +253,38 @@ def test_kv_dc_relay_deduplicates_workers_and_restores_missed_events(
                         (relay_stats := _endpoint_stats(stats, endpoint_id))[
                             "recovery"
                         ]["rebuild_count"]
-                        >= 2
+                        # This is a new relay incarnation. Rank snapshots may
+                        # be batched into a single rebuild, so count recovery
+                        # completion and restored blocks, not one rebuild/rank.
+                        >= 1
+                        and relay_stats["recovery"]["rank_count"] == len(worker_ids)
                         and relay_stats["recovery"]["recovering_rank_count"] == 0
                         and relay_stats["aggregation"]["contribution_count"]
-                        > shared["aggregation"]["contribution_count"]
+                        == shared["aggregation"]["contribution_count"]
+                        + len(missed_tokens) // BLOCK_SIZE
                     ),
                 )
                 recovered = _endpoint_stats(recovered_host, endpoint_id)
                 recovered_members = _member_blocks(recovered)
-                assert recovered_members[worker_ids[0]] > shared_members[worker_ids[0]]
+                assert (
+                    recovered_host["identity"]["relay_incarnation"]
+                    != shared_host["identity"]["relay_incarnation"]
+                )
+                assert recovered_members[worker_ids[0]] == (
+                    shared_members[worker_ids[0]] + len(missed_tokens) // BLOCK_SIZE
+                )
+                assert recovered["aggregation"]["unique_block_count"] == (
+                    shared["aggregation"]["unique_block_count"]
+                    + len(missed_tokens) // BLOCK_SIZE
+                )
+                assert (
+                    _endpoint_stats(recovered_host, secondary_endpoint_id)[
+                        "aggregation"
+                    ]["unique_block_count"]
+                    == _endpoint_stats(isolated_host, secondary_endpoint_id)[
+                        "aggregation"
+                    ]["unique_block_count"]
+                )
                 assert recovered_members[worker_ids[1]] == shared_members[worker_ids[1]]
                 assert recovered["recovery"]["pending_live_event_count"] == 0
             finally:

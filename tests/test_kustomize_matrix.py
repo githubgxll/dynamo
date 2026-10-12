@@ -58,6 +58,10 @@ def test_user_facing_manifests_use_short_vllm_component_names():
 )
 def test_kimi_k3_vllm_recipes_use_short_worker_names(deployment, expected_worker_names):
     """Unprefixed names like PrefillWorker must not escape the vLLM rename."""
+    # Dingo intentionally removed the upstream recipes tree in f97f149cf6.
+    # A missing individual manifest is still a failure when recipes are shipped.
+    if not (REPO_ROOT / "recipes").exists():
+        pytest.skip("Dingo does not ship upstream recipes (f97f149cf6)")
     manifest = REPO_ROOT / "recipes/kimi-k3/vllm" / deployment / "deploy.yaml"
     resources = list(yaml.safe_load_all(manifest.read_text(encoding="utf-8")))
     dgd = next(
