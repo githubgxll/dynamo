@@ -189,6 +189,18 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// Preserve the legacy salt across serialization to Python processors.
+    /// The unsupported-field map is deliberately not serialized; promote only
+    /// the resolved cache namespace, leaving unrelated unknown fields private.
+    /// HTTP header policy must run first so x-tenant-id keeps precedence.
+    pub fn normalize_cache_salt(&mut self) {
+        if let Some(salt) =
+            crate::protocols::common::extensions::request_cache_salt(self).map(str::to_owned)
+        {
+            self.nvext.get_or_insert_with(NvExt::default).cache_salt = Some(salt);
+        }
+    }
+
     /// Resolve the request's reasoning controls into `chat_template_args`.
     /// Runs once at the HTTP boundary, so every render path reads one answer.
     /// Model-specific overrides still apply later in the default preprocessor.
@@ -940,6 +952,56 @@ impl ValidateRequest for NvCreateChatCompletionRequest {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_cache_salt_survives_python_serialization() {
+        use crate::protocols::common::extensions::apply_frontend_nvext_policy;
+        for enabled in [false, true] {
+            for canonical in [None, Some(""), Some("canonical")] {
+                for header in [None, Some("header")] {
+                    let mut request: super::NvCreateChatCompletionRequest =
+                        serde_json::from_value(serde_json::json!({
+                            "model": "test",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                            "nvext": {"cache_salt": canonical},
+                            "cache_salt": "legacy",
+                            "unknown_private_field": "not-for-python"
+                        }))
+                        .unwrap();
+                    let mut headers = axum::http::HeaderMap::new();
+                    if let Some(value) = header {
+                        headers.insert("x-tenant-id", value.parse().unwrap());
+                    }
+                    request.nvext =
+                        apply_frontend_nvext_policy(request.nvext.take(), &headers, enabled);
+                    request.normalize_cache_salt();
+                    let serialized = serde_json::to_value(request).unwrap();
+                    let expected = header
+                        .or(canonical.filter(|s| !s.is_empty()))
+                        .unwrap_or("legacy");
+                    assert_eq!(serialized["nvext"]["cache_salt"], expected);
+                    assert!(serialized.get("unknown_private_field").is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn absent_or_invalid_legacy_cache_salt_does_not_add_nvext() {
+        for legacy in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(123),
+        ] {
+            let mut request: super::NvCreateChatCompletionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "model": "test", "messages": [], "cache_salt": legacy
+                }))
+                .unwrap();
+            request.normalize_cache_salt();
+            assert!(request.nvext.is_none());
+        }
+    }
+
     use super::*;
     use crate::engines::ValidateRequest;
     use crate::protocols::common::{

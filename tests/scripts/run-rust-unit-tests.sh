@@ -71,5 +71,15 @@ for entry in "${TESTS[@]}"; do
     done
     run "$name" cargo "+$TOOLCHAIN" test --locked "${args[@]}"
 done
+
+# Root workspace tests cannot compile the independently versioned PyO3 crate.
+# Keep quick Rust-only CI lanes lightweight; full runs include its unit tests.
+if [[ -z "${QUICK_PACKS:-}" || ",${QUICK_PACKS}," == *,dynamo-py3,* ]]; then
+    if [[ "${SKIP_RUNTIME_BUILD:-0}" == 1 ]]; then
+        omit "30-python-bindings" "SKIP_RUNTIME_BUILD=1: Python binding build disabled"
+    else
+        run "30-python-bindings" env RUST_TOOLCHAIN="$TOOLCHAIN" bash "$SCRIPT_DIR/rust-bindings-test.sh"
+    fi
+fi
 finish
 exit $?

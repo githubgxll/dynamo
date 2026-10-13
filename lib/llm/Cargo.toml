@@ -27,6 +27,9 @@ block-manager = ["dep:dynamo-memory", "dep:nixl-sys", "dep:cudarc", "dep:nix", "
 # Keep it in the normal runtime feature set, but allow a text-only frontend
 # wheel to compile without CUDA, UCX or NIXL by disabling default features.
 nixl-media = ["dep:dynamo-memory"]
+# Load the runtime image's NIXL C API, keeping its core and plugins together.
+# nixl-sys/stub-api performs real calls through dlopen when NIXL is installed.
+nixl-dynamic = ["nixl-sys/stub-api"]
 nccl = ["dep:cudarc", "cudarc/nccl"]  # Enable NCCL collective operations
 block-manager-bench = ["block-manager", "testing-full", "dep:clap", "dep:indicatif"]
 cuda = ["dep:cudarc"]

@@ -2067,10 +2067,18 @@ async def test_generate_emits_cumulative_usage_only_when_requested(
                 "total_tokens": 8 + count,
                 "prompt_tokens_details": expected_details,
             }
+            expected_engine_data = {}
             if cache_details is not None:
-                assert chunk["engine_data"]["cached_tokens_details"] == cache_details
-            else:
-                assert "engine_data" not in chunk
+                expected_engine_data["cached_tokens_details"] = cache_details
+            if (
+                serving_mode == DisaggregationMode.AGGREGATED
+                and "finish_reason" in chunk
+            ):
+                expected_engine_data["kv_cache_hit"] = {
+                    "prompt_tokens": 8,
+                    "reused_tokens": cached_tokens or 0,
+                }
+            assert chunk.get("engine_data", {}) == expected_engine_data
         else:
             assert "completion_usage" not in chunk
             assert "engine_data" not in chunk
@@ -2203,23 +2211,33 @@ async def test_process_token_stream_cancellation_aborts_without_terminal_usage(
     del handler._cancellation_monitor
     handler.shutdown_event = None
     aborted = []
+    abort_received = asyncio.Event()
+    drained = asyncio.Event()
+
+    def abort_request(**kwargs):
+        aborted.append(kwargs)
+        abort_received.set()
+
     handler.engine = SimpleNamespace(
-        tokenizer_manager=SimpleNamespace(
-            abort_request=lambda **kwargs: aborted.append(kwargs)
-        )
+        tokenizer_manager=SimpleNamespace(abort_request=abort_request)
     )
     cancellation = asyncio.get_running_loop().create_future()
     context = SimpleNamespace(
         id=lambda: "request-1",
         is_stopped=lambda: cancellation.done(),
         async_killed_or_stopped=lambda: cancellation,
+        notify_first_token=Mock(),
     )
 
     async def cancelled_stream():
         yield _usage_update([101], 1)
         cancellation.set_result(None)
+        await abort_received.wait()
         yield _usage_update(cancelled_token_ids, 2)
-        pytest.fail("Cancelled generation must not drain further engine updates")
+        # Consume the abort acknowledgement to release the engine stream,
+        # while suppressing every response after cancellation.
+        yield _usage_update([], 2, finish_reason={"type": "abort"})
+        drained.set()
 
     chunks = await asyncio.wait_for(
         _collect(
@@ -2228,11 +2246,14 @@ async def test_process_token_stream_cancellation_aborts_without_terminal_usage(
                 context,
                 suppressed_stop_token_ids={128001},
                 continuous_usage_stats=continuous_usage_stats,
+                submitted_request_id="request-1",
             )
         ),
         timeout=1,
     )
 
+    context.notify_first_token.assert_called_once_with()
+    assert drained.is_set()
     assert len(chunks) == 1
     assert chunks[0]["token_ids"] == [101]
     assert "finish_reason" not in chunks[0]
@@ -2324,6 +2345,7 @@ async def test_process_token_stream_treats_completion_usage_as_optional():
                 "prompt_tokens": 2,
                 "completion_tokens": 3,
                 "total_tokens": 5,
+                "prompt_tokens_details": None,
             },
             "engine_data": {"kv_cache_hit": {"prompt_tokens": 2, "reused_tokens": 0}},
         },

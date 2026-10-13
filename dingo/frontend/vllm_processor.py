@@ -41,6 +41,7 @@ from dingo.common.multimodal.mm_kwargs_transfer import (
 from dingo.common.multimodal.routing_utils import build_mm_routing_info_from_features
 from dingo.common.utils import nvtx_utils as _nvtx
 from dingo.common.utils.input_params import resolve_thinking_token_budget
+from dingo.frontend.cache_salt import project_cache_salt, resolve_cache_salt
 from dingo.frontend.frontend_args import FrontendConfig
 from dingo.vllm.errors import vllm_client_error_to_http_error
 
@@ -917,6 +918,14 @@ class VllmProcessor:
             request.get("top_logprobs"),
         )
 
+        try:
+            cache_salt = resolve_cache_salt(request)
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from exc
+        # vLLM validates its top-level field during preprocessing. Give it the
+        # same resolved salt as the router and worker, without changing input.
+        request = {**request, "cache_salt": cache_salt}
+
         messages = request.get("messages") or []
         _normalize_vllm_image_parts(messages)
         # Preserve user cache UUIDs alongside URL-backed media. UUID-only image
@@ -1007,7 +1016,7 @@ class VllmProcessor:
                 self.input_processor.renderer,
                 engine_prompt,
                 tokens,
-                cache_salt=request_for_sampling.cache_salt,
+                cache_salt=cache_salt,
                 mm_processor_kwargs=request_for_sampling.mm_processor_kwargs,
                 defer_multimodal_processing=mm_uuids is not None,
             )
@@ -1065,6 +1074,7 @@ class VllmProcessor:
             "annotations": [],
             "routing": request.get("routing"),
         }
+        project_cache_salt(dynamo_preproc, cache_salt)
         if guided_decoding is not None:
             dynamo_preproc["sampling_options"]["guided_decoding"] = guided_decoding
         if reasoning_metadata.engine_reasoning_ended is not None:

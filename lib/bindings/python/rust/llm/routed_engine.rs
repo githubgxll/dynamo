@@ -147,7 +147,7 @@ fn dispatch_span(
 }
 
 #[cfg(test)]
-mod tests {
+mod trace_context_tests {
     use super::*;
     use dynamo_runtime::logging::{DistributedTraceIdLayer, inject_trace_headers_into_map};
     use opentelemetry::trace::{TraceContextExt, TraceId, TracerProvider as _};
@@ -288,7 +288,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod request_tracker_tests {
     use super::*;
     use dynamo_llm::protocols::common::{OutputOptions, SamplingOptions, StopConditions};
 

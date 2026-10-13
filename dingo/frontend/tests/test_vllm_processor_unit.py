@@ -1463,6 +1463,117 @@ async def test_generator_forwards_chat_logprobs_count(
     assert captured["dynamo_preproc"]["output_options"]["logprobs"] == 1
 
 
+@pytest.mark.parametrize(
+    "salt_fields, expected",
+    [
+        ({}, None),
+        ({"nvext": {"cache_salt": "tenant-a"}}, "tenant-a"),
+        ({"cache_salt": "legacy"}, "legacy"),
+        ({"nvext": {"cache_salt": "header"}, "cache_salt": "body"}, "header"),
+        ({"nvext": {"cache_salt": ""}, "cache_salt": "legacy"}, "legacy"),
+        ({"cache_salt": 123}, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_generator_forwards_cache_salt(
+    vllm_processor_module,
+    monkeypatch,
+    salt_fields,
+    expected,
+):
+    class RequestForSampling(SimpleNamespace):
+        model_fields = frozenset()
+
+    monkeypatch.setattr(
+        vllm_processor_module,
+        "preprocess_chat_request",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                request_for_sampling=RequestForSampling(
+                    max_completion_tokens=None,
+                    max_tokens=1,
+                    logprobs=True,
+                    top_logprobs=1,
+                    top_k=None,
+                    min_p=None,
+                    cache_salt=None,
+                    mm_processor_kwargs=None,
+                ),
+                tool_parser=None,
+                chat_template_kwargs={},
+                engine_prompt={"prompt": "Hello"},
+                prompt_token_ids=[1],
+                guided_decoding=None,
+                uses_dynamo_json_tool_call_fallback=False,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        vllm_processor_module.InputProcessor,
+        "assign_request_id",
+        lambda request: None,
+    )
+
+    build_inputs = AsyncMock(return_value={})
+    monkeypatch.setattr(vllm_processor_module, "_build_engine_inputs", build_inputs)
+
+    def process_inputs(request_id, engine_inputs, sampling_params, supported_tasks):
+        return SimpleNamespace(sampling_params=sampling_params, mm_features=None)
+
+    input_processor = SimpleNamespace(
+        generation_config_fields={},
+        renderer=SimpleNamespace(process_for_engine_async=AsyncMock(return_value={})),
+        process_inputs=process_inputs,
+        model_config=None,
+    )
+    processor = vllm_processor_module.VllmProcessor(
+        tokenizer=SimpleNamespace(eos_token_id=2, all_special_tokens=[]),
+        input_processor=input_processor,
+        output_processor=object(),
+        tool_parser_class=None,
+        reasoning_parser_class=None,
+        routed_engine=object(),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_prepare_mm_routing",
+        AsyncMock(return_value=(None, [], False)),
+    )
+    captured = {}
+
+    async def capture_generate_and_stream(*args, **kwargs):
+        captured["dynamo_preproc"] = args[2]
+        yield {"captured": True}
+
+    monkeypatch.setattr(processor, "_generate_and_stream", capture_generate_and_stream)
+
+    results = [
+        item
+        async for item in processor._generator_inner(
+            {
+                **salt_fields,
+                "routing": {"dp_rank": 0},
+                "model": "test",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "logprobs": True,
+                "top_logprobs": 1,
+            }
+        )
+    ]
+
+    assert results == [{"captured": True}]
+    assert captured["dynamo_preproc"]["output_options"]["logprobs"] == 1
+
+    preproc = captured["dynamo_preproc"]
+    assert preproc["routing"] == {
+        "dp_rank": 0, **({"cache_salt": expected} if expected else {})
+    }
+    assert preproc.get("extra_args", {}).get("nvext", {}).get("cache_salt") == expected
+    assert build_inputs.await_args.kwargs["cache_salt"] == expected
+    normalized = vllm_processor_module.preprocess_chat_request.await_args.args[0]
+    assert normalized["cache_salt"] == expected
+
+
 @pytest.mark.asyncio
 async def test_include_reasoning_false_keeps_response_parser_active(
     vllm_processor_module,
@@ -4401,3 +4512,22 @@ def test_unrequested_logprobs_stay_null(vllm_processor_module):
     assert choice["logprobs"] is None
     assert pending == []
     assert emitted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("salt", [123, False, [], {}])
+async def test_generator_rejects_invalid_canonical_cache_salt(
+    vllm_processor_module, monkeypatch, salt
+):
+    preprocess = AsyncMock()
+    monkeypatch.setattr(vllm_processor_module, "preprocess_chat_request", preprocess)
+    processor = _logprobs_processor(vllm_processor_module)
+    with pytest.raises(HttpError) as excinfo:
+        await anext(
+            processor._generator_inner(
+                {"model": "test", "messages": [], "nvext": {"cache_salt": salt}}
+            )
+        )
+    assert excinfo.value.code == 400
+    assert "cache_salt" in excinfo.value.message
+    preprocess.assert_not_awaited()

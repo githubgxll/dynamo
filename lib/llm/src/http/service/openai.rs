@@ -4205,6 +4205,10 @@ async fn chat_completions(
         &request_id,
     );
 
+    // HTTP header/NvExt policy has already resolved the canonical salt.
+    // Promote the legacy fallback before dispatch can serialize this to Python.
+    request.normalize_cache_salt();
+
     if let Err(err_response) = normalize_chat_reasoning_template_args(&mut request) {
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);

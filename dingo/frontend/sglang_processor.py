@@ -29,6 +29,7 @@ from sglang.srt.utils.hf_transformers_utils import (
 
 from dingo.common.multimodal.cache_uuid import reject_unsupported_multimodal_uuids
 from dingo.common.utils.input_params import resolve_thinking_token_budget
+from dingo.frontend.cache_salt import project_cache_salt, resolve_cache_salt
 from dingo.frontend.frontend_args import FrontendConfig
 
 from .sglang_prepost import (
@@ -713,6 +714,11 @@ def _build_dynamo_preproc(
     }
     if nvext_passthrough:
         preproc["extra_args"] = {"nvext": nvext_passthrough}
+
+    try:
+        project_cache_salt(preproc, resolve_cache_salt(request))
+    except ValueError as exc:
+        raise PreprocessError(str(exc)) from exc
 
     return preproc
 

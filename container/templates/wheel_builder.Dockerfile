@@ -651,7 +651,10 @@ COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml 
 COPY lib/ /opt/dynamo/lib/
 COPY dingo/ /opt/dynamo/dingo/
 
-# Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels
+# Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels.
+# Runtime images supply shared libraries; audit without bundling duplicate copies.
+# SGLang CUDA runtime images own their NIXL stack. Use its C API dynamically:
+# bundling the build SDK core alone leaves its UCX plugin absent at runtime.
 ARG USE_SCCACHE
 ARG TARGETARCH
 ARG ENABLE_MEDIA_FFMPEG
@@ -674,10 +677,17 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     uv build --wheel --out-dir /opt/dynamo/dist && \
     cd /opt/dynamo/lib/bindings/python && \
     if [ "$ENABLE_MEDIA_FFMPEG" = "true" ]; then \
-        maturin build --release --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
+        maturin build --release --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
     else \
-        maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy" --out /opt/dynamo/dist; \
+        maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
     fi && \
+    {% if device == "cuda" %}
+    auditwheel repair --exclude 'lib*.so*' \
+        --plat manylinux_2_28_$(uname -m) \
+        --wheel-dir /opt/dynamo/dist /opt/dynamo/runtime-wheel-unrepaired/*.whl && \
+    {% else %}
+    cp /opt/dynamo/runtime-wheel-unrepaired/*.whl /opt/dynamo/dist/ && \
+    {% endif %}
     /tmp/use-sccache.sh show-stats "Dynamo Runtime"
 
 # Complete the root Cargo workspace after the expensive runtime build. Planner

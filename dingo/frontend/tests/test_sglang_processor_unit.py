@@ -7061,3 +7061,42 @@ class TestReasoningTokenAccounting:  # FRONTEND.9 — thinking-token count for u
         post.process_output({"token_ids": [1, 2], "finish_reason": "stop"})
 
         assert post.pop_reasoning_token_count() is None
+
+
+class TestCacheSaltProjection:
+    @pytest.mark.parametrize(
+        "salt_fields, expected",
+        [
+            ({}, None),
+            ({"nvext": {"cache_salt": "tenant-a"}}, "tenant-a"),
+            ({"cache_salt": "legacy"}, "legacy"),
+            ({"nvext": {"cache_salt": "header"}, "cache_salt": "body"}, "header"),
+            ({"nvext": {"cache_salt": ""}, "cache_salt": "legacy"}, "legacy"),
+            ({"nvext": {"cache_salt": None}, "cache_salt": "legacy"}, "legacy"),
+            ({"nvext": {"cache_salt": " "}}, " "),
+            ({"cache_salt": 123}, None),
+        ],
+    )
+    def test_cache_salt_reaches_router_and_worker(self, salt_fields, expected):
+        request = {
+            **salt_fields,
+            "routing": {"dp_rank": 0},
+            "nvext": {
+                **salt_fields.get("nvext", {}),
+                "metadata_upload": {"endpoint": "test"},
+                "extra_fields": ["cache"],
+            },
+        }
+        snapshot = copy.deepcopy(request)
+        result = _build_dynamo_preproc(request, [1], "test", None)
+        assert result["routing"].get("cache_salt") == expected
+        assert result["routing"]["dp_rank"] == 0
+        assert result["extra_args"]["nvext"].get("cache_salt") == expected
+        assert result["extra_args"]["nvext"]["metadata_upload"] == {"endpoint": "test"}
+        assert result["extra_args"]["nvext"]["extra_fields"] == ["cache"]
+        assert request == snapshot
+
+    @pytest.mark.parametrize("salt", [123, False, [], {}])
+    def test_invalid_cache_salt_is_preprocess_error(self, salt):
+        with pytest.raises(sglang_processor_module.PreprocessError, match="cache_salt"):
+            _build_dynamo_preproc({"nvext": {"cache_salt": salt}}, [1], "test", None)

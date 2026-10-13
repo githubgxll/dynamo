@@ -26,6 +26,8 @@ default = []
 # Preserve the historical Linux runtime wheel when explicitly requested by
 # container builds. The dedicated text frontend uses --no-default-features.
 full-runtime = ["dynamo-llm/block-manager", "dynamo-llm/nixl-media"]
+# SGLang CUDA images supply NIXL via their own wheel, including native plugins.
+nixl-dynamic = ["dynamo-llm/nixl-dynamic"]
 # Links the worker-selection policies Dynamo ships plus the replaceable catalog selected by the
 # dependency alias below. Enabled explicitly by full container builds so deployments can select shipped policies through
 # router-policy YAML without rebuilding. A private image replaces only the catalog dependency, so

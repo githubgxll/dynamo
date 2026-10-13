@@ -5,8 +5,12 @@
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import re
+import subprocess
 import sys
+import zipfile
 from importlib import metadata
 from pathlib import Path
 
@@ -74,9 +78,9 @@ def _requirements_file_aisimulate_requirement(path: Path) -> Requirement:
 def _exact_version(requirement: Requirement) -> Version:
     assert requirement.url is None, "AISimulate must resolve from PyPI"
     specifiers = list(requirement.specifier)
-    assert (
-        len(specifiers) == 1 and specifiers[0].operator == "=="
-    ), "AISimulate must use one exact PyPI version"
+    assert len(specifiers) == 1 and specifiers[0].operator == "==", (
+        "AISimulate must use one exact PyPI version"
+    )
     return Version(specifiers[0].version)
 
 
@@ -90,9 +94,9 @@ def _locked_cargo_version(path: Path) -> Version:
     assert package.get("source") == (
         "registry+https://github.com/rust-lang/crates.io-index"
     ), f"aisimulate-core must resolve from crates.io in {path}"
-    assert re.fullmatch(
-        r"[0-9a-f]{64}", str(package.get("checksum", ""))
-    ), f"aisimulate-core must have a registry checksum in {path}"
+    assert re.fullmatch(r"[0-9a-f]{64}", str(package.get("checksum", ""))), (
+        f"aisimulate-core must have a registry checksum in {path}"
+    )
     return Version(str(package["version"]))
 
 
@@ -128,39 +132,99 @@ def test_dynamo_pins_matching_published_aisimulate_releases() -> None:
     cargo_dependency = cargo["workspace"]["dependencies"]["aisimulate-core"]
     assert not {"path", "git", "rev", "branch", "tag"} & cargo_dependency.keys()
     cargo_requirement = str(cargo_dependency["version"])
-    assert cargo_requirement.startswith(
-        "="
-    ), "aisimulate-core must use one exact crates.io version"
+    assert cargo_requirement.startswith("="), (
+        "aisimulate-core must use one exact crates.io version"
+    )
     cargo_version = Version(cargo_requirement.removeprefix("="))
 
     assert cargo_version == python_version
     assert all(_locked_cargo_version(path) == cargo_version for path in LOCKFILES)
 
 
-def test_container_stages_the_published_aisimulate_wheel() -> None:
-    pyproject, _ = _root_configs()
-    python_version = _exact_version(_python_requirement(pyproject))
-    container_version = _exact_version(
-        _requirements_file_aisimulate_requirement(AISIMULATE_REQUIREMENTS)
+def _staging_module():
+    spec = importlib.util.spec_from_file_location(
+        "stage_aisimulate", ROOT / "container/deps/stage_aisimulate.py"
     )
-    wheel_builder = (ROOT / "container/templates/wheel_builder.Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    assert container_version == python_version
-    assert "requirements.aisimulate.txt" in wheel_builder
+
+@pytest.mark.parametrize("matching_version", [True, False])
+def test_container_stages_the_published_aisimulate_wheel(
+    tmp_path, monkeypatch, matching_version
+) -> None:
+    pyproject, _ = _root_configs()
+    version = _exact_version(_python_requirement(pyproject))
     assert (
-        "--requirement /opt/dynamo/container/deps/requirements.aisimulate.txt"
+        _exact_version(
+            _requirements_file_aisimulate_requirement(AISIMULATE_REQUIREMENTS)
+        )
+        == version
+    )
+    wheel_builder = (ROOT / "container/templates/wheel_builder.Dockerfile").read_text()
+    assert "COPY container/deps/requirements.aisimulate.txt" in wheel_builder
+    assert (
+        "COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json"
         in wheel_builder
     )
-    assert "--only-binary=:all:" in wheel_builder
-    assert "--no-deps" in wheel_builder
-    assert "--no-index" in wheel_builder
-    assert AISIMULATE_FIND_LINKS == "https://pypi.nvidia.com/aisimulate/"
-    assert f"--find-links {AISIMULATE_FIND_LINKS}" in wheel_builder
+    assert "python /opt/dynamo/container/deps/stage_aisimulate.py" in wheel_builder
     assert "COPY aisimulate" not in wheel_builder
     assert "/opt/dynamo/aisimulate" not in wheel_builder
     assert not (ROOT / "aisimulate").exists()
+    staging = _staging_module()
+    calls = []
+
+    def download(command, **kwargs):
+        calls.append(command)
+        assert command[:4] == [sys.executable, "-m", "pip", "download"]
+        for flag in ("--only-binary=:all:", "--no-deps", "--no-index"):
+            assert flag in command
+        assert command[command.index("--requirement") + 1] == str(
+            AISIMULATE_REQUIREMENTS
+        )
+        assert command[command.index("--find-links") + 1] == AISIMULATE_FIND_LINKS
+        wheel_version = str(version) if matching_version else "0.0.0"
+        wheel = Path(command[command.index("--dest") + 1]) / "aisimulate-test.whl"
+        with zipfile.ZipFile(wheel, "w") as package:
+            package.writestr(
+                "aisimulate.dist-info/METADATA",
+                f"Name: aisimulate\nVersion: {wheel_version}\n",
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(staging.subprocess, "run", download)
+    output = tmp_path / "wheels"
+    if matching_version:
+        staging.stage(ROOT, output)
+        assert [p.name for p in output.iterdir()] == ["aisimulate-test.whl"]
+    else:
+        with pytest.raises(SystemExit, match="metadata does not match"):
+            staging.stage(ROOT, output)
+        assert not list(output.iterdir())
+    assert len(calls) == 1
+
+
+def test_aisimulate_source_fallback_rejects_checksum_mismatch(tmp_path, monkeypatch):
+    staging = _staging_module()
+    calls = []
+
+    def unavailable(command, **kwargs):
+        calls.append(command)
+        assert command[1:4] == ["-m", "pip", "download"]
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(staging.subprocess, "run", unavailable)
+    monkeypatch.setattr(
+        staging.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: io.BytesIO(b"invalid archive"),
+    )
+    output = tmp_path / "wheels"
+    with pytest.raises(SystemExit, match="source archive checksum mismatch"):
+        staging.stage(ROOT, output)
+    assert len(calls) == 1  # No build may run after the checksum fails.
+    assert not list(output.iterdir())
 
 
 def test_planner_ci_image_collects_unified_cli_e2e_tests() -> None:
