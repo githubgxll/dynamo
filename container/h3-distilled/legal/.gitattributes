@@ -1,0 +1,8 @@
+# Preserve the exact bytes of hash-pinned upstream documents.
+* -text
+.gitattributes text eol=lf
+
+# These two upstream license texts contain intentional/original trailing spaces.
+# Keep other whitespace diagnostics and all content/hash checks enabled.
+MiniMax-H3-LICENSE whitespace=-blank-at-eol
+fasth3-LICENSE whitespace=-blank-at-eol

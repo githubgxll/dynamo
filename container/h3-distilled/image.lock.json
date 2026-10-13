@@ -1,0 +1,18 @@
+{
+  "schema": "h3-distilled-image/1",
+  "base_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:aace31a2806c2c18535cb0bc6a81cc940e0901b4f02f380d2d880c1f34f965c2",
+  "publication_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "tag_prefix": "v0.30.0-ubuntu2404-distilled",
+  "platform": "linux/amd64",
+  "recipe_base_commit": "958c2ce95cd361fd5a6770e3023eac4de968f674",
+  "versions": {"vllm": "0.30.0", "vllm-omni": "0.30.0"},
+  "omni_source_commit": "a8576ccb725c4e21cd13c3eb5f9a546b21149d2b",
+  "omni_wheel_sha256": "141cb0c7b9c07970e5c92a99aab9696e81682dbfa3d2bfcde359c3c1533385f4",
+  "asset_root": "/opt/h3-adapters",
+  "local_branch": "h3/distilled-omni030",
+  "publish_branch": "DingoRouter-h3-distilled-20261013",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "asset_policy": "Full SHA256 and safetensors-header verification; no conversion, merging or weight modification during build",
+  "base_weights": "Existing read-only FL2VA and Ref2VA mounts; not included in this image",
+  "qualification": "Four-card HSDP, adapter activation, FastH3 Base revision and media acceptance remain separate"
+}

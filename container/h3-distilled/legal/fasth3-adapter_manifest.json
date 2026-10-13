@@ -1,0 +1,78 @@
+{
+  "schema_version": "fasth3-lora-bundle-v1",
+  "model_id": "FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA",
+  "visibility": "private",
+  "base_model": "MiniMaxAI/MiniMax-H3",
+  "sampling": {
+    "transformer_forwards": 4,
+    "scheduler_points": 5,
+    "base_timesteps": [999, 749, 500, 250],
+    "guidance_scale": 1.0
+  },
+  "variants": [
+    {
+      "slug": "vsa-datafree",
+      "display_name": "VSA / Data-Free",
+      "adapter_path": "vsa-datafree/adapter_model.safetensors",
+      "adapter_rank": 64,
+      "adapter_size_bytes": 5339117712,
+      "adapter_sha256": "42dc502a2078f166c396a1fa75f29728d1844363652d345d5ef3e2b444ed6470",
+      "source_repo": "FastVideo/FastH3-4-step-v1-LoRA",
+      "source_revision": "317ac01648c4d367ec792e960ece12abe38662b0",
+      "source_path": "rank-64/adapter_model.safetensors",
+      "full_checkpoint": "FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-DataFree",
+      "training_step": 1300,
+      "training_source": "prompts-only",
+      "attention": "vsa-h3-90pct-tile64",
+      "requires_vsa": true
+    },
+    {
+      "slug": "vsa-synthetic-step1300",
+      "display_name": "VSA / Synthetic / Step 1300",
+      "adapter_path": "vsa-synthetic-step1300/adapter_model.safetensors",
+      "adapter_rank": 64,
+      "adapter_size_bytes": 5339128568,
+      "adapter_sha256": "de6af1ea8b2f4b31a7ac3752b4836f88671199fdf277a5dd922f9cca3bea7b65",
+      "source_repo": "FastVideo/FastH3-4-step-v1.1-LoRA",
+      "source_revision": "47ac7540f4af979620652e85e41562e711c2b0e2",
+      "source_path": "rank-64/adapter_model.safetensors",
+      "full_checkpoint": "FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-Synthetic-Step1300",
+      "training_step": 1300,
+      "training_source": "synthetic-base-h3",
+      "attention": "vsa-h3-90pct-tile64",
+      "requires_vsa": true
+    },
+    {
+      "slug": "vsa-synthetic-step1900",
+      "display_name": "VSA / Synthetic / Step 1900",
+      "adapter_path": "vsa-synthetic-step1900/adapter_model.safetensors",
+      "adapter_rank": 64,
+      "adapter_size_bytes": 5339117712,
+      "adapter_sha256": "bbac632dffb828d99123ab06c7ff3efc246351bed63d1860b4252e61dafeaed8",
+      "source_repo": "FastVideo/FastH3-4-step-v1.2-LoRA",
+      "source_revision": "5b9c234e35a0169a896281b4ff1b2e706949d4b6",
+      "source_path": "rank-64/adapter_model.safetensors",
+      "full_checkpoint": "FastVideo/FastVideo-FastH3-4-step-Preview-v1-VSA-Synthetic-Step1900",
+      "training_step": 1900,
+      "training_source": "synthetic-base-h3",
+      "attention": "vsa-h3-90pct-tile64",
+      "requires_vsa": true
+    },
+    {
+      "slug": "dense-datafree",
+      "display_name": "Dense / Data-Free",
+      "adapter_path": "dense-datafree/adapter_model.safetensors",
+      "adapter_rank": 64,
+      "adapter_size_bytes": 1485626152,
+      "adapter_sha256": "4ce198c83132251b7fd0de2503823aa49c53983f068318f66cb19eaefb7fcc12",
+      "source_repo": "FastVideo/FastH3-Dense-4-step-v1-LoRA",
+      "source_revision": "2cadb1af70f165338f99790e4bbda9daa1557b1b",
+      "source_path": "rank-64/adapter_model.safetensors",
+      "full_checkpoint": "FastVideo/FastVideo-FastH3-4-step-Preview-v1-Dense-DataFree",
+      "training_step": 1000,
+      "training_source": "prompts-only",
+      "attention": "dense",
+      "requires_vsa": false
+    }
+  ]
+}

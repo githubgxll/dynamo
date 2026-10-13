@@ -1,0 +1,13 @@
+*
+!Dockerfile
+!.dockerignore
+!image.lock.json
+!assets.lock.json
+!profiles.json
+!fetch_assets.py
+!verify_assets.py
+!runtime_snapshot.py
+!image_reuse_check.py
+!validate_bundle.py
+!legal/
+!legal/**

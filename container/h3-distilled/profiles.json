@@ -1,0 +1,149 @@
+{
+  "schema": "h3-distilled-profiles/1",
+  "scope": "Reference contracts for deployment integration, not an implemented deployment CLI",
+  "common": {
+    "gpu_count": 4,
+    "node": "hd04-gpu1-0050",
+    "tensor_parallel": 1,
+    "ulysses": 4,
+    "hsdp_shard": 4,
+    "hsdp_replicate": 1,
+    "text_encoder_tp": 4,
+    "vae_patch_parallel": 4,
+    "ring": 1,
+    "cfg_parallel": 1,
+    "dtype": "bfloat16",
+    "eager": true,
+    "attention": "FLASH_ATTN",
+    "concurrency": 1,
+    "cache": "none",
+    "quality": "omit",
+    "quantization": "none",
+    "offload": false,
+    "vsa": false
+  },
+  "profiles": [
+    {
+      "id": "base-fl50",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": null,
+      "steps": 50,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "suite": "FL11",
+      "extra_start_args": []
+    },
+    {
+      "id": "base-ref50",
+      "base_partition": "ref2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/Ref2VA",
+      "adapter_path": null,
+      "steps": 50,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "suite": "Ref7",
+      "extra_start_args": []
+    },
+    {
+      "id": "turbo-fl8",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "9b0efe3613b43a84e30febaa43af27432ea9d0711eac7bba904b2556b175f6d4",
+      "steps": 8,
+      "video_shift": 6,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "suite": "FL11",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors"
+      ],
+      "allowed_tasks": [
+        "t2va",
+        "fl2va"
+      ],
+      "base_revision": null
+    },
+    {
+      "id": "turbo-ref8",
+      "base_partition": "ref2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/Ref2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "9bac880b1a5d7ac052171cf6cce769f0cceaaa42ffa51de4b8e41143a2bdd2d2",
+      "steps": 8,
+      "video_shift": 6,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "suite": "Ref7",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"
+      ],
+      "allowed_tasks": [
+        "ref2va"
+      ],
+      "base_revision": null
+    },
+    {
+      "id": "turbo-fl4",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "c3d4a2cf618efea71b9e21a4baaa12d412f1eb6c2b6f86efacaf0ebb6814b689",
+      "steps": 4,
+      "video_shift": 6,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "suite": "FL11",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors"
+      ],
+      "allowed_tasks": [
+        "t2va",
+        "fl2va"
+      ],
+      "base_revision": null
+    },
+    {
+      "id": "fasth3-dense4",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/fasth3/f509e629374cac104e7f62daecce6d1488a3041d/dense-datafree/adapter_model.safetensors",
+      "revision": "f509e629374cac104e7f62daecce6d1488a3041d",
+      "sha256": "4ce198c83132251b7fd0de2503823aa49c53983f068318f66cb19eaefb7fcc12",
+      "steps": 4,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "suite": "T2VA-9",
+      "extra_start_args": [
+        "--lora-path",
+        "/opt/h3-adapters/fasth3/f509e629374cac104e7f62daecce6d1488a3041d/dense-datafree/adapter_model.safetensors"
+      ],
+      "allowed_tasks": [
+        "t2va"
+      ],
+      "base_revision": "9bfb6693f2cf6de171db46d1aa586f67d773a1da"
+    }
+  ]
+}

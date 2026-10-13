@@ -18,6 +18,7 @@ on:
           - vllm
           - sglang
           - all
+          - h3-distilled
         default: configured
 
 permissions:
@@ -32,6 +33,9 @@ concurrency:
 jobs:
   prepare:
     name: Prepare image matrix
+    # Distilled profiles inherit the published 0.30 runtime. They must not also
+    # trigger the native builder or the normal framework dependency install.
+    if: ${{ !startsWith(github.ref_name, 'DingoRouter-h3-distilled-') && inputs.frameworks != 'h3-distilled' }}
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 10
     outputs:
@@ -55,7 +59,7 @@ jobs:
   build:
     name: Build ${{ matrix.framework }} ${{ matrix.render_target }}
     needs: prepare
-    if: needs.prepare.outputs.has_images == 'true'
+    if: ${{ needs.prepare.outputs.has_images == 'true' && !startsWith(github.ref_name, 'DingoRouter-h3-distilled-') && inputs.frameworks != 'h3-distilled' }}
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 240
     strategy:
@@ -235,5 +239,101 @@ jobs:
         with:
           name: image-evidence-${{ matrix.framework }}-${{ matrix.docker_target }}-${{ github.sha }}-${{ github.run_attempt }}
           path: .dingo-build-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  h3-distilled:
+    name: Build H3 distilled adapters on the published Omni 0.30 runtime
+    if: ${{ startsWith(github.ref_name, 'DingoRouter-h3-distilled-') || inputs.frameworks == 'h3-distilled' }}
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Validate distilled configuration and publication target
+        id: profile
+        shell: bash
+        run: |
+          python3 .github/scripts/h3_distilled_ci.py prepare \
+            --github-output "${GITHUB_OUTPUT}"
+          docker version
+          docker buildx version
+
+      - name: Log in to the private registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      # Both targets descend from exactly the same runtime stage and use the
+      # same immutable base, weights, build args and local BuildKit cache.
+      # No packages are installed and no native framework builder is invoked.
+      - name: Build and export CPU validation evidence before publication
+        uses: docker/build-push-action@v7
+        with:
+          context: container/h3-distilled
+          file: container/h3-distilled/Dockerfile
+          platforms: ${{ steps.profile.outputs.platform }}
+          target: evidence
+          pull: true
+          push: false
+          outputs: type=local,dest=.h3-distilled-evidence
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.base_image }}
+            H3_DISTILLED_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify exported reports and recipe before publication
+        shell: bash
+        run: |
+          python3 .github/scripts/h3_distilled_ci.py validate-evidence \
+            --directory .h3-distilled-evidence --copy-inputs
+
+      - name: Build and push the H3 distilled runtime
+        id: distilled_image
+        uses: docker/build-push-action@v7
+        with:
+          context: container/h3-distilled
+          file: container/h3-distilled/Dockerfile
+          platforms: ${{ steps.profile.outputs.platform }}
+          target: runtime
+          pull: true
+          push: true
+          tags: ${{ steps.profile.outputs.image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.base_image }}
+            H3_DISTILLED_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Record distilled publication and digest
+        shell: bash
+        env:
+          IMAGE: ${{ steps.profile.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.distilled_image.outputs.digest }}
+        run: |
+          python3 .github/scripts/h3_distilled_ci.py record \
+            --image "${IMAGE}" --digest "${IMAGE_DIGEST}" \
+            --directory .h3-distilled-evidence
+          echo '### Published H3 distilled image' >> "${GITHUB_STEP_SUMMARY}"
+          echo "Image: \`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Digest: \`${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Source commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'CPU source and asset checks passed. H100, mounted Base identity and video generation still require separate acceptance.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload distilled source, asset and publication evidence
+        if: ${{ always() && hashFiles('.h3-distilled-evidence/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-h3-distilled-${{ github.sha }}-${{ github.run_attempt }}
+          path: .h3-distilled-evidence/
           include-hidden-files: true
           if-no-files-found: error
