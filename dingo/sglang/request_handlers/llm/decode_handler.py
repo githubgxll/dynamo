@@ -842,6 +842,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         return_tokens_as_token_ids = bool(
             output_options.get("return_tokens_as_token_ids")
         )
+        continuous_usage_stats = output_options.get("continuous_usage_stats", False)
         user_stop_token_ids = _user_stop_token_ids(request)
         suppressed_stop_token_ids = _suppressed_stop_token_ids(request)
 
@@ -916,6 +917,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     report_kv_cache_hit=not _has_parallel_prefix_warmup(
                         sampling_params
                     ),
+                    continuous_usage_stats=continuous_usage_stats,
                 ):
                     yield out
             else:
@@ -1017,6 +1019,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     report_kv_cache_hit=not _has_parallel_prefix_warmup(
                         sampling_params
                     ),
+                    continuous_usage_stats=continuous_usage_stats,
                 ):
                     yield out
             else:
@@ -1122,6 +1125,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         metadata_uploader: MetadataUploader | None = None,
         submitted_request_id: str | None = None,
         report_kv_cache_hit: bool = True,
+        continuous_usage_stats: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process token-based stream output.
 
@@ -1131,6 +1135,8 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         Args:
             stream_source: Async generator from engine.async_generate.
             context: Context object for cancellation handling.
+            continuous_usage_stats: Emit engine cumulative usage on every update,
+                including updates whose tokens are buffered as possible stops.
 
         Yields:
             Dict with token_ids and optional finish_reason.
@@ -1141,12 +1147,10 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         pending_stop_tokens_per_choice: dict[int, list[int]] = {}
         pending_log_probs_per_choice: dict[int, list[Any]] = {}
         pending_top_logprobs_per_choice: dict[int, list[Any]] = {}
-        # SGLang reports cached_tokens_details on each chunk's meta_info, but
-        # the frontend only emits it to the client on the terminal chunk. Track
-        # the latest value per choice (n>1 interleaves choices) and fold it
-        # into engine_data on the finish chunk so the processor can promote it
-        # to the sglext carrier.
+        # Keep the latest cache breakdown per choice for the terminal chunk,
+        # and expose it on intermediate chunks only in continuous-usage mode.
         cached_tokens_details_per_choice: dict[int, dict[str, Any]] = {}
+        cached_tokens_per_choice: dict[int, int] = {}
         request_ids: set[str] = set()
         first_output_seen = False
         async with self._cancellation_monitor(
@@ -1179,12 +1183,18 @@ class DecodeWorkerHandler(BaseWorkerHandler):
 
                 # Capture SGLang's per-dimension cache hit breakdown. SGLang
                 # populates this on every chunk once the radix-tree lookup is
-                # known; keep the latest per choice and emit it on the finish
-                # chunk below. Requested via return_cached_tokens_details
-                # (sglang patch forces it on for all requests).
+                # known; keep the latest per choice for usage-bearing chunks.
+                # Requested via return_cached_tokens_details (sglang patch
+                # forces it on for all requests).
                 cached_tokens_details = meta_info.get("cached_tokens_details")
                 if isinstance(cached_tokens_details, dict):
                     cached_tokens_details_per_choice[output_idx] = cached_tokens_details
+                cached_tokens = meta_info.get("cached_tokens")
+                if continuous_usage_stats:
+                    if cached_tokens is not None:
+                        cached_tokens_per_choice[output_idx] = cached_tokens
+                    else:
+                        cached_tokens = cached_tokens_per_choice.get(output_idx)
 
                 out: dict[str, Any] = {"index": output_idx}
                 finish_reason = meta_info["finish_reason"]
@@ -1208,13 +1218,29 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     if stop_reason is not None:
                         out["stop_reason"] = stop_reason
 
-                # With stream_output=True, raw_output_ids contains only new tokens (disjoint)
-                raw_output_ids = res.get("output_ids", [])
-                # Keep draining empty, non-final chunks after cancellation so the
-                # abort monitor can run and SGLang can finish request cleanup.
-                if not raw_output_ids and not finish_reason:
-                    continue
+                # Token IDs are deltas, but engine usage is already cumulative.
+                # Missing intermediate counters must not become invented zeros.
+                has_usage = (
+                    meta_info.get("prompt_tokens") is not None
+                    and meta_info.get("completion_tokens") is not None
+                )
+                if has_usage and (finish_reason or continuous_usage_stats):
+                    input_tokens = meta_info["prompt_tokens"]
+                    completion_tokens = meta_info["completion_tokens"]
+                    prefill_prompt_tokens_details = None
+                    if cached_tokens is not None and (
+                        continuous_usage_stats or cached_tokens > 0
+                    ):
+                        prefill_prompt_tokens_details = {"cached_tokens": cached_tokens}
+                    out["completion_usage"] = {
+                        "prompt_tokens": input_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": input_tokens + completion_tokens,
+                        "prompt_tokens_details": prefill_prompt_tokens_details,
+                    }
 
+                # With stream_output=True, output_ids contains only new tokens (disjoint).
+                raw_output_ids = list(res.get("output_ids", []))
                 if raw_output_ids and not first_output_seen:
                     first_output_seen = True
                     context.notify_first_token()
@@ -1273,9 +1299,13 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                             ]
                             top_logprobs = top_logprobs[: -len(pending_stop_tokens)]
 
-                # Empty, non-final chunks can happen while an ambiguous stop
-                # suffix is buffered. Wait until it matches or becomes visible.
-                if not output_ids and not finish_reason:
+                # Preserve real usage even when a possible stop suffix hides
+                # every token. Legacy streams still wait for visible output.
+                if (
+                    not output_ids
+                    and not finish_reason
+                    and "completion_usage" not in out
+                ):
                     continue
 
                 out["token_ids"] = output_ids
@@ -1288,10 +1318,13 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 routed_experts = meta_info.get("routed_experts")
                 if routed_experts is not None and metadata_uploader is None:
                     engine_data["routed_experts"] = routed_experts
-                if finish_reason and output_idx in cached_tokens_details_per_choice:
-                    engine_data["cached_tokens_details"] = (
+                if (
+                    finish_reason or continuous_usage_stats
+                ) and output_idx in cached_tokens_details_per_choice:
+                    out_cache_details = cached_tokens_details_per_choice[output_idx]
+                    engine_data["cached_tokens_details"] = out_cache_details
+                    if finish_reason:
                         cached_tokens_details_per_choice.pop(output_idx)
-                    )
                 if engine_data:
                     out["engine_data"] = engine_data
                 if finish_reason:
@@ -1310,23 +1343,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     )
                     if kv_cache_hit:
                         engine_data["kv_cache_hit"] = kv_cache_hit
-                    input_tokens = meta_info.get("prompt_tokens")
-                    completion_tokens = meta_info.get("completion_tokens")
-                    cached_tokens = meta_info.get("cached_tokens")
-                    prefill_prompt_tokens_details = None
-                    if cached_tokens is not None and cached_tokens > 0:
-                        prefill_prompt_tokens_details = {"cached_tokens": cached_tokens}
-                    if input_tokens is not None and completion_tokens is not None:
-                        completion_usage = {
-                            "prompt_tokens": input_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": input_tokens + completion_tokens,
-                        }
-                        if prefill_prompt_tokens_details is not None:
-                            completion_usage["prompt_tokens_details"] = (
-                                prefill_prompt_tokens_details
-                            )
-                        out["completion_usage"] = completion_usage
+                    cached_tokens_per_choice.pop(output_idx, None)
                     if metadata_uploader is not None:
                         try:
                             await metadata_uploader.upload_choice(output_idx, meta_info)

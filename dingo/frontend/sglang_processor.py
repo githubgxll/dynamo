@@ -62,6 +62,8 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_SGLANG_STREAM_INTERVAL: int = 1
+# Bound reasoning and answer tokens together when the client omits both limits.
+DEFAULT_SGLANG_MAX_TOKENS: int = 8192
 
 # Internal carrier key mirroring the Rust constant in
 # lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
@@ -77,7 +79,7 @@ def _cached_tokens_details_from_engine_data(
     """Extract and normalize cached_tokens_details from engine_data.
 
     The decode handler copies sglang's ``meta_info.cached_tokens_details`` into
-    ``engine_data.cached_tokens_details`` on the finish chunk. This normalizes
+    ``engine_data.cached_tokens_details`` on usage-bearing chunks. This normalizes
     the shape so the carrier payload matches sglang's native ``sglext`` field.
     Returns ``None`` when the detail is absent or malformed.
     """
@@ -107,6 +109,15 @@ def _cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     return cached_tokens if isinstance(cached_tokens, int) else None
 
 
+def _continuous_usage_requested(request: dict[str, Any]) -> bool:
+    options = request.get("stream_options") or {}
+    return bool(
+        request.get("stream")
+        and options.get("include_usage")
+        and options.get("continuous_usage_stats")
+    )
+
+
 def _normalize_eos_token_ids(value: Any) -> list[int]:
     if isinstance(value, int) and not isinstance(value, bool):
         return [value]
@@ -122,8 +133,10 @@ def _normalize_eos_token_ids(value: Any) -> list[int]:
     return []
 
 
-def _request_stop_strings(request: dict[str, Any]) -> set[str]:
-    if request.get("include_stop_str_in_output") is True:
+def _request_stop_strings(
+    request: dict[str, Any], *, match_visible: bool = False
+) -> set[str]:
+    if request.get("include_stop_str_in_output") is True and not match_visible:
         return set()
     stop = request.get("stop")
     if isinstance(stop, str):
@@ -355,6 +368,31 @@ def _guided_json_is_content(preproc: dict[str, Any]) -> bool:
     )
 
 
+def _infer_reasoning_parser_name(
+    source_path: str, chat_template: str | None
+) -> str | None:
+    """Infer known think-tag parsers from the discovered model, not its alias."""
+    if not detect_force_reasoning_from_template(chat_template):
+        return None
+    try:
+        with open(os.path.join(source_path, "config.json"), encoding="utf-8") as f:
+            model_config = json.load(f)
+    except (OSError, ValueError):
+        logger.warning("Cannot infer reasoning parser from %s/config.json", source_path)
+        return None
+    parser = {
+        "glm_moe_dsa": "glm45",
+        "glm5_next": "glm45",
+    }.get(model_config.get("model_type"))
+    if parser is None:
+        logger.warning(
+            "Thinking template detected for model_type=%r without a reasoning parser; "
+            "configure --dyn-reasoning-parser to separate reasoning and answer stops",
+            model_config.get("model_type"),
+        )
+    return parser
+
+
 def _unsupported_n_message(n: int) -> str:
     return f"Unsupported value: 'n={n}'. This endpoint currently supports only n=1."
 
@@ -542,7 +580,24 @@ def _build_dynamo_preproc(
     require_reasoning = require_reasoning or (
         thinking_token_budget is not None and force_reasoning
     )
-    max_tokens = request.get("max_completion_tokens") or request.get("max_tokens")
+    max_tokens = request.get("max_completion_tokens")
+    if max_tokens is None:
+        max_tokens = request.get("max_tokens")
+    if max_tokens is None:
+        max_tokens = DEFAULT_SGLANG_MAX_TOKENS
+
+    frequency_penalty = request.get("frequency_penalty", 0.0)
+    # GLM-5.3 compatibility policy: accept negative values without rewarding
+    # repetition. Official API probes complete normally with -2; this is our
+    # compatibility choice, not a claim about the provider's implementation.
+    # Match the exact model ID (also accepting a repository-qualified ID),
+    # rather than applying the policy to every model using the GLM parser.
+    if (
+        model_name.rsplit("/", 1)[-1].lower() == "glm-5.3"
+        and isinstance(frequency_penalty, (int, float))
+        and frequency_penalty < 0
+    ):
+        frequency_penalty = 0.0
 
     stop = request.get("stop")
     stop_token_ids = _request_stop_token_ids(request)
@@ -553,6 +608,12 @@ def _build_dynamo_preproc(
     ):
         stop = []
     elif stop is None:
+        stop = []
+
+    # The worker sees the unsplit reasoning/answer stream. String stops belong
+    # to the frontend when a reasoning parser is active; token stops and EOS
+    # remain backend-owned.
+    if reasoning_parser is not None:
         stop = []
 
     # Handle logprobs
@@ -608,7 +669,7 @@ def _build_dynamo_preproc(
         "sampling_options": {
             "n": request.get("n", 1),
             "presence_penalty": request.get("presence_penalty", 0.0),
-            "frequency_penalty": request.get("frequency_penalty", 0.0),
+            "frequency_penalty": frequency_penalty,
             "repetition_penalty": request.get("repetition_penalty", 1.0),
             "temperature": request.get("temperature", 1.0),
             "top_p": request.get("top_p", 1.0),
@@ -631,6 +692,7 @@ def _build_dynamo_preproc(
                 has_parser=tool_call_parser is not None or reasoning_parser is not None,
             ),
             "return_tokens_as_token_ids": request.get("return_tokens_as_token_ids"),
+            "continuous_usage_stats": _continuous_usage_requested(request),
         },
         "eos_token_ids": _normalize_eos_token_ids(eos_token_ids),
         "annotations": [],
@@ -807,7 +869,11 @@ class SglangProcessor:
             named_zero_arg_tool=pre.named_zero_arg_tool,
             guided_json_is_content=_guided_json_is_content(dynamo_preproc),
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(request),
+            stop_strings=_request_stop_strings(
+                request, match_visible=pre.reasoning_parser is not None
+            ),
+            include_stop_str_in_output=request.get("include_stop_str_in_output", False),
+            min_tokens=request.get("min_tokens", 0),
             guided_decoding=pre.guided_decoding,
             response_format_guided_active=pre.response_format_guided_active,
             tool_guided_active=pre.tool_guided_active,
@@ -893,7 +959,11 @@ class SglangProcessor:
                 preproc_result.dynamo_preproc
             ),
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(request),
+            stop_strings=_request_stop_strings(
+                request, match_visible=reasoning_parser is not None
+            ),
+            include_stop_str_in_output=request.get("include_stop_str_in_output", False),
+            min_tokens=request.get("min_tokens", 0),
             guided_decoding=preproc_result.dynamo_preproc.get(
                 "sampling_options", {}
             ).get("guided_decoding"),
@@ -941,6 +1011,9 @@ class SglangProcessor:
         post_proc_total_ms = 0.0
         created_ts = int(time.time())
         stream_interval = self.stream_interval
+        continuous_usage = _continuous_usage_requested(request)
+        dynamo_stream = None
+        terminal_items: list[dict[str, Any]] = []
 
         try:
             dynamo_stream = await self.routed_engine.generate(
@@ -1012,16 +1085,17 @@ class SglangProcessor:
                     token_count += chunk_token_count
 
                 envelope: dict[str, Any] = {"_dynamo_annotated": True}
-                if choice:
+                terminal = post.locally_finished or finish_reason is not None
+                if choice or (continuous_usage and pending_usage):
                     dynamo_out: dict[str, Any] = {
                         "id": request_id,
-                        "choices": [choice],
+                        "choices": [choice] if choice else [],
                         "created": created_ts,
                         "model": request["model"],
                         "object": "chat.completion.chunk",
                     }
                     if (
-                        choice.get("finish_reason") is not None
+                        terminal
                         and pending_usage
                         and "completion_tokens_details" not in pending_usage
                     ):
@@ -1030,7 +1104,7 @@ class SglangProcessor:
                             pending_usage["completion_tokens_details"] = {
                                 "reasoning_tokens": reasoning_tokens
                             }
-                    if pending_usage:
+                    if pending_usage and (terminal or continuous_usage):
                         dynamo_out["usage"] = pending_usage
                     response_nvext: dict[str, Any] = {}
                     effective_stop_reason = (
@@ -1047,7 +1121,7 @@ class SglangProcessor:
                         request, "engine_data"
                     ):
                         response_nvext["engine_data"] = engine_data
-                    if choice.get("finish_reason") is not None:
+                    if terminal or continuous_usage:
                         cached_tokens_details = _cached_tokens_details_from_engine_data(
                             engine_data
                         )
@@ -1103,6 +1177,10 @@ class SglangProcessor:
                         for key, value in data.items()
                         if key not in ("usage", "nvext")
                     }
+                    if continuous_usage and "usage" in data:
+                        payload["usage"] = data["usage"]
+                        if "nvext" in data:
+                            payload["nvext"] = data["nvext"]
                     payload["choices"] = [{**choice, "finish_reason": None}]
                     terminal = {
                         **data,
@@ -1163,10 +1241,11 @@ class SglangProcessor:
                             stop_terminated=False,
                             engine_data=None,
                         )
+                        if post.locally_finished:
+                            terminal_items = list(split_terminal_tool_payload(envelope))
+                            break
                         for emitted in split_terminal_tool_payload(envelope):
                             yield emitted
-                        if post.locally_finished:
-                            break
 
                 chunk_tokens = len(new_ids)
                 cumulative_output_tokens += chunk_tokens
@@ -1193,17 +1272,32 @@ class SglangProcessor:
                 flush_threshold = (
                     1 if first_chunk or post.has_pending_stop_text else stream_interval
                 )
-                if finish_reason or len(pending_token_ids) >= flush_threshold:
+                if (
+                    finish_reason
+                    or len(pending_token_ids) >= flush_threshold
+                    or (continuous_usage and pending_usage and not pending_token_ids)
+                ):
                     envelope = flush_pending(
                         finish_reason=finish_reason,
                         stop_reason=stop_reason,
                         stop_terminated=stop_terminated,
                         engine_data=engine_data,
                     )
+                    if post.locally_finished:
+                        terminal_items = list(split_terminal_tool_payload(envelope))
+                        break
                     for emitted in split_terminal_tool_payload(envelope):
                         yield emitted
-                    if post.locally_finished:
-                        break
+
+            # Close generation before exposing the local stop's terminal frame.
+            # This releases the child stream without cancelling HTTP completion.
+            if dynamo_stream is not None:
+                close = getattr(dynamo_stream, "aclose", None)
+                if close is not None:
+                    await close()
+                dynamo_stream = None
+            for item in terminal_items:
+                yield item
         except (InvalidArgument, Unknown):
             raise
         except Exception as e:
@@ -1212,6 +1306,11 @@ class SglangProcessor:
                 f"Error generating response for request {request_id}: {e}"
             ) from e
         finally:
+            if dynamo_stream is not None:
+                close = getattr(dynamo_stream, "aclose", None)
+                if close is not None:
+                    await close()
+                dynamo_stream = None
             if self.debug_perf and token_count > 0:
                 logger.info(
                     "[perf] sglang stream done: request=%s tokens=%d "
@@ -1302,6 +1401,9 @@ class SglangEngineFactory:
         reasoning_parser_name = (
             self.reasoning_parser_name
             or _runtime_config_parser_name(mdc, "reasoning_parser")
+            or _infer_reasoning_parser_name(
+                local_dir, getattr(tokenizer, "chat_template", None)
+            )
         )
         default_thinking_mode = runtime_default_thinking_mode(mdc.runtime_config())
         (

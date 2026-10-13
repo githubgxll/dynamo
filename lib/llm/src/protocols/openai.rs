@@ -280,6 +280,7 @@ impl<T: OpenAIOutputOptionsProvider> OutputOptionsProvider for T {
             formatted_prompt,
             return_tokens_as_token_ids,
             no_stop_trim: self.get_no_stop_trim(),
+            continuous_usage_stats: false,
         })
     }
 }
