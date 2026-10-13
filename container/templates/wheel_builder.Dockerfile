@@ -689,20 +689,15 @@ COPY deploy/inference-gateway/sidecar/ /opt/dynamo/deploy/inference-gateway/side
 {% if target == "planner" or (target == "runtime" and framework in ("vllm", "sglang", "trtllm")) %}
 COPY container/deps/requirements.aisimulate.txt /opt/dynamo/container/deps/requirements.aisimulate.txt
 
-# AISimulate is released separately as an abi3 wheel. Stage the pinned wheel
-# directly from NVIDIA's package index. Download only this
-# distribution; runtime images own dependency installation through their
-# requirements files and local wheels.
-RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+# Prefer the exact published wheel. If its public publication lags the Rust
+# crate, build the reviewed, checksum-pinned source with the same nightly stamp.
+COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json /opt/dynamo/container/deps/
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
+    --mount=type=cache,target=/root/.cargo/git,sharing=shared \
+    --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
     export UV_CACHE_DIR=/root/.cache/uv && \
     source ${VIRTUAL_ENV}/bin/activate && \
-    python -m pip download \
-        --only-binary=:all: \
-        --no-deps \
-        --no-index \
-        --find-links https://pypi.nvidia.com/aisimulate/ \
-        --dest /opt/dynamo/dist \
-        --requirement /opt/dynamo/container/deps/requirements.aisimulate.txt
+    python /opt/dynamo/container/deps/stage_aisimulate.py
 {% endif %}
 
 # Compliance: harvest each crate's real LICENSE files from the cargo registry
