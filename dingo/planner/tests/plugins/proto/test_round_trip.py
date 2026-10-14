@@ -46,9 +46,9 @@ def test_class_coverage_pydantic_side():
     }
     registered = set(_PYD_TO_PROTO.keys())
     missing = pyd_classes - registered
-    assert (
-        not missing
-    ), f"Pydantic classes missing proto registration: {sorted(c.__name__ for c in missing)}"
+    assert not missing, (
+        f"Pydantic classes missing proto registration: {sorted(c.__name__ for c in missing)}"
+    )
 
 
 def test_class_coverage_proto_side():
@@ -246,9 +246,9 @@ def test_prediction_data_optional_unset_vs_zero():
     # Explicit 0.0 (rare but valid)
     p2 = pyd.PredictionData(predicted_num_req=0.0)
     pb2 = pydantic_to_proto(p2)
-    assert pb2.HasField(
-        "predicted_num_req"
-    ), "predicted_num_req=0.0 must round-trip as set"
+    assert pb2.HasField("predicted_num_req"), (
+        "predicted_num_req=0.0 must round-trip as set"
+    )
     assert pb2.predicted_num_req == 0.0
     assert not pb2.HasField("predicted_isl")  # still unset
 
@@ -626,3 +626,25 @@ def test_wire_deterministic(msg):
     pb1 = pydantic_to_proto(msg)
     pb2 = pydantic_to_proto(msg)
     assert pb1.SerializeToString() == pb2.SerializeToString()
+
+
+def test_plugin_wire_namespace_survives_python_package_rename():
+    """Python lives under dingo; existing t5 plugin peers keep their wire API."""
+    from dingo.planner.plugins.proto.v1 import plugin_pb2_grpc
+
+    assert pb.DESCRIPTOR.package == "dynamo.planner.plugin.v1"
+
+    class RecordingChannel:
+        def __init__(self):
+            self.paths = []
+
+        def unary_unary(self, path, **_kwargs):
+            self.paths.append(path)
+            return object()
+
+    for service in pb.DESCRIPTOR.services_by_name.values():
+        channel = RecordingChannel()
+        getattr(plugin_pb2_grpc, service.name + "Stub")(channel)
+        assert channel.paths == [
+            f"/{service.full_name}/{method.name}" for method in service.methods
+        ]

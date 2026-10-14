@@ -24,8 +24,9 @@ from tests.utils.collection_env_guard import (
     format_collection_env_changes,
     snapshot_collection_env,
 )
-from tests.utils.constants import TEST_MODELS, DefaultPort
+from tests.utils.constants import TEST_MODELS, DynamoPortRange
 from tests.utils.managed_process import ManagedProcess
+from tests.utils.output_paths import resolve_test_output_path
 from tests.utils.port_utils import (
     ServicePorts,
     allocate_port,
@@ -33,7 +34,6 @@ from tests.utils.port_utils import (
     deallocate_port,
     deallocate_ports,
 )
-from tests.utils.test_output import resolve_test_output_path
 
 _logger = logging.getLogger(__name__)
 
@@ -222,6 +222,35 @@ logging.basicConfig(
 
 def pytest_configure(config: pytest.Config) -> None:
     """Configure session: validate --models-dir and detect GPUs for --max-vram-gib."""
+    # Dual-register custom markers (also declared in pyproject
+    # [tool.pytest.ini_options].markers) so --strict-markers recognizes them
+    # regardless of config-load order. See .ai/pytest-guidelines.md.
+    config.addinivalue_line(
+        "markers",
+        "elastic_ep: marks vLLM elastic expert-parallelism (ePLB) scaling tests "
+        "(scale_elastic_ep over the Ray DP backend)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "token_budget_parity: compares native backend and Dynamo prompt/output "
+        "overflow behavior",
+    )
+    config.addinivalue_line(
+        "markers",
+        "sidecar: marks tests that launch a Dynamo dynamo-*-sidecar binary "
+        "against its native-gRPC engine via lib/sidecar/*/launch/*.sh",
+    )
+    config.addinivalue_line(
+        "markers",
+        "framework_with_efa: marks deployment tests that require an EFA-capable "
+        "cluster and an -efa image",
+    )
+    config.addinivalue_line(
+        "markers",
+        "framework_with_kvcr: marks deployment tests that require a KVCR-capable "
+        "image and multi-host RDMA",
+    )
+
     models_dir = config.getoption("--models-dir", default=None)
     if models_dir and not Path(models_dir).is_dir():
         pytest.exit(
@@ -644,7 +673,12 @@ def pytest_collection_modifyitems(config, items):
     This function is called to modify the list of tests to run.
     """
     _check_sglang_mm_hashes_present(items)
-    # Auto-skip tests marked with a framework marker when the framework is not installed
+    # Auto-skip tests marked with a framework marker when the framework is not
+    # installed. Framework markers are also how CI selects which container runs a
+    # test, so a test that inspects the container itself must carry every
+    # framework marker to be selected everywhere -- and would then be skipped
+    # everywhere, since no image ships all of them. framework_agnostic opts such
+    # a test out of the skip while leaving its selection markers intact.
     framework_markers = {
         "vllm": "vllm",
         "sglang": "sglang",
@@ -655,7 +689,9 @@ def pytest_collection_modifyitems(config, items):
         if importlib.util.find_spec(module_name) is None:
             skip = pytest.mark.skip(reason=f"{module_name} is not installed")
             for item in items:
-                if _item_has_marker(item, marker_name):
+                if _item_has_marker(item, marker_name) and not _item_has_marker(
+                    item, "framework_agnostic"
+                ):
                     item.add_marker(skip)
 
     # Deselect tests based on --max-vram-gib:
@@ -1096,29 +1132,11 @@ def request_plane(request):
 
 
 @pytest.fixture
-def durable_kv_events(request, monkeypatch):
-    """
-    Whether to use durable KV events via JetStream. Defaults to False (NATS Core mode).
-
-    When False (default):
-    - NATS server starts without JetStream (-js flag omitted) for faster startup
-    - Workers use local indexer mode (NATS Core / fire-and-forget events)
-
-    When True:
-    - NATS server starts with JetStream for durable KV event distribution
-    - Workers use --durable-kv-events flag to publish to JetStream
-
-    To use JetStream mode:
-        @pytest.mark.parametrize("durable_kv_events", [True], indirect=True)
-        def test_example(runtime_services_dynamic_ports):
-            ...
-    """
-    value = getattr(request, "param", False)
-    if value:
-        # Durable/JetStream KV events only exist on the NATS event plane. ZMQ is now
-        # the default, so pin NATS here; otherwise the durable subscriber bails at
-        # startup ("--durable-kv-events requires NATS event plane").
-        monkeypatch.setenv("DYN_EVENT_PLANE", "nats")
+def event_plane(request, monkeypatch):
+    """Explicit event plane for tests that must pin a transport."""
+    value = getattr(request, "param", None)
+    if value is not None:
+        monkeypatch.setenv("DYN_EVENT_PLANE", value)
     return value
 
 
@@ -1130,7 +1148,7 @@ def runtime_services(request, discovery_backend, request_plane):
     - If discovery_backend != "etcd", etcd is not started (returns None)
     - If request_plane != "nats", NATS is not started (returns None)
     - The event plane follows the runtime default (ZMQ); set DYN_EVENT_PLANE=nats
-      (or use durable_kv_events) for tests that need the NATS event plane.
+      for tests that need the NATS event plane.
 
     Returns a tuple of (nats_process, etcd_process) where each has a .port attribute.
     """
@@ -1151,7 +1169,11 @@ def runtime_services(request, discovery_backend, request_plane):
 
 @pytest.fixture()
 def runtime_services_dynamic_ports(
-    request, discovery_backend, request_plane, durable_kv_events, monkeypatch
+    request,
+    discovery_backend,
+    request_plane,
+    event_plane,
+    monkeypatch,
 ):
     """Provide NATS and Etcd servers with truly dynamic ports per test.
 
@@ -1166,18 +1188,26 @@ def runtime_services_dynamic_ports(
 
     - If discovery_backend != "etcd", etcd is not started (returns None)
     - The event plane follows the runtime default (ZMQ). NATS is still started so
-      the NATS opt-in paths stay available; durable_kv_events=True pins
-      DYN_EVENT_PLANE=nats (see the durable_kv_events fixture).
+      the NATS opt-in paths stay available, unless a TCP test explicitly selects
+      the ZMQ event plane.
 
     Returns a tuple of (nats_process, etcd_process) where each has a .port attribute.
     """
     # Port cleanup is now handled in NatsServer and EtcdServer __exit__ methods
     # Start NATS when etcd is used so the NATS opt-in paths stay available.
-    # When durable_kv_events=False (default), disable JetStream for faster startup
-    if discovery_backend == "etcd":
-        with NatsServer(
-            request, port=0, disable_jetstream=not durable_kv_events
-        ) as nats_process:
+    nats_required = request_plane == "nats" or event_plane == "nats"
+    nats_free = event_plane == "zmq" and not nats_required
+    if nats_free:
+        monkeypatch.delenv("NATS_SERVER", raising=False)
+
+    if discovery_backend == "etcd" and nats_free:
+        with EtcdServer(request, port=0) as etcd_process:
+            monkeypatch.setenv(
+                "ETCD_ENDPOINTS", f"http://localhost:{etcd_process.port}"
+            )
+            yield None, etcd_process
+    elif discovery_backend == "etcd":
+        with NatsServer(request, port=0, disable_jetstream=True) as nats_process:
             with EtcdServer(request, port=0) as etcd_process:
                 # Set environment variables for this test's dynamic ports.
                 # monkeypatch.setenv auto-restores them (including any values set by
@@ -1190,17 +1220,10 @@ def runtime_services_dynamic_ports(
                 )
 
                 yield nats_process, etcd_process
-    elif request_plane == "nats":
-        with NatsServer(
-            request, port=0, disable_jetstream=not durable_kv_events
-        ) as nats_process:
-            orig_nats = os.environ.get("NATS_SERVER")
-            os.environ["NATS_SERVER"] = f"nats://localhost:{nats_process.port}"
+    elif nats_required:
+        with NatsServer(request, port=0, disable_jetstream=True) as nats_process:
+            monkeypatch.setenv("NATS_SERVER", f"nats://localhost:{nats_process.port}")
             yield nats_process, None
-            if orig_nats is not None:
-                os.environ["NATS_SERVER"] = orig_nats
-            else:
-                os.environ.pop("NATS_SERVER", None)
     else:
         yield None, None
 
@@ -1275,28 +1298,31 @@ def dynamo_dynamic_ports(num_system_ports) -> Generator[ServicePorts, None, None
 
     - frontend_port: OpenAI-compatible HTTP/gRPC ingress (dingo.frontend)
     - system_ports: List of worker metrics/system ports (configurable count via num_system_ports)
-    - kv_event_port: ZMQ port for vLLM KV event publishing (avoids collisions under xdist)
+    - kv_event_ports: one ZMQ port per worker for vLLM KV event publishing
     """
     # Track ports as they are allocated so a failure mid-sequence (e.g. NIXL
     # allocation raising) still cleans up earlier reservations via finally,
     # rather than leaking them until stale cleanup and exhausting the xdist pool.
     all_ports: list[int] = []
     try:
-        frontend_port = allocate_port(DefaultPort.FRONTEND.value)
+        frontend_port = allocate_port(DynamoPortRange.FRONTEND.value)
         all_ports.append(frontend_port)
-        system_port_list = allocate_ports(num_system_ports, DefaultPort.SYSTEM1.value)
+        system_port_list = allocate_ports(num_system_ports, DynamoPortRange.SERVE.value)
         all_ports.extend(system_port_list)
-        kv_event_port = allocate_port(DefaultPort.SYSTEM1.value)
-        all_ports.append(kv_event_port)
+        kv_event_ports = allocate_ports(num_system_ports, DynamoPortRange.SERVE.value)
+        all_ports.extend(kv_event_ports)
+        fpm_port = allocate_port(DynamoPortRange.FPM.value)
+        all_ports.append(fpm_port)
         # One NIXL side-channel port per worker (avoids xdist collisions on shared hosts).
         nixl_side_channel_ports = allocate_ports(
-            num_system_ports, DefaultPort.SYSTEM1.value
+            num_system_ports, DynamoPortRange.NIXL.value
         )
         all_ports.extend(nixl_side_channel_ports)
         yield ServicePorts(
             frontend_port=frontend_port,
             system_ports=system_port_list,
-            kv_event_port=kv_event_port,
+            kv_event_ports=kv_event_ports,
+            fpm_port=fpm_port,
             nixl_side_channel_ports=nixl_side_channel_ports,
         )
     finally:

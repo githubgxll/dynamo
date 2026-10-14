@@ -10,8 +10,7 @@ disappears mid-transfer (issue #7319).
 NIXL and CUDA are mocked so these tests run on CPU-only machines.
 """
 
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -37,31 +36,16 @@ def _make_nixl_mocks():
 
 
 @pytest.fixture
-def nixl_mocks():
+def nixl_mocks(monkeypatch):
+    # Patch only the dependencies this test uses. Restoring all of sys.modules
+    # after importing native modules can unload torch's Python wrappers while
+    # its native registries remain alive, corrupting later tests.
+    from dynamo import nixl_connect
+
     nixl_api_mock, nixl_bindings_mock, agent_instance = _make_nixl_mocks()
-
-    # Patch cupy import too since nixl_connect tries to import it
-    cupy_mock = MagicMock()
-    cupy_mock.cuda = MagicMock()
-    cupy_mock.cuda.is_available = MagicMock(return_value=False)
-    cupy_mock.ndarray = type("ndarray", (), {})
-
-    with (
-        patch.dict(
-            sys.modules,
-            {
-                "nixl": MagicMock(),
-                "nixl._api": nixl_api_mock,
-                "nixl._bindings": nixl_bindings_mock,
-                "cupy": cupy_mock,
-                "cupy_backends": MagicMock(),
-                "cupy_backends.cuda": MagicMock(),
-                "cupy_backends.cuda.api": MagicMock(),
-                "cupy_backends.cuda.api.runtime": MagicMock(),
-            },
-        ),
-    ):
-        yield nixl_api_mock, nixl_bindings_mock, agent_instance
+    monkeypatch.setattr(nixl_connect, "nixl_api", nixl_api_mock)
+    monkeypatch.setattr(nixl_connect, "nixl_bindings", nixl_bindings_mock)
+    yield nixl_api_mock, nixl_bindings_mock, agent_instance
 
 
 @pytest.fixture

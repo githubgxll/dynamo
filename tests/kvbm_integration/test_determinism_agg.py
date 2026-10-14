@@ -35,8 +35,8 @@ from typing import Any, Dict, List, Optional, TextIO
 import pytest
 import requests
 
+from tests.utils.output_paths import resolve_test_output_path
 from tests.utils.port_utils import allocate_port, deallocate_port
-from tests.utils.test_output import resolve_test_output_path
 
 from .common import DeterminismTester, ServerType
 from .common import TestDeterminism as BaseTestDeterminism
@@ -110,12 +110,15 @@ _CONCURRENT_TIMEOUT = _SERVER_START_TIMEOUT + 2 * (
 )
 
 # Test markers to align with repository conventions
-# Todo: enable the rest when kvbm is built in the ci
 pytestmark = [
+    pytest.mark.kvbm,
+    pytest.mark.kvbm_determinism,
     pytest.mark.e2e,
     pytest.mark.slow,
     pytest.mark.gpu_1,
+    pytest.mark.h100,
     pytest.mark.nightly,
+    pytest.mark.post_merge,
 ]
 
 
@@ -152,7 +155,7 @@ class LLMServerManager:
         self.gpu_cache_blocks = gpu_cache_blocks
 
         # Prepare logging
-        self.log_dir = log_dir or Path(".")
+        self.log_dir = log_dir or Path(resolve_test_output_path("kvbm_integration"))
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config_str = (

@@ -80,9 +80,7 @@ class UnifiedSGLangProcess(SGLangProcess):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        _swap_module(
-            self.worker_processes, "dingo.sglang", "dingo.sglang.unified_main"
-        )
+        _swap_module(self.worker_processes, "dingo.sglang", "dingo.sglang.unified_main")
 
     process_name = "Unified SGLang worker"
     cleanup_name = "Unified SGLang worker resources"
@@ -307,4 +305,3 @@ def test_unified_sglang_router_decisions_dp(
         test_dp_rank=True,
         extra_process_kwargs={"data_parallel_size": 2},
     )
-

@@ -3,7 +3,7 @@
 
 # Case 3b: AIC supported model, rapid, with planner, rapid pre-deployment sweeping, enable mocker
 model: "Qwen/Qwen3-32B"
-backend: trtllm
+backend: vllm
 image: "nvcr.io/nvidia/ai-dynamo/dynamo-frontend:latest"
 hardware:
   gpuSku: h200_sxm
@@ -18,6 +18,6 @@ features:
     enable_throughput_scaling: true
     enable_load_scaling: false
     mode: disagg
-    backend: trtllm
+    backend: vllm
   mocker:
     enabled: true

@@ -4,12 +4,9 @@
 name: DingoRouter Tests
 
 on:
-  pull_request:
-    branches:
-      - DingoRouter-base
   push:
     branches:
-      - DingoRouter-base
+      - 'DingoRouter-*'
   workflow_dispatch:
     inputs:
       quick_mode:

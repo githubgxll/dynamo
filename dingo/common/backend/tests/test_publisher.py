@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-import json
+import queue
+import threading
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Optional
@@ -15,18 +16,16 @@ pytest.importorskip(
     reason="dynamo._core.backend not built — run `maturin develop` first",
 )
 
-from dynamo._core import Context  # noqa: E402
-from dingo.common.backend.engine import (  # noqa: E402
+from dynamo._core import Context
+
+from dingo.common.backend.engine import (
     EngineConfig,
     GenerateChunk,
     GenerateRequest,
     LLMEngine,
 )
-from dingo.common.backend.publisher import (  # noqa: E402
-    ComponentSnapshot,
-    PushSource,
-    ZmqSource,
-)
+from dingo.common.backend.publisher import ComponentSnapshot, PushSource, ZmqSource
+from dingo.common.constants import DisaggregationMode
 
 pytestmark = [
     pytest.mark.unit,
@@ -34,6 +33,8 @@ pytestmark = [
     pytest.mark.gpu_0,
     pytest.mark.pre_merge,
 ]
+
+import json
 
 
 def test_source_descriptors_carry_payload_and_defaults():
@@ -83,6 +84,65 @@ async def test_abc_source_methods_default_to_empty_list():
 @pytest.mark.asyncio
 async def test_register_prometheus_default_is_noop():
     assert await _MinimalEngine().register_prometheus(metrics=object()) is None
+
+
+@pytest.mark.asyncio
+async def test_sample_engine_declares_dp_ranks_and_kv_event_source():
+    from dingo.common.backend.sample_engine import SampleLLMEngine
+
+    engine = SampleLLMEngine.__new__(SampleLLMEngine)
+
+    engine.disaggregation_mode = DisaggregationMode.AGGREGATED
+    assert engine.component_metrics_dp_ranks() == [0]
+    sources = await engine.kv_event_sources()
+    assert len(sources) == 1
+    assert isinstance(sources[0], PushSource)
+    assert sources[0].dp_rank == 0
+
+    # Encode workers host neither the component gauges nor a KV-event source.
+    engine.disaggregation_mode = DisaggregationMode.ENCODE
+    assert engine.component_metrics_dp_ranks() == []
+    assert await engine.kv_event_sources() == []
+
+
+def test_sample_engine_publish_loop_pushes_component_snapshot():
+    """An idle publish tick pushes a ComponentSnapshot to the attached
+    publisher — the same path real engines use to feed the snapshot gauge."""
+    from dingo.common.backend.sample_engine import SampleLLMEngine
+
+    engine = SampleLLMEngine.__new__(SampleLLMEngine)
+    engine._kv_used_blocks = 25
+    engine._publish_stop = threading.Event()
+
+    published: list[tuple[int, ComponentSnapshot]] = []
+
+    def _publish(rank, snapshot):
+        published.append((rank, snapshot))
+        engine._publish_stop.set()  # one tick, then let the loop exit
+
+    engine.attach_snapshot_publisher(SimpleNamespace(publish=_publish))
+    assert engine._snapshot_publisher is not None
+
+    class _AlwaysEmpty:
+        def get(self, timeout):
+            raise queue.Empty
+
+    engine._publish_queue = _AlwaysEmpty()
+
+    engine._publish_loop(publisher=None)
+
+    assert published == [
+        (
+            0,
+            ComponentSnapshot(
+                kv_used_blocks=25,
+                kv_total_blocks=1000,
+                gpu_cache_usage=0.025,
+                kv_cache_hit_rate=None,
+                dp_rank=0,
+            ),
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -158,4 +218,3 @@ async def test_sglang_kv_event_sources_return_one_zmq_source_per_local_dp_rank(
         ("tcp://127.0.0.1:6006", 6),
         ("tcp://127.0.0.1:6007", 7),
     ]
-

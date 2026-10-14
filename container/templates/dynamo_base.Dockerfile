@@ -34,12 +34,13 @@ RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64")
 # Download the uv release tarball directly from GitHub instead of pulling the
 # ghcr.io/astral-sh/uv image: ghcr.io is unreachable (TLS handshake timeout) from
 # some CI/build networks, and pinning the version keeps builds reproducible.
-ARG UV_VERSION=0.10.7
-RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
+ARG UV_VERSION={{ context.dynamo.uv_version }}
+RUN mkdir -p /opt/uv/bin && ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
     wget --tries=3 --waitretry=5 \
         "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" && \
-    tar -xzf "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" -C /usr/local/bin --strip-components=1 && \
+    tar -xzf "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz" -C /opt/uv/bin --strip-components=1 && \
     rm -f "uv-${ARCH_ALT}-unknown-linux-gnu.tar.gz"
+ENV PATH=/opt/uv/bin:${PATH}
 
 # Install NATS server
 ARG NATS_VERSION
@@ -59,7 +60,7 @@ ENV PATH=/usr/local/bin/etcd/:$PATH
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH \
-    RUST_VERSION=1.93.1
+    RUST_VERSION=1.96.1
 
 # Install Rust — ARCH_ALT (x86_64/aarch64) is derived from TARGETARCH at build time
 RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64") && \
