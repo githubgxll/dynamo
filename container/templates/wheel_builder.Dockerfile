@@ -299,7 +299,7 @@ ENV VIRTUAL_ENV=/workspace/.venv
 RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
     export UV_CACHE_DIR=/root/.cache/uv UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 && \
     uv venv ${VIRTUAL_ENV} --python $PYTHON_VERSION --seed && \
-    uv pip install --upgrade auditwheel meson pybind11 patchelf maturin[patchelf] tomlkit pyyaml
+    uv pip install --upgrade 'setuptools>=61.0' wheel auditwheel meson pybind11 patchelf maturin[patchelf] tomlkit pyyaml
 
 ARG NIXL_UCX_REF
 
@@ -681,13 +681,13 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     else \
         maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
     fi && \
-    {% if device == "cuda" %}
+    {% if device == "cuda" -%}
     auditwheel repair --exclude 'lib*.so*' \
         --plat manylinux_2_28_$(uname -m) \
         --wheel-dir /opt/dynamo/dist /opt/dynamo/runtime-wheel-unrepaired/*.whl && \
-    {% else %}
+    {% else -%}
     cp /opt/dynamo/runtime-wheel-unrepaired/*.whl /opt/dynamo/dist/ && \
-    {% endif %}
+    {% endif -%}
     /tmp/use-sccache.sh show-stats "Dynamo Runtime"
 
 # Complete the root Cargo workspace after the expensive runtime build. Planner
@@ -786,13 +786,16 @@ COPY lib/gpu_memory_service/ /opt/dynamo/lib/gpu_memory_service/
 
 # Build gpu-memory-service wheel → /opt/dynamo/dist/gpu_memory_service*.whl (small C++ extension, fast build -- all targets, all frameworks)
 {% if device == "cuda" %}
-# Build gpu_memory_service wheel (C++ extension only needs Python headers, no CUDA/torch)
+# Build with the backend already installed in wheel_builder_base.
+# This C++ extension only needs Python headers; no CUDA/torch or network access.
 ARG ENABLE_GPU_MEMORY_SERVICE
 RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
     if [ "$ENABLE_GPU_MEMORY_SERVICE" = "true" ]; then \
         export UV_CACHE_DIR=/root/.cache/uv && \
         source ${VIRTUAL_ENV}/bin/activate && \
-        uv build --wheel --out-dir /opt/dynamo/dist /opt/dynamo/lib/gpu_memory_service; \
+        uv build --wheel --offline --no-build-isolation \
+            --python ${VIRTUAL_ENV}/bin/python \
+            --out-dir /opt/dynamo/dist /opt/dynamo/lib/gpu_memory_service; \
     fi
 {% endif %}
 

@@ -57,6 +57,10 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.has_images == 'true'
     runs-on: [self-hosted, linux, x64, dingo]
+    env:
+      # render.py mounts these as secret envs; build args alone are shadowed.
+      PIP_INDEX_URL: ${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
+      UV_DEFAULT_INDEX: ${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -139,12 +143,12 @@ jobs:
           push: true
           tags: ${{ matrix.builder_image }}
           build-args: |
-            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
           secret-envs: |
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
             actions-results-url=ACTIONS_RESULTS_URL
             actions-runtime-token=ACTIONS_RUNTIME_TOKEN
           provenance: false
@@ -177,12 +181,12 @@ jobs:
           push: true
           tags: ${{ matrix.image }}
           build-args: |
-            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
           secret-envs: |
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
             actions-results-url=ACTIONS_RESULTS_URL
             actions-runtime-token=ACTIONS_RUNTIME_TOKEN
           # Native dependencies come from the immutable builder image above.
