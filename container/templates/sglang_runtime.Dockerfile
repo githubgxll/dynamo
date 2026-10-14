@@ -127,28 +127,10 @@ $NIXL_PLUGIN_DIR:\
 ${LD_LIBRARY_PATH:-}
 {% endif %}
 
-{% if target not in ("dev", "local-dev") %}
-# Runtime target installs only the prebuilt Dynamo wheels. SGLang and its NIXL
-# packages come from the upstream lmsysorg/sglang runtime image; --no-deps keeps
-# pip from replacing that stack. Dev/local-dev build from source later in the
-# shared dev stage after the workspace is bind-mounted.
-COPY --chmod=775 --chown=dynamo:0 --from=wheel_builder /opt/dynamo/dist/*.whl /opt/dynamo/wheelhouse/
-
-{% if device == "xpu" %}
-RUN pip install --no-deps \
-        /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
-        /opt/dynamo/wheelhouse/ai_dingo*any.whl \
-        /opt/dynamo/wheelhouse/aisimulate*.whl \
-        /opt/dynamo/wheelhouse/nixl/nixl*.whl \
-        "distro==1.9.0"
-{% else %}
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    export PIP_CACHE_DIR=/root/.cache/pip && \
-    pip install --break-system-packages --no-deps \
-        /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
-        /opt/dynamo/wheelhouse/ai_dingo*any.whl \
-        /opt/dynamo/wheelhouse/aisimulate*.whl
-
+# Install third-party dependencies before copying application wheels. Changes to
+# Dynamo source then preserve these download/install layers, and missing packages
+# fail before waiting for the Rust wheel build.
+{% if target not in ("dev", "local-dev") and device != "xpu" %}
 # Install accelerate for diffusion/video worker pipelines (diffusers requires it
 # for enable_model_cpu_offload but the upstream SGLang runtime image omits it)
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
@@ -164,15 +146,6 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps "distro==1.9.0"
 
-# Install gpu_memory_service wheel if enabled (all targets)
-ARG ENABLE_GPU_MEMORY_SERVICE
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    if [ "${ENABLE_GPU_MEMORY_SERVICE}" = "true" ]; then \
-        export PIP_CACHE_DIR=/root/.cache/pip && \
-        GMS_WHEEL=$(ls /opt/dynamo/wheelhouse/gpu_memory_service*.whl 2>/dev/null | head -1); \
-        if [ -n "$GMS_WHEEL" ]; then pip install --no-cache-dir --break-system-packages "$GMS_WHEEL"; fi; \
-    fi
-
 {% if context.sglang.enable_modelexpress == "true" %}
 # Install only the ModelExpress client package. --no-deps preserves the upstream
 # SGLang runtime dependency stack. google-crc32c is imported eagerly by the MX
@@ -185,7 +158,6 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         "modelexpress==${MODELEXPRESS_VERSION}"; \
     pip install --break-system-packages "google-crc32c>=1.5.0"; \
     python3 -c "import modelexpress.engines.sglang"
-{% endif %}
 {% endif %}
 {% endif %}
 
@@ -201,12 +173,16 @@ RUN --mount=type=bind,source=./container/deps/requirements.common.txt,target=/tm
 # Install SGLang-specific runtime dependencies without changing the upstream
 # dependency solution. imageio-ffmpeg is installed from source (no bundled
 # binary) for the VP9 video-encode path; see requirements.sglang.txt.
+# This public dependency set includes mooncake-transfer-engine-cuda13, which
+# is absent from some mirrors. Consult official PyPI as well; keep the CUDA 13
+# distribution and version constraints instead of substituting the CUDA 12 wheel.
 {% if device == "cuda" %}
 RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tmp/requirements.sglang.txt \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
     [ "$CUDA_MAJOR" = "13" ] || { echo "ERROR: requirements.sglang.txt hardcodes the mooncake-transfer-engine-cuda13 distribution; got CUDA_MAJOR=$CUDA_MAJOR" >&2; exit 1; } && \
     pip install --break-system-packages --force-reinstall --no-deps \
+        --extra-index-url https://pypi.org/simple \
         --requirement /tmp/requirements.sglang.txt
 
 # Assert what the install left. The pin is repeated from the requirements file
@@ -249,6 +225,54 @@ RUN rm -rf \
         /opt/nvidia/nsight-systems-cli/*/target-linux-*/plugins/efa_metrics \
         /opt/nvidia/nsight-compute/*/host/target-linux-*/plugins/efa_metrics && \
     [ -z "$(find /usr/local /opt -xdev -type d -name efa_metrics 2>/dev/null)" ]
+
+{%- if device != "xpu" %}
+# Precompile Python bytecode into the image while still root. CI runs tests as
+# the non-root `dynamo` user, which cannot write .pyc back to site-packages, and
+# the test harness forks a fresh process per test. Without baked .pyc, every test
+# process recompiles torch/transformers/sglang from source on first import (~+3.5s
+# each), which previously added ~8-10 min to the sglang CI job. This was implicitly
+# provided by the now-removed vendored-patch step that ran `import sglang` at build.
+# Run before application wheels/source are copied so code-only changes reuse it;
+# pip compiles the application wheels when it installs them below.
+RUN SITE_PACKAGES="$(python3 -c 'import site; print(site.getsitepackages()[0])')" && \
+    python3 -m compileall -q -j0 "$SITE_PACKAGES" && \
+    (python3 -m compileall -q -j0 /sgl-workspace/sglang/python || true)
+{%- endif %}
+
+{% if target not in ("dev", "local-dev") %}
+# Runtime target installs only the prebuilt Dynamo wheels. SGLang and its NIXL
+# packages come from the upstream lmsysorg/sglang runtime image; --no-deps keeps
+# pip from replacing that stack. Dev/local-dev build from source later in the
+# shared dev stage after the workspace is bind-mounted.
+COPY --chmod=775 --chown=dynamo:0 --from=wheel_builder /opt/dynamo/dist/*.whl /opt/dynamo/wheelhouse/
+
+{% if device == "xpu" %}
+RUN pip install --no-deps \
+        /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
+        /opt/dynamo/wheelhouse/ai_dingo*any.whl \
+        /opt/dynamo/wheelhouse/aisimulate*.whl \
+        /opt/dynamo/wheelhouse/nixl/nixl*.whl \
+        "distro==1.9.0"
+{% else %}
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    export PIP_CACHE_DIR=/root/.cache/pip && \
+    pip install --break-system-packages --no-deps \
+        /opt/dynamo/wheelhouse/ai_dingo_runtime*.whl \
+        /opt/dynamo/wheelhouse/ai_dingo*any.whl \
+        /opt/dynamo/wheelhouse/aisimulate*.whl
+
+# Install gpu_memory_service wheel if enabled (all targets)
+ARG ENABLE_GPU_MEMORY_SERVICE
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    if [ "${ENABLE_GPU_MEMORY_SERVICE}" = "true" ]; then \
+        export PIP_CACHE_DIR=/root/.cache/pip && \
+        GMS_WHEEL=$(ls /opt/dynamo/wheelhouse/gpu_memory_service*.whl 2>/dev/null | head -1); \
+        if [ -n "$GMS_WHEEL" ]; then pip install --no-cache-dir --break-system-packages "$GMS_WHEEL"; fi; \
+    fi
+
+{% endif %}
+{% endif %}
 
 {% if device == "cuda" %}
 # Copy the local FFmpeg build (NVENC/VP9) from wheel_builder: shared libs
@@ -322,18 +346,6 @@ RUN chmod 755 /opt/dynamo/.launch_screen && \
     if [ -n "$NSYS_BIN" ]; then ln -sf "$NSYS_BIN" /usr/local/bin/nsys; \
     else echo "WARNING: no bundled nsys found under /opt/nvidia/nsight-compute"; fi
 {% endif %}
-
-{%- if device != "xpu" %}
-# Precompile Python bytecode into the image while still root. CI runs tests as
-# the non-root `dynamo` user, which cannot write .pyc back to site-packages, and
-# the test harness forks a fresh process per test. Without baked .pyc, every test
-# process recompiles torch/transformers/sglang from source on first import (~+3.5s
-# each), which previously added ~8-10 min to the sglang CI job. This was implicitly
-# provided by the now-removed vendored-patch step that ran `import sglang` at build.
-RUN SITE_PACKAGES="$(python3 -c 'import site; print(site.getsitepackages()[0])')" && \
-    python3 -m compileall -q -j0 "$SITE_PACKAGES" && \
-    (python3 -m compileall -q -j0 /sgl-workspace/sglang/python || true)
-{%- endif %}
 
 USER dynamo
 ARG DYNAMO_COMMIT_SHA
