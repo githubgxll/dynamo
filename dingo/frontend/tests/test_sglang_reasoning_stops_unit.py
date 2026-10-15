@@ -80,6 +80,7 @@ def test_factory_selects_parser_and_preserves_reasoning_before_stop(
     factory = processor_module.SglangEngineFactory(
         SimpleNamespace(
             trust_remote_code=False,
+            glm_history_arguments_models=[],
             preprocess_workers=0,
             exclude_tools_when_tool_choice_none=True,
         ),

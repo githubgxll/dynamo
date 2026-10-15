@@ -356,8 +356,9 @@ def _normalize_assistant_tool_call_arguments(messages: list[dict[str, Any]]) -> 
     (``serving_chat.py``) so multi-turn conversations containing prior tool
     calls render correctly.
 
-    Malformed JSON is left untouched so the chat-template error remains
-    visible to the caller instead of being silently corrupted.
+    Malformed JSON is left untouched. HTTP admission rejects it by default;
+    explicitly enabled GLM deployments render it verbatim as historical text.
+    Never repair or silently replace it with an empty object.
     """
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
