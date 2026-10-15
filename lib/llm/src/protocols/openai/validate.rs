@@ -509,6 +509,15 @@ pub fn validate_stop(stop: &Option<dynamo_protocols::types::Stop>) -> Result<(),
 pub fn validate_messages(
     messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
 ) -> Result<(), anyhow::Error> {
+    validate_messages_with_history_policy(messages, false)
+}
+
+/// Allow malformed JSON syntax only for explicitly configured historical tool calls.
+/// Valid JSON with a non-object shape is still rejected. No input is rewritten.
+pub fn validate_messages_with_history_policy(
+    messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
+    allow_invalid_history_arguments: bool,
+) -> Result<(), anyhow::Error> {
     if messages.is_empty() {
         anyhow::bail!("Messages array cannot be empty");
     }
@@ -522,6 +531,7 @@ pub fn validate_messages(
             for (tool_call_index, tool_call) in tool_calls.iter().enumerate() {
                 validate_json_object_string(
                     &tool_call.function.arguments,
+                    allow_invalid_history_arguments,
                     format!(
                         "`messages[{message_index}].tool_calls[{tool_call_index}].function.arguments`"
                     ),
@@ -532,12 +542,19 @@ pub fn validate_messages(
     Ok(())
 }
 
-fn validate_json_object_string(value: &str, field: String) -> Result<(), anyhow::Error> {
+fn validate_json_object_string(
+    value: &str,
+    allow_invalid_history_arguments: bool,
+    field: String,
+) -> Result<(), anyhow::Error> {
     if value.trim().is_empty() {
         return Ok(());
     }
-    let parsed: serde_json::Value = serde_json::from_str(value)
-        .map_err(|error| anyhow::anyhow!("{field} must be a valid JSON object string: {error}"))?;
+    let parsed: serde_json::Value = match serde_json::from_str(value) {
+        Ok(parsed) => parsed,
+        Err(_) if allow_invalid_history_arguments => return Ok(()),
+        Err(error) => anyhow::bail!("{field} must be a valid JSON object string: {error}"),
+    };
     if !parsed.is_object() {
         anyhow::bail!("{field} must be a valid JSON object string");
     }

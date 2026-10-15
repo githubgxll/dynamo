@@ -689,6 +689,11 @@ impl State {
     }
 
     /// Response field used for emitted OpenAI-compatible reasoning content.
+    pub fn allows_invalid_history_arguments(&self, model: &str) -> bool {
+        self.frontend_api_config
+            .allows_invalid_history_arguments(model)
+    }
+
     pub fn reasoning_field(&self) -> ReasoningField {
         self.frontend_api_config.reasoning_field()
     }

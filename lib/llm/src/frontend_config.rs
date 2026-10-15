@@ -170,6 +170,7 @@ pub struct FrontendApiConfig {
     anthropic: AnthropicApiConfig,
     streaming_dispatch: StreamingDispatchConfig,
     reasoning_field: ReasoningField,
+    glm_history_arguments_models: Vec<String>,
 }
 
 impl FrontendApiConfig {
@@ -182,6 +183,7 @@ impl FrontendApiConfig {
             anthropic,
             streaming_dispatch,
             reasoning_field,
+            glm_history_arguments_models: Vec::new(),
         }
     }
 
@@ -199,6 +201,7 @@ impl FrontendApiConfig {
                 enable_streaming_reasoning_dispatch,
             ),
             reasoning_field,
+            glm_history_arguments_models: Vec::new(),
         }
     }
 
@@ -250,6 +253,16 @@ impl FrontendApiConfig {
         self.reasoning_field
     }
 
+    pub fn allows_invalid_history_arguments(&self, model: &str) -> bool {
+        self.glm_history_arguments_models
+            .iter()
+            .any(|name| name == model)
+    }
+
+    pub fn set_glm_history_arguments_models(&mut self, models: Vec<String>) {
+        self.glm_history_arguments_models = models;
+    }
+
     pub fn set_reasoning_field(&mut self, reasoning_field: ReasoningField) {
         self.reasoning_field = reasoning_field;
     }
@@ -261,6 +274,7 @@ impl Default for FrontendApiConfig {
             anthropic: Default::default(),
             streaming_dispatch: Default::default(),
             reasoning_field: default_reasoning_field(),
+            glm_history_arguments_models: Vec::new(),
         }
     }
 }
@@ -268,6 +282,18 @@ impl Default for FrontendApiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_arguments_policy_is_explicit_and_model_scoped() {
+        let mut config = FrontendApiConfig::default();
+        assert!(!config.allows_invalid_history_arguments("glm-5.3"));
+        config.set_glm_history_arguments_models(vec!["glm-5.3".to_string()]);
+        assert!(config.allows_invalid_history_arguments("glm-5.3"));
+        assert!(!config.allows_invalid_history_arguments("other-glm-5.3"));
+        assert!(!config.allows_invalid_history_arguments("qwen"));
+        config.set_glm_history_arguments_models(Vec::new());
+        assert!(!config.allows_invalid_history_arguments("glm-5.3"));
+    }
 
     #[test]
     fn optional_flags_return_none_when_all_values_are_unspecified() {

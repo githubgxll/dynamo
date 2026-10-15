@@ -491,7 +491,7 @@ pub(crate) struct EntrypointArgs {
 impl EntrypointArgs {
     #[allow(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (engine_type, model_path=None, model_name=None, endpoint_id=None, template_file=None, router_config=None, kv_cache_block_size=None, http_host=None, http_port=None, http_metrics_port=None, tls_cert_path=None, tls_key_path=None, extra_engine_args=None, mocker_engine_args=None, runtime_config=None, namespace=None, namespace_prefix=None, is_prefill=false, is_decode=false, migration_limit=0, migration_max_seq_len=None, chat_engine_factory=None, ais_perf_config=None, *, tls_client_ca_cert_path=None, metrics_prefix=None, enable_anthropic_api=None, strip_anthropic_preamble=None, enable_streaming_tool_dispatch=None, enable_streaming_reasoning_dispatch=None, reasoning_field_name=None, tokenizer_backend=None, tokenizer_fallback=None))]
+    #[pyo3(signature = (engine_type, model_path=None, model_name=None, endpoint_id=None, template_file=None, router_config=None, kv_cache_block_size=None, http_host=None, http_port=None, http_metrics_port=None, tls_cert_path=None, tls_key_path=None, extra_engine_args=None, mocker_engine_args=None, runtime_config=None, namespace=None, namespace_prefix=None, is_prefill=false, is_decode=false, migration_limit=0, migration_max_seq_len=None, chat_engine_factory=None, ais_perf_config=None, *, tls_client_ca_cert_path=None, metrics_prefix=None, enable_anthropic_api=None, strip_anthropic_preamble=None, enable_streaming_tool_dispatch=None, enable_streaming_reasoning_dispatch=None, reasoning_field_name=None, glm_history_arguments_models=None, tokenizer_backend=None, tokenizer_fallback=None))]
     pub fn new(
         py: Python<'_>,
         engine_type: EngineType,
@@ -524,6 +524,7 @@ impl EntrypointArgs {
         enable_streaming_tool_dispatch: Option<bool>,
         enable_streaming_reasoning_dispatch: Option<bool>,
         reasoning_field_name: Option<String>,
+        glm_history_arguments_models: Option<Vec<String>>,
         tokenizer_backend: Option<String>,
         tokenizer_fallback: Option<bool>,
     ) -> PyResult<Self> {
@@ -585,6 +586,19 @@ impl EntrypointArgs {
         }
         runtime_config.validate_config()?;
 
+        let mut frontend_api_config = FrontendApiConfig::from_optional_flags(
+            enable_anthropic_api,
+            strip_anthropic_preamble,
+            enable_streaming_tool_dispatch,
+            enable_streaming_reasoning_dispatch,
+            reasoning_field,
+        );
+        if let Some(models) = glm_history_arguments_models {
+            frontend_api_config
+                .get_or_insert_with(FrontendApiConfig::default)
+                .set_glm_history_arguments_models(models);
+        }
+
         Ok(EntrypointArgs {
             engine_type,
             model_path,
@@ -597,13 +611,7 @@ impl EntrypointArgs {
             http_port: http_port.unwrap_or(DEFAULT_HTTP_PORT),
             http_metrics_port,
             metrics_config: metrics_prefix.map(|prefix| MetricsConfig::new(Some(prefix))),
-            frontend_api_config: FrontendApiConfig::from_optional_flags(
-                enable_anthropic_api,
-                strip_anthropic_preamble,
-                enable_streaming_tool_dispatch,
-                enable_streaming_reasoning_dispatch,
-                reasoning_field,
-            ),
+            frontend_api_config,
             tls_cert_path,
             tls_key_path,
             tls_client_ca_cert_path,

@@ -894,10 +894,23 @@ impl OpenAIOutputOptionsProvider for NvCreateChatCompletionRequest {
 /// allowing us to validate the data.
 impl ValidateRequest for NvCreateChatCompletionRequest {
     fn validate(&self) -> Result<(), anyhow::Error> {
+        self.validate_with_history_policy(false)
+    }
+}
+
+impl NvCreateChatCompletionRequest {
+    /// Deployment-owned policy, never controllable through request JSON.
+    pub fn validate_with_history_policy(
+        &self,
+        allow_invalid_history_arguments: bool,
+    ) -> Result<(), anyhow::Error> {
         validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
         validate::validate_guided_decoding(self)?;
         validate::validate_chat_template_args(self.chat_template_args.as_ref())?;
-        validate::validate_messages(&self.inner.messages)?;
+        validate::validate_messages_with_history_policy(
+            &self.inner.messages,
+            allow_invalid_history_arguments,
+        )?;
         validate::validate_model(&self.inner.model)?;
         // none for store
         validate::validate_reasoning_effort(&self.inner.reasoning_effort)?;
@@ -952,6 +965,41 @@ impl ValidateRequest for NvCreateChatCompletionRequest {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn history_arguments_policy_is_narrow_and_does_not_rewrite() {
+        use crate::engines::ValidateRequest;
+        for (arguments, strict_ok, tolerant_ok) in [
+            (r#"{"a":1}"#, true, true),
+            ("{}", true, true),
+            ("", true, true),
+            (r#"{"a":1"#, false, true),
+            ("not json", false, true),
+            ("[]", false, false),
+            ("null", false, false),
+            ("1", false, false),
+            (r#""text""#, false, false),
+        ] {
+            let request: super::NvCreateChatCompletionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "model": "glm-5.3",
+                    "messages": [{"role": "assistant", "tool_calls": [{
+                        "id": "call_1", "type": "function",
+                        "function": {"name": "lookup", "arguments": arguments}
+                    }]}]
+                }))
+                .unwrap();
+            let before = serde_json::to_value(&request).unwrap();
+            assert_eq!(request.validate().is_ok(), strict_ok, "{arguments}");
+            assert_eq!(
+                request.validate_with_history_policy(true).is_ok(),
+                tolerant_ok,
+                "{arguments}"
+            );
+            assert_eq!(serde_json::to_value(&request).unwrap(), before);
+        }
+    }
+
     #[test]
     fn legacy_cache_salt_survives_python_serialization() {
         use crate::protocols::common::extensions::apply_frontend_nvext_policy;

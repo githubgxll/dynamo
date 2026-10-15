@@ -3055,6 +3055,7 @@ class EntrypointArgs:
         strip_anthropic_preamble: Optional[bool] = None,
         enable_streaming_tool_dispatch: Optional[bool] = None,
         enable_streaming_reasoning_dispatch: Optional[bool] = None,
+        glm_history_arguments_models: Optional[List[str]] = None,
         tokenizer_backend: Optional[str] = None,
         tokenizer_fallback: Optional[bool] = None,
     ) -> None:

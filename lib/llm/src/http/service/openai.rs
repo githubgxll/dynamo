@@ -4244,7 +4244,10 @@ async fn chat_completions(
     }
 
     // Handle Rest of Validation Errors
-    if let Err(err_response) = validate_chat_completion_fields_generic(&request) {
+    if let Err(err_response) = validate_chat_completion_fields_with_history_policy(
+        &request,
+        state.allows_invalid_history_arguments(&request.inner.model),
+    ) {
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
@@ -4684,7 +4687,14 @@ fn validate_request_fields_generic<R: ValidateRequest>(
     request: &R,
     request_kind: &str,
 ) -> Result<(), ErrorResponse> {
-    request.validate().map_err(|e| {
+    validation_result_response(request.validate(), request_kind)
+}
+
+fn validation_result_response(
+    result: Result<(), anyhow::Error>,
+    request_kind: &str,
+) -> Result<(), ErrorResponse> {
+    result.map_err(|e| {
         if find_invalid_argument_in_chain(e.as_ref()).is_some() {
             return ErrorMessage::from_anyhow(e, &format!("Invalid {request_kind} request"));
         }
@@ -4703,6 +4713,16 @@ pub fn validate_chat_completion_fields_generic(
     request: &NvCreateChatCompletionRequest,
 ) -> Result<(), ErrorResponse> {
     validate_request_fields_generic(request, "chat completion")
+}
+
+fn validate_chat_completion_fields_with_history_policy(
+    request: &NvCreateChatCompletionRequest,
+    allow_invalid_history_arguments: bool,
+) -> Result<(), ErrorResponse> {
+    validation_result_response(
+        request.validate_with_history_policy(allow_invalid_history_arguments),
+        "chat completion",
+    )
 }
 
 /// Validates that stream_options is only used when stream=true for completions (NVBug 5662680)
@@ -4960,7 +4980,9 @@ async fn responses(
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
-    if let Err(error) = chat_request.validate() {
+    if let Err(error) = chat_request.validate_with_history_policy(
+        state.allows_invalid_history_arguments(&chat_request.inner.model),
+    ) {
         let err_response = ErrorMessage::from_anyhow(
             invalid_argument(error.to_string()).into(),
             "Invalid responses request",

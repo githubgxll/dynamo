@@ -68,12 +68,20 @@ impl HarnessService {
     }
 
     pub async fn start_with_engine(engine: Arc<ScriptedChatEngine>) -> Self {
+        Self::start_with_frontend_config(engine, Default::default()).await
+    }
+
+    pub async fn start_with_frontend_config(
+        engine: Arc<ScriptedChatEngine>,
+        config: dynamo_llm::frontend_config::FrontendApiConfig,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .no_proxy()
             .build()
             .expect("failed to build harness HTTP client");
         let (listener, port) = bind_random_port().await;
         let service = HttpService::builder()
+            .frontend_api_config(config)
             .port(port)
             .host("127.0.0.1")
             .enable_chat_endpoints(true)

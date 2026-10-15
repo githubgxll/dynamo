@@ -860,3 +860,51 @@ async fn tool_name_limit_is_shared_across_protocols() {
     })
     .await;
 }
+
+/// Both HTTP adapters must apply the same deployment policy without changing history.
+#[tokio::test]
+#[serial]
+async fn glm_history_policy_covers_chat_and_responses() {
+    temp_env::async_with_vars(BASE_ENV, async {
+        for allowed_models in [vec![], vec!["other-model".to_string()], vec![MODEL.to_string()]] {
+            let enabled = allowed_models.iter().any(|model| model == MODEL);
+            let mut config = dynamo_llm::frontend_config::FrontendApiConfig::default();
+            config.set_glm_history_arguments_models(allowed_models);
+            let script = load_agent_fixture("text.sse").await.unwrap();
+            let engine = Arc::new(ScriptedChatEngine::new([Ok(script.clone()), Ok(script)]));
+            let svc = HarnessService::start_with_frontend_config(engine, config).await;
+            for args in [r#"{"a":1"#, "[]"] {
+                for (path, body) in [
+                    ("/v1/chat/completions", json!({
+                        "model": MODEL,
+                        "messages": [
+                            {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": args}}]},
+                            {"role": "tool", "tool_call_id": "call_1", "content": "Invalid JSON; try again"}
+                        ]
+                    })),
+                    ("/v1/responses", json!({
+                        "model": MODEL,
+                        "input": [
+                            {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": args},
+                            {"type": "function_call_output", "call_id": "call_1", "output": "Invalid JSON; try again"}
+                        ]
+                    }))
+                ] {
+                    let response = post_json(&svc, path, body).await;
+                    let expected = if enabled && args != "[]" { 200 } else { 400 };
+                    assert_eq!(response.status().as_u16(), expected, "{path} {args}");
+                    let _ = response.text().await.unwrap();
+                    let requests = svc.engine.take_requests().await;
+                    if expected == 200 {
+                        assert_eq!(requests.len(), 1);
+                        let value = serde_json::to_value(&requests[0]).unwrap();
+                        assert_eq!(value["messages"][0]["tool_calls"][0]["function"]["arguments"], args);
+                    } else {
+                        assert!(requests.is_empty());
+                    }
+                }
+            }
+            svc.shutdown().await;
+        }
+    }).await;
+}

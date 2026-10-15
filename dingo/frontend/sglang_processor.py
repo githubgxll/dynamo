@@ -1387,6 +1387,13 @@ class SglangEngineFactory:
             logger.info("Using custom chat template override")
             tokenizer.chat_template = chat_template
 
+        if mdc.name() in self.config.glm_history_arguments_models:
+            from .glm_history import adapt_glm_history_template
+
+            chat_template = adapt_glm_history_template(tokenizer.chat_template)
+            tokenizer.chat_template = chat_template
+            logger.info("Enabled GLM history arguments compatibility for %s", mdc.name())
+
         eos_token_ids = _resolve_model_eos_token_ids(
             tokenizer=tokenizer,
             source_path=local_dir,

@@ -39,3 +39,35 @@ reasoning parser configuration.
 Detection uses the discovered model's `config.json`, so serving aliases do not
 affect it. Explicit parser settings take precedence. Unknown model types with
 thinking templates produce a warning requesting explicit parser configuration.
+
+## GLM-5.3 malformed historical tool arguments
+
+For a GLM-5.3 deployment using `--dyn-chat-processor sglang`, opt in with
+`--glm-history-arguments-models glm-5.3` (environment default:
+`DYN_GLM_HISTORY_ARGUMENTS_MODELS`). This is a comma-separated list of exact,
+case-sensitive canonical served model names, after request alias resolution.
+An empty list, including an explicit empty CLI value, keeps strict validation.
+
+The setting applies to `/v1/chat/completions` and `/v1/responses`, including
+streaming. It permits malformed JSON **syntax** in historical assistant
+`tool_calls[].function.arguments` / Responses `function_call.arguments`.
+Valid JSON arrays, strings, numbers, booleans and null remain invalid; the
+existing acceptance of empty argument strings is unchanged. Other validation
+and newly generated tool-call handling are unchanged. This does not make
+malformed arguments safe to execute: the client must return a tool error and
+let the model retry with valid arguments.
+
+Rust owns admission and receives this deployment setting explicitly through
+PyO3. Python preserves malformed strings and adapts the discovered GLM Jinja
+in memory for the named models, including preprocessing subprocesses. Object
+arguments retain the original `<arg_key>` / `<arg_value>` rendering; strings
+are preserved verbatim after the tool name. No shared model files or
+frontend/worker wire schemas change. Unknown template revisions fail model
+initialization rather than silently applying an unverified transformation.
+An explicitly supplied `--chat-template` is subject to the same check.
+
+Use a dedicated GLM frontend and the same immutable image on frontend/workers
+for initial rollout. Verify valid/invalid history, streaming, Responses and a
+tool-error/retry round trip before production rollout. Removing the option
+and restarting the frontend restores strict admission and the original
+template. Native `sglang serve` does not use this Dingo configuration.
