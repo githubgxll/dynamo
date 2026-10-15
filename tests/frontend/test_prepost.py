@@ -7,6 +7,7 @@
 # mypy: ignore-errors
 
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -1682,6 +1683,138 @@ def test_qwen3_streaming_buffers_function_marker_after_reasoning_end(
     assert len(tool_calls) == 1
     assert tool_calls[0]["function"]["name"] == "get_weather"
     assert json.loads(tool_calls[0]["function"]["arguments"]) == {"location": "NYC"}
+
+
+@pytest.mark.parametrize(
+    "chunk_variant",
+    ["partial_second_at_handoff", "partial_second_after_handoff", "sequential_closed"],
+)
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_streaming_handoff_batches_all_calls_until_finish(
+    processor, monkeypatch, chunk_variant, finish_reason
+):
+    """A closed call is not the end of a multi-call generation."""
+    first = (
+        '<tool_call>{"name": "search_gutenberg_books", "arguments": '
+        '{"search_terms": ["James Joyce"]}}</tool_call>'
+    )
+    second_prefix = '<tool_call>{"name": "search_gutenberg_books", "arguments": '
+    second_suffix = '{"search_terms": ["Charles Dickens"]}}</tool_call>'
+    if chunk_variant == "partial_second_at_handoff":
+        chunks = [
+            first + second_prefix,
+            '{"search_terms": [',
+            '"Charles Dickens"]}}</tool_call>',
+        ]
+    elif chunk_variant == "partial_second_after_handoff":
+        chunks = [first[:20], first[20:] + second_prefix, second_suffix]
+    else:
+        chunks = [first[:20], first[20:], second_prefix + second_suffix]
+
+    batch_parse = Mock(wraps=processor.tool_parser.extract_tool_calls)
+    incremental_parse = Mock(
+        side_effect=AssertionError("Handoff must not resume incremental parsing")
+    )
+    monkeypatch.setattr(processor.tool_parser, "extract_tool_calls", batch_parse)
+    monkeypatch.setattr(
+        processor.tool_parser, "extract_tool_calls_streaming", incremental_parse
+    )
+
+    results = []
+    for i, text in enumerate(chunks):
+        result = processor.process_output(
+            CompletionOutput(
+                index=0,
+                text=("<think>Find both authors.</think>" if i == 0 else "") + text,
+                token_ids=[151667, 151668] if i == 0 else [1001],
+                cumulative_logprob=None,
+                logprobs=None,
+            )
+        )
+        if result is not None:
+            results.append(result)
+        batch_parse.assert_not_called()
+        incremental_parse.assert_not_called()
+        assert not _collect_tool_calls(results)
+
+    terminal = processor.process_output(
+        CompletionOutput(
+            index=0,
+            text="",
+            token_ids=[],
+            cumulative_logprob=None,
+            logprobs=None,
+            finish_reason=finish_reason,
+        )
+    )
+    assert terminal is not None
+    results.append(terminal)
+    batch_parse.assert_called_once_with(
+        first + second_prefix + second_suffix, processor.request_for_sampling
+    )
+    incremental_parse.assert_not_called()
+    calls = terminal["delta"]["tool_calls"]
+    assert [call["index"] for call in calls] == [0, 1]
+    assert all(call["id"] for call in calls)
+    assert len({call["id"] for call in calls}) == 2
+    assert [call["function"]["name"] for call in calls] == [
+        "search_gutenberg_books",
+        "search_gutenberg_books",
+    ]
+    assert [json.loads(call["function"]["arguments"]) for call in calls] == [
+        {"search_terms": ["James Joyce"]},
+        {"search_terms": ["Charles Dickens"]},
+    ]
+    assert _collect_reasoning(results) == "Find both authors."
+    assert not any(result["delta"].get("content") for result in results)
+    assert terminal["finish_reason"] == (
+        "tool_calls" if finish_reason == "stop" else "length"
+    )
+
+
+def test_streaming_handoff_preserves_terminal_truncation_error(processor, monkeypatch):
+    """Defer batch parsing, but never swallow a strict parser's terminal error."""
+    first = (
+        '<tool_call>{"name": "search_gutenberg_books", "arguments": '
+        '{"search_terms": ["James Joyce"]}}</tool_call>'
+    )
+    partial_second = '<tool_call>{"name": "search_gutenberg_books", "arguments": '
+    batch_parse = Mock(side_effect=ValueError("Incomplete tool call"))
+    incremental_parse = Mock(
+        side_effect=AssertionError("Handoff must not resume incremental parsing")
+    )
+    monkeypatch.setattr(processor.tool_parser, "extract_tool_calls", batch_parse)
+    monkeypatch.setattr(
+        processor.tool_parser, "extract_tool_calls_streaming", incremental_parse
+    )
+    for i, text in enumerate([first, partial_second]):
+        result = processor.process_output(
+            CompletionOutput(
+                index=0,
+                text=("<think>Find both authors.</think>" if i == 0 else "") + text,
+                token_ids=[151667, 151668] if i == 0 else [1001],
+                cumulative_logprob=None,
+                logprobs=None,
+            )
+        )
+        assert result is None or not result["delta"].get("tool_calls")
+        batch_parse.assert_not_called()
+
+    with pytest.raises(ValueError, match="Incomplete tool call"):
+        processor.process_output(
+            CompletionOutput(
+                index=0,
+                text="",
+                token_ids=[],
+                cumulative_logprob=None,
+                logprobs=None,
+                finish_reason="length",
+            )
+        )
+    batch_parse.assert_called_once_with(
+        first + partial_second, processor.request_for_sampling
+    )
+    incremental_parse.assert_not_called()
 
 
 @pytest.mark.vllm

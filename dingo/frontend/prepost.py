@@ -506,7 +506,7 @@ class StreamingPostProcessor:
         # Buffer for post-reasoning tool text when </think> and <tool_call>
         # arrive in the same chunk.  The streaming tool parser cannot handle
         # this correctly, so we accumulate text here and fall back to the
-        # non-streaming extract_tool_calls() once the buffer is complete.
+        # non-streaming extract_tool_calls() once generation finishes.
         self._tool_text_buffer: str | None = None
 
     def _should_buffer_for_non_streaming_tool_parse(self) -> bool:
@@ -576,17 +576,6 @@ class StreamingPostProcessor:
             # MistralToolParser names its [TOOL_CALLS] marker bot_token.
             getattr(self.tool_parser, "bot_token", None),
             *self._tool_parser_terminal_markers(("TOOL_START", "FUNC_PREFIX")),
-        ]
-        return tuple(
-            dict.fromkeys(
-                marker for marker in markers if isinstance(marker, str) and marker
-            )
-        )
-
-    def _tool_end_markers(self) -> tuple[str, ...]:
-        markers = [
-            getattr(self.tool_parser, "tool_call_end_token", None),
-            *self._tool_parser_terminal_markers(("TOOL_END", "FUNC_END")),
         ]
         return tuple(
             dict.fromkeys(
@@ -777,17 +766,14 @@ class StreamingPostProcessor:
         # Drain the tool-text buffer (populated when </think> and <tool_call>
         # arrived in the same chunk).  The streaming tool parser cannot
         # handle that transition correctly, so we accumulate text here and
-        # use the non-streaming extract_tool_calls() once complete.
+        # batch-parse once generation finishes. A closing marker only ends
+        # one call: later calls may still be partial or arrive in later chunks.
+        # Do not resume incremental parsing after a batch parse, since its
+        # call indexes/state need not be synchronized with the batch parser.
         # ------------------------------------------------------------------
         if self._tool_text_buffer is not None:
             self._tool_text_buffer += delta_text
-            buffer_complete = (
-                any(
-                    marker in self._tool_text_buffer
-                    for marker in self._tool_end_markers()
-                )
-            ) or output.finish_reason
-            if buffer_complete:
+            if output.finish_reason:
                 buffered_text = self._tool_text_buffer
                 self._tool_text_buffer = None
                 delta_message = self._extract_tool_calls_from_text(buffered_text)
