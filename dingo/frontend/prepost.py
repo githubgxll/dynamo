@@ -305,7 +305,10 @@ def _prepare_request(
     chat_template_kwargs = dict(
         request_for_sampling.chat_template_kwargs or raw_ctk or {}
     )
-    chat_template_kwargs["reasoning_effort"] = request_for_sampling.reasoning_effort
+    # Rust may already have normalized effort into the template arguments.
+    # An absent top-level value must not erase that canonical nested value.
+    if request_for_sampling.reasoning_effort is not None:
+        chat_template_kwargs["reasoning_effort"] = request_for_sampling.reasoning_effort
 
     if _reasoning_parser_enabled(reasoning_parser_class, chat_template_kwargs):
         if guidance_snapshots is not None:

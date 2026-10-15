@@ -1087,6 +1087,66 @@ class TestSchemaAwareToolParser:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("skip_validation", [False, True])
+@pytest.mark.parametrize("kwargs_key", ["chat_template_kwargs", "chat_template_args"])
+@pytest.mark.parametrize(
+    ("top_level", "expected_effort"),
+    [
+        ({}, "max"),
+        ({"reasoning_effort": None}, "max"),
+        ({"reasoning_effort": "low"}, "low"),
+    ],
+)
+def test_prepare_request_preserves_nested_reasoning_effort(
+    monkeypatch, skip_validation, kwargs_key, top_level, expected_effort
+):
+    monkeypatch.setattr(prepost_module, "SKIP_REQUEST_VALIDATION", skip_validation)
+    request = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "Hello"}],
+        kwargs_key: {"reasoning_effort": "max", "enable_thinking": True},
+        **top_level,
+    }
+    original = deepcopy(request)
+    parser = Mock()
+    parser.adjust_request.side_effect = lambda request: request
+    parser_class = Mock(return_value=parser)
+    tokenizer = object()
+
+    _, _, template_kwargs, _, chat_params = _prepare_request(
+        request,
+        tokenizer=tokenizer,
+        tool_parser_class=None,
+        reasoning_parser_class=parser_class,
+    )
+
+    expected = {"reasoning_effort": expected_effort, "enable_thinking": True}
+    assert template_kwargs == expected
+    parser_class.assert_called_once_with(tokenizer, chat_template_kwargs=expected)
+    assert all(
+        chat_params.chat_template_kwargs[key] == value
+        for key, value in expected.items()
+    )
+    assert request == original
+
+
+@pytest.mark.parametrize("top_effort", [None, "low"])
+def test_prepare_request_typed_reasoning_effort_precedence(top_effort):
+    request = ChatCompletionRequest.model_construct(
+        model=MODEL,
+        messages=[{"role": "user", "content": "Hello"}],
+        reasoning_effort=top_effort,
+        chat_template_kwargs={"reasoning_effort": "max", "enable_thinking": False},
+    )
+    _, _, template_kwargs, _, chat_params = _prepare_request(
+        request, tokenizer=object(), tool_parser_class=None
+    )
+    expected = "max" if top_effort is None else top_effort
+    assert template_kwargs == {"reasoning_effort": expected, "enable_thinking": False}
+    assert chat_params.chat_template_kwargs["reasoning_effort"] == expected
+    assert request.chat_template_kwargs["reasoning_effort"] == "max"
+
+
 @pytest.mark.core
 class TestChatTemplateKwargsForwarding:
     """chat_template_kwargs from the request are forwarded to ChatParams.
@@ -1148,7 +1208,7 @@ class TestChatTemplateKwargsForwarding:
         )
 
     def test_reasoning_effort_forwarded_to_template_kwargs(self, tokenizer):
-        """reasoning_effort is always present in chat_params.chat_template_kwargs."""
+        """Explicit top-level reasoning_effort is forwarded to template kwargs."""
         chat_params, _ = self._prepare(
             {
                 "model": MODEL,

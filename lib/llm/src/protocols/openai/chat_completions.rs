@@ -182,21 +182,87 @@ impl NvCreateChatCompletionRequest {
     /// Normalize OpenAI-style reasoning controls into the template kwargs
     /// consumed by backend prompt formatters.
     pub fn normalize_reasoning_template_args(&mut self) -> anyhow::Result<()> {
-        let thinking_mode = self
+        let mut thinking_mode = self
             .thinking
             .as_ref()
             .map(openai_thinking_mode)
-            .transpose()?
-            .flatten();
-        let reasoning_effort = self
-            .inner
-            .reasoning_effort
-            .as_ref()
-            .and_then(|effort| serde_json::to_value(effort).ok());
+            .transpose()?;
+        let mut thinking_source = "thinking";
+        let mut effort = self.inner.reasoning_effort.clone();
+        let mut effort_source = "reasoning_effort";
 
+        // Inspect every explicit control before changing the request. In particular,
+        // aliases must remain available for diagnostics when validation fails.
+        if let Some(value) = self.unsupported_fields.get("enable_thinking") {
+            let mode = boolean_thinking_mode(value, "enable_thinking")?;
+            coalesce_reasoning_control(
+                &mut thinking_mode,
+                &mut thinking_source,
+                mode,
+                "enable_thinking",
+            )?;
+        }
+        if let Some(value) = self.unsupported_fields.get("reasoning") {
+            let object = value.as_object().ok_or_else(|| {
+                anyhow::anyhow!("`reasoning` must be an object containing only `effort`")
+            })?;
+            for key in object.keys() {
+                if key != "effort" {
+                    anyhow::bail!(
+                        "Unsupported parameter `reasoning.{key}`; only `effort` is supported"
+                    );
+                }
+            }
+            if let Some(value) = object.get("effort") {
+                coalesce_reasoning_control(
+                    &mut effort,
+                    &mut effort_source,
+                    parse_reasoning_effort(value, "reasoning.effort")?,
+                    "reasoning.effort",
+                )?;
+            }
+        }
+        if let Some(args) = self.chat_template_args.as_ref() {
+            for (key, source) in [
+                ("thinking", "chat_template_args.thinking"),
+                ("enable_thinking", "chat_template_args.enable_thinking"),
+                ("thinking_mode", "chat_template_args.thinking_mode"),
+            ] {
+                if let Some(value) = args.get(key) {
+                    let mode = match key {
+                        "thinking" => openai_thinking_mode(value)?,
+                        "enable_thinking" => boolean_thinking_mode(value, source)?,
+                        _ => match value.as_str() {
+                            Some("enabled" | "thinking") => OpenAiThinkingMode::Enabled,
+                            Some("disabled" | "chat") => OpenAiThinkingMode::Disabled,
+                            Some("adaptive") => OpenAiThinkingMode::Adaptive,
+                            _ => anyhow::bail!(
+                                "`{source}` must be `enabled`, `thinking`, `disabled`, `chat`, or `adaptive`"
+                            ),
+                        },
+                    };
+                    coalesce_reasoning_control(
+                        &mut thinking_mode,
+                        &mut thinking_source,
+                        mode,
+                        source,
+                    )?;
+                }
+            }
+            if let Some(value) = args.get("reasoning_effort") {
+                coalesce_reasoning_control(
+                    &mut effort,
+                    &mut effort_source,
+                    parse_reasoning_effort(value, "chat_template_args.reasoning_effort")?,
+                    "chat_template_args.reasoning_effort",
+                )?;
+            }
+        }
+        let reasoning_effort = effort.as_ref().map(serde_json::to_value).transpose()?;
         self.validate_glm53_reasoning_controls(thinking_mode.as_ref(), reasoning_effort.as_ref())?;
 
         if thinking_mode.is_none() && reasoning_effort.is_none() {
+            self.unsupported_fields.remove("reasoning");
             return Ok(());
         }
 
@@ -223,6 +289,7 @@ impl NvCreateChatCompletionRequest {
                     );
                 }
                 OpenAiThinkingMode::Adaptive => {
+                    args.remove("thinking");
                     args.insert(
                         "thinking_mode".to_string(),
                         serde_json::Value::String("adaptive".to_string()),
@@ -238,6 +305,10 @@ impl NvCreateChatCompletionRequest {
         // drop it so it isn't double-shipped downstream (and so it can't be
         // re-interpreted with different precedence by the worker preprocessor).
         self.thinking = None;
+        // Sampling and model policy consume the typed top-level effort too.
+        self.inner.reasoning_effort = effort;
+        self.unsupported_fields.remove("enable_thinking");
+        self.unsupported_fields.remove("reasoning");
         Ok(())
     }
 
@@ -334,6 +405,46 @@ impl NvCreateChatCompletionRequest {
     }
 }
 
+fn coalesce_reasoning_control<T: PartialEq>(
+    current: &mut Option<T>,
+    current_source: &mut &'static str,
+    value: T,
+    source: &'static str,
+) -> anyhow::Result<()> {
+    if let Some(existing) = current.as_ref() {
+        if existing != &value {
+            anyhow::bail!("Conflicting reasoning controls `{current_source}` and `{source}`");
+        }
+    } else {
+        *current = Some(value);
+        *current_source = source;
+    }
+    Ok(())
+}
+
+fn parse_reasoning_effort(
+    value: &serde_json::Value,
+    source: &str,
+) -> anyhow::Result<dynamo_protocols::types::ReasoningEffort> {
+    if !value.is_string() {
+        anyhow::bail!("`{source}` must be a reasoning effort string");
+    }
+    serde_json::from_value(value.clone())
+        .map_err(|err| anyhow::anyhow!("Invalid `{source}`: {err}"))
+}
+
+fn boolean_thinking_mode(
+    value: &serde_json::Value,
+    source: &str,
+) -> anyhow::Result<OpenAiThinkingMode> {
+    match value.as_bool() {
+        Some(true) => Ok(OpenAiThinkingMode::Enabled),
+        Some(false) => Ok(OpenAiThinkingMode::Disabled),
+        None => anyhow::bail!("`{source}` must be a boolean"),
+    }
+}
+
+#[derive(PartialEq)]
 enum OpenAiThinkingMode {
     Enabled,
     Disabled,
@@ -345,9 +456,7 @@ fn is_glm53_model_id(model: &str) -> bool {
         // Compare on a normalized form so the alias-family deployed model ids
         // (`glm-5.3`, `glm5.3`, `GLM_5.3`) match; version suffix must stay
         // exact — `glm53` without the dot must NOT match.
-        let normalized = name
-            .to_ascii_lowercase()
-            .replace(['-', '_'], "");
+        let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
         normalized == "glm5.3"
     })
 }
@@ -365,13 +474,9 @@ mod glm53_model_id_tests {
     }
 }
 
-fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<OpenAiThinkingMode>> {
-    if let Some(enabled) = value.as_bool() {
-        return Ok(Some(if enabled {
-            OpenAiThinkingMode::Enabled
-        } else {
-            OpenAiThinkingMode::Disabled
-        }));
+fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<OpenAiThinkingMode> {
+    if value.is_boolean() {
+        return boolean_thinking_mode(value, "thinking");
     }
 
     let Some(thinking_object) = value.as_object() else {
@@ -383,9 +488,9 @@ fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<Open
         anyhow::bail!("`thinking.type` must be `enabled`, `disabled`, or `adaptive`");
     };
     match thinking_type {
-        "enabled" => Ok(Some(OpenAiThinkingMode::Enabled)),
-        "disabled" => Ok(Some(OpenAiThinkingMode::Disabled)),
-        "adaptive" => Ok(Some(OpenAiThinkingMode::Adaptive)),
+        "enabled" => Ok(OpenAiThinkingMode::Enabled),
+        "disabled" => Ok(OpenAiThinkingMode::Disabled),
+        "adaptive" => Ok(OpenAiThinkingMode::Adaptive),
         _ => anyhow::bail!("`thinking.type` must be `enabled`, `disabled`, or `adaptive`"),
     }
 }
@@ -1722,7 +1827,7 @@ mod tests {
     }
 
     #[test]
-    fn test_openai_thinking_top_level_overrides_stale_template_args() {
+    fn test_openai_thinking_top_level_conflicts_with_template_args() {
         let json_str = json!({
             "model": "MiniMaxAI/MiniMax-M3",
             "messages": [
@@ -1739,18 +1844,11 @@ mod tests {
 
         let mut request: NvCreateChatCompletionRequest =
             serde_json::from_value(json_str).expect("Failed to deserialize request");
-        request
-            .normalize_reasoning_template_args()
-            .expect("top-level thinking payload should normalize");
-
-        let args = request
-            .chat_template_args
-            .as_ref()
-            .expect("chat_template_args should be populated");
-        assert_eq!(args.get("thinking"), Some(&json!(false)));
-        assert_eq!(args.get("thinking_mode"), Some(&json!("disabled")));
-        assert_eq!(args.get("reasoning_effort"), Some(&json!("none")));
-        assert!(request.thinking.is_none());
+        let before = serde_json::to_value(&request).unwrap();
+        let error = request.normalize_reasoning_template_args().unwrap_err();
+        assert!(error.to_string().contains("thinking"));
+        assert!(error.to_string().contains("chat_template_args.thinking"));
+        assert_eq!(serde_json::to_value(&request).unwrap(), before);
     }
 
     #[test]
@@ -1858,7 +1956,11 @@ mod tests {
             let error = request
                 .normalize_reasoning_template_args()
                 .expect_err("unsupported GLM-5.3 effort must be rejected");
-            assert!(error.to_string().contains("low`, `medium`, `high`, or `max"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("low`, `medium`, `high`, or `max")
+            );
         }
 
         // `medium` is now accepted
