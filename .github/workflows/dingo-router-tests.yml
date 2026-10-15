@@ -57,6 +57,7 @@ jobs:
           # SKIP_RUNTIME_BUILD=1 跳过 binding 构建与所有 Python 测试，只跑 Rust 测试。
           # 如需跑 Python 测试：先在 runner 预装 libclang（clang-devel/libclang-dev），再改为 '0'。
           SKIP_RUNTIME_BUILD: '1'
+          TEST_RESULTS_DIR: ${{ runner.temp }}/dingo-test-results
         run: |
           cd "${GITHUB_WORKSPACE}"
           QUICK_MODE="${QUICK_MODE}" DOWNLOAD_MODEL="${DOWNLOAD_MODEL}" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" SKIP_RUNTIME_BUILD="${SKIP_RUNTIME_BUILD}" bash tests/scripts/run-all-tests-oneclick.sh
@@ -67,6 +68,6 @@ jobs:
         with:
           name: test-logs-${{ inputs.quick_mode || 'smoke' }}
           path: |
-            /tmp/oneclick-*.log
+            ${{ runner.temp }}/dingo-test-results/
           retention-days: 7
           if-no-files-found: warn

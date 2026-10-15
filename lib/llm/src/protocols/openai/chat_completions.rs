@@ -990,7 +990,11 @@ mod tests {
                 }))
                 .unwrap();
             let before = serde_json::to_value(&request).unwrap();
-            assert_eq!(request.validate().is_ok(), strict_ok, "{arguments}");
+            assert_eq!(
+                ValidateRequest::validate(&request).is_ok(),
+                strict_ok,
+                "{arguments}"
+            );
             assert_eq!(
                 request.validate_with_history_policy(true).is_ok(),
                 tolerant_ok,
