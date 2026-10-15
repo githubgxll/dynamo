@@ -362,4 +362,4 @@ def test_local_stop_closes_generation_and_emits_terminal_usage(
     assert terminal["usage"]["completion_tokens"] == generated
     assert terminal["usage"]["total_tokens"] == generated + 2
     assert terminal["nvext"]["stop_reason"] == "\n"
-    assert json.loads(items[-1]["comment"][0])["output_tokens"] == generated
+    assert terminal["llm_metrics"]["output_tokens"] == generated
