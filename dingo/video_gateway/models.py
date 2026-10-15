@@ -164,8 +164,8 @@ class VideoTask:
         if self.normalized_request.get("fps") is not None:
             result["fps"] = self.normalized_request["fps"]
         if self.normalized_request.get("seed") is not None:
-            # The adapter resolves a random seed before persistence. Returning
-            # that final value makes generated requests reproducible too.
+            # New tasks only persist explicitly supplied seeds. Keep the flag
+            # for older persisted tasks whose Gateway generated a seed.
             result["seed"] = self.normalized_request["seed"]
             result["seed_generated"] = bool(
                 self.normalized_request.get("seed_generated", False)

@@ -20,7 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Gateway 将公开请求规范化为 Worker 请求。Worker 执行仍依赖 vLLM-Omni；当前部署通过 Dynamo 内部请求平面和共享制品目录交换任务与结果。双 Gateway 的任务协调使用 etcd。
 
-例如，Gateway 会把 `seconds`/`size` 等公开字段换算为 Worker 使用的帧数和尺寸，再构造包含 `model`、`prompt`、`size`、`output_format: mp4`、`nvext.fps`、`nvext.num_frames`、`nvext.num_inference_steps` 和 `nvext.seed` 的内部请求。参考文件经校验后才编码为底层 `input_reference`；这层转换不属于公开 API。
+例如，Gateway 会把 `seconds`/`size` 等公开字段换算为 Worker 使用的帧数和尺寸，再构造包含 `model`、`prompt`、`size`、`output_format: mp4`、`nvext.fps`、`nvext.num_frames` 和 `nvext.num_inference_steps` 的内部请求。只有调用方显式指定 seed 时才加入 `nvext.seed`，Gateway 不生成默认 seed。参考文件经校验后才编码为底层 `input_reference`；这层转换不属于公开 API。
 
 ## 对外接口
 
@@ -124,7 +124,7 @@ Gateway 将公开请求规范化为 Worker 请求。Worker 执行仍依赖 vLLM-
 | `model`、`prompt`、`seconds`、`size` | 与 OpenAI Videos Create 同名，vLLM-Omni 也支持 | 模型必须属于已配置 pool；时长和尺寸按 MiniMax-H3 限制校验；必填/默认值/取值并不与 OpenAI 相同 |
 | `user` | 不是当前 OpenAI Videos Create 参考列出的字段 | 仅作标签，不用于认证 |
 | `width` + `height`、`num_frames` | vLLM-Omni 扩展 | 可替代 `size`、`seconds`；时长必须在 `seconds`、`num_frames`、`extra_params.duration` 中恰选一种 |
-| `fps`、`num_inference_steps`、`seed`、`guidance_scale`、`negative_prompt` | vLLM-Omni 常见生成参数 | MiniMax-H3 当前只接受 24 FPS；步数允许 2–200；seed 可省略并由 Gateway 生成 |
+| `fps`、`num_inference_steps`、`seed`、`guidance_scale`、`negative_prompt` | vLLM-Omni 常见生成参数 | MiniMax-H3 当前只接受 24 FPS；步数允许 2–200；seed 省略时 Gateway 不生成、不下传，指定时原值下传 |
 | `generate_sound` | vLLM-Omni 扩展 | Gateway 默认 `true`；请求 `false` 时，输出不得带音轨，必要时 Gateway 去音轨 |
 | `input_reference` | 与 OpenAI 同名，但官方要求 `file_id`/`image_url` 引用对象 | 当前只接收一个 multipart 上传文件；FL2VA 可作为首帧或尾帧；不能直接使用官方引用对象 |
 | 重复的 `input_references` | Gateway 的多参考文件扩展 | FL2VA 支持两张首尾帧；Ref2VA 支持图片、视频及可选音频组合，文件顺序保留 |

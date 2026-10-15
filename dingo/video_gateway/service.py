@@ -167,6 +167,8 @@ class VideoGatewayService:
             + self.config.media.task_memory_overhead_bytes
         )
         digest_request = dict(normalized)
+        # Match legacy unseeded requests whose Gateway generated a seed before
+        # persistence; that random seed was never part of the request digest.
         if digest_request.pop("seed_generated", False):
             digest_request.pop("seed", None)
         digest_payload = {

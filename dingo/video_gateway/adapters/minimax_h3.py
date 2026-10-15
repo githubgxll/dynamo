@@ -12,7 +12,6 @@ import json
 import logging
 import math
 import os
-import secrets
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -60,9 +59,7 @@ def _record_media_timing(
 
 
 @contextmanager
-def _open_artifact_metadata(
-    path: Path, timings: dict[str, Any] | None = None
-):
+def _open_artifact_metadata(path: Path, timings: dict[str, Any] | None = None):
     """Avoid pixel reconstruction while probing indexed H.264/AAC results.
 
     This is metadata validation, not a full bitstream/decode integrity scan.
@@ -1013,10 +1010,7 @@ class MiniMaxH3VideoAdapter:
                 "guidance_scale",
             )
         seed = _integer(_one(fields, "seed"), "seed")
-        seed_generated = seed is None
-        if seed is None:
-            seed = secrets.randbits(32)
-        if not 0 <= seed <= 2**32 - 1:
+        if seed is not None and not 0 <= seed <= 2**32 - 1:
             raise GatewayError(
                 400, "invalid_seed", "seed must be an unsigned 32-bit integer", "seed"
             )
@@ -1117,7 +1111,7 @@ class MiniMaxH3VideoAdapter:
                 f"{self.limits.max_prompt_bytes} UTF-8 bytes",
                 "negative_prompt",
             )
-        return {
+        normalized = {
             "prompt": prompt,
             "public_model": public_model,
             "backend_model": self.pool.backend_model,
@@ -1129,8 +1123,6 @@ class MiniMaxH3VideoAdapter:
             "num_frames": num_frames,
             "num_inference_steps": steps,
             "guidance_scale": guidance_scale,
-            "seed": seed,
-            "seed_generated": seed_generated,
             "negative_prompt": negative_prompt,
             "frame_indices": frame_indices,
             "reference_kinds": kinds,
@@ -1154,6 +1146,9 @@ class MiniMaxH3VideoAdapter:
             "audio_flow_shift": 3.0,
             "generate_sound": generate_sound,
         }
+        if seed is not None:
+            normalized.update(seed=seed, seed_generated=False)
+        return normalized
 
     def _validate_references(
         self,
@@ -1273,9 +1268,10 @@ class MiniMaxH3VideoAdapter:
                 "fps": normalized["fps"],
                 "num_frames": normalized["num_frames"],
                 "num_inference_steps": normalized["num_inference_steps"],
-                "seed": normalized["seed"],
             },
         }
+        if normalized.get("seed") is not None:
+            payload["nvext"]["seed"] = normalized["seed"]
         if normalized.get("negative_prompt") is not None:
             payload["nvext"]["negative_prompt"] = normalized["negative_prompt"]
         if normalized.get("guidance_scale") is not None:
@@ -1420,9 +1416,7 @@ class MiniMaxH3VideoAdapter:
                             None,
                         ),
                         generate_sound=generate_sound,
-                        validate_media=bool(
-                            self.options.get("validate_media", False)
-                        ),
+                        validate_media=bool(self.options.get("validate_media", False)),
                         needs_processing=needs_processing,
                         outcome=outcome,
                         total_s=round(time.perf_counter() - started_total, 6),
@@ -1600,7 +1594,5 @@ class MiniMaxH3VideoAdapter:
             "video_duration_s": video_duration,
             "audio_duration_s": audio_duration,
         }
-        _record_media_timing(
-            diagnostic_timings, "validation_total", started_validation
-        )
+        _record_media_timing(diagnostic_timings, "validation_total", started_validation)
         return result

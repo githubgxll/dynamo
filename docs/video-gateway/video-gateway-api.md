@@ -94,7 +94,7 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `fps` | 否 | `24` | MiniMax-H3 当前只接受 24 |
 | `num_inference_steps` | 否 | `50` | 2–200；别名为 `steps`，两者不能同时提供 |
 | `guidance_scale` | 否 | 模型默认值 | 0–20 |
-| `seed` | 否 | 随机生成 | 无符号 32 位整数；最终 seed 会在任务状态中返回 |
+| `seed` | 否 | 不设置 | 无符号 32 位整数（含 0）；指定时原值下传，未指定时 Gateway 不生成、不下传 |
 | `negative_prompt` | 否 | 无 | UTF-8，不超过 32 KiB |
 | `generate_sound` | 否 | `true` | 接受 `true/false/1/0` |
 | `output_format` | 否 | `mp4` | 当前只支持 `mp4` |
@@ -241,6 +241,10 @@ Gateway 始终检查上传参考文件的签名、声明的 MIME 类型以及媒
   "seed_generated": false
 }
 ```
+
+新请求未指定 `seed` 时，任务响应不包含 `seed` 和 `seed_generated`；指定时返回原值及
+`seed_generated: false`。旧任务已保存的 seed 和标记仍保留。未指定时随机行为由 Worker/引擎决定，
+Gateway 不保证跨重试的结果可复现；需要复现时请显式指定 seed。
 
 公开状态及含义：
 
@@ -428,7 +432,7 @@ curl -sS "$GATEWAY_URL/v1/videos/$TASK_ID/diagnostics" | jq
 `video/mp4`，常用响应头包括：
 
 - `X-Video-Id`：任务 ID；同步请求也会创建可查询的持久化任务。
-- `X-Video-Seed`：实际 seed。
+- `X-Video-Seed`：任务保存的 seed；新请求仅在显式指定 seed 时返回，未指定时不返回此头。
 - `X-Video-Frames`、`X-Video-FPS`、`X-Video-Duration-Seconds`：实际输出信息。
 - `ETag`：基于结果 SHA-256 的实体标签。
 

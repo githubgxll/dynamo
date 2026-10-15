@@ -4,17 +4,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 import aiohttp
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter
-from dingo.video_gateway.api import _is_loopback
+from dingo.video_gateway.api import _SERVICE_KEY, _is_loopback
 from dingo.video_gateway.app import create_app
 from tests.video_gateway.test_dispatcher import FakeClient, _stack
 
 
-def _form(*, fps="24", model="public-fl"):
+def _form(*, fps="24", model="public-fl", seed="55"):
     form = aiohttp.MultipartWriter("form-data")
     for name, value in (
         ("model", model),
@@ -22,7 +25,7 @@ def _form(*, fps="24", model="public-fl"):
         ("seconds", "5"),
         ("size", "1344x768"),
         ("fps", fps),
-        ("seed", "55"),
+        ("seed", seed),
     ):
         if value is None:
             continue
@@ -112,9 +115,7 @@ async def test_local_drain_keeps_reads_live_and_rejects_new_submissions(
         )
         assert submit_response.status == 503
         assert submit_response.headers["Retry-After"] == "1"
-        assert (await submit_response.json())["error"]["code"] == (
-            "gateway_draining"
-        )
+        assert (await submit_response.json())["error"]["code"] == ("gateway_draining")
     finally:
         await client.close()
 
@@ -361,9 +362,7 @@ async def test_sync_uses_same_task_pipeline_and_returns_mp4(
         assert response.headers["X-Video-FPS"] == "24"
         assert response.headers["X-Video-Duration-Seconds"] == "5.175"
         assert payload.startswith(b"\x00\x00\x00\x18ftyp")
-        status = await client.get(
-            f'/v1/videos/{response.headers["X-Video-Id"]}'
-        )
+        status = await client.get(f'/v1/videos/{response.headers["X-Video-Id"]}')
         metadata = await status.json()
         assert metadata["seed"] == 55
         assert metadata["requested_num_frames"] == 120
@@ -393,6 +392,112 @@ async def test_invalid_fps_and_unimplemented_stream_return_stable_errors(
         await client.close()
 
 
+@pytest.mark.parametrize("seed", [None, "0", str(2**32 - 1)])
+@pytest.mark.parametrize("synchronous", [False, True])
+async def test_seed_presence_matches_request_across_the_gateway(
+    make_gateway_config, seed, synchronous
+):
+    endpoint = FakeClient()
+    client = await _client(make_gateway_config, endpoint)
+    try:
+        path = "/v1/videos/sync" if synchronous else "/v1/videos"
+        response = await client.post(path, data=_form(seed=seed))
+        if synchronous:
+            assert response.status == 200
+            assert (await response.read()).startswith(b"\x00\x00\x00\x18ftyp")
+            task_id = response.headers["X-Video-Id"]
+        else:
+            assert response.status == 202
+            submitted = await response.json()
+            task_id = submitted["id"]
+            assert ("seed" in submitted) == (seed is not None)
+        _, completed = await _wait_completed(client, task_id)
+        assert completed["status"] == "completed"
+        diagnostic = await client.get(f"/v1/videos/{task_id}/diagnostics")
+        metadata = await diagnostic.json()
+        service = client.server.app[_SERVICE_KEY]
+        stored = await service.store.get_task(task_id)
+        persisted = json.loads(Path(stored.task.request_path).read_text())
+        assert len(endpoint.calls) == 1
+        nvext = endpoint.calls[0]["payload"]["nvext"]
+        head = await client.head(f"/v1/videos/{task_id}/content")
+        for value in (completed, metadata, persisted, stored.task.normalized_request):
+            if seed is None:
+                assert "seed" not in value and "seed_generated" not in value
+            else:
+                assert value["seed"] == int(seed) and value["seed_generated"] is False
+        if seed is None:
+            assert "seed" not in nvext and "X-Video-Seed" not in head.headers
+            if synchronous:
+                assert "X-Video-Seed" not in response.headers
+        else:
+            assert nvext["seed"] == int(seed) and head.headers["X-Video-Seed"] == seed
+            if synchronous:
+                assert response.headers["X-Video-Seed"] == seed
+    finally:
+        await client.close()
+
+
+async def test_legacy_generated_seed_replays_after_new_seed_semantics(
+    make_gateway_config, monkeypatch
+):
+    original = MiniMaxH3VideoAdapter.normalize_request
+
+    def legacy_normalize(self, fields, uploads, model):
+        normalized = original(self, fields, uploads, model)
+        if "seed" not in normalized:
+            normalized.update(seed=1101, seed_generated=True)
+        return normalized
+
+    client = await _client(make_gateway_config)
+    try:
+        monkeypatch.setattr(
+            MiniMaxH3VideoAdapter, "normalize_request", legacy_normalize
+        )
+        first = await client.post(
+            "/v1/videos",
+            data=_form(seed=None),
+            headers={"Idempotency-Key": "legacy-seed"},
+        )
+        saved = await first.json()
+        assert first.status == 202 and saved["seed_generated"] is True
+        await _wait_completed(client, saved["id"])
+        monkeypatch.setattr(MiniMaxH3VideoAdapter, "normalize_request", original)
+        replay = await client.post(
+            "/v1/videos",
+            data=_form(seed=None),
+            headers={"Idempotency-Key": "legacy-seed"},
+        )
+        restored = await replay.json()
+        assert replay.status == 200 and restored["id"] == saved["id"]
+        assert restored["seed"] == 1101 and restored["seed_generated"] is True
+    finally:
+        await client.close()
+
+
+async def test_explicit_seed_conflicts_with_an_unseeded_idempotent_request(
+    make_gateway_config,
+):
+    client = await _client(make_gateway_config)
+    try:
+        first = await client.post(
+            "/v1/videos",
+            data=_form(seed=None),
+            headers={"Idempotency-Key": "seed-change"},
+        )
+        assert first.status == 202
+        await first.read()
+        conflict = await client.post(
+            "/v1/videos",
+            data=_form(seed="0"),
+            headers={"Idempotency-Key": "seed-change"},
+        )
+        assert conflict.status == 409
+        assert (await conflict.json())["error"]["code"] == "idempotency_conflict"
+    finally:
+        await client.close()
+
+
 async def test_multipart_parser_uses_effective_media_config(make_gateway_config):
     text_limited = await _client(
         make_gateway_config,
@@ -416,12 +521,15 @@ async def test_multipart_parser_uses_effective_media_config(make_gateway_config)
         await part_limited.close()
 
 
-async def test_idempotency_replay_does_not_create_second_task(make_gateway_config):
+@pytest.mark.parametrize("seed", [None, "0", "55"])
+async def test_idempotency_replay_does_not_create_second_task(
+    make_gateway_config, seed
+):
     endpoint_client = FakeClient()
     client = await _client(make_gateway_config, endpoint_client)
     try:
         first = await client.post(
-            "/v1/videos", data=_form(), headers={"Idempotency-Key": "same"}
+            "/v1/videos", data=_form(seed=seed), headers={"Idempotency-Key": "same"}
         )
         endpoint_client.available = False
         for _ in range(100):
@@ -432,7 +540,7 @@ async def test_idempotency_replay_does_not_create_second_task(make_gateway_confi
         else:
             raise AssertionError("fake Worker did not disappear from discovery")
         second = await client.post(
-            "/v1/videos", data=_form(), headers={"Idempotency-Key": "same"}
+            "/v1/videos", data=_form(seed=seed), headers={"Idempotency-Key": "same"}
         )
         first_payload = await first.json()
         second_payload = await second.json()

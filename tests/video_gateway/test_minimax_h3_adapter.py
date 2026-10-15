@@ -96,6 +96,56 @@ def test_pinned_h3_frame_alignment_matches_worker_version():
     assert align_frame_count(360) == 362
 
 
+@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
+@pytest.mark.parametrize("seed", [None, 0, 1101, 2**32 - 1])
+def test_seed_is_only_persisted_and_forwarded_when_supplied(
+    make_gateway_config, tmp_path, workflow, seed
+):
+    adapter = _adapter(make_gateway_config, workflow)
+    model = "public-fl" if workflow == "fl2va" else "public-ref"
+    fields = _base_fields(model)
+    if seed is None:
+        fields.pop("seed")
+    else:
+        fields["seed"] = [str(seed)]
+    uploads = [] if workflow == "fl2va" else [_png_upload(tmp_path)]
+
+    normalized = adapter.normalize_request(fields, uploads, model)
+    manifest = [upload.manifest_entry(relative_to=tmp_path) for upload in uploads]
+    payload = adapter.build_worker_payload(normalized, manifest, tmp_path)
+
+    if seed is None:
+        assert "seed" not in normalized and "seed_generated" not in normalized
+        assert "seed" not in payload and "seed" not in payload["nvext"]
+    else:
+        assert normalized["seed"] == seed and normalized["seed_generated"] is False
+        assert payload["nvext"]["seed"] == seed
+
+
+@pytest.mark.parametrize(
+    "seed,code",
+    [
+        ("-1", "invalid_seed"),
+        (str(2**32), "invalid_seed"),
+        ("1.5", "invalid_integer"),
+        ("", "invalid_integer"),
+    ],
+)
+def test_invalid_explicit_seed_is_not_replaced(make_gateway_config, seed, code):
+    fields = {**_base_fields(), "seed": [seed]}
+    with pytest.raises(GatewayError) as error:
+        _adapter(make_gateway_config).normalize_request(fields, [], "public-fl")
+    assert error.value.code == code and error.value.param == "seed"
+
+
+def test_legacy_persisted_seed_is_still_forwarded(make_gateway_config, tmp_path):
+    adapter = _adapter(make_gateway_config)
+    normalized = adapter.normalize_request(_base_fields(), [], "public-fl")
+    normalized["seed_generated"] = True
+    payload = adapter.build_worker_payload(normalized, [], tmp_path)
+    assert payload["nvext"]["seed"] == 1101
+
+
 def test_duration_must_have_exactly_one_source(make_gateway_config):
     adapter = _adapter(make_gateway_config)
     fields = _base_fields()
