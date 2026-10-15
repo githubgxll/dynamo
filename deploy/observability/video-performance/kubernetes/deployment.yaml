@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Render with render.py; this is a parameterized template.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: "${name}", namespace: "${namespace}"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: "${name}", namespace: "${namespace}"}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: "${name}"}
+  template:
+    metadata:
+      labels: {app: "${name}", app.kubernetes.io/part-of: dingo-video-performance}
+    spec:
+      serviceAccountName: ${name}
+      containers:
+        - name: postgres
+          image: ${postgres_image}
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: POSTGRES_DB, value: performance}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: "${name}-auth", key: write-password}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          args: [postgres, -c, max_connections=30, -c, shared_buffers=128MB, -c, max_wal_size=256MB, -c, min_wal_size=32MB]
+          ports: [{name: postgres, containerPort: 5432}]
+          resources:
+            requests: {cpu: "1", memory: 512Mi, ephemeral-storage: 2Gi}
+            limits: {cpu: "2", memory: 2Gi, ephemeral-storage: "${postgres_storage_limit}"}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, postgres, -d, performance]}
+            periodSeconds: 5
+          startupProbe:
+            exec: {command: [pg_isready, -U, postgres, -d, performance]}
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+        - name: collector
+          image: ${collector_image}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLUSTER_ID
+              value: ${cluster_id}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: "${name}-auth", key: write-password}}
+            - name: READ_PASSWORD
+              valueFrom: {secretKeyRef: {name: "${name}-auth", key: read-password}}
+          resources:
+            requests: {cpu: "1", memory: 256Mi, ephemeral-storage: 128Mi}
+            limits: {cpu: "2", memory: 1Gi, ephemeral-storage: 1Gi}
+          securityContext: {runAsUser: 10001, runAsGroup: 10001, allowPrivilegeEscalation: false}
+          volumeMounts:
+            - {name: config, mountPath: /opt/config, readOnly: true}
+            - {name: data, mountPath: /var/lib/postgresql/data, readOnly: true}
+      volumes:
+        - {name: data, emptyDir: {sizeLimit: "${storage_budget}"}}
+        - name: config
+          configMap: {name: "${name}-config"}

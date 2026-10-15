@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -105,6 +106,15 @@ class HttpConfig:
     sync_timeout_s: float = 1800.0
     default_model: str | None = None
     async_submit_status_code: int = 202
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceCacheConfig:
+    enabled: bool = True
+    retention_s: float = 300.0
+    max_records: int = 50000
+    max_bytes: int = 64 * _MIB
+    token_env: str = "DINGO_VIDEO_PERFORMANCE_TOKEN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,9 +232,50 @@ class GatewayConfig:
     pools: tuple[PoolConfig, ...]
     pools_by_model: Mapping[str, PoolConfig] = field(repr=False)
     pools_by_id: Mapping[str, PoolConfig] = field(repr=False)
+    performance_cache: PerformanceCacheConfig = field(
+        default_factory=PerformanceCacheConfig
+    )
 
     def pool_for_model(self, model: str) -> PoolConfig | None:
         return self.pools_by_model.get(model)
+
+
+def _performance_cache_config(raw: Any) -> PerformanceCacheConfig:
+    data = _mapping({} if raw is None else raw, "performance_cache")
+    _only(
+        data,
+        {"enabled", "retention_s", "max_records", "max_bytes", "token_env"},
+        "performance_cache",
+    )
+    defaults = PerformanceCacheConfig()
+    retention = data.get("retention_s", defaults.retention_s)
+    if (
+        type(retention) not in (int, float)
+        or not math.isfinite(retention)
+        or not 1 <= retention <= 86400
+    ):
+        raise ValueError("performance_cache.retention_s must be between 1 and 86400")
+    for key, default, upper in (
+        ("max_records", defaults.max_records, 100000),
+        ("max_bytes", defaults.max_bytes, 128 * _MIB),
+    ):
+        value = data.get(key, default)
+        if type(value) is not int or not 1 <= value <= upper:
+            raise ValueError(f"performance_cache.{key} is out of range")
+    token_env = data.get("token_env", "DINGO_VIDEO_PERFORMANCE_TOKEN")
+    if not isinstance(token_env, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", token_env
+    ):
+        raise ValueError(
+            "performance_cache.token_env must be an environment variable name"
+        )
+    return PerformanceCacheConfig(
+        enabled=_boolean(data, "enabled", True),
+        retention_s=float(retention),
+        max_records=data.get("max_records", defaults.max_records),
+        max_bytes=data.get("max_bytes", defaults.max_bytes),
+        token_env=token_env,
+    )
 
 
 def _runtime_config(raw: Any) -> RuntimeConfig:
@@ -708,6 +759,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "artifact_store",
             "lifecycle",
             "pools",
+            "performance_cache",
         },
         "config",
     )
@@ -761,6 +813,7 @@ def parse_config(raw: Any) -> GatewayConfig:
         pools=pools,
         pools_by_model=by_model,
         pools_by_id=by_id,
+        performance_cache=_performance_cache_config(data.get("performance_cache")),
     )
 
 

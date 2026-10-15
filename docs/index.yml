@@ -276,6 +276,10 @@ navigation:
                 path: observability/prometheus-grafana.md
               - page: Metrics
                 path: observability/metrics.md
+              - page: Video Gateway Observability
+                path: video-gateway/observability.md
+              - page: Video Performance Collection
+                path: video-gateway/performance-collection.md
               - page: Metrics Developer Guide
                 path: observability/metrics-developer-guide.md
               - page: Health Checks

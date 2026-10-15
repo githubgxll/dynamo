@@ -1,0 +1,11 @@
+{
+  "namespaces": ["token-factory"],
+  "poll_interval_s": 15,
+  "initial_lookback_s": 86400,
+  "max_read_bytes": 4194304,
+  "max_line_bytes": 262144,
+  "storage_budget_bytes": 10737418240,
+  "storage_reserve_bytes": 536870912,
+  "warning_fraction": 0.8,
+  "pause_fraction": 0.9
+}

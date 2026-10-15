@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# One Role/RoleBinding in each configured source namespace; no ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: "${name}", namespace: "${source_namespace}"}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: "${name}", namespace: "${source_namespace}"}
+subjects:
+  - {kind: ServiceAccount, name: "${name}", namespace: "${namespace}"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${name}"}

@@ -86,11 +86,14 @@ queued -> in_progress -> completed
 |---|---|---|
 | [接口使用说明](video-gateway-api.md) | 模型查询、任务提交、状态、下载、取消、FL2VA/Ref2VA 输入和错误码 | 接口调用方、联调人员 |
 | [协议与兼容性](video-gateway-protocol-compatibility.md) | 与 OpenAI Videos API、vLLM-Omni Videos API 的相同点和差异 | 接口调用方、适配开发人员 |
+| [可观测性与指标](observability.md) | Prometheus 指标、标签、HA 聚合、诊断接口及日志开关 | 部署、运维和面板开发人员 |
+| [性能采集机制](performance-collection.md) | HTTP 拉取、日志发现、SQL 字段、续采和存储预算 | 性能分析与采集器维护人员 |
 | [`CONTINUOUS_EXECUTION.md`](../../dingo/video_gateway/CONTINUOUS_EXECUTION.md) | Worker slot 提前释放、预取和连续执行的状态约束 | Gateway 开发与评审人员 |
 | [`GATEWAY_CONFIGURATION_CONSISTENCY.md`](../../dingo/video_gateway/GATEWAY_CONFIGURATION_CONSISTENCY.md) | 双 Gateway 配置哪些必须一致、哪些可在滚动升级期间短暂不同 | 部署和运维人员 |
 
 Kubernetes 部署 recipe 和回归测试维护在独立的
 `dingo-video-gateway-regression` 项目中，接口文档不复制具体集群地址、PVC、节点或镜像配置。
+性能采集器和 PostgreSQL/Grafana 配置维护在本仓库的 `deploy/observability/video-performance/`。
 
 ## 当前边界
 

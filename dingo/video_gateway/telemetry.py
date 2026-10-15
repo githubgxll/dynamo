@@ -22,6 +22,7 @@ from dingo.common.video_timing_schemas import (
 )
 from dingo.video_gateway.models import TERMINAL_STATUSES, TaskStatus, VideoTask
 from dingo.video_gateway.performance import performance_record
+from dingo.video_gateway.performance_cache import PerformanceCache
 
 audit_logger = logging.getLogger("dingo.video_gateway.audit")
 
@@ -72,7 +73,9 @@ def _escape_label(value: str) -> str:
 def _format_labels(labels: Sequence[tuple[str, str]]) -> str:
     if not labels:
         return ""
-    return "{" + ",".join(f'{key}="{_escape_label(value)}"' for key, value in labels) + "}"
+    return (
+        "{" + ",".join(f'{key}="{_escape_label(value)}"' for key, value in labels) + "}"
+    )
 
 
 def _format_number(value: float | int) -> str:
@@ -107,14 +110,11 @@ class GatewayTelemetry:
     """Small in-process Prometheus registry scoped to one Gateway replica."""
 
     def __init__(self) -> None:
+        self.performance_cache: PerformanceCache | None = None
         self._lock = threading.Lock()
         self._counters: Counter[tuple[str, tuple[tuple[str, str], ...]]] = Counter()
-        self._gauges: dict[
-            tuple[str, tuple[tuple[str, str], ...]], float
-        ] = {}
-        self._histograms: dict[
-            tuple[str, tuple[tuple[str, str], ...]], _Histogram
-        ] = {}
+        self._gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        self._histograms: dict[tuple[str, tuple[tuple[str, str], ...]], _Histogram] = {}
 
     def increment(
         self,
@@ -158,9 +158,7 @@ class GatewayTelemetry:
                 self._histograms[key] = histogram
             histogram.observe(numeric)
 
-    def record_submission(
-        self, pool_id: str, outcome: str, delivery_mode: str
-    ) -> None:
+    def record_submission(self, pool_id: str, outcome: str, delivery_mode: str) -> None:
         self.increment(
             "dingo_video_task_submissions_total",
             labels={
@@ -237,7 +235,9 @@ class GatewayTelemetry:
             "reason": reason,
             "error_code": task.error.code if task.error is not None else None,
         }
-        payload.update({key: value for key, value in optional.items() if value is not None})
+        payload.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
         if event in {
             "finalization_started",
             "completed",
@@ -260,11 +260,40 @@ class GatewayTelemetry:
             payload.update(
                 {key: value for key, value in timing.items() if value is not None}
             )
-        if (
-            event in {"completed", "failed", "cancelled"}
-            and os.environ.get("DINGO_VIDEO_PERFORMANCE_RECORDS", "0") == "1"
-        ):
-            payload["performance"] = performance_record(task)
+        if event in {"completed", "failed", "cancelled"}:
+            log_performance = (
+                os.environ.get("DINGO_VIDEO_PERFORMANCE_RECORDS", "0") == "1"
+            )
+            if log_performance or self.performance_cache is not None:
+                record = performance_record(task)
+                if log_performance:
+                    payload["performance"] = record
+                if self.performance_cache is not None:
+                    # Strict allowlist: ordinary audit fields can contain error/reason text.
+                    snapshot = {
+                        key: payload[key]
+                        for key in (
+                            "log_type",
+                            "event",
+                            "task_id",
+                            "deployment_id",
+                            "pool_id",
+                            "model",
+                            "attempt",
+                            "status",
+                        )
+                    }
+                    snapshot["timestamp_ms"] = (
+                        task.completed_at_ms or payload["timestamp_ms"]
+                    )
+                    snapshot["performance"] = record
+                    if task.worker_instance_id:
+                        snapshot["worker_instance_id"] = task.worker_instance_id
+                    try:
+                        self.performance_cache.append(snapshot)
+                    except (ValueError, TypeError, OverflowError):
+                        # Diagnostics must not turn a committed terminal task into a failure.
+                        self.increment("dingo_video_performance_cache_errors_total")
         if extra:
             payload.update(extra)
         audit_logger.info(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -316,12 +345,15 @@ class GatewayTelemetry:
             counters = list(self._counters.items())
             gauges = list(self._gauges.items())
             histograms = [
-                (key, _Histogram(
-                    value.buckets,
-                    list(value.bucket_counts),
-                    value.count,
-                    value.total,
-                ))
+                (
+                    key,
+                    _Histogram(
+                        value.buckets,
+                        list(value.bucket_counts),
+                        value.count,
+                        value.total,
+                    ),
+                )
                 for key, value in self._histograms.items()
             ]
 
@@ -365,7 +397,10 @@ class GatewayTelemetry:
                     f"{name}_sum{_format_labels(labels)} "
                     f"{_format_number(histogram.total)}"
                 )
-                lines.append(
-                    f"{name}_count{_format_labels(labels)} {histogram.count}"
-                )
+                lines.append(f"{name}_count{_format_labels(labels)} {histogram.count}")
+        if self.performance_cache is not None:
+            for key, value in self.performance_cache.stats().items():
+                name = "dingo_video_performance_cache_" + key
+                kind = "counter" if key.endswith("_total") else "gauge"
+                lines.extend((f"# TYPE {name} {kind}", f"{name} {value}"))
         return lines

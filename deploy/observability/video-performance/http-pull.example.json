@@ -1,0 +1,21 @@
+{
+  "max_workers": 4,
+  "targets": [
+    {
+      "name": "video-gateway-a",
+      "cluster_id": "example-region",
+      "namespace": "example-video",
+      "deployment_id": "example-deployment",
+      "url": "https://gateway-a.example.invalid",
+      "token_env": "VIDEO_PERFORMANCE_TARGET_A_TOKEN",
+      "poll_interval_s": 5,
+      "timeout_s": 3
+    }
+  ],
+  "storage": {
+    "storage_budget_bytes": 10737418240,
+    "storage_reserve_bytes": 536870912,
+    "warning_fraction": 0.8,
+    "pause_fraction": 0.9
+  }
+}

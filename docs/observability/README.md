@@ -55,6 +55,8 @@ For detailed setup instructions and configuration, see [Prometheus + Grafana Set
 | Guide | Description | Environment Variables to Control |
 |-------|-------------|----------------------------------|
 | [Metrics](metrics.md) | Available metrics reference | `DYN_SYSTEM_PORT`† |
+| [Video Gateway Observability](../video-gateway/observability.md) | Video-specific metrics, replica aggregation, task diagnostics, and performance logs | `DINGO_VIDEO_PERFORMANCE_RECORDS`, `DINGO_VIDEO_MEDIA_TIMING` |
+| [Video Performance Collection](../video-gateway/performance-collection.md) | HTTP pull or namespace log discovery, PostgreSQL storage, and parameter-filtered Grafana analysis | Collector configuration |
 | [Operator Metrics (Kubernetes)](../kubernetes/observability/operator-metrics.md) | Operator controller and webhook metrics for Kubernetes | N/A (configured via Helm) |
 | [Health Checks](health-checks.md) | Component health monitoring and readiness probes | `DYN_SYSTEM_PORT`†, `DYN_SYSTEM_STARTING_HEALTH_STATUS`, `DYN_SYSTEM_HEALTH_PATH`, `DYN_SYSTEM_LIVE_PATH`, `DYN_SYSTEM_USE_ENDPOINT_HEALTH_STATUS` |
 | [Tracing](tracing.md) | Distributed tracing with OpenTelemetry and Tempo | `DYN_LOGGING_JSONL`†, `OTEL_EXPORT_ENABLED`†, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`†, `OTEL_SERVICE_NAME`† |

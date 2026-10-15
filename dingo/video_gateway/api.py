@@ -10,6 +10,7 @@ import ipaddress
 import logging
 import os
 import resource
+import secrets
 import stat
 import time
 
@@ -157,6 +158,54 @@ async def drain(request: web.Request) -> web.Response:
         {"status": "draining"},
         headers={"Connection": "close"},
     )
+
+
+async def performance_records(request: web.Request) -> web.Response:
+    service = _service(request)
+    cache = service.performance_cache
+    if cache is None:
+        raise GatewayError(404, "performance_disabled", "performance cache is disabled")
+    if request.method != "GET":
+        raise GatewayError(
+            405, "performance_method_not_allowed", "use GET", headers={"Allow": "GET"}
+        )
+    expected = os.environ.get(service.config.performance_cache.token_env, "")
+    supplied = request.headers.get("Authorization", "")
+    if not expected or not secrets.compare_digest(
+        supplied.encode(), ("Bearer " + expected).encode()
+    ):
+        raise GatewayError(
+            401, "performance_unauthorized", "performance authentication required"
+        )
+    if not cache.admit_read():
+        raise GatewayError(
+            429,
+            "performance_rate_limited",
+            "performance polling rate exceeded",
+            headers={"Retry-After": "1"},
+        )
+    allowed = {"cursor", "limit"}
+    if set(request.query) - allowed or any(
+        len(request.query.getall(k)) != 1 for k in request.query
+    ):
+        raise GatewayError(
+            400, "invalid_performance_query", "invalid performance query"
+        )
+    try:
+        page = cache.page(
+            request.query.get("cursor"), int(request.query.get("limit", "100"))
+        )
+    except ValueError as exc:
+        raise GatewayError(400, "invalid_performance_query", str(exc)) from exc
+    page["source"] = {
+        "deployment_id": service.config.deployment_id,
+        "namespace": os.environ.get("POD_NAMESPACE"),
+        "pod": os.environ.get("POD_NAME", os.environ.get("HOSTNAME", "unknown")),
+        "pod_uid": os.environ.get("POD_UID", cache.instance_id),
+        "container": os.environ.get("POD_CONTAINER", "gateway"),
+        "image": os.environ.get("GATEWAY_IMAGE", "unknown"),
+    }
+    return web.json_response(page, headers={"Cache-Control": "no-store"})
 
 
 async def models(request: web.Request) -> web.Response:
@@ -725,6 +774,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
 
 
 def register_routes(app: web.Application) -> None:
+    app.router.add_route("*", "/internal/v1/performance/records", performance_records)
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
     app.router.add_post("/internal/drain", drain)

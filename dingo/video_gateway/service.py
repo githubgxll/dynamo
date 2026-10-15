@@ -19,6 +19,7 @@ from dingo.video_gateway.errors import GatewayError, StoreConflict
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.ids import new_video_id
 from dingo.video_gateway.models import StoredTask, TaskStatus, VideoTask, now_ms
+from dingo.video_gateway.performance_cache import PerformanceCache
 from dingo.video_gateway.task_store import TaskStore
 
 
@@ -42,6 +43,12 @@ class VideoGatewayService:
         self.artifacts = artifacts
         self.dispatcher = dispatcher
         self.telemetry = dispatcher.telemetry
+        self.performance_cache = (
+            PerformanceCache(config.performance_cache)
+            if config.performance_cache.enabled
+            else None
+        )
+        self.telemetry.performance_cache = self.performance_cache
         self.adapters = adapters
         self.upstream_models: list[dict] = []
 

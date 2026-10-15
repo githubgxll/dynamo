@@ -65,8 +65,12 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `GET` | `/live` | 进程及 Gateway owner lease 存活检查 |
 | `GET` | `/ready`、`/health` | 服务就绪检查 |
 | `GET` | `/metrics` | Prometheus 文本指标 |
+| `GET` | `/internal/v1/performance/records` | 短期性能快照增量拉取，缓存默认开启，独立认证 |
 
 `POST /v1/videos/stream` 当前未实现，固定返回 `404 unsupported_endpoint`。
+内部性能缓存使用 `performance_cache` 配置，默认开启并保留 300 秒（5 分钟），每进程最多 50000 条、64 MiB，容量不足时提前淘汰，不扫描任务存储或制品；
+未配置独立 Token 时 Gateway 仍正常启动并缓存，但拉取返回 401。可设置 `enabled: false` 显式关闭。
+游标、分页、认证和漏采边界见[HTTP 定时拉取](performance-collection.md#http-定时拉取)。
 `/ready` 表示 Gateway 自身、任务存储和制品存储可用，不要求每个模型都有 Worker。
 模型是否至少发现一个已注册 Worker，应查看 `/v1/models` 中对应项的 `available`；
 `available=true` 也不表示 Worker 当前空闲，满载时任务仍可能进入队列。
@@ -329,7 +333,7 @@ Gateway 还会在结果成功交接进入 `finalizing` 时，将这些阶段汇�
 `/metrics` 的 `dingo_video_model_stage_duration_seconds` Histogram，标签为
 `pool`、`schema`、`stage`，可用于 Grafana 平均值/P95 展示。不包含 `task_id`，
 缺失阶段不补零，不回填历史任务，也不增加 etcd 查询。该指标按交接记录时间统计，
-不是按阶段开始时间统计；父子阶段不能相加。详见[Gateway 指标说明](../../dingo/video_gateway/METRICS.md)。
+不是按阶段开始时间统计；父子阶段不能相加。详见[Gateway 可观测性与指标](observability.md)。
 
 模型阶段来自 `MiniMaxH3Pipeline` 的原生 profiler，需要 Worker 开启
 `--enable-diffusion-pipeline-profiler`。该 profiler 会同步 GPU，可能影响性能；Gateway 不额外

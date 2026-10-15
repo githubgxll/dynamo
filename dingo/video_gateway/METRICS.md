@@ -1,4 +1,13 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Multi-slot capacity and statistics
+
+The complete deployment-facing metric reference is
+[Video Gateway observability](../../docs/video-gateway/observability.md).
+This document retains the implementation details of multi-slot capacity accounting.
 
 ## Task-level performance analysis
 
@@ -12,7 +21,8 @@ Reference FPS multiplied by duration is not reported as an exact frame count.
 
 The test monitoring project collects these logs into a separate SQL store for
 Grafana parameter filters. These task dimensions are not Prometheus labels.
-The collector deduplicates `(deployment,task_id,attempt)`; collection gaps and
+The regional collector deduplicates `(cluster_id,namespace,deployment,task_id,attempt)`;
+the legacy test collector used `(deployment,task_id,attempt)`. Collection gaps and
 ephemeral-store loss prevent treating this as a complete audit record.
 
 ## Model-stage timings
