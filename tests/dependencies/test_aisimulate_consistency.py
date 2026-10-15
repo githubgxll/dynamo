@@ -155,20 +155,24 @@ def test_rust_source_staging_preserves_transitive_lock(tmp_path, monkeypatch):
     root = tmp_path / "build"
     (root / ".cargo").mkdir(parents=True)
     (root / "Cargo.toml").write_text((ROOT / "Cargo.toml").read_text())
-    (root / "Cargo.lock").write_text((ROOT / "Cargo.lock").read_text())
+    for original in LOCKFILES:
+        destination = root / original.relative_to(ROOT)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(original.read_text())
     (root / ".cargo/config.toml").write_text("[build]\njobs = 2\n")
     checkout = tmp_path / "source"
     checkout.mkdir()
     (checkout / "LICENSE").write_text("test license")
     monkeypatch.setattr(staging, "prepare_source", lambda *args: checkout)
-    before = tomllib.loads((root / "Cargo.lock").read_text())
+    before = [tomllib.loads(path.read_text()) for path in LOCKFILES]
     staging.stage_rust_source(root, tmp_path / "deps")
-    after = tomllib.loads((root / "Cargo.lock").read_text())
-    for package in before["package"]:
-        if package["name"] == "aisimulate-core":
-            package.pop("source")
-            package.pop("checksum")
-    assert after == before
+    for original, expected in zip(LOCKFILES, before):
+        after = tomllib.loads((root / original.relative_to(ROOT)).read_text())
+        for package in expected["package"]:
+            if package["name"] == "aisimulate-core":
+                package.pop("source")
+                package.pop("checksum")
+        assert after == expected
     config = tomllib.loads((root / ".cargo/config.toml").read_text())
     assert config["build"]["jobs"] == 2
     assert config["patch"]["crates-io"]["aisimulate-core"]["path"] == str(
