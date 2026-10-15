@@ -208,21 +208,31 @@ def stage_rust_source(root, output):
     text = config.read_text()
     if "[patch.crates-io]" in text:
         raise SystemExit("Refusing to replace existing Cargo source patches")
-    lock = root / "Cargo.lock"
-    lock_text, count = re.subn(
-        r'(name = "aisimulate-core"\nversion = "' + re.escape(pin[1:])
-        + r'"\n)source = "registry\+https://github.com/rust-lang/crates.io-index"\n'
-        + r'checksum = "[0-9a-f]{64}"\n',
-        r"\1",
-        lock.read_text(),
-    )
-    if count != 1:
-        raise SystemExit("Expected one locked registry AISimulate core package")
+    # The runtime and KVBM bindings are independent Cargo workspaces.
+    # Validate every lockfile before writing any of the build-only overrides.
+    updated_locks = []
+    for relative in (
+        "Cargo.lock",
+        "lib/bindings/python/Cargo.lock",
+        "lib/bindings/kvbm/Cargo.lock",
+    ):
+        lock = root / relative
+        lock_text, count = re.subn(
+            r'(name = "aisimulate-core"\nversion = "' + re.escape(pin[1:])
+            + r'"\n)source = "registry\+https://github.com/rust-lang/crates.io-index"\n'
+            + r'checksum = "[0-9a-f]{64}"\n',
+            r"\1",
+            lock.read_text(),
+        )
+        if count != 1:
+            raise SystemExit(f"Expected one locked registry AISimulate core package: {relative}")
+        updated_locks.append((lock, lock_text))
     config.write_text(
         text + "\n[patch.crates-io]\naisimulate-core = { path = "
         + json.dumps(str(checkout / "crates/core")) + " }\n"
     )
-    lock.write_text(lock_text)
+    for lock, lock_text in updated_locks:
+        lock.write_text(lock_text)
     licenses = root / "rust-licenses" / ("aisimulate-core-" + pin[1:])
     licenses.mkdir(parents=True, exist_ok=True)
     for name in ("LICENSE", "NOTICE"):
