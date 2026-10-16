@@ -524,11 +524,26 @@ pub fn validate_messages_with_history_policy(
     // Prior assistant tool-call messages in the request must carry arguments
     // as a JSON object string; reject bad non-empty shapes before chat-template rendering.
     // This was caught in MiniMax-M3 multi-turn tool-call tests
+    let mut pending_tool_calls = std::collections::HashSet::new();
     for (message_index, message) in messages.iter().enumerate() {
+        if let dynamo_protocols::types::ChatCompletionRequestMessage::Tool(tool) = message {
+            if !pending_tool_calls.remove(tool.tool_call_id.as_str()) {
+                anyhow::bail!(
+                    "`messages[{message_index}].tool_call_id` must reference an unanswered tool call in the preceding assistant message"
+                );
+            }
+        } else {
+            pending_tool_calls.clear();
+        }
         if let dynamo_protocols::types::ChatCompletionRequestMessage::Assistant(assistant) = message
             && let Some(tool_calls) = &assistant.tool_calls
         {
             for (tool_call_index, tool_call) in tool_calls.iter().enumerate() {
+                if !pending_tool_calls.insert(tool_call.id.as_str()) {
+                    anyhow::bail!(
+                        "`messages[{message_index}].tool_calls[{tool_call_index}].id` must be unique within the assistant message"
+                    );
+                }
                 validate_json_object_string(
                     &tool_call.function.arguments,
                     allow_invalid_history_arguments,
