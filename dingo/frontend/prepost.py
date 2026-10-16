@@ -501,6 +501,10 @@ class StreamingPostProcessor:
         self.previous_token_ids: list[int] = []
         self.reasoning_is_done = False
         self._reasoning_parser_finished = False
+        # None means the implicit streaming path has not been selected yet.
+        # Track it even before the tool parser emits its first delta.
+        self._implicit_tool_text: str | None = None
+        self._implicit_tool_token_ids: list[int] = []
         self.in_progress_tool_calls: dict[int, DeltaToolCall] = {}
         # Per-choice tracking (https://github.com/ai-dynamo/dynamo/issues/8636) of whether a tool_call delta was
         # emitted on that choice, keyed by `output.index`. Required because
@@ -680,6 +684,28 @@ class StreamingPostProcessor:
             request=self.request_for_sampling,
         )
 
+    def _extract_implicit_tools_streaming(
+        self, content: str, delta_token_ids: list[int]
+    ) -> DeltaMessage | None:
+        assert self.tool_parser is not None
+        previous_text = self._implicit_tool_text or ""
+        current_text = previous_text + content
+        current_token_ids = self._implicit_tool_token_ids + delta_token_ids
+        message = self.tool_parser.extract_tool_calls_streaming(
+            previous_text=previous_text,
+            current_text=current_text,
+            delta_text=content,
+            previous_token_ids=self._implicit_tool_token_ids,
+            current_token_ids=current_token_ids,
+            delta_token_ids=delta_token_ids,
+            request=self.request_for_sampling,
+        )
+        # Use the scanner's released content, not raw output text: a terminal
+        # flush can release text whose token IDs arrived in an earlier chunk.
+        self._implicit_tool_text = current_text
+        self._implicit_tool_token_ids = current_token_ids
+        return message
+
     def _merge_streaming_tool_calls(self, tool_calls: list[DeltaToolCall]) -> None:
         for tool_delta in tool_calls:
             existing = self.in_progress_tool_calls.get(tool_delta.index)
@@ -800,6 +826,7 @@ class StreamingPostProcessor:
         current_token_ids = self.previous_token_ids + delta_token_ids
 
         delta_message: DeltaMessage | None = DeltaMessage(content=delta_text)
+        implicit_reasoning: str | None = None
 
         # ------------------------------------------------------------------
         # Drain the tool-text buffer (populated when </think> and <tool_call>
@@ -840,16 +867,28 @@ class StreamingPostProcessor:
             reasoning_ended = self._reasoning_end_confirmed(
                 current_token_ids, delta_token_ids
             )
-            if reasoning_ended or (
+            finish_reasoning = reasoning_ended or (
                 output.finish_reason
                 and getattr(self.reasoning_parser, "engine_based_streaming", False)
                 is True
                 and callable(getattr(self.reasoning_parser, "finish_streaming", None))
-            ):
+            )
+            if finish_reasoning:
                 # Flush before abandoning the scanner, including on truncated
                 # generations. It may still hold reasoning or a tool prefix.
                 delta_message = self._finish_reasoning_streaming(delta_message)
                 self.reasoning_is_done = True
+
+            if self._implicit_tool_text is not None and self._should_parse_tools():
+                # Do not reset an already selected streaming parser to batch
+                # mode when confirmation/termination arrives. Feed its tail,
+                # including scanner holdback, once and with its original context.
+                implicit_reasoning = delta_message.reasoning if delta_message else None
+                delta_message = self._extract_implicit_tools_streaming(
+                    (delta_message.content if delta_message else None) or "",
+                    delta_token_ids,
+                )
+            elif finish_reasoning:
                 saved_reasoning = delta_message.reasoning if delta_message else None
                 post_content = (delta_message.content if delta_message else None) or ""
 
@@ -905,12 +944,24 @@ class StreamingPostProcessor:
                 # The model may have skipped reasoning and gone straight
                 # to tool calls (e.g. Mistral [TOOL_CALLS] without
                 # [THINK]...[/THINK]).  Let the tool parser decide.
-                delta_message = self._extract_tool_calls_streaming(
-                    current_text=current_text,
-                    delta_text=delta_text,
-                    current_token_ids=current_token_ids,
-                    delta_token_ids=delta_token_ids,
-                )
+                if (
+                    getattr(self.reasoning_parser, "engine_based_streaming", False)
+                    is True
+                ):
+                    delta_message = self._extract_implicit_tools_streaming(
+                        delta_message.content, delta_token_ids
+                    )
+                else:
+                    delta_message = self._extract_tool_calls_streaming(
+                        current_text=current_text,
+                        delta_text=delta_text,
+                        current_token_ids=current_token_ids,
+                        delta_token_ids=delta_token_ids,
+                    )
+        elif self._implicit_tool_text is not None and self._should_parse_tools():
+            delta_message = self._extract_implicit_tools_streaming(
+                delta_text, delta_token_ids
+            )
         else:
             if self._should_parse_tools():
                 no_prev_reasoning = (
@@ -957,6 +1008,12 @@ class StreamingPostProcessor:
             choice = self._emit_tool_calls_choice(output)
         elif output.finish_reason:
             choice = self._build_choice(output, {})
+
+        if implicit_reasoning:
+            if choice is None:
+                choice = self._build_choice(output, {})
+            choice["delta"]["role"] = "assistant"
+            choice["delta"]["reasoning_content"] = implicit_reasoning
 
         self.previous_text = current_text
         self.previous_token_ids = current_token_ids

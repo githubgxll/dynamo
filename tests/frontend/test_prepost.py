@@ -37,7 +37,12 @@ if HAS_VLLM:
     from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
     from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
-    from dingo.frontend.prepost import DeltaMessage, StreamingPostProcessor
+    from dingo.frontend.prepost import (
+        DeltaFunctionCall,
+        DeltaMessage,
+        DeltaToolCall,
+        StreamingPostProcessor,
+    )
 else:
     # Fake some types so that `pre-commit` passes
     class CompletionOutput:
@@ -1565,6 +1570,132 @@ def test_engine_implicit_tool_handoff(processor, terminal):
     assert len(_collect_tool_calls(results)) == 1
     assert results[-1]["finish_reason"] == "tool_calls"
     assert not _collect_reasoning(results)
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+@pytest.mark.parametrize("ending", ["nonempty", "empty", "flush", "split_flush"])
+@pytest.mark.parametrize("defer_first_delta", [False, True])
+def test_engine_implicit_tool_terminal_continuation(
+    processor, confirmed, finish_reason, ending, defer_first_delta
+):
+    prefix = '<tool_call>{"name":"search_gutenberg_books","arguments":'
+    suffix = '{"search_terms":["one"]}}</tool_call>'
+    first = prefix + suffix if ending == "empty" else prefix
+    terminal = suffix if ending == "nonempty" else ""
+    flushed = suffix if ending == "flush" else ""
+    if ending == "split_flush":
+        terminal, flushed = suffix[:-12], suffix[-12:]
+    # Non-special body IDs are placeholders; preserve the exact supplied IDs,
+    # including held-back text flushed without any additional token IDs.
+    first_ids = [151657, 1001] + ([151658] if ending == "empty" else [])
+    terminal_ids = [1002, 151658] if terminal else []
+    if ending == "flush":
+        first_ids += [1002, 151658]
+    parser = SimpleNamespace(
+        engine_based_streaming=True,
+        extract_reasoning_streaming=Mock(
+            side_effect=[DeltaMessage(content=first), DeltaMessage(content=terminal)]
+        ),
+        has_engine_confirmed_reasoning_end=Mock(side_effect=[False, confirmed]),
+        finish_streaming=Mock(
+            return_value=DeltaMessage(
+                content=flushed, reasoning="held reasoning" if flushed else None
+            )
+        ),
+    )
+    processor.reasoning_parser = parser
+    original = processor.tool_parser.extract_tool_calls_streaming
+    seen = []
+
+    def incremental(**kwargs):
+        seen.append(kwargs)
+        if defer_first_delta:
+            # A parser may need more text before emitting even the call ID.
+            if len(seen) == 1:
+                return None
+            body = json.loads(
+                kwargs["current_text"]
+                .removeprefix("<tool_call>")
+                .removesuffix("</tool_call>")
+            )
+            return DeltaMessage(
+                tool_calls=[
+                    DeltaToolCall(
+                        index=0,
+                        id="deferred-call-id",
+                        type="function",
+                        function=DeltaFunctionCall(
+                            name=body["name"], arguments=json.dumps(body["arguments"])
+                        ),
+                    )
+                ]
+            )
+        return original(**kwargs)
+
+    streaming = Mock(side_effect=incremental)
+    processor.tool_parser.extract_tool_calls_streaming = streaming
+    batch = Mock(side_effect=AssertionError("Do not restart implicit tools in batch"))
+    processor.tool_parser.extract_tool_calls = batch
+    results = _collect_results(
+        processor,
+        [
+            _reasoning_output(first, first_ids),
+            _reasoning_output(terminal + flushed, terminal_ids, finish_reason),
+        ],
+    )
+    assert len(seen) == 2
+    assert seen[0]["previous_text"] == ""
+    assert seen[0]["current_text"] == seen[0]["delta_text"] == first
+    assert seen[1]["previous_text"] == first
+    assert seen[1]["current_text"] == prefix + suffix
+    assert seen[1]["delta_text"] == terminal + flushed
+    assert seen[1]["previous_token_ids"] == first_ids
+    assert seen[1]["current_token_ids"] == first_ids + terminal_ids
+    assert seen[1]["delta_token_ids"] == terminal_ids
+    batch.assert_not_called()
+    parser.finish_streaming.assert_called_once_with()
+    calls = _collect_tool_calls(results)
+    assert len(calls) == 1
+    assert calls[0]["id"]
+    assert calls[0]["function"]["name"] == "search_gutenberg_books"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"search_terms": ["one"]}
+    assert not any(r["delta"].get("content") for r in results)
+    assert _collect_reasoning(results) == ("held reasoning" if flushed else "")
+    assert results[-1]["finish_reason"] == (
+        "tool_calls" if finish_reason == "stop" else "length"
+    )
+
+
+@pytest.mark.parametrize("tools_enabled", [False, True])
+def test_engine_implicit_plain_terminal_content(processor, tools_enabled):
+    processor.request_for_sampling.tool_choice = "auto" if tools_enabled else "none"
+    processor.reasoning_parser = SimpleNamespace(
+        engine_based_streaming=True,
+        extract_reasoning_streaming=Mock(
+            side_effect=[
+                DeltaMessage(content="ordinary "),
+                DeltaMessage(content="text"),
+            ]
+        ),
+        has_engine_confirmed_reasoning_end=Mock(return_value=False),
+        finish_streaming=Mock(return_value=DeltaMessage(content=" tail")),
+    )
+    streaming = Mock(wraps=processor.tool_parser.extract_tool_calls_streaming)
+    processor.tool_parser.extract_tool_calls_streaming = streaming
+    results = _collect_results(
+        processor,
+        [
+            _reasoning_output("ordinary ", [1001]),
+            _reasoning_output("text", [1002], "stop"),
+        ],
+    )
+    content = "".join(r["delta"].get("content", "") for r in results)
+    assert content == "ordinary text tail"
+    assert not _collect_tool_calls(results)
+    assert results[-1]["finish_reason"] == "stop"
+    if not tools_enabled:
+        streaming.assert_not_called()
 
 
 @pytest.mark.parametrize("stop", [[], ["橘子"], ["STOP-LONG"]])
