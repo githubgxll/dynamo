@@ -937,6 +937,13 @@ impl From<DeltaChoice> for dynamo_protocols::types::ChatChoice {
         } else if !delta.text.is_empty() {
             // Text-only response (backward compatible)
             Some(ChatCompletionMessageContent::Text(delta.text))
+        } else if finish_reason == Some(dynamo_protocols::types::FinishReason::Length)
+            && delta.reasoning_content.is_some()
+            && !has_tool_calls
+        {
+            // A reasoning-only turn cut off by max_tokens has an empty answer.
+            // GLM's chat-completion response represents that answer as "".
+            Some(ChatCompletionMessageContent::Text(String::new()))
         } else {
             None
         };
@@ -3558,6 +3565,31 @@ mod tests {
             "content key must be serialized as null when absent"
         );
         assert!(json.get("reasoning_content").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reasoning_only_length_response_has_empty_content() {
+        let mut delta = create_reasoning_delta(0, "", "Still reasoning");
+        delta.data.as_mut().unwrap().inner.choices[0].finish_reason =
+            Some(dynamo_protocols::types::FinishReason::Length);
+        let response = DeltaAggregator::apply(
+            Box::pin(stream::iter(vec![delta])),
+            ParsingOptions::default(),
+        )
+        .await
+        .unwrap();
+        let choice = &response.inner.choices[0];
+        assert_eq!(
+            choice.message.content,
+            Some(ChatCompletionMessageContent::Text(String::new()))
+        );
+        assert_eq!(
+            choice.finish_reason,
+            Some(dynamo_protocols::types::FinishReason::Length)
+        );
+        let json = serde_json::to_value(&choice.message).unwrap();
+        assert_eq!(json["content"], "");
+        assert_eq!(json["reasoning_content"], "Still reasoning");
     }
 
     // --- glm47 truncation recovery tests ---

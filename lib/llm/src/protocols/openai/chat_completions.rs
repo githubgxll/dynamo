@@ -166,6 +166,11 @@ pub struct NvCreateChatCompletionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_token_budget: Option<u32>,
 
+    /// GLM-compatible sampling switch. When false, temperature and top_p are
+    /// accepted but have no effect; generation uses greedy decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub do_sample: Option<bool>,
+
     /// Runtime media decoding parameters, forwarded verbatim to the worker when the
     /// worker owns decoding. When the frontend decodes, these override the MDC defaults.
     /// Kept opaque so options the frontend does not own pass through untouched.
@@ -189,6 +194,30 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// Apply sampling controls after validating the client's original values.
+    /// The resulting canonical options are shared by Rust and Python backends.
+    pub fn normalize_sampling_controls(&mut self) {
+        self.inner.temperature = self.get_temperature();
+        self.inner.top_p = self.get_top_p();
+        // Downstream adapters receive canonical sampling parameters, not a
+        // backend-specific switch that could be ignored or rejected there.
+        self.do_sample = None;
+    }
+
+    fn compatible_top_p(&self) -> Option<f32> {
+        if is_glm53_model_id(&self.inner.model)
+            && (self.inner.top_p.is_none() || self.inner.top_p == Some(0.0))
+        {
+            // The GLM-5.3 hosted API accepts zero and still samples. Its exact
+            // treatment is undocumented; use its documented default rather
+            // than turning zero into greedy decoding or sending it to SGLang,
+            // which rejects zero. Keep other models' validation unchanged.
+            Some(0.95)
+        } else {
+            self.inner.top_p
+        }
+    }
+
     /// Preserve the legacy salt across serialization to Python processors.
     /// The unsupported-field map is deliberately not serialized; promote only
     /// the resolved cache namespace, leaving unrelated unknown fields private.
@@ -682,12 +711,20 @@ impl AnnotationsProvider for NvCreateChatCompletionRequest {
 impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
     /// Retrieves the temperature parameter for sampling, if set.
     fn get_temperature(&self) -> Option<f32> {
-        self.inner.temperature
+        if self.do_sample == Some(false) {
+            Some(0.0)
+        } else {
+            self.inner.temperature
+        }
     }
 
     /// Retrieves the top-p (nucleus sampling) parameter, if set.
     fn get_top_p(&self) -> Option<f32> {
-        self.inner.top_p
+        if self.do_sample == Some(false) {
+            Some(1.0)
+        } else {
+            self.compatible_top_p()
+        }
     }
 
     /// Retrieves the frequency penalty parameter, if set.
@@ -941,7 +978,7 @@ impl NvCreateChatCompletionRequest {
         // none for stream
         // none for stream_options
         validate::validate_temperature(self.inner.temperature)?;
-        validate::validate_top_p(self.inner.top_p)?;
+        validate::validate_top_p(self.compatible_top_p())?;
         let effective_tools = validate::validated_effective_tools(&self.inner)?;
         validate::validate_tool_choice(&self.inner.tool_choice, Some(effective_tools.as_ref()))?;
         // none for parallel_tool_calls
@@ -1104,6 +1141,85 @@ mod tests {
             body[key] = value.clone();
         }
         serde_json::from_value(body).expect("Failed to deserialize request")
+    }
+
+    #[test]
+    fn test_do_sample_false_normalizes_sampling_after_validation() {
+        let mut request = chat_request_with(&json!({
+            "do_sample": false,
+            "temperature": 1.0,
+            "top_p": 0.95
+        }));
+        assert!(request.unsupported_fields.is_empty());
+        assert_eq!(serde_json::to_value(&request).unwrap()["do_sample"], false);
+        ValidateRequest::validate(&request).expect("do_sample is accepted");
+        request.normalize_sampling_controls();
+        let sampling = request.extract_sampling_options().unwrap();
+        assert_eq!(sampling.temperature, Some(0.0));
+        assert_eq!(sampling.top_p, Some(1.0));
+        let python_request = serde_json::to_value(&request).unwrap();
+        assert!(python_request.get("do_sample").is_none());
+        assert_eq!(python_request["temperature"], 0.0);
+        assert_eq!(python_request["top_p"], 1.0);
+
+        let mut request = chat_request_with(&json!({"do_sample": true, "temperature": 0.7}));
+        ValidateRequest::validate(&request).expect("do_sample=true is accepted");
+        request.normalize_sampling_controls();
+        assert_eq!(
+            request.extract_sampling_options().unwrap().temperature,
+            Some(0.7)
+        );
+
+        let invalid = chat_request_with(&json!({"do_sample": false, "top_p": 0}));
+        assert!(ValidateRequest::validate(&invalid).is_err());
+    }
+
+    #[test]
+    fn test_do_sample_rejects_non_boolean_values() {
+        for value in [json!("true"), json!(0), json!({})] {
+            let request = serde_json::from_value::<NvCreateChatCompletionRequest>(json!({
+                "model": "glm-5.3",
+                "messages": [{"role": "user", "content": "hi"}],
+                "do_sample": value
+            }));
+            assert!(request.is_err());
+        }
+    }
+
+    #[test]
+    fn test_glm53_zero_top_p_is_accepted_and_normalized_for_backends() {
+        for model in ["glm-5.3", "glm5.3", "zai-org/GLM-5.3"] {
+            for do_sample in [None, Some(true), Some(false)] {
+                let mut request = chat_request_with(&json!({
+                    "model": model, "top_p": 0, "temperature": 1.0
+                }));
+                request.do_sample = do_sample;
+                ValidateRequest::validate(&request).expect("GLM-5.3 accepts top_p=0");
+                let expected = if do_sample == Some(false) { 1.0 } else { 0.95 };
+                assert_eq!(
+                    request.extract_sampling_options().unwrap().top_p,
+                    Some(expected)
+                );
+                request.normalize_sampling_controls();
+                let python_request = serde_json::to_value(&request).unwrap();
+                assert_eq!(python_request["top_p"], expected);
+                assert_eq!(
+                    python_request["temperature"],
+                    if do_sample == Some(false) { 0.0 } else { 1.0 }
+                );
+            }
+        }
+
+        let mut request = chat_request_with(&json!({"model": "glm-5.3", "top_p": 0.7}));
+        request.normalize_sampling_controls();
+        assert_eq!(request.inner.top_p, Some(0.7));
+        let mut default = chat_request_with(&json!({"model": "glm-5.3"}));
+        default.normalize_sampling_controls();
+        assert_eq!(default.inner.top_p, Some(0.95));
+        for model in ["test-model", "glm-5.2", "glm-5.3-flash"] {
+            let request = chat_request_with(&json!({"model": model, "top_p": 0}));
+            assert!(ValidateRequest::validate(&request).is_err());
+        }
     }
 
     /// Extracts sampling options for `extra` and returns the guided-decoding options it
