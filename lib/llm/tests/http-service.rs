@@ -41,6 +41,132 @@ use ports::bind_random_port;
 
 struct CounterEngine {}
 
+#[derive(Default)]
+struct CountingChatEngine(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl
+    AsyncEngine<
+        SingleIn<NvCreateChatCompletionRequest>,
+        ManyOut<Annotated<NvCreateChatCompletionStreamResponse>>,
+        Error,
+    > for CountingChatEngine
+{
+    async fn generate(
+        &self,
+        request: SingleIn<NvCreateChatCompletionRequest>,
+    ) -> Result<ManyOut<Annotated<NvCreateChatCompletionStreamResponse>>, Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        CounterEngine {}.generate(request).await
+    }
+}
+
+#[tokio::test]
+async fn test_chat_tool_result_associations_before_generation() {
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    let (listener, port) = bind_random_port().await;
+    let service = HttpService::builder()
+        .port(port)
+        .enable_chat_endpoints(true)
+        .build()
+        .unwrap();
+    let state = service.state_clone();
+    let engine = Arc::new(CountingChatEngine::default());
+    let card = ModelDeploymentCard::with_name_only("foo");
+    state
+        .manager()
+        .add_chat_completions_model("foo", card.mdcsum(), engine.clone())
+        .unwrap();
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let task = tokio::spawn(async move { service.run_with_listener(token, listener).await });
+    wait_for_service_ready(port).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{port}/v1/chat/completions");
+    let assistant = json!({"role": "assistant", "tool_calls": [
+        {"id": "a", "type": "function", "function": {"name": "historical", "arguments": "{}"}},
+        {"id": "b", "type": "function", "function": {"name": "historical", "arguments": ""}}
+    ]});
+    let tool = |id: &str| json!({"role": "tool", "tool_call_id": id, "content": "private result"});
+    for streaming in [false, true] {
+        for (messages, index, reason) in [
+            (json!([tool("a")]), 0, "no preceding assistant"),
+            (json!([assistant, tool("unknown")]), 1, "unknown"),
+            (
+                json!([assistant, tool("a"), tool("a")]),
+                2,
+                "already consumed",
+            ),
+        ] {
+            let response = client
+                .post(&url)
+                .json(&json!({
+                    "model": "foo", "messages": messages, "stream": streaming
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(
+                response.headers()[reqwest::header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("application/json")
+            );
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], 400);
+            let message = body["message"].as_str().unwrap();
+            assert!(
+                message.contains(&format!("messages[{index}].tool_call_id")),
+                "{body}"
+            );
+            assert!(message.contains(reason), "{body}");
+            assert!(!message.contains("private result"));
+            assert_eq!(engine.0.load(Ordering::SeqCst), 0);
+        }
+    }
+    let mut single_call = assistant.clone();
+    single_call["tool_calls"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    let mut generated = 0;
+    for streaming in [false, true] {
+        for messages in [
+            json!([single_call, tool("a")]),
+            json!([assistant, tool("a")]),
+            json!([assistant, tool("a"), tool("b")]),
+            json!([assistant, tool("b"), tool("a")]),
+            json!([assistant]),
+            json!([assistant, tool("a"), assistant, tool("a")]),
+        ] {
+            let response = client
+                .post(&url)
+                .json(&json!({
+                    "model": "foo", "messages": messages, "stream": streaming
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response.text().await.unwrap();
+            if streaming {
+                assert!(body.contains("data:"), "{body}");
+                assert!(!body.contains("\"error\""), "{body}");
+            } else {
+                let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert!(body["choices"].is_array(), "{body}");
+            }
+            generated += 1;
+            assert_eq!(engine.0.load(Ordering::SeqCst), generated);
+        }
+    }
+    cancel.cancel();
+    task.await.unwrap().unwrap();
+}
+
 // Add a new long-running test engine
 struct LongRunningEngine {
     delay_ms: u64,

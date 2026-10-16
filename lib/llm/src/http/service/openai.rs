@@ -1962,12 +1962,19 @@ pub fn validate_chat_completion_stream_options(
 pub fn validate_chat_completion_fields_generic(
     request: &NvCreateChatCompletionRequest,
 ) -> Result<(), ErrorResponse> {
-    request.validate().map_err(|e| {
-        ErrorMessage::from_http_error(HttpError {
-            code: 400,
-            message: VALIDATION_PREFIX.to_string() + &e.to_string(),
+    request
+        .validate()
+        .and_then(|()| {
+            crate::protocols::openai::validate::validate_chat_tool_result_associations(
+                &request.inner.messages,
+            )
         })
-    })
+        .map_err(|e| {
+            ErrorMessage::from_http_error(HttpError {
+                code: 400,
+                message: VALIDATION_PREFIX.to_string() + &e.to_string(),
+            })
+        })
 }
 
 /// Validates that stream_options is only used when stream=true for completions (NVBug 5662680)
@@ -3284,6 +3291,53 @@ mod tests {
         ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
         CreateCompletionRequest,
     };
+
+    #[test]
+    fn test_chat_http_tool_result_associations() {
+        use serde_json::json;
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "test-model",
+            "messages": [{"role": "tool", "tool_call_id": "a", "content": "private result"}]
+        }))
+        .unwrap();
+        request
+            .validate()
+            .expect("shared validation remains unchanged");
+        let error = validate_chat_completion_fields_generic(&request).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.message.starts_with(VALIDATION_PREFIX));
+        assert!(error.1.message.contains("messages[0].tool_call_id"));
+        assert!(!error.1.message.contains("private result"));
+
+        for arguments in ["{}", "", "  "] {
+            request.inner.messages.insert(
+                0,
+                serde_json::from_value(json!({
+                    "role": "assistant", "tool_calls": [{"id": "a", "type": "function",
+                        "function": {"name": "historical_tool", "arguments": arguments}}]
+                }))
+                .unwrap(),
+            );
+            validate_chat_completion_fields_generic(&request).unwrap();
+            request.inner.messages.remove(0);
+        }
+        request.inner.messages.insert(
+            0,
+            serde_json::from_value(json!({
+                "role": "assistant", "tool_calls": [{"id": "a", "type": "function",
+                    "function": {"name": "historical_tool", "arguments": "[]"}}]
+            }))
+            .unwrap(),
+        );
+        let error = validate_chat_completion_fields_generic(&request).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error
+                .1
+                .message
+                .contains("messages[0].tool_calls[0].function.arguments")
+        );
+    }
 
     const BACKUP_ERROR_MESSAGE: &str = "Failed to generate completions";
 

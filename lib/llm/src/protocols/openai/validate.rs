@@ -482,6 +482,57 @@ pub fn validate_messages(
     Ok(())
 }
 
+/// Checks tool results at the Chat HTTP boundary only, not shared protocol validation.
+/// Unreturned calls are allowed; invalid declarations matter only when a result refers to them.
+pub fn validate_chat_tool_result_associations(
+    messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
+) -> Result<(), anyhow::Error> {
+    use dynamo_protocols::types::ChatCompletionRequestMessage;
+    use std::collections::{HashMap, HashSet};
+
+    let mut declarations = HashMap::new();
+    let mut consumed = HashSet::new();
+    for (index, message) in messages.iter().enumerate() {
+        match message {
+            ChatCompletionRequestMessage::Tool(tool) => {
+                let id = tool.tool_call_id.as_str();
+                let field = format!("`messages[{index}].tool_call_id`");
+                if id.trim().is_empty() {
+                    anyhow::bail!("{field} must be non-empty");
+                }
+                if declarations.is_empty() {
+                    anyhow::bail!("{field} has no preceding assistant tool-call block");
+                }
+                match declarations.get(id) {
+                    None => {
+                        anyhow::bail!("{field} is unknown in the current assistant tool-call block")
+                    }
+                    Some(count) if *count > 1 => {
+                        anyhow::bail!("{field} is ambiguous: multiple tool calls declare this ID")
+                    }
+                    _ => {}
+                }
+                if !consumed.insert(id) {
+                    anyhow::bail!("{field} references an already consumed tool call");
+                }
+            }
+            _ => {
+                // Every non-tool message ends the preceding association block.
+                declarations.clear();
+                consumed.clear();
+                if let ChatCompletionRequestMessage::Assistant(assistant) = message
+                    && let Some(calls) = &assistant.tool_calls
+                {
+                    for call in calls {
+                        *declarations.entry(call.id.as_str()).or_insert(0usize) += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_json_object_string(value: &str, field: String) -> Result<(), anyhow::Error> {
     if value.trim().is_empty() {
         return Ok(());
@@ -820,6 +871,93 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn chat_tool_result_association_matrix() {
+        let assistant = |ids: &[&str]| {
+            json!({
+                "role": "assistant", "tool_calls": ids.iter().map(|id| json!({
+                    "id": id, "type": "function",
+                    "function": {"name": "historical_tool", "arguments": "{}"}
+                })).collect::<Vec<_>>()
+            })
+        };
+        let tool =
+            |id: &str| json!({"role": "tool", "tool_call_id": id, "content": "private result"});
+        let mut cases = vec![
+            (vec![tool("a")], Some((0, "no preceding assistant"))),
+            (vec![assistant(&["a"]), tool("b")], Some((1, "unknown"))),
+            (
+                vec![assistant(&["a"]), tool("a"), tool("a")],
+                Some((2, "already consumed")),
+            ),
+            (
+                vec![assistant(&["a", "a"]), tool("a")],
+                Some((1, "ambiguous")),
+            ),
+            (vec![assistant(&[""]), tool("")], Some((1, "non-empty"))),
+            (vec![assistant(&[" "]), tool(" ")], Some((1, "non-empty"))),
+            (vec![assistant(&["a"]), tool("")], Some((1, "non-empty"))),
+            (vec![assistant(&["a"]), tool("a")], None),
+            (vec![assistant(&["a", "b"]), tool("a"), tool("b")], None),
+            (vec![assistant(&["a", "b"]), tool("b"), tool("a")], None),
+            (vec![assistant(&["a", "b"]), tool("b")], None),
+            (vec![assistant(&["", "a", "a"])], None),
+            (vec![assistant(&["a", "a", "b"]), tool("b")], None),
+            (
+                vec![assistant(&["a"]), tool("a"), assistant(&["a"]), tool("a")],
+                None,
+            ),
+            (
+                vec![
+                    assistant(&["a"]),
+                    json!({"role": "user", "content": "next"}),
+                ],
+                None,
+            ),
+            (
+                vec![
+                    json!({"role": "assistant", "function_call": {"name": "old", "arguments": "{}"}}),
+                    json!({"role": "function", "name": "old", "content": "result"}),
+                ],
+                None,
+            ),
+        ];
+        for role in ["user", "system", "developer", "assistant"] {
+            cases.push((
+                vec![
+                    assistant(&["a"]),
+                    json!({"role": role, "content": "boundary"}),
+                    tool("a"),
+                ],
+                Some((2, "no preceding assistant")),
+            ));
+        }
+        cases.push((
+            vec![assistant(&["a"]), assistant(&["b"]), tool("a")],
+            Some((2, "unknown")),
+        ));
+        for (history, expected) in cases {
+            let messages = serde_json::from_value::<
+                Vec<dynamo_protocols::types::ChatCompletionRequestMessage>,
+            >(json!(history))
+            .unwrap();
+            // Shared validation must continue accepting these histories (Responses/Messages).
+            validate_messages(&messages).unwrap();
+            let result = validate_chat_tool_result_associations(&messages);
+            if let Some((index, reason)) = expected {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!("messages[{index}].tool_call_id")),
+                    "{error}"
+                );
+                assert!(error.contains(reason), "{error}");
+                assert!(!error.contains("private result"), "{error}");
+            } else {
+                result.unwrap();
+            }
+        }
+    }
 
     fn unknown_fields() -> HashMap<String, serde_json::Value> {
         HashMap::from([("experimental_field".to_string(), json!("value"))])
