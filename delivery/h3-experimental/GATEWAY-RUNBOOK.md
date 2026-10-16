@@ -52,6 +52,7 @@ call delivery\h3-experimental\02-submit-build.cmd
 | 阶段 | 自动工作 | 通过后的证据 |
 |---|---|---|
 | 输入检查 | 服务 commit、官方底图 digest、资产和目标仓库 | 配方身份 |
+| 构建上下文检查 | 使用 `FROM scratch` 和实际 BuildKit `COPY` 导出环境文件，验证参考文件与安装脚本哈希；不拉取底图、不安装依赖 | `environment-context.json` |
 | native builder | 固定 manylinux、华为 Alma/EPEL、编译工具链 | reusable builder |
 | 完整服务框架 | ai-dingo、Gateway/监测；联合求解完整 Omni、服务默认依赖及 Gateway extra | 实际 Linux 依赖、导入、CPU 媒体检查 |
 | 合规与框架发布 | 保留 NOTICE/SBOM/许可证门禁 | 框架中间 digest |
@@ -116,6 +117,9 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 | 0.31 输入输出及内部导入变动 | 定点适配服务桥接代码，保留旧布局兼容；仍需真实服务 E2E |
 | soxr LGPL 门禁 | 复用精确 soxr1.1.0/vllm-runtime 实验例外；保留检查、NOTICE/SBOM，不扩大未知包白名单 |
 | Git ignored 文件导致提交失败 | 临时 index 验证后提交精确 tree，备份 index、保留文件模式 |
+| 参考 Dockerfile 哈希为 `null`，环境审计提前终止 | 根 `.dockerignore` 的 `container/**/*.Dockerfile` 排除了参考副本；改名为 `.Dockerfile.txt`，原始内容和 SHA256 保持不变；增加真实构建上下文导出预检，不跳过校验 |
+
+2026-10-16 此次漏文件修复不改变 `.dockerignore`、native 模板或 builder 指纹，仍为 `76446244149f`。因此可以复用本次已经发布的 native builder；镜像存在且 Runner 有拉取权限时，CI 会跳过其构建。框架运行层仍需继续构建和验证，耗时不能仅凭 native 缓存命中保证。
 
 ## 6. 仍需验证的风险
 

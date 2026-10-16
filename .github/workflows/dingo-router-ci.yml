@@ -50,6 +50,22 @@ jobs:
         with:
           driver: docker
 
+      - name: Verify environment files survive the Docker build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          context_export="$(mktemp -d "${RUNNER_TEMP}/h3-environment-context.XXXXXX")"
+          trap 'rm -rf -- "${context_export}"' EXIT
+          docker buildx build --file - --progress=plain \
+            --provenance=false --sbom=false \
+            --output "type=local,dest=${context_export}" . <<'DOCKERFILE'
+          FROM scratch
+          COPY container/h3-experimental/environment/ /environment/
+          DOCKERFILE
+          python3 .github/scripts/h3_experimental_ci.py check-context \
+            --directory "${context_export}" \
+            --report .h3-experimental-evidence/ci/environment-context.json
+
       - name: Expose job-scoped sccache credentials as BuildKit secrets
         uses: actions/github-script@v7
         with:

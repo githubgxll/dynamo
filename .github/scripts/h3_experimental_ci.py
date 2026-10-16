@@ -38,6 +38,37 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_environment_context(root, directory, report=None):
+    """Verify an actual BuildKit COPY export, before native/framework builds.
+
+    Use a fresh export directory; Docker, not a Python glob approximation,
+    applies the root .dockerignore. This checks packaging only, not packages.
+    """
+    source = root / PROFILE / "environment"
+    policy = read(source / "gateway-dependency-policy.json")
+    names = {
+        "gateway-dependency-policy.json", "install_environment.sh",
+        "audit_environment.py", "dependency_audit.py", "runtime_dependencies.py",
+        "protected_packages.txt", "media_smoke.py", "service_smoke.py",
+        *policy["gateway_reference_sha256"],
+    }
+    hashes = {}
+    for name in sorted(names):
+        original = source / name
+        exported = directory / "environment" / name
+        if not exported.is_file() or exported.is_symlink():
+            raise ValueError(f"Required environment input missing from Docker context: {name}; check .dockerignore and COPY")
+        expected = policy["gateway_reference_sha256"].get(name, sha256(original))
+        if sha256(original) != expected or sha256(exported) != expected:
+            raise ValueError(f"Docker context environment input hash differs: {name}")
+        hashes[name] = expected
+    result = {"status": "PASS_EXPORTED_ENVIRONMENT_INPUTS_ONLY", "sha256": hashes,
+              "scope": "COPY export identity only; no dependency installation, service or GPU validation"}
+    if report:
+        dump(report, result)
+    return result
+
+
 def dump(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -219,14 +250,17 @@ def record_final(root, environ, digest, directory, framework_ref):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "record-framework", "validate-evidence", "record-final"])
+    parser.add_argument("command", choices=["prepare", "check-context", "record-framework", "validate-evidence", "record-final"])
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--directory", type=Path, default=Path(".h3-experimental-evidence"))
     parser.add_argument("--digest")
     parser.add_argument("--framework-ref")
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.command == "prepare":
         result = prepare(ROOT, os.environ, args.github_output, args.directory)
+    elif args.command == "check-context":
+        result = check_environment_context(ROOT, args.directory, args.report)
     elif args.command == "record-framework":
         result = record_framework(ROOT, os.environ, args.digest or "", args.directory, args.github_output)
     elif args.command == "validate-evidence":

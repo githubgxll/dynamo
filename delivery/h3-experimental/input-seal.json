@@ -20,17 +20,17 @@
     },
     ".github/scripts/h3_experimental_ci.py": {
       "mode": "100644",
-      "blob": "e02f4cdcd238ffcabc34ae6811f912a2504a29ac",
+      "blob": "9b71c1f90a409037aed40abe9ce4c3dfa219b649",
       "status": "A"
     },
     ".github/scripts/test_h3_experimental_ci.py": {
       "mode": "100644",
-      "blob": "8b6c6199355906efa64f0bb567474ecdd4bea9ce",
+      "blob": "9608a072b33bf35be6406c73e320a6d0a01128f5",
       "status": "A"
     },
     ".github/workflows/dingo-router-ci.yml": {
       "mode": "100644",
-      "blob": "f394ecf334916967ed6eab1d2e69cc076a154a33",
+      "blob": "53c88038aad1d0ec62537a3f5b1c2798d4f79ff2",
       "status": "M"
     },
     ".gitignore": {
@@ -125,7 +125,7 @@
     },
     "container/h3-experimental/environment/audit_environment.py": {
       "mode": "100644",
-      "blob": "aaf2f997a43c3c336eca4551055a1be80583ea41",
+      "blob": "b488535da63e1e5e118665e368a758d538b3ea9f",
       "status": "A"
     },
     "container/h3-experimental/environment/dependency_audit.py": {
@@ -135,7 +135,7 @@
     },
     "container/h3-experimental/environment/gateway-dependency-policy.json": {
       "mode": "100644",
-      "blob": "ca8f3415ca73359b89bef169a3cd4311e6812348",
+      "blob": "9abf7b12c3a9aeab0384e8013eac41a3d9f029ec",
       "status": "A"
     },
     "container/h3-experimental/environment/install_environment.sh": {
@@ -163,7 +163,7 @@
       "blob": "1e4109cfbf9f5602ff979cb84aa40beb8de37e20",
       "status": "A"
     },
-    "container/h3-experimental/environment/reference-gateway-vllm-runtime.Dockerfile": {
+    "container/h3-experimental/environment/reference-gateway-vllm-runtime.Dockerfile.txt": {
       "mode": "100644",
       "blob": "c9f248a5ca5a1ca33dedbf5d3cbe281b84a48d93",
       "status": "A"
@@ -185,7 +185,7 @@
     },
     "container/h3-experimental/environment/test_gateway_overlay.py": {
       "mode": "100644",
-      "blob": "8d9da2028eb8eb82e04169872b44ab2c638bbb50",
+      "blob": "d951b43257e323fbdc42cbd67d835a3cf70f9e52",
       "status": "A"
     },
     "container/h3-experimental/environment/test_runtime_dependencies.py": {
@@ -355,7 +355,7 @@
     },
     "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
       "mode": "100644",
-      "blob": "462af5d1bb4db84b48f0fdd5863e62c1d7648d15",
+      "blob": "a62be383456fb72c18b2132e4101214aca61bfe0",
       "status": "A"
     },
     "delivery/h3-experimental/README.md": {

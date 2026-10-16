@@ -64,6 +64,6 @@
   "gateway_reference_sha256": {
     "reference-gateway-pyproject.toml": "712c8759b5dde8e1042de85ffe16848bfd9ca57d77467633bfe443f57d803e9b",
     "reference-gateway-runtime-pyproject.toml": "6ec034d984b0370011e4590ade3086995e8d641e19081ed5998e1adc23b85203",
-    "reference-gateway-vllm-runtime.Dockerfile": "33b8b80f3eaa80911d6e2a0107821c149c381f256be6c473bd66420ec11a5542"
+    "reference-gateway-vllm-runtime.Dockerfile.txt": "33b8b80f3eaa80911d6e2a0107821c149c381f256be6c473bd66420ec11a5542"
   }
 }

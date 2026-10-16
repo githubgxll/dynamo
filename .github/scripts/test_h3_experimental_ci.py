@@ -128,7 +128,51 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError): ci.validate_evidence(self.root,self.env,self.out,self.base)
 
 
+class EnvironmentContextTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp.name)
+        shutil.copytree(ROOT / ci.PROFILE / "environment", self.directory / "environment")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_complete_export_matches_source_and_pinned_reference_hashes(self):
+        report = self.directory / "report.json"
+        result = ci.check_environment_context(ROOT, self.directory, report)
+        self.assertEqual(result["status"], "PASS_EXPORTED_ENVIRONMENT_INPUTS_ONLY")
+        self.assertEqual(result, ci.read(report))
+        self.assertEqual(result["sha256"]["reference-gateway-vllm-runtime.Dockerfile.txt"],
+                         "33b8b80f3eaa80911d6e2a0107821c149c381f256be6c473bd66420ec11a5542")
+
+    def test_missing_reference_reproduces_ci_packaging_failure(self):
+        (self.directory / "environment/reference-gateway-vllm-runtime.Dockerfile.txt").unlink()
+        with self.assertRaisesRegex(ValueError, "missing from Docker context"):
+            ci.check_environment_context(ROOT, self.directory)
+
+    def test_missing_runtime_installer_is_also_rejected(self):
+        (self.directory / "environment/install_environment.sh").unlink()
+        with self.assertRaisesRegex(ValueError, "missing from Docker context"):
+            ci.check_environment_context(ROOT, self.directory)
+
+    def test_stale_or_modified_export_does_not_pass(self):
+        (self.directory / "environment/reference-gateway-vllm-runtime.Dockerfile.txt").write_bytes(b"stale")
+        with self.assertRaisesRegex(ValueError, "hash differs"):
+            ci.check_environment_context(ROOT, self.directory)
+
+
 class GatewayTemplateTests(unittest.TestCase):
+    def test_real_context_probe_precedes_expensive_builds_without_external_base(self):
+        workflow = yaml.load((ROOT/".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        steps = workflow["jobs"]["h3-experimental"]["steps"]
+        index, probe = next((i, s) for i, s in enumerate(steps) if "check-context" in s.get("run", ""))
+        first_build = next(i for i, s in enumerate(steps) if s.get("uses", "").startswith("docker/build-push-action@"))
+        self.assertLess(index, first_build)
+        self.assertIn('mktemp -d "${RUNNER_TEMP}/h3-environment-context.XXXXXX"', probe["run"])
+        self.assertIn("FROM scratch\nCOPY container/h3-experimental/environment/ /environment/", probe["run"])
+        self.assertNotIn("# syntax=", probe["run"])
+        self.assertIn('--output "type=local,dest=${context_export}" .', probe["run"])
+
     def test_only_h3_workflow_matches_experimental_push(self):
         matched = []
         for path in sorted((ROOT/".github/workflows").glob("*.y*ml")):

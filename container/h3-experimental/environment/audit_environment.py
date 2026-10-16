@@ -39,7 +39,9 @@ def reference_evidence(policy, *, gateway_sha):
         path = HERE / name
         actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
         hashes[name] = actual
-        if actual != expected:
+        if actual is None:
+            errors.append(f"Pinned gateway reference is missing: {name}; check Docker build context exclusions and COPY")
+        elif actual != expected:
             errors.append(f"Pinned gateway reference differs: {name}")
     return {"verified": not errors, "gateway_sha": gateway_sha,
             "reference_sha256": hashes, "errors": errors,

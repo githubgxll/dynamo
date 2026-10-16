@@ -72,6 +72,14 @@ class GatewayOverlayTests(unittest.TestCase):
         self.assertEqual(self.report(stack, root_extras={"ai-dingo": ["video-gateway"]})["status"], "FAIL")
         self.assertEqual(self.report(stack[1:], root_extras={"missing": ["video-gateway"]})["status"], "FAIL")
 
+    def test_missing_reference_is_reported_as_packaging_error_not_version_conflict(self):
+        policy = overlay.read_policy()
+        with tempfile.TemporaryDirectory() as temporary, patch.object(overlay, "HERE", Path(temporary)):
+            result = overlay.reference_evidence(policy, gateway_sha=policy["gateway_sha"])
+        self.assertFalse(result["verified"])
+        self.assertTrue(all(value is None for value in result["reference_sha256"].values()))
+        self.assertTrue(all("is missing" in error and "COPY" in error for error in result["errors"]))
+
     def test_inherited_override_file_is_not_a_general_override_channel(self):
         overlay.check_override_file("# official\nnvidia-nccl-cu13==2.30.7\n")
         for text in ("", "nvidia-nccl-cu13==2.29.7", "nvidia-nccl-cu13==2.30.7\nfoo==1", "nvidia-nccl-cu13==2.30.7\nnvidia-nccl-cu13==2.30.7"):
