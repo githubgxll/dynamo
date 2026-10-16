@@ -8,7 +8,7 @@ import torch
 import uvloop
 from protocol import BatchTransferRequest, EmbeddingTransferMode, TransferConfig
 
-from dingo.common.multimodal.embedding_transfer import (
+from dynamo.common.multimodal.embedding_transfer import (
     LocalEmbeddingSender,
     NixlReadEmbeddingSender,
     NixlWriteEmbeddingSender,

@@ -47,33 +47,28 @@ def _repo_root() -> Path:
     return start
 
 
-_root = _repo_root()
-_components_src = _root / "components" / "src"
-_profiler_src = _root / "dingo" / "profiler"
+_components_src = _repo_root() / "components" / "src"
 
-# In the operator Docker build the context is deploy/operator/ only — the Python
-# component sources are not copied in. The generated files are already committed,
-# so skip validation.
-if not _components_src.exists() or not _profiler_src.exists():
+# In the operator Docker build the context is deploy/operator/ only — components/src
+# is not copied in. The generated files are already committed, so skip validation.
+if not _components_src.exists():
     print(
-        "Note: Python component sources not found (operator-only build context). "
+        f"Note: {_components_src} not found (operator-only build context). "
         "Skipping Pydantic validation tests."
     )
     sys.exit(0)
 
-# The planner remains under components/src while the profiler is part of the
-# repository-root dingo package.
+# Add the components src to path so we can import the generated models
 sys.path.insert(0, str(_components_src))
-sys.path.insert(0, str(_root))
 
 # ---------------------------------------------------------------------------
-# Stub dynamo.runtime.logging and bypass the heavy dingo.planner.__init__
+# Stub dynamo.runtime.logging and bypass the heavy dynamo.planner.__init__
 # before importing any dynamo module.
 #
 # dynamo itself must be a namespace-like package (has __path__) so that
-# dingo.planner is pre-registered as a stub to skip its heavy __init__.py,
-# while still allowing dingo.planner.config.* to load normally. The lightweight
-# dingo package is imported normally from the repository root.
+# Python's import machinery can traverse down to dynamo.profiler from the
+# filesystem.  dynamo.planner is pre-registered as a stub to skip its heavy
+# __init__.py, while still allowing dynamo.planner.config.* to load normally.
 # ---------------------------------------------------------------------------
 _dynamo_path = str(_components_src / "dynamo")
 _planner_path = str(_components_src / "dynamo" / "planner")
@@ -92,20 +87,21 @@ _logging_mod = types.ModuleType("dynamo.runtime.logging")
 _logging_mod.configure_dynamo_logging = lambda *args, **kwargs: None  # type: ignore[attr-defined]
 sys.modules["dynamo.runtime.logging"] = _logging_mod
 
-_planner_mod = types.ModuleType("dingo.planner")
+_planner_mod = types.ModuleType("dynamo.planner")
 _planner_mod.__path__ = [_planner_path]  # type: ignore[attr-defined]
-_planner_mod.__package__ = "dingo.planner"
-sys.modules["dingo.planner"] = _planner_mod
+_planner_mod.__package__ = "dynamo.planner"
+sys.modules["dynamo.planner"] = _planner_mod
 
 import pydantic  # noqa: E402
 
-from dingo.profiler.utils.dgdr_v1beta1_types import (  # noqa: E402
+from dynamo.profiler.utils.dgdr_v1beta1_types import (  # noqa: E402
     BackendType,
     DeploymentInfoStatus,
     DGDRPhase,
     DynamoGraphDeploymentRequestSpec,
     DynamoGraphDeploymentRequestStatus,
     FeaturesSpec,
+    KVRouterSpec,
     MockerSpec,
     ModelCacheSpec,
     PlannerConfig,
@@ -153,6 +149,7 @@ def test_full_dgdr():
         ),
         features=FeaturesSpec(
             planner=PlannerConfig(enable_load_scaling=False),
+            kvRouter=KVRouterSpec(enabled=True),
             mocker=MockerSpec(enabled=False),
         ),
         searchStrategy=SearchStrategy.Rapid,
@@ -168,6 +165,7 @@ def test_full_dgdr():
     assert spec.modelCache.pvcName == "model-cache"
     assert spec.modelCache.pvcModelPath == "llama-3.1-405b"
     assert isinstance(spec.features.planner, PlannerConfig)
+    assert spec.features.kvRouter.enabled is True
     assert spec.features.mocker.enabled is False
     print("✓ Full DGDR spec validation passed")
 

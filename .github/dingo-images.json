@@ -6,29 +6,6 @@
   "commit_sha_length": 12,
   "keep_buildkit_state": true,
   "images": [
-    {
-      "framework": "dynamo",
-      "enabled": false,
-      "repository": "ai-dingo",
-      "tag_prefix": "router-noble",
-      "docker_target": "router"
-    },
-    {
-      "framework": "dynamo",
-      "enabled": false,
-      "repository": "ai-dingo",
-      "tag_prefix": "router-official"
-    },
-    {
-      "framework": "vllm",
-      "enabled": true,
-      "repository": "ai-dingo-vllm"
-    },
-    {
-      "framework": "sglang",
-      "enabled": false,
-      "repository": "ai-dingo-sglang",
-      "docker_target": "pre_runtime"
-    }
+    {"framework": "vllm", "enabled": true, "repository": "ai-dingo-vllm"}
   ]
 }

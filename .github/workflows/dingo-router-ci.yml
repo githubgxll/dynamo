@@ -1,339 +1,213 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-name: Dingo runtime images
+name: Dingo H3 experimental Omni 0.31
 
 on:
   push:
-    branches:
-      - 'DingoRouter-*'
+    branches: [Dingorouter-H3-vllm-omni-jirx]
   workflow_dispatch:
-    inputs:
-      frameworks:
-        description: Images to build (configured uses dingo-images.json)
-        type: choice
-        options:
-          - configured
-          - dynamo
-          - vllm
-          - sglang
-          - all
-          - h3-distilled
-        default: configured
 
 permissions:
   contents: read
 
-# Preserve an image for every pushed commit while preventing two workflow runs
-# from competing for the same local Docker daemon.
 concurrency:
   group: dingo-runtime-images-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Prepare image matrix
-    # Distilled profiles inherit the published 0.30 runtime. They must not also
-    # trigger the native builder or the normal framework dependency install.
-    if: ${{ !startsWith(github.ref_name, 'DingoRouter-h3-distilled-') && inputs.frameworks != 'h3-distilled' }}
+  h3-experimental:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx'
     runs-on: [self-hosted, linux, x64, dingo]
-    timeout-minutes: 10
-    outputs:
-      has_images: ${{ steps.matrix.outputs.has_images }}
-      matrix: ${{ steps.matrix.outputs.matrix }}
+    timeout-minutes: 360
+    env:
+      # Optional BuildKit index secrets preserve main's index injection contract.
+      # No host or Pod proxy is embedded here.
+      PIP_INDEX_URL: https://pypi.org/simple
+      UV_DEFAULT_INDEX: https://pypi.org/simple
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Checkout the dedicated H3 experimental branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Read and validate image configuration
-        id: matrix
-        env:
-          FRAMEWORK_SELECTION: ${{ inputs.frameworks || 'configured' }}
-        run: |
-          python3 .github/scripts/prepare_dingo_image_matrix.py \
-            --config .github/dingo-images.json \
-            --github-sha "${GITHUB_SHA}" \
-            --selection "${FRAMEWORK_SELECTION}" \
-            --github-output "${GITHUB_OUTPUT}"
-
-  build:
-    name: Build ${{ matrix.framework }} ${{ matrix.render_target }}
-    needs: prepare
-    if: ${{ needs.prepare.outputs.has_images == 'true' && !startsWith(github.ref_name, 'DingoRouter-h3-distilled-') && inputs.frameworks != 'h3-distilled' }}
-    runs-on: [self-hosted, linux, x64, dingo]
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Check self-hosted runner prerequisites
-        shell: bash
-        run: |
-          docker version
-          docker buildx version
-          python3 -c "import jinja2, yaml"
-
-      - name: Log in to the private registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ matrix.registry }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          # Use the persistent self-hosted runner's Docker daemon instead of
-          # creating a disposable BuildKit container for every job. Downloaded
-          # builder-image layers remain in the host content store across runs;
-          # the published builder image remains the fallback for another runner.
-          driver: docker
-
-      - name: Configure GitHub Actions cache for sccache
-        uses: actions/github-script@v7
-        with:
-          # sccache's GHA backend needs the job-scoped cache service URL and
-          # runtime token. Export them for the following BuildKit invocation;
-          # the build passes them as secrets rather than image build arguments.
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
-
-      - name: Check reusable builder image
-        if: matrix.builder_image != ''
-        id: builder
-        shell: bash
-        env:
-          BUILDER_IMAGE: ${{ matrix.builder_image }}
-        run: |
-          if docker buildx imagetools inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-            echo "Reusing ${BUILDER_IMAGE}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-            echo "Builder image is missing; it will be built once: ${BUILDER_IMAGE}"
-          fi
-
-      - name: Render ${{ matrix.framework }} builder Dockerfile
-        if: matrix.builder_image != '' && steps.builder.outputs.exists != 'true'
-        shell: bash
-        env:
-          CUDA_VERSION: ${{ matrix.cuda_version }}
-          FRAMEWORK: ${{ matrix.framework }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          python3 container/render.py \
-            --framework "${FRAMEWORK}" \
-            --target runtime \
-            --cuda-version "${CUDA_VERSION}" \
-            --platform "${PLATFORM}"
-
-      - name: Build and publish reusable builder image
-        if: matrix.builder_image != '' && steps.builder.outputs.exists != 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          target: reusable_builder_base
-          push: true
-          tags: ${{ matrix.builder_image }}
-          build-args: |
-            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            USE_SCCACHE=true
-            SCCACHE_GHA_ENABLED=on
-            SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
-          secret-envs: |
-            actions-results-url=ACTIONS_RESULTS_URL
-            actions-runtime-token=ACTIONS_RUNTIME_TOKEN
-          provenance: false
-          sbom: false
-
-      - name: Render ${{ matrix.framework }} ${{ matrix.render_target }} Dockerfile
-        shell: bash
-        env:
-          BUILDER_IMAGE: ${{ matrix.builder_image }}
-          CUDA_VERSION: ${{ matrix.cuda_version }}
-          FRAMEWORK: ${{ matrix.framework }}
-          PLATFORM: ${{ matrix.platform }}
-          RENDER_TARGET: ${{ matrix.render_target }}
-        run: |
-          python3 container/render.py \
-            --framework "${FRAMEWORK}" \
-            --target "${RENDER_TARGET}" \
-            --cuda-version "${CUDA_VERSION}" \
-            --platform "${PLATFORM}" \
-            --builder-image "${BUILDER_IMAGE}"
-
-      - name: Build and push ${{ matrix.image }}
-        id: runtime_image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platform }}
-          target: ${{ matrix.docker_target }}
-          pull: true
-          push: true
-          tags: ${{ matrix.image }}
-          build-args: |
-            PIP_INDEX_URL=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            UV_DEFAULT_INDEX=${{ matrix.framework == 'sglang' && 'https://pypi.tuna.tsinghua.edu.cn/simple' || 'https://pypi.org/simple' }}
-            DYNAMO_COMMIT_SHA=${{ github.sha }}
-            USE_SCCACHE=true
-            SCCACHE_GHA_ENABLED=on
-            SCCACHE_GHA_VERSION=${{ matrix.sccache_cache_version }}
-          secret-envs: |
-            actions-results-url=ACTIONS_RESULTS_URL
-            actions-runtime-token=ACTIONS_RUNTIME_TOKEN
-          # Native dependencies come from the immutable builder image above.
-          # Do not export mode=max here: it republishes every intermediate layer
-          # on every code build and is too large for the private registry link.
-          provenance: false
-          sbom: false
-
-      - name: Publish job summary
-        env:
-          BUILDER_IMAGE: ${{ matrix.builder_image }}
-          IMAGE: ${{ matrix.image }}
-          IMAGE_DIGEST: ${{ steps.runtime_image.outputs.digest }}
-          DOCKERFILE: ${{ matrix.dockerfile }}
-        run: |
-          test -n "${IMAGE_DIGEST}"
-          mkdir -p .dingo-build-evidence
-          cp "${DOCKERFILE}" container/context.yaml .github/dingo-images.json pyproject.toml .dingo-build-evidence/
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          image = os.environ["IMAGE"]
-          digest = os.environ["IMAGE_DIGEST"]
-          manifest = {
-              "source_commit": os.environ["GITHUB_SHA"],
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "image": image,
-              "digest": digest,
-              "deployment_image": image.rsplit(":", 1)[0] + "@" + digest,
-              "builder_image": os.environ["BUILDER_IMAGE"],
-              "validation_scope": "Image published; GPU and model E2E not yet validated",
-          }
-          Path(".dingo-build-evidence/image.json").write_text(json.dumps(manifest, indent=2) + "\n")
-          PY
-          echo "### Published image" >> "${GITHUB_STEP_SUMMARY}"
-          echo "\`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Digest: \`${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Source commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
-          if [ -n "${BUILDER_IMAGE}" ]; then
-            echo "" >> "${GITHUB_STEP_SUMMARY}"
-            echo "### Reusable builder image" >> "${GITHUB_STEP_SUMMARY}"
-            echo "\`${BUILDER_IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
-          fi
-
-      - name: Upload image evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-evidence-${{ matrix.framework }}-${{ matrix.docker_target }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: .dingo-build-evidence/
-          include-hidden-files: true
-          if-no-files-found: error
-
-  h3-distilled:
-    name: Build H3 distilled adapters on the published Omni 0.30 runtime
-    if: ${{ startsWith(github.ref_name, 'DingoRouter-h3-distilled-') || inputs.frameworks == 'h3-distilled' }}
-    runs-on: [self-hosted, linux, x64, dingo]
-    timeout-minutes: 120
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Validate distilled configuration and publication target
+      - name: Validate the source and four-adapter configuration
         id: profile
         shell: bash
         run: |
-          python3 .github/scripts/h3_distilled_ci.py prepare \
-            --github-output "${GITHUB_OUTPUT}"
+          set -euo pipefail
           docker version
           docker buildx version
+          python3 -c 'import jinja2, yaml'
+          python3 .github/scripts/h3_experimental_ci.py prepare \
+            --github-output "${GITHUB_OUTPUT}" --directory .h3-experimental-evidence/ci
 
-      - name: Log in to the private registry
+      - name: Log in to the existing Harbor repository
         uses: docker/login-action@v4
         with:
           registry: ${{ steps.profile.outputs.registry }}
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Set up Docker Buildx
+      - name: Reuse the persistent group Docker builder
         uses: docker/setup-buildx-action@v4
         with:
           driver: docker
 
-      # Both targets descend from exactly the same runtime stage and use the
-      # same immutable base, weights, build args and local BuildKit cache.
-      # No packages are installed and no native framework builder is invoked.
-      - name: Build and export CPU validation evidence before publication
+      - name: Expose job-scoped sccache credentials as BuildKit secrets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
+      - name: Check the main-input reusable native builder
+        id: builder
+        shell: bash
+        env:
+          BUILDER_IMAGE: ${{ steps.profile.outputs.builder_image }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${BUILDER_IMAGE}" > .h3-experimental-evidence/ci/builder-inspect.txt 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "Reusing ${BUILDER_IMAGE}"
+          elif grep -Eiq 'manifest unknown|no such manifest|not found' .h3-experimental-evidence/ci/builder-inspect.txt; then
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+            echo "Current main native inputs require a new reusable builder: ${BUILDER_IMAGE}"
+          else
+            cat .h3-experimental-evidence/ci/builder-inspect.txt
+            echo 'Builder inspection failed for connectivity or authorization; not treating that as a missing image.' >&2
+            exit 1
+          fi
+
+      - name: Render the first-build Dockerfile from current main templates
+        if: steps.builder.outputs.exists != 'true'
+        run: python3 container/render.py --framework vllm --target runtime --cuda-version 13.0 --platform linux/amd64
+
+      - name: Build and publish the input-fingerprinted native builder
+        if: steps.builder.outputs.exists != 'true'
         uses: docker/build-push-action@v7
         with:
-          context: container/h3-distilled
-          file: container/h3-distilled/Dockerfile
-          platforms: ${{ steps.profile.outputs.platform }}
-          target: evidence
-          pull: true
-          push: false
-          outputs: type=local,dest=.h3-distilled-evidence
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: reusable_builder_base
+          push: true
+          tags: ${{ steps.profile.outputs.builder_image }}
           build-args: |
-            BASE_IMAGE=${{ steps.profile.outputs.base_image }}
-            H3_DISTILLED_SOURCE_COMMIT=${{ github.sha }}
+            USE_SCCACHE=true
+            SCCACHE_GHA_ENABLED=on
+            SCCACHE_GHA_VERSION=${{ steps.profile.outputs.sccache_cache_version }}
+          secret-envs: |
+            actions-results-url=ACTIONS_RESULTS_URL
+            actions-runtime-token=ACTIONS_RUNTIME_TOKEN
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
           provenance: false
           sbom: false
 
-      - name: Verify exported reports and recipe before publication
-        shell: bash
+      - name: Render main runtime using the reusable native builder
+        env:
+          BUILDER_IMAGE: ${{ steps.profile.outputs.builder_image }}
         run: |
-          python3 .github/scripts/h3_distilled_ci.py validate-evidence \
-            --directory .h3-distilled-evidence --copy-inputs
+          python3 container/render.py --framework vllm --target runtime \
+            --cuda-version 13.0 --platform linux/amd64 --builder-image "${BUILDER_IMAGE}"
 
-      - name: Build and push the H3 distilled runtime
-        id: distilled_image
+      - name: Build and publish the main framework runtime
+        id: framework
         uses: docker/build-push-action@v7
         with:
-          context: container/h3-distilled
-          file: container/h3-distilled/Dockerfile
-          platforms: ${{ steps.profile.outputs.platform }}
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
           target: runtime
           pull: true
           push: true
-          tags: ${{ steps.profile.outputs.image }}
+          tags: ${{ steps.profile.outputs.framework_image }}
           build-args: |
-            BASE_IMAGE=${{ steps.profile.outputs.base_image }}
-            H3_DISTILLED_SOURCE_COMMIT=${{ github.sha }}
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
+            USE_SCCACHE=true
+            SCCACHE_GHA_ENABLED=on
+            SCCACHE_GHA_VERSION=${{ steps.profile.outputs.sccache_cache_version }}
+          secret-envs: |
+            actions-results-url=ACTIONS_RESULTS_URL
+            actions-runtime-token=ACTIONS_RUNTIME_TOKEN
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
+          # Retain main's in-image compliance, avoid huge intermediate registry cache exports.
           provenance: false
           sbom: false
 
-      - name: Record distilled publication and digest
-        shell: bash
+      - name: Bind the final stage to this run's real framework digest
+        id: framework_record
         env:
-          IMAGE: ${{ steps.profile.outputs.image }}
-          IMAGE_DIGEST: ${{ steps.distilled_image.outputs.digest }}
+          FRAMEWORK_DIGEST: ${{ steps.framework.outputs.digest }}
         run: |
-          python3 .github/scripts/h3_distilled_ci.py record \
-            --image "${IMAGE}" --digest "${IMAGE_DIGEST}" \
-            --directory .h3-distilled-evidence
-          echo '### Published H3 distilled image' >> "${GITHUB_STEP_SUMMARY}"
-          echo "Image: \`${IMAGE}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Digest: \`${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Source commit: \`${GITHUB_SHA}\`" >> "${GITHUB_STEP_SUMMARY}"
-          echo 'CPU source and asset checks passed. H100, mounted Base identity and video generation still require separate acceptance.' >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/h3_experimental_ci.py record-framework \
+            --digest "${FRAMEWORK_DIGEST}" --github-output "${GITHUB_OUTPUT}" \
+            --directory .h3-experimental-evidence/ci
+          cp container/vllm-runtime-cuda13.0-amd64-rendered.Dockerfile .h3-experimental-evidence/ci/framework.Dockerfile
 
-      - name: Upload distilled source, asset and publication evidence
-        if: ${{ always() && hashFiles('.h3-distilled-evidence/**') != '' }}
+      - name: Build the four-adapter Ref8 repair image and export CPU evidence
+        uses: docker/build-push-action@v7
+        with:
+          context: container/h3-experimental
+          file: container/h3-experimental/Dockerfile
+          platforms: linux/amd64
+          target: evidence
+          pull: true
+          push: false
+          outputs: type=local,dest=.h3-experimental-evidence/final
+          build-args: |
+            BASE_IMAGE=${{ steps.framework_record.outputs.framework_ref }}
+            H3_EXPERIMENTAL_SOURCE_COMMIT=${{ github.sha }}
+          secret-envs: |
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
+          provenance: false
+          sbom: false
+
+      - name: Require final full-Omni, four-adapter and Ref8 offline reports
+        env:
+          FRAMEWORK_REF: ${{ steps.framework_record.outputs.framework_ref }}
+        run: |
+          python3 .github/scripts/h3_experimental_ci.py validate-evidence \
+            --directory .h3-experimental-evidence/final --framework-ref "${FRAMEWORK_REF}"
+
+      - name: Publish the verified experimental distilled runtime
+        id: final
+        uses: docker/build-push-action@v7
+        with:
+          context: container/h3-experimental
+          file: container/h3-experimental/Dockerfile
+          platforms: linux/amd64
+          target: runtime
+          pull: true
+          push: true
+          tags: ${{ steps.profile.outputs.final_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.framework_record.outputs.framework_ref }}
+            H3_EXPERIMENTAL_SOURCE_COMMIT=${{ github.sha }}
+          secret-envs: |
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
+          provenance: false
+          sbom: false
+
+      - name: Save the actual final digest and complete recipe evidence
+        env:
+          FINAL_DIGEST: ${{ steps.final.outputs.digest }}
+          FRAMEWORK_REF: ${{ steps.framework_record.outputs.framework_ref }}
+        run: |
+          python3 .github/scripts/h3_experimental_ci.py record-final \
+            --digest "${FINAL_DIGEST}" --framework-ref "${FRAMEWORK_REF}" \
+            --directory .h3-experimental-evidence/final
+          echo '### H3 experimental Omni 0.31 publication' >> "${GITHUB_STEP_SUMMARY}"
+          cat .h3-experimental-evidence/final/deployment-image.txt >> "${GITHUB_STEP_SUMMARY}"
+          echo 'Final CPU checks passed; H100, mounted Base identity, adapter activation and media E2E remain separate.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Save source, framework and final evidence even on failure
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: image-evidence-h3-distilled-${{ github.sha }}-${{ github.run_attempt }}
-          path: .h3-distilled-evidence/
+          name: h3-experimental-omni031-${{ github.sha }}-${{ github.run_attempt }}
+          path: .h3-experimental-evidence/
           include-hidden-files: true
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 30

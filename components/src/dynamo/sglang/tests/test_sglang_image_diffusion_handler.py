@@ -1,0 +1,727 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for ImageDiffusionWorkerHandler."""
+
+import base64
+import io
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
+from PIL import Image
+
+from dynamo.llm.exceptions import InvalidArgument
+from dynamo.sglang.request_handlers.image_diffusion.image_diffusion_handler import (
+    ImageDiffusionWorkerHandler,
+)
+
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.sglang,
+    pytest.mark.gpu_0,  # No GPU needed for unit tests
+    pytest.mark.pre_merge,
+    pytest.mark.parallel,
+]
+
+
+@pytest.fixture
+def mock_generator():
+    """Mock SGLang DiffGenerator."""
+    generator = MagicMock()
+    generator.generate = MagicMock()
+    return generator
+
+
+@pytest.fixture
+def mock_config():
+    """Mock Config object."""
+    config = MagicMock()
+    config.dynamo_args = MagicMock()
+    config.dynamo_args.media_output_fs_url = "file:///tmp/images"
+    config.dynamo_args.media_output_http_url = "file:///tmp/images"
+    return config
+
+
+@pytest.fixture
+def mock_fs():
+    """Mock fsspec filesystem."""
+    fs = MagicMock()
+    fs.pipe = MagicMock()
+    return fs
+
+
+@pytest.fixture
+def mock_context():
+    """Mock Context object."""
+    context = MagicMock()
+    context.id = MagicMock(return_value="test-context-id")
+    context.trace_id = "test-trace-id"
+    context.span_id = "test-span-id"
+    context.is_cancelled = MagicMock(return_value=False)
+    context.is_stopped = MagicMock(return_value=False)
+    context.is_killed = MagicMock(return_value=False)
+    return context
+
+
+@pytest.fixture
+def handler(mock_generator, mock_config, mock_fs) -> ImageDiffusionWorkerHandler:
+    """Create ImageDiffusionWorkerHandler instance."""
+    return ImageDiffusionWorkerHandler(
+        generator=mock_generator,
+        config=mock_config,
+        publisher=None,
+        fs=mock_fs,
+    )
+
+
+class TestImageDiffusionWorkerHandler:
+    """Test suite for ImageDiffusionWorkerHandler."""
+
+    def test_initialization(self, handler, mock_generator, mock_fs):
+        """Test handler initialization."""
+        assert handler.generator == mock_generator
+        assert handler.fs == mock_fs
+        assert handler.fs_url == "file:///tmp/images"
+        assert handler.base_url == "file:///tmp/images"
+
+    def test_initialization_with_url_base(self, mock_generator, mock_fs):
+        """Test handler initialization with URL base."""
+        config = MagicMock()
+        config.dynamo_args = MagicMock()
+        config.dynamo_args.media_output_fs_url = "s3://my-bucket/images"
+        config.dynamo_args.media_output_http_url = "http://localhost:8008/images"
+
+        handler = ImageDiffusionWorkerHandler(
+            generator=mock_generator,
+            config=config,
+            publisher=None,
+            fs=mock_fs,
+        )
+
+        assert handler.base_url == "http://localhost:8008/images"
+        assert handler.fs_url == "s3://my-bucket/images"
+
+    @patch("torch.cuda.empty_cache")
+    def test_cleanup(self, mock_empty_cache, handler):
+        """Test cleanup method."""
+        _original_generator = handler.generator
+        handler.cleanup()
+        # Generator should be set to None after cleanup
+        # Note: We can't assert it's None because the attribute gets deleted
+        mock_empty_cache.assert_called_once()
+
+    def test_parse_size(self, handler):
+        """Test _parse_size method."""
+        width, height = handler._parse_size("1024x1024")
+        assert width == 1024
+        assert height == 1024
+
+        width, height = handler._parse_size("512x768")
+        assert width == 512
+        assert height == 768
+
+    def test_parse_size_auto_uses_default(self, handler):
+        """The OpenAI size enum includes "auto": the frontend forwards it, and
+        it must behave like an omitted size (backend default), not a 400."""
+        assert handler._parse_size("auto") == (1024, 1024)
+
+    @pytest.mark.parametrize("bad_size", ["1024", "axb", "1024x768x3", "x", ""])
+    def test_parse_size_invalid_raises_invalid_argument(self, handler, bad_size):
+        """Malformed size strings must raise InvalidArgument (HTTP 400),
+        not an unhandled ValueError (sanitized HTTP 500)."""
+        with pytest.raises(InvalidArgument, match="size must be"):
+            handler._parse_size(bad_size)
+
+    def test_encode_base64(self, handler):
+        """Test _encode_base64 method."""
+        test_bytes = b"test image data"
+        expected = base64.b64encode(test_bytes).decode("utf-8")
+        result = handler._encode_base64(test_bytes)
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_generate_success_url_format(self, handler, mock_context):
+        """Test successful image generation with URL response format."""
+        # Create a simple test image
+        test_image = Image.new("RGB", (256, 256), color="red")
+        img_buffer: io.BytesIO = io.BytesIO()
+        test_image.save(img_buffer, format="PNG")
+
+        # Mock generator response
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image.convert("RGB")])
+        )
+
+        request = {
+            "prompt": "A red square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "url",
+            "user": "test-user",
+            "nvext": {
+                "num_inference_steps": 10,
+                "guidance_scale": 7.5,
+                "seed": 42,
+                "negative_prompt": None,
+            },
+        }
+
+        # Execute generation
+        results = []
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        # Verify results
+        assert len(results) == 1
+        response = results[0]
+        assert "created" in response
+        assert "data" in response
+        assert len(response["data"]) == 1
+        assert "url" in response["data"][0]
+        assert response["data"][0]["url"].startswith("file:///tmp/images/users/")
+
+    @pytest.mark.asyncio
+    async def test_generate_success_b64_format(self, handler, mock_context):
+        """Test successful image generation with base64 response format."""
+        # Create a simple test image
+        test_image = Image.new("RGB", (256, 256), color="blue")
+
+        # Mock generator response
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image.convert("RGB")])
+        )
+
+        request = {
+            "prompt": "A blue square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "user": "test-user",
+            "nvext": {
+                "num_inference_steps": 10,
+                "guidance_scale": 7.5,
+                "seed": 42,
+                "negative_prompt": None,
+            },
+        }
+
+        # Execute generation
+        results = []
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        # Verify results
+        assert len(results) == 1
+        response = results[0]
+        assert "created" in response
+        assert "data" in response
+        assert len(response["data"]) == 1
+        assert "b64_json" in response["data"][0]
+        # Verify it's valid base64
+        b64_data = response["data"][0]["b64_json"]
+        decoded = base64.b64decode(b64_data)
+        assert len(decoded) > 0
+
+    @pytest.mark.asyncio
+    async def test_generate_with_default_num_inference_steps(
+        self, handler, mock_context
+    ):
+        """Test that num_inference_steps defaults to 50."""
+        test_image = Image.new("RGB", (256, 256), color="green")
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image])
+        )
+
+        request = {
+            "prompt": "A green square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "user": "test-user",
+        }
+
+        # Execute generation
+        results = []
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        assert (
+            handler.generator.generate.call_args.kwargs["sampling_params_kwargs"][
+                "num_inference_steps"
+            ]
+            == 50
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_error_propagates(self, handler, mock_context):
+        """Generation failures must raise, not be swallowed.
+
+        The runtime converts a raised exception into an error event on the
+        response stream, which the frontend surfaces as a non-200 HTTP error.
+        The previous behavior (yielding {"data": [], "error": ...}) resulted
+        in an HTTP 200 with empty data and no error message, because the
+        OpenAI ImagesResponse schema has no `error` field.
+        """
+        handler.generator.generate = Mock(side_effect=RuntimeError("Generation failed"))
+
+        request = {
+            "prompt": "Test prompt",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "url",
+            "user": "test-user",
+            "nvext": {
+                "num_inference_steps": 10,
+                "guidance_scale": 7.5,
+                "seed": 42,
+                "negative_prompt": None,
+            },
+        }
+
+        with pytest.raises(RuntimeError, match="Generation failed"):
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_generate_blank_input_reference_raises_invalid_argument(
+        self, handler, mock_context
+    ):
+        """A blank input_reference must raise InvalidArgument (HTTP 400)."""
+        request = {
+            "prompt": "Transform this image",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "input_reference": "   ",
+        }
+
+        with pytest.raises(InvalidArgument, match="input_reference"):
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+        handler.generator.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_invalid_size_raises_invalid_argument(
+        self, handler, mock_context
+    ):
+        """A malformed size must raise InvalidArgument before generation."""
+        request = {
+            "prompt": "A red square",
+            "model": "test-model",
+            "size": "not-a-size",
+            "response_format": "b64_json",
+        }
+
+        with pytest.raises(InvalidArgument, match="size must be"):
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+        handler.generator.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_upload_to_fs(self, handler):
+        """Test _upload_to_fs method."""
+        image_bytes = b"test image data"
+        user_id = "user123"
+        request_id = "req456"
+
+        url, storage_path = await handler._upload_to_fs(
+            image_bytes, user_id, request_id
+        )
+
+        # Verify storage path format
+        assert f"users/{user_id}/generations/{request_id}/" in url
+        assert url.endswith(".png")
+        assert storage_path.startswith(f"users/{user_id}/generations/{request_id}/")
+
+    @pytest.mark.asyncio
+    async def test_generate_images_with_numpy_array(self, handler):
+        """Test _generate_images handles numpy arrays."""
+        import numpy as np
+
+        # Create a numpy array representing an image
+        np_image = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
+
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[np_image])
+        )
+
+        images = await handler._generate_images(
+            prompt="test",
+            width=256,
+            height=256,
+            num_inference_steps=10,
+            guidance_scale=7.5,
+            seed=42,
+        )
+
+        assert len(images) == 1
+        assert isinstance(images[0], bytes)
+
+    @pytest.mark.asyncio
+    async def test_generate_images_with_pil_image(self, handler):
+        """Test _generate_images handles PIL Images."""
+        pil_image = Image.new("RGB", (256, 256), color="red")
+
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[pil_image])
+        )
+
+        images = await handler._generate_images(
+            prompt="test",
+            width=256,
+            height=256,
+            num_inference_steps=10,
+            guidance_scale=7.5,
+            seed=42,
+        )
+
+        assert len(images) == 1
+        assert isinstance(images[0], bytes)
+
+    @pytest.mark.asyncio
+    async def test_generate_images_with_bytes(self, handler):
+        """Test _generate_images handles bytes directly."""
+        img_bytes = b"raw image bytes"
+
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[img_bytes])
+        )
+
+        images = await handler._generate_images(
+            prompt="test",
+            width=256,
+            height=256,
+            num_inference_steps=10,
+            guidance_scale=7.5,
+            seed=42,
+        )
+
+        assert len(images) == 1
+        assert images[0] == img_bytes
+
+    @pytest.mark.asyncio
+    async def test_generate_with_nvext(self, handler, mock_context):
+        """Test that nvext parameters are passed to the generator."""
+        test_image = Image.new("RGB", (256, 256), color="yellow")
+
+        handler._generate_images = AsyncMock(return_value=[test_image.tobytes()])
+
+        request = {
+            "prompt": "A yellow square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "user": "test-user",
+            "nvext": {
+                "num_inference_steps": 10,
+                "guidance_scale": 7.5,
+                "seed": 42,
+                "negative_prompt": "negative",
+            },
+        }
+
+        # Execute generation
+        results = []
+        mock_context.trace_headers = MagicMock(
+            return_value={"traceparent": "00-1234567890-1234567890-01"}
+        )
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        # Verify results
+        handler._generate_images.assert_called_once_with(
+            prompt="A yellow square",
+            width=256,
+            height=256,
+            num_inference_steps=10,
+            guidance_scale=7.5,
+            seed=42,
+            negative_prompt="negative",
+            input_reference=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_i2i_passes_image_path(
+        self, handler, mock_context, tmp_path, monkeypatch
+    ):
+        """The generator gets the *resolved* path, never the raw reference.
+
+        Resolution is what makes the confinement check meaningful: the string
+        handed to the generator has to be the one that was checked against
+        DYN_MM_LOCAL_PATH, not the one the client sent.
+        """
+        test_image = Image.new("RGB", (256, 256), color="green")
+
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image])
+        )
+
+        monkeypatch.setenv("DYN_MM_LOCAL_PATH", str(tmp_path))
+        (tmp_path / "sub").mkdir()
+        input_ref = tmp_path / "test_input.png"
+        input_ref.write_bytes(b"x")
+        # A "sub/.." segment so the resolved form differs from what was sent;
+        # on Linux an already-normalized tmp_path resolves to itself, and the
+        # assertion below would hold even with no resolution at all.
+        sent = str(tmp_path / "sub" / ".." / "test_input.png")
+        request = {
+            "prompt": "Transform this image",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "input_reference": sent,
+        }
+
+        results = []
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        sampling_params = handler.generator.generate.call_args[1][
+            "sampling_params_kwargs"
+        ]
+        assert sampling_params["image_path"] != sent
+        assert sampling_params["image_path"] == str(input_ref.resolve())
+
+    @pytest.mark.asyncio
+    async def test_generate_i2i_rejects_path_outside_allowed_dir(
+        self, handler, mock_context, tmp_path, monkeypatch
+    ):
+        """A rejected reference must be a 400, not a sanitized 500.
+
+        UrlValidationError is a policy verdict on client input. It is also a
+        plain ValueError, so without the explicit mapping it reaches the runtime
+        as an unexpected failure and the client is told nothing.
+        """
+        handler.generator.generate = Mock()
+        monkeypatch.setenv("DYN_MM_LOCAL_PATH", str(tmp_path))
+        request = {
+            "prompt": "x",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "input_reference": "/etc/passwd",
+        }
+
+        with pytest.raises(InvalidArgument, match="outside the allowed directory"):
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+        handler.generator.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_i2i_rejection_message_is_bounded(
+        self, handler, mock_context, tmp_path, monkeypatch
+    ):
+        """A rejected reference is echoed back bounded, not at full length.
+
+        input_reference has no length limit, and the 400 body plus the error log
+        are two sinks per request: echoing it verbatim turns one request into an
+        arbitrarily large amplification.
+        """
+        handler.generator.generate = Mock()
+        monkeypatch.setenv("DYN_MM_LOCAL_PATH", str(tmp_path))
+        reference = "/nope/" + "A" * 200_000 + ".png"
+        request = {
+            "prompt": "x",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "input_reference": reference,
+        }
+
+        with pytest.raises(InvalidArgument) as excinfo:
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+        assert len(str(excinfo.value)) < 500, "client-visible message is unbounded"
+        handler.generator.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_i2i_maps_a_4xx_fetch_to_invalid_argument(
+        self, handler, mock_context, tmp_path, monkeypatch
+    ):
+        """A 4xx from the origin the client chose is the client's problem.
+
+        Everything that is not an InvalidArgument becomes a sanitized 500, so
+        without this the caller is told nothing about their own dead URL. The
+        URL is not echoed back -- it has no length limit and the video handler
+        puts str(exc) straight in its response body.
+        """
+        from dynamo.common.http.base import HttpStatusError
+
+        handler.generator.generate = Mock()
+        monkeypatch.setenv("DYN_MM_ALLOW_INTERNAL", "1")
+        url = "http://example.com/" + "u" * 5000
+
+        async def fake_fetch(u, timeout, *, policy=None, max_bytes=None):
+            raise HttpStatusError(404, "Not Found", u)
+
+        monkeypatch.setattr("dynamo.common.http.fetch_bytes", fake_fetch)
+        request = {
+            "prompt": "x",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "input_reference": url,
+        }
+
+        with pytest.raises(InvalidArgument, match="HTTP 404") as excinfo:
+            async for _ in handler.generate(request, mock_context):
+                pass
+
+        assert "uuuu" not in str(excinfo.value)
+        handler.generator.generate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_t2i_no_image_path(self, handler, mock_context):
+        """Test that image_path is NOT passed when input_reference is absent."""
+        test_image = Image.new("RGB", (256, 256), color="red")
+
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image])
+        )
+
+        request = {
+            "prompt": "A red square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+        }
+
+        results = []
+        async for result in handler.generate(request, mock_context):
+            results.append(result)
+
+        # Verify image_path was NOT passed
+        call_args = handler.generator.generate.call_args
+        sampling_params = call_args[1]["sampling_params_kwargs"]
+        assert "image_path" not in sampling_params
+
+
+class TestNParameter:
+    """The OpenAI `n` field: n independent images per request."""
+
+    @staticmethod
+    def _request(n=None, seed=42):
+        req = {
+            "prompt": "A red square",
+            "model": "test-model",
+            "size": "256x256",
+            "response_format": "b64_json",
+            "user": "test-user",
+            "nvext": {"num_inference_steps": 10, "seed": seed},
+        }
+        if n is not None:
+            req["n"] = n
+        return req
+
+    @staticmethod
+    def _mock_one_image(handler):
+        test_image = Image.new("RGB", (256, 256), color="red")
+        handler.generator.generate = Mock(
+            return_value=SimpleNamespace(frames=[test_image])
+        )
+
+    @pytest.mark.asyncio
+    async def test_n_returns_n_images(self, handler, mock_context):
+        """n=3 produces three generations and three data entries."""
+        self._mock_one_image(handler)
+
+        results = []
+        async for result in handler.generate(self._request(n=3), mock_context):
+            results.append(result)
+
+        assert len(results) == 1
+        assert len(results[0]["data"]) == 3
+        assert handler.generator.generate.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_n_seeds_are_deterministic_and_distinct(self, handler, mock_context):
+        """With an explicit seed, generation i uses seed+i."""
+        self._mock_one_image(handler)
+
+        async for _ in handler.generate(self._request(n=3, seed=42), mock_context):
+            pass
+
+        seeds = [
+            call.kwargs["sampling_params_kwargs"]["seed"]
+            for call in handler.generator.generate.call_args_list
+        ]
+        assert seeds == [42, 43, 44]
+
+    @pytest.mark.asyncio
+    async def test_n_defaults_to_single_image(self, handler, mock_context):
+        """Omitted n behaves exactly as before: one generation, one image."""
+        self._mock_one_image(handler)
+
+        results = []
+        async for result in handler.generate(self._request(), mock_context):
+            results.append(result)
+
+        assert len(results[0]["data"]) == 1
+        assert handler.generator.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_n_above_max_is_rejected(self, handler, mock_context):
+        """n above MAX_IMAGES_PER_REQUEST is rejected, matching the TRT-LLM
+        image handler's [1, 10] validation (no silent clamping)."""
+        self._mock_one_image(handler)
+
+        with pytest.raises(InvalidArgument, match=r"n must be in \[1, 10\]"):
+            async for _ in handler.generate(self._request(n=99), mock_context):
+                pass
+        assert handler.generator.generate.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_n_below_one_is_an_error(self, handler, mock_context):
+        """n=0 must not silently produce one image."""
+        self._mock_one_image(handler)
+
+        with pytest.raises(InvalidArgument, match=r"n must be in \[1, 10\]"):
+            async for _ in handler.generate(self._request(n=0), mock_context):
+                pass
+        assert handler.generator.generate.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_request_stops_between_generations(
+        self, handler, mock_context
+    ):
+        """A context stopped after the first generation must not start more."""
+        self._mock_one_image(handler)
+        # False for the first iteration check, True afterwards
+        mock_context.is_stopped = MagicMock(side_effect=[False, True, True])
+
+        results = []
+        async for result in handler.generate(self._request(n=3), mock_context):
+            results.append(result)
+
+        assert results == []
+        assert handler.generator.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_upload_failure_cleans_up(self, handler, mock_context):
+        """If a later upload fails, earlier uploaded files are removed."""
+        self._mock_one_image(handler)
+
+        uploads = []
+
+        async def fake_upload(img, user_id, request_id):
+            if len(uploads) == 1:
+                raise RuntimeError("upload failed")
+            uploads.append(
+                f"users/{user_id}/generations/{request_id}/img{len(uploads)}.png"
+            )
+            return "http://x/img.png", uploads[-1]
+
+        handler._upload_to_fs = fake_upload
+        handler._cleanup_uploads = AsyncMock()
+
+        req = self._request(n=2)
+        req["response_format"] = "url"
+        with pytest.raises(RuntimeError, match="upload failed"):
+            async for _ in handler.generate(req, mock_context):
+                pass
+        handler._cleanup_uploads.assert_awaited_once_with(uploads)

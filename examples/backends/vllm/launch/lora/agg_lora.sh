@@ -56,8 +56,8 @@ echo ""
 echo "=========================================="
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var.
-python -m dingo.frontend &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var.
+python -m dynamo.frontend &
 
 # ---- Tunable (override via env vars) ----
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
@@ -68,7 +68,7 @@ MAX_CONCURRENT_SEQS="${MAX_CONCURRENT_SEQS:-2}"
 : "${_PROFILE_OVERRIDE_VLLM_KV_CACHE_BYTES:=941712000}"
 GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT} \
-    python -m dingo.vllm --model "$MODEL" --enforce-eager \
+    python -m dynamo.vllm --model "$MODEL" --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \
     --max-num-seqs "$MAX_CONCURRENT_SEQS" \
     $GPU_MEM_ARGS \

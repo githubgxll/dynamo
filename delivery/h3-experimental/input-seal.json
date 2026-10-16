@@ -1,0 +1,398 @@
+{
+  "schema": "h3-main-overlay-seal/1",
+  "main_commit": "049eece3f32f8d38dc1d8c52d4b793cb30e394bb",
+  "remote_baseline": "36db79a59362bdac8e4fefcdceff994b46e49a62",
+  "delta": {
+    ".dockerignore": {
+      "mode": "100644",
+      "blob": "ab0065dea7c110975fb9f02aa1bb9dda6cc5f498",
+      "status": "M"
+    },
+    ".gitattributes": {
+      "mode": "100644",
+      "blob": "8b69a020313eeec45ec64d76042d374ff4226f5a",
+      "status": "M"
+    },
+    ".github/dingo-images.json": {
+      "mode": "100644",
+      "blob": "233714f78314782c792fe3142b7bca824551773e",
+      "status": "A"
+    },
+    ".github/scripts/h3_experimental_ci.py": {
+      "mode": "100644",
+      "blob": "a88a677a5d492dffdf551755e7c43515e3fcfb76",
+      "status": "A"
+    },
+    ".github/scripts/prepare_dingo_image_matrix.py": {
+      "mode": "100644",
+      "blob": "5609d318eb5cab62c8443c5ff161c02963256bc3",
+      "status": "A"
+    },
+    ".github/scripts/test_h3_experimental_ci.py": {
+      "mode": "100644",
+      "blob": "69e8437564dcfe21a815ea45beb5700f2863abaf",
+      "status": "A"
+    },
+    ".github/workflows/dingo-router-ci.yml": {
+      "mode": "100644",
+      "blob": "69f39bcfadff5951dfc8058c31ed3e811da03219",
+      "status": "A"
+    },
+    ".github/workflows/request-nvskills-ci.yml": {
+      "mode": "100644",
+      "blob": "0d035af6812d44801d9fbfd0603da285e949d2ab",
+      "status": "M"
+    },
+    ".gitignore": {
+      "mode": "100644",
+      "blob": "99e22e28fac0fe00d249b28a631c1c4365dae9a9",
+      "status": "M"
+    },
+    "container/context.yaml": {
+      "mode": "100644",
+      "blob": "e61061ea071243119af70ff3d2815b9c5660e97d",
+      "status": "M"
+    },
+    "container/h3-experimental/.dockerignore": {
+      "mode": "100644",
+      "blob": "9916f42b4f1bd39ee084890a30cafc029a83ab23",
+      "status": "A"
+    },
+    "container/h3-experimental/Dockerfile": {
+      "mode": "100644",
+      "blob": "bb1dc6a0ff10a78e6958e5be6b052a4ddf0f0a46",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/assets.lock.json": {
+      "mode": "100644",
+      "blob": "dd2dcbb8e12bcc21e7bf1d4f80cf7e828813b196",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/fetch_assets.py": {
+      "mode": "100644",
+      "blob": "6281496fd8eca8c788a21fb39c7571ce48046385",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/.gitattributes": {
+      "mode": "100644",
+      "blob": "c17e5ed73bf69490cfd9d4f2211168ba7b7c8dc2",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/Apache-2.0.txt": {
+      "mode": "100644",
+      "blob": "137069b823873b8bcf42979bcf8e9371052d26a2",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/MiniMax-H3-LICENSE": {
+      "mode": "100644",
+      "blob": "c389b45855337ccec8ddeb389f4fe902abcd0b19",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/NOTICE": {
+      "mode": "100644",
+      "blob": "65d507740b0ae63baacdcc501b35ee1ffa5d1226",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/fasth3-LICENSE": {
+      "mode": "100644",
+      "blob": "c389b45855337ccec8ddeb389f4fe902abcd0b19",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/fasth3-README.md": {
+      "mode": "100644",
+      "blob": "6b074f1a5dd24ffdc83c26ed02396b4f3d80b6f9",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/fasth3-adapter_manifest.json": {
+      "mode": "100644",
+      "blob": "2db6349874caab3bb3f3ca000e7faf58457644a4",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/legal/lightx2v-README.md": {
+      "mode": "100644",
+      "blob": "cdce032d8bffbd1150157808152c2c722d715a36",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/tests/test_assets.py": {
+      "mode": "100644",
+      "blob": "75dc0cad87b727f14bfa7c8d6bb21ed66637ca8f",
+      "status": "A"
+    },
+    "container/h3-experimental/assets/verify_assets.py": {
+      "mode": "100644",
+      "blob": "d27b3b88574c5d55c2760aac4332393e8dc21ed8",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/README.md": {
+      "mode": "100644",
+      "blob": "6ef973b2c890f9856a192cd4f3fb8cf7d86c790e",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/audit_environment.py": {
+      "mode": "100644",
+      "blob": "0489799eba8bfab0006f4c5d291f7cf19f165e2c",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/dependency_audit.py": {
+      "mode": "100644",
+      "blob": "947024d9c802305cdad09f6b7d31e8c5bb13bc89",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/install_environment.sh": {
+      "mode": "100644",
+      "blob": "6ff371dc2fb4007f26a4946b9dc57df487bb98f7",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/main-dependency-policy.json": {
+      "mode": "100644",
+      "blob": "a3db5a131e0bf091657b8bc87ede5375878897e8",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/media_smoke.py": {
+      "mode": "100644",
+      "blob": "4a7439cf9dda178f624d702cb1ccd3aedf19fc8f",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/protected_packages.txt": {
+      "mode": "100644",
+      "blob": "bae206d3c755e54f41c7b6dfbfa920795182fad2",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/reference-main-requirements.vllm.txt": {
+      "mode": "100644",
+      "blob": "e6f6738e9f94cb36da323d77e1ffe3e0329fac89",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/reference-main-vllm-runtime.Dockerfile": {
+      "mode": "100644",
+      "blob": "1264205eb85a2f18f5314525052b1e0f8f948e9f",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/runtime_dependencies.py": {
+      "mode": "100644",
+      "blob": "f0277e607133f04c3269c781ce6706fbda22b318",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/test_dependency_audit.py": {
+      "mode": "100644",
+      "blob": "2a90d71a63ac03abfb8cbaa53fd2fd3be7e265c3",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/test_main_overlay.py": {
+      "mode": "100644",
+      "blob": "182d2c17c4817c7099a39f867064cbe93a98f731",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/test_runtime_dependencies.py": {
+      "mode": "100644",
+      "blob": "e47147417febfc746442155cdad29ef3d483e007",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/README.md": {
+      "mode": "100644",
+      "blob": "911b3c2ac5998f6a557962a92af88bd71aecc401",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/base_verify.py": {
+      "mode": "100644",
+      "blob": "ded14c0f6a2a8557124bcc64dc1c83776cd492fc",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/check_profiles.py": {
+      "mode": "100644",
+      "blob": "5ac1853c617bbf8c93c98c47d45162b48218d707",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/fasth3_base_lock.json": {
+      "mode": "100644",
+      "blob": "be63ebe7eb2ee57563cf784f8016c9aeff32131a",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/launch.py": {
+      "mode": "100644",
+      "blob": "ed4f2e328eb173a9e1d6ed68b03cc77a4b4b609f",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/profiles.json": {
+      "mode": "100644",
+      "blob": "aa3c04fc0178af53867b099bde86039fc43d2414",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-base-fl50.sh": {
+      "mode": "100644",
+      "blob": "63e2fa8ae6000e9d82ba4f08c33e146201d7a0c3",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-base-ref50.sh": {
+      "mode": "100644",
+      "blob": "ef9c3d5b3f9a1734bc352fec328823c2dca9b754",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-fasth3-dense4.sh": {
+      "mode": "100644",
+      "blob": "80625da43d935850fc44b14a75e95b10e5a98bbd",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-turbo-fl4.sh": {
+      "mode": "100644",
+      "blob": "951f97674969a59fc0da144a494eafe6a82e9b70",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-turbo-fl8.sh": {
+      "mode": "100644",
+      "blob": "e008b1bab2f12cffb68d35f014e18a9cdd2827f9",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/start-turbo-ref8.sh": {
+      "mode": "100644",
+      "blob": "aec8440b1f5b1cec7224abf81413fdd397e90243",
+      "status": "A"
+    },
+    "container/h3-experimental/profiles/tests/test_profiles.py": {
+      "mode": "100644",
+      "blob": "b0a314df14bace22c8d9725a649513eade1ccfd8",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/README.md": {
+      "mode": "100644",
+      "blob": "2203c628408bed45164ecca54ef7293ec1086beb",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/UPSTREAM-LICENSE": {
+      "mode": "100644",
+      "blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/apply_patch.py": {
+      "mode": "100644",
+      "blob": "c58a87688d6e0e6b2721a30ff7eac8d6260f2f24",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/check_contract.py": {
+      "mode": "100644",
+      "blob": "3fa563058cdb08e0d7a987d2fb4874e7b52f594e",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/denoise_loop.py": {
+      "mode": "100644",
+      "blob": "c4c452b3c2dc30670bbede2bf556ad7b6276badc",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/lora.py": {
+      "mode": "100644",
+      "blob": "fced23de3cf7f5c41efb792d6a46b0fcc5c21cc7",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/pipeline_minimax_h3.py": {
+      "mode": "100644",
+      "blob": "b1dfc78b9b13549f2bd5bd802a1a13d0afdb84d0",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/sampling.py": {
+      "mode": "100644",
+      "blob": "2db9c5de4dd0babd1fa61e9f626a1b25d3be3edf",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/sigma_schedule.py": {
+      "mode": "100644",
+      "blob": "7eb3ed38c7abe983a63e29e8836c92aebfae969e",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/fixtures/time_request.py": {
+      "mode": "100644",
+      "blob": "35ceef9f7ef3a157bae8af369cbf49aab755040c",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/native_contract.py": {
+      "mode": "100644",
+      "blob": "e60333ff8f334d3c16a09084286ea2c7a2b16c1a",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/patch.lock.json": {
+      "mode": "100644",
+      "blob": "b17ec9b8d2e053d46ca8d4066fc85b882e3124cf",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/schedule_gate.py": {
+      "mode": "100644",
+      "blob": "e49046d17424da7609d611a1688e796e7a2f09bb",
+      "status": "A"
+    },
+    "container/h3-experimental/ref8/tests/test_contract.py": {
+      "mode": "100644",
+      "blob": "ce77b1d024853c06fe4b6d677d51a1a6a76ef1d0",
+      "status": "A"
+    },
+    "container/render.py": {
+      "mode": "100755",
+      "blob": "c70fc7410a3fd378ad8bd7d0ae7882b20a1494d1",
+      "status": "M"
+    },
+    "container/templates/args.Dockerfile": {
+      "mode": "100644",
+      "blob": "ee6d90654794fe076c5796b16947d6373f32f66a",
+      "status": "M"
+    },
+    "container/templates/wheel_builder.Dockerfile": {
+      "mode": "100644",
+      "blob": "29da727e6f12de53894e1301669c69d3ac2c9489",
+      "status": "M"
+    },
+    "container/use-sccache.sh": {
+      "mode": "100755",
+      "blob": "14085293cad64ce2184df620e1583fd72fffc6d8",
+      "status": "M"
+    },
+    "delivery/h3-experimental/01-check.cmd": {
+      "mode": "100644",
+      "blob": "fb802390bd74cbfd36608b796038fdbd369712c4",
+      "status": "A"
+    },
+    "delivery/h3-experimental/02-submit-build.cmd": {
+      "mode": "100644",
+      "blob": "4ec261c1b86dbe952d0e9907138801fca35e5419",
+      "status": "A"
+    },
+    "delivery/h3-experimental/03-import-image-evidence.cmd": {
+      "mode": "100644",
+      "blob": "f56ec6efdbda93a7cca7beea2a1a05557b5a9580",
+      "status": "A"
+    },
+    "delivery/h3-experimental/README.md": {
+      "mode": "100644",
+      "blob": "20c88b3a416796a4421eb36d916b79b5e67b85c1",
+      "status": "A"
+    },
+    "delivery/h3-experimental/check_local.py": {
+      "mode": "100644",
+      "blob": "7017bc76c5c6fe250d74080a585352a30ea6eaba",
+      "status": "A"
+    },
+    "delivery/h3-experimental/env.cmd": {
+      "mode": "100644",
+      "blob": "a730161d07f53436b19741e87b12a565100bdc74",
+      "status": "A"
+    },
+    "delivery/h3-experimental/ops.py": {
+      "mode": "100644",
+      "blob": "feac3e735cbbe94e8c896d4696e09840b93165aa",
+      "status": "A"
+    },
+    "delivery/h3-experimental/source-lock.json": {
+      "mode": "100644",
+      "blob": "1dd8f20d5ef320408035ca7bbf21f6720bd5721f",
+      "status": "A"
+    },
+    "delivery/h3-experimental/tests/test_ops.py": {
+      "mode": "100644",
+      "blob": "f729407571b9daffe08bf19e3ccb672fea916ec7",
+      "status": "A"
+    },
+    "delivery/h3-experimental/tests/test_staging.py": {
+      "mode": "100644",
+      "blob": "03dee6efec809b921ec143f330b6afbb95938d78",
+      "status": "A"
+    }
+  },
+  "scope": "Exact Git blobs and deletions relative to the reviewed main snapshot; seal excludes itself"
+}

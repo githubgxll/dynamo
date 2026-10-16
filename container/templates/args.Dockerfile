@@ -28,9 +28,9 @@ ARG CUDA_MAJOR=${CUDA_VERSION%%.*}
 # Base and runtime images configuration
 ARG BASE_IMAGE={{ context[framework][device_key].base_image }}
 ARG BASE_IMAGE_TAG={{ context[framework][device_key].base_image_tag }}
-{% if framework in ["sglang", "vllm"] -%}
+{% if framework in ["sglang", "trtllm", "vllm", "triton"] -%}
 ARG RUNTIME_IMAGE={{ context[framework][device_key].runtime_image }}
-ARG RUNTIME_IMAGE_TAG={{ context[framework][device_key].runtime_image_tag }}{{ '@' + context[framework][device_key].runtime_image_digest if context[framework][device_key].get('runtime_image_digest') else '' }}
+ARG RUNTIME_IMAGE_TAG={{ context[framework][device_key].runtime_image_tag }}{% if context[framework][device_key].get("runtime_image_digest") %}@{{ context[framework][device_key].runtime_image_digest }}{% endif %}
 {%- endif %}
 
 # wheel builder image selection
@@ -40,7 +40,7 @@ ARG WHEEL_BUILDER_IMAGE=${BASE_IMAGE}:${BASE_IMAGE_TAG}
 {# Multi-arch: manylinux selection is handled via --platform-pinned stage aliases   #}
 {# in wheel_builder.Dockerfile using TARGETARCH. No static ARG needed here.         #}
 {% else %}
-ARG WHEEL_BUILDER_IMAGE=quay.io/pypa/manylinux_2_28_{{ "x86_64" if platform == "amd64" else "aarch64" }}:{{ context.dynamo.manylinux_image_tag }}@{{ context.dynamo.manylinux_image_digest["x86_64" if platform == "amd64" else "aarch64"] }}
+ARG WHEEL_BUILDER_IMAGE=quay.io/pypa/manylinux_2_28_{{ "x86_64" if platform == "amd64" else "aarch64" }}
 {% endif %}
 
 # Build configuration
@@ -52,7 +52,6 @@ ARG ETCD_VERSION={{ context.dynamo.etcd_version }}
 
 ARG ENABLE_MEDIA_FFMPEG={{ context[framework].enable_media_ffmpeg }}
 ARG FFMPEG_VERSION={{ context.dynamo.ffmpeg_version }}
-ARG NV_CODEC_HEADERS_REF={{ context.dynamo.nv_codec_headers_ref }}
 ARG LIBVPX_REF={{ context.dynamo.libvpx_ref }}
 {% if device == "cuda" -%}
 ARG ENABLE_GPU_MEMORY_SERVICE={{ context[framework].enable_gpu_memory_service }}
@@ -68,7 +67,10 @@ ARG SCCACHE_GHA_VERSION=""
 
 # NIXL configuration
 ARG NIXL_UCX_REF={{ context.dynamo.nixl_ucx_ref }}
-{% if "nixl_ref" in context[framework].get(device_key, {}) -%}
+{# Resolved most-specific first: per-target, then per-device, then framework. #}
+{% if "nixl_ref" in context[framework].get(target, {}) -%}
+ARG NIXL_REF={{ context[framework][target].nixl_ref }}
+{% elif "nixl_ref" in context[framework].get(device_key, {}) -%}
 ARG NIXL_REF={{ context[framework][device_key].nixl_ref }}
 {% elif "nixl_ref" in context[framework] -%}
 ARG NIXL_REF={{ context[framework].nixl_ref }}
@@ -90,19 +92,20 @@ ARG FRONTEND_IMAGE={{ context.dynamo.frontend_image }}
 {% endif %}
 
 {% if target == "planner" %}
-ARG PLANNER_BUILD_IMAGE={{ context.dingo.planner_build_image }}
-ARG PLANNER_BUILD_IMAGE_TAG={{ context.dingo.planner_build_image_tag }}
-ARG PLANNER_RUNTIME_IMAGE={{ context.dingo.planner_runtime_image }}
-ARG PLANNER_RUNTIME_IMAGE_TAG={{ context.dingo.planner_runtime_image_tag }}
+ARG PLANNER_BUILD_IMAGE={{ context.dynamo.planner_build_image }}
+ARG PLANNER_BUILD_IMAGE_TAG={{ context.dynamo.planner_build_image_tag }}
+ARG PLANNER_RUNTIME_IMAGE={{ context.dynamo.planner_runtime_image }}
+ARG PLANNER_RUNTIME_IMAGE_TAG={{ context.dynamo.planner_runtime_image_tag }}
+# Planner-scoped interpreter — see context.yaml `planner_python_version` for
+# why this is not the global PYTHON_VERSION.
+ARG PLANNER_PYTHON_VERSION={{ context.dynamo.planner_python_version }}
 {% endif %}
 
 {% if framework == "vllm" -%}
 ARG MAX_JOBS={{ context.vllm.max_jobs }}
-{% if device == "cuda" -%}
-# FlashInfer cubin/jit-cache version used by the vLLM installer.
-ARG FLASHINF_REF={{ context.vllm.flashinf_ref }}
-{% endif %}
-ARG VLLM_OMNI_REF={{ context.vllm.vllm_omni_ref }}
+ARG TRANSFORMERS_VERSION={{ context.vllm.transformers_version }}
+ARG TOKENIZERS_VERSION={{ context.vllm.tokenizers_version }}
+ARG VLLM_OMNI_REF={{ context.vllm[device_key].get("vllm_omni_ref", context.vllm.vllm_omni_ref) }}
 
 {% if device == "cuda" -%}
 # If left blank, then we will fallback to vLLM defaults

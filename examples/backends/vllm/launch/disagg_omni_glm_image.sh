@@ -52,8 +52,8 @@ export FLASHINFER_DISABLE_VERSION_CHECK=1
 
 # Stage 0: AR worker (GPU 0) — generates prior_token_ids
 echo "Starting Stage 0 (AR)..."
-CUDA_VISIBLE_DEVICES=0 DYN_SYSTEM_PORT=8081 \
-    python -m dingo.vllm.omni \
+DYN_SYSTEM_PORT=8081 \
+    python -m dynamo.vllm.omni \
     --model "$MODEL" \
     --stage-id 0 \
     --stage-configs-path "$STAGE_CONFIG" \
@@ -64,8 +64,9 @@ sleep 20
 
 # Stage 1: DiT worker (GPU 1) — diffusion denoising + VAE decode
 echo "Starting Stage 1 (DiT)..."
-CUDA_VISIBLE_DEVICES=1 DYN_SYSTEM_PORT=8082 \
-    python -m dingo.vllm.omni \
+# Use CUDA_VISIBLE_DEVICES to select GPU 1, which appears as device "0" to this process
+DYN_SYSTEM_PORT=8082 \
+    python -m dynamo.vllm.omni \
     --model "$MODEL" \
     --stage-id 1 \
     --stage-configs-path "$STAGE_CONFIG" \
@@ -77,7 +78,7 @@ sleep 20
 # Router — discovers stage workers, orchestrates pipeline, formats response
 echo "Starting Router..."
 DYN_SYSTEM_PORT=8083 \
-    python -m dingo.vllm.omni \
+    python -m dynamo.vllm.omni \
     --model "$MODEL" \
     --omni-router \
     --stage-configs-path "$STAGE_CONFIG" \
@@ -88,6 +89,6 @@ sleep 5
 
 # Frontend
 echo "Starting Frontend..."
-python -m dingo.frontend &
+python -m dynamo.frontend &
 
 wait_any_exit

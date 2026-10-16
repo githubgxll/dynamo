@@ -5,7 +5,7 @@
 # Minimal Dynamo frontend image built from source.
 #
 # Build context MUST be the dynamo workspace root (see docker-compose.yml).
-# Produces an image that runs `python -m dingo.frontend`.
+# Produces an image that runs `python -m dynamo.frontend`.
 
 FROM python:3.12-slim-bookworm AS builder
 
@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust toolchain for building ai-dingo-runtime (maturin-backed Python wheel).
+# Rust toolchain for building ai-dynamo-runtime (maturin-backed Python wheel).
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable --profile minimal \
     && /root/.cargo/bin/cargo --version
@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir maturin
 WORKDIR /build
 COPY . .
 
-# Build the ai-dingo-runtime wheel. Share the cargo registry cache across
+# Build the ai-dynamo-runtime wheel. Share the cargo registry cache across
 # concurrent builds, but lock the mutable target/ dir while it is being
 # written so incremental rebuilds don't trample each other. The wheel
 # output goes to /tmp/wheels which is NOT a cache mount, so it persists into
@@ -52,7 +52,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /tmp/wheels /tmp/wheels
 COPY --from=builder /build/pyproject.toml /build/hatch_build.py /build/README.md /build/LICENSE /app/
 COPY --from=builder /build/components /app/components
-COPY --from=builder /build/dingo /app/dingo
 
 WORKDIR /app
 
@@ -60,4 +59,4 @@ RUN pip install --no-cache-dir /tmp/wheels/*.whl \
     && pip install --no-cache-dir . \
     && rm -rf /tmp/wheels
 
-ENTRYPOINT ["python", "-m", "dingo.frontend"]
+ENTRYPOINT ["python", "-m", "dynamo.frontend"]

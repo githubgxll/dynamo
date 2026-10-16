@@ -43,10 +43,10 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Sample Diffusion Aggregated Serving" "$MODEL_NAME" "$HTTP_PORT"
 
 # run frontend
-python3 -m dingo.frontend &
+python3 -m dynamo.frontend &
 
 # run sample diffusion worker (serves /v1/images/generations)
-python3 -m dingo.common.backend.sample_diffusion_main \
+python3 -m dynamo.common.backend.sample_diffusion_main \
   --model-name "$MODEL_NAME" \
   --endpoint-types images \
   "${EXTRA_ARGS[@]}" &

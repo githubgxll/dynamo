@@ -12,7 +12,7 @@ Default checks:
 - System resources (OS, CPU, memory, GPU)
 - Container/host context (execution context, /dev/shm sizing, selected env)
 - Development tools (Cargo/Rust, Maturin, Python)
-- LLM frameworks (vllm, sglang)
+- LLM frameworks (vllm, sglang, tensorrt_llm)
 - Dynamo runtime and framework components
 - Installation status and component availability
 
@@ -20,14 +20,14 @@ Additional checks with --thorough-check:
 - File system permissions (file-level analysis)
 - Directory sizes and disk space
 - Ulimits (resource limits)
-- CUDA/NVIDIA information (nvidia-smi, nvcc, env vars, dpkg, pip packages)
+- CUDA/NVIDIA or XPU/Intel information (nvidia-smi/xpu-smi, nvcc, env vars, dpkg, pip packages)
 - DYN_* environment variables
 - HuggingFace model cache details
 
 IMPORTANT: This script is STANDALONE and uses only Python stdlib (no Dynamo components).
 
 Why: Must work before Dynamo is built/installed (CI, fresh containers, build failures).
-This tool is for pre-deployment validation; dingo.common.config_dump is for runtime.
+This tool is for pre-deployment validation; dynamo.common.config_dump is for runtime.
 
 Hard-coded paths: Uses defaults (e.g., ~/.cache/huggingface/hub) for predictable
 behavior even when environment variables are misconfigured. See class docs for details.
@@ -79,17 +79,18 @@ System info (hostname=jensen-linux, IP=10.111.122.133)
 │  └─ PYTHONPATH: not set
 └─ Dynamo: $HOME/dynamo
    ├─ Git HEAD: a03d29066, branch=main, Date: 2025-08-30 16:22:29 PDT
-   ├─ ✅ Runtime components: ai-dingo-runtime 0.4.1
+   ├─ ✅ Runtime components: ai-dynamo-runtime 0.4.1
    │  ├─ ✅ dynamo._core             $HOME/dynamo/lib/bindings/python/src/dynamo/_core.cpython-312-x86_64-linux-gnu.so
    │  ├─ ✅ dynamo.logits_processing $HOME/dynamo/lib/bindings/python/src/dynamo/logits_processing/__init__.py
    │  ├─ ✅ dynamo.nixl_connect      $HOME/dynamo/lib/bindings/python/src/dynamo/nixl_connect/__init__.py
    │  ├─ ✅ dynamo.llm               $HOME/dynamo/lib/bindings/python/src/dynamo/llm/__init__.py
    │  └─ ✅ dynamo.runtime           $HOME/dynamo/lib/bindings/python/src/dynamo/runtime/__init__.py
-   └─ ✅ Framework components: ai-dingo 0.5.0
-      ├─ ✅ dingo.frontend  $HOME/dynamo/dingo/frontend/__init__.py
+   └─ ✅ Framework components: ai-dynamo 0.5.0
+      ├─ ✅ dynamo.frontend  $HOME/dynamo/components/src/dynamo/frontend/__init__.py
       ├─ ✅ dynamo.llama_cpp $HOME/dynamo/components/src/dynamo/llama_cpp/__init__.py
-      ├─ ✅ dingo.sglang    $HOME/dynamo/dingo/sglang/__init__.py
-      └─ ✅ dingo.vllm      $HOME/dynamo/dingo/vllm/__init__.py
+      ├─ ✅ dynamo.sglang    $HOME/dynamo/components/src/dynamo/sglang/__init__.py
+      ├─ ✅ dynamo.trtllm    $HOME/dynamo/components/src/dynamo/trtllm/__init__.py
+      └─ ✅ dynamo.vllm      $HOME/dynamo/components/src/dynamo/vllm/__init__.py
 
 Additional output with --thorough-check:
 
@@ -142,17 +143,19 @@ Options:
     --terse                       Enable terse output mode (show only essential info and errors)
     --json-output                 Output a JSON representation (terse subset) suitable for copy/paste
     --runtime-check-only          Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers
-                                  and validate Dynamo packages (ai-dingo-runtime and ai-dingo)
+                                  and validate ai-dynamo packages (ai-dynamo-runtime and ai-dynamo)
     --no-gpu-check                Skip GPU detection and information collection (useful for environments without GPU access)
-    --no-framework-check          Skip LLM framework package checks (vllm, sglang)
+    --no-framework-check          Skip LLM framework package checks (vllm, sglang, tensorrt_llm)
 """
 
+import csv
 import datetime
 import glob
 import json
 import logging
 import os
 import platform
+import re
 import resource
 import shutil
 import site
@@ -668,7 +671,7 @@ class SystemInfo(NodeInfo):
         """Suppress Prometheus endpoint warnings from planner module during import testing."""
         # The planner module logs a warning about Prometheus endpoint when imported
         # outside of a Kubernetes cluster. Suppress this for cleaner output.
-        planner_logger = logging.getLogger("dingo.planner.config.defaults")
+        planner_logger = logging.getLogger("dynamo.planner.config.defaults")
         planner_logger.setLevel(logging.ERROR)
         # Also suppress the defaults._get_default_prometheus_endpoint logger
         defaults_logger = logging.getLogger("defaults._get_default_prometheus_endpoint")
@@ -798,43 +801,152 @@ class OSInfo(NodeInfo):
 
 
 class GPUInfo(NodeInfo):
-    """NVIDIA GPU information.
+    """GPU information for NVIDIA and Intel XPU environments.
 
-    Displays GPU model, driver version, power/memory stats, and CUDA versions.
-    In thorough mode (--thorough-check), also collects detailed CUDA/NVIDIA
-    environment information (nvcc, env vars, dpkg packages, pip packages).
+    Prefers NVIDIA reporting when `nvidia-smi` is available and falls back to
+    Intel XPU reporting via `xpu-smi` otherwise.
     """
 
     def __init__(self, thorough_check: bool = False):
         self.thorough_check = thorough_check
+
         # Find nvidia-smi executable (check multiple paths)
-        nvidia_smi = shutil.which("nvidia-smi")
-        if not nvidia_smi:
-            # Check common paths if `which` fails
-            for candidate in [
+        nvidia_smi = self._find_executable(
+            "nvidia-smi",
+            [
                 "/usr/bin/nvidia-smi",
                 "/usr/local/bin/nvidia-smi",
                 "/usr/local/nvidia/bin/nvidia-smi",
-            ]:
-                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                    nvidia_smi = candidate
-                    break
+            ],
+        )
+        nvidia_failure_desc: Optional[str] = None
+        if nvidia_smi:
+            if self._init_nvidia_gpu_info(nvidia_smi):
+                return
+            nvidia_failure_desc = self._failure_desc("nvidia-smi initialization failed")
 
-        if not nvidia_smi:
-            super().__init__(
-                label="NVIDIA GPU", desc="nvidia-smi not found", status=NodeStatus.ERROR
+        # Fall back to Intel XPU reporting on systems without nvidia-smi.
+        xpu_smi = self._find_executable(
+            "xpu-smi",
+            [
+                "/usr/bin/xpu-smi",
+                "/usr/local/bin/xpu-smi",
+            ],
+        )
+        if xpu_smi:
+            if self._init_xpu_gpu_info(xpu_smi):
+                return
+            xpu_failure_desc = self._failure_desc("xpu-smi initialization failed")
+            self._finalize_gpu_probe_failure(
+                nvidia_failure_desc=nvidia_failure_desc,
+                xpu_failure_desc=xpu_failure_desc,
+                xpu_found=True,
             )
             return
 
+        self._finalize_gpu_probe_failure(
+            nvidia_failure_desc=nvidia_failure_desc,
+            xpu_failure_desc=None,
+            xpu_found=False,
+        )
+
+    def _failure_desc(self, default: str) -> str:
+        """Return the current node description when present, else a default message."""
+        return self.desc or default
+
+    def _finalize_gpu_probe_failure(
+        self,
+        nvidia_failure_desc: Optional[str],
+        xpu_failure_desc: Optional[str],
+        xpu_found: bool,
+    ) -> None:
+        """Set the final GPU error node after probe attempts.
+
+        Note: If only xpu-smi was attempted and it already initialized this node with
+        a concrete error, we keep that message and avoid overwriting it.
+        """
+        if nvidia_failure_desc and xpu_found and xpu_failure_desc:
+            super().__init__(
+                label="GPU",
+                desc=(
+                    f"nvidia-smi failed ({nvidia_failure_desc}); "
+                    f"xpu-smi failed ({xpu_failure_desc})"
+                ),
+                status=NodeStatus.ERROR,
+            )
+            return
+
+        if nvidia_failure_desc and not xpu_found:
+            super().__init__(
+                label="GPU",
+                desc=f"nvidia-smi failed ({nvidia_failure_desc}); xpu-smi not found",
+                status=NodeStatus.ERROR,
+            )
+            return
+
+        if xpu_found and xpu_failure_desc:
+            # Keep existing Intel XPU failure details from _init_xpu_gpu_info.
+            return
+
+        super().__init__(
+            label="GPU",
+            desc="neither nvidia-smi nor xpu-smi found",
+            status=NodeStatus.ERROR,
+        )
+
+    def _find_executable(self, name: str, candidates: List[str]) -> Optional[str]:
+        """Find an executable by PATH lookup first, then common fallback paths."""
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+        for candidate in candidates:
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
+        return None
+
+    def _run_command(
+        self, args: List[str], timeout: int = 10
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a command and return the completed process, swallowing launch errors."""
+        try:
+            return subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except Exception:
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr=""
+            )
+
+    def _run_json_command(self, args: List[str], timeout: int = 10) -> Optional[Any]:
+        """Run a JSON-emitting command and decode its stdout."""
+        result = self._run_command(args, timeout=timeout)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+
+    def _init_nvidia_gpu_info(self, nvidia_smi: str) -> bool:
+        """Populate the node using NVIDIA-specific tooling.
+
+        Returns:
+            True when NVIDIA initialization succeeds and should be used.
+            False when initialization fails and caller should consider fallback.
+        """
         try:
             # Get GPU list
-            result = subprocess.run(
-                [nvidia_smi, "-L"], capture_output=True, text=True, timeout=10
-            )
+            result = self._run_command([nvidia_smi, "-L"])
 
             if result.returncode != 0:
                 # Extract and process error message from stderr or stdout
-                error_msg = "nvidia-smi failed"
+                error_msg = "nvidia-smi -L failed"
 
                 # Try stderr first, then stdout
                 for output in [result.stderr, result.stdout]:
@@ -844,7 +956,7 @@ class GPUInfo(NodeInfo):
                             error_msg = error_lines[0].strip()
                             break
 
-                # Handle NVML-specific errors
+                # Handle NVML-specific errors.
                 if "Failed to initialize NVML" in error_msg:
                     error_msg = "No NVIDIA GPU detected (NVML initialization failed)"
                     # Add docker restart suggestion specifically for NVML failures in containers
@@ -854,7 +966,7 @@ class GPUInfo(NodeInfo):
                 super().__init__(
                     label="NVIDIA GPU", desc=error_msg, status=NodeStatus.ERROR
                 )
-                return
+                return False
 
             # Parse GPU names
             gpu_names = []
@@ -865,7 +977,7 @@ class GPUInfo(NodeInfo):
                     gpu_name = line.split(":", 1)[1].split("(")[0].strip()
                     gpu_names.append(gpu_name)
 
-            # Check for zero GPUs
+            # Check for zero GPUs.
             if not gpu_names:
                 # Get driver and CUDA even for zero GPUs
                 driver, cuda = self._get_driver_cuda_versions(nvidia_smi)
@@ -882,7 +994,7 @@ class GPUInfo(NodeInfo):
                     desc=f"not detected{driver_cuda_str}",
                     status=NodeStatus.ERROR,
                 )
-                return
+                return False
 
             # Get driver and CUDA versions
             driver, cuda = self._get_driver_cuda_versions(nvidia_smi)
@@ -890,16 +1002,18 @@ class GPUInfo(NodeInfo):
             # Handle single vs multiple GPUs
             if len(gpu_names) == 1:
                 # Single GPU - just show GPU name in main label
-                value = gpu_names[0]
-                super().__init__(label="NVIDIA GPU", desc=value, status=NodeStatus.OK)
-
+                super().__init__(
+                    label="NVIDIA GPU", desc=gpu_names[0], status=NodeStatus.OK
+                )
                 # Add power and memory metadata for single GPU
                 self._add_power_memory_info(nvidia_smi, 0)
             else:
                 # Multiple GPUs - show count in main label
-                value = f"{len(gpu_names)} GPUs"
-                super().__init__(label="NVIDIA GPU", desc=value, status=NodeStatus.OK)
-
+                super().__init__(
+                    label="NVIDIA GPU",
+                    desc=f"{len(gpu_names)} GPUs",
+                    status=NodeStatus.OK,
+                )
                 # Add each GPU as a child node
                 for i, name in enumerate(gpu_names):
                     gpu_child = NodeInfo(
@@ -919,10 +1033,330 @@ class GPUInfo(NodeInfo):
                 cuda_info = self._collect_cuda_info()
                 self.add_child(cuda_info)
 
+            return True
+
         except Exception:
             super().__init__(
                 label="NVIDIA GPU", desc="detection failed", status=NodeStatus.ERROR
             )
+            return False
+
+    def _init_xpu_gpu_info(self, xpu_smi: str) -> bool:
+        """Populate the node using Intel XPU tooling.
+
+        Returns:
+            True when XPU initialization succeeds and should be used.
+            False when initialization fails.
+        """
+        try:
+            devices = self._get_xpu_devices(xpu_smi)
+            if devices is None:
+                super().__init__(
+                    label="Intel XPU",
+                    desc="xpu-smi discovery failed",
+                    status=NodeStatus.ERROR,
+                )
+                return False
+
+            if not devices:
+                super().__init__(
+                    label="Intel XPU",
+                    desc="not detected",
+                    status=NodeStatus.ERROR,
+                )
+                return False
+
+            if len(devices) == 1:
+                device = devices[0]
+                super().__init__(
+                    label="Intel XPU",
+                    desc=device["name"],
+                    status=NodeStatus.OK,
+                )
+                self._add_xpu_power_memory_info(device)
+            else:
+                super().__init__(
+                    label="Intel XPU",
+                    desc=f"{len(devices)} devices",
+                    status=NodeStatus.OK,
+                )
+                for device in devices:
+                    gpu_child = NodeInfo(
+                        label=f"GPU {device['device_id']}",
+                        desc=device["name"],
+                        status=NodeStatus.OK,
+                    )
+                    stats = self._format_xpu_power_memory_string(device)
+                    if stats:
+                        gpu_child.add_metadata("Stats", stats)
+                    self.add_child(gpu_child)
+
+            primary = devices[0]
+            if primary.get("driver_version"):
+                self.add_child(
+                    NodeInfo(
+                        label="Driver version",
+                        desc=primary["driver_version"],
+                        status=NodeStatus.INFO,
+                    )
+                )
+
+            cli_version, service_version, level_zero_version = self._get_xpu_versions(
+                xpu_smi
+            )
+            if cli_version:
+                version_desc = cli_version
+                extras = []
+                if service_version:
+                    extras.append(f"service {service_version}")
+                if level_zero_version:
+                    extras.append(f"Level Zero {level_zero_version}")
+                if extras:
+                    version_desc = f"{version_desc} ({', '.join(extras)})"
+                self.add_child(
+                    NodeInfo(
+                        label="xpu-smi",
+                        desc=version_desc,
+                        status=NodeStatus.INFO,
+                    )
+                )
+
+            if self.thorough_check:
+                self.add_child(self._collect_xpu_info(xpu_smi))
+
+            return True
+
+        except Exception:
+            super().__init__(
+                label="Intel XPU", desc="detection failed", status=NodeStatus.ERROR
+            )
+            return False
+
+    def _get_xpu_devices(self, xpu_smi: str) -> Optional[List[Dict[str, Any]]]:
+        """Return summarized Intel XPU device info or None on discovery failure."""
+        # Start from JSON discovery for reliable inventory, then enrich each
+        # device with metrics pulled from the text subcommands below.
+        data = self._run_json_command([xpu_smi, "discovery", "-j"])
+        if not isinstance(data, dict):
+            return None
+
+        raw_devices = data.get("device_list")
+        if not isinstance(raw_devices, list):
+            return None
+
+        # Batch identity fields that would otherwise require per-device discovery.
+        # Call count impact for N devices: from (1 + 3N) to (2 + 2N).
+        discovery_dump = self._get_xpu_discovery_dump(xpu_smi)
+
+        devices: List[Dict[str, Any]] = []
+        for item in raw_devices:
+            if not isinstance(item, dict):
+                continue
+
+            device_id = item.get("device_id")
+            if device_id is None:
+                continue
+
+            # xpu-smi splits stats and config across subcommands.
+            stats_text = self._get_xpu_device_text(xpu_smi, device_id, "stats")
+            config_text = self._get_xpu_device_text(xpu_smi, device_id, "config")
+            dump_entry = discovery_dump.get(str(device_id), {})
+
+            devices.append(
+                {
+                    "device_id": device_id,
+                    "name": item.get("device_name") or f"Device {device_id}",
+                    "driver_version": dump_entry.get("driver_version"),
+                    "memory_total_mib": dump_entry.get("memory_total_mib"),
+                    "memory_used_mib": self._parse_xpu_int_value(
+                        self._extract_table_value(
+                            stats_text, "GPU Memory Used \\(MiB\\)"
+                        )
+                    ),
+                    "power_draw_w": self._parse_xpu_float_value(
+                        self._extract_table_value(stats_text, "GPU Power \\([Ww]\\)")
+                    ),
+                    "power_limit_w": self._parse_xpu_float_value(
+                        self._extract_xpu_field(config_text, "Power Limit \\([Ww]\\)")
+                    ),
+                }
+            )
+
+        return devices
+
+    def _get_xpu_discovery_dump(self, xpu_smi: str) -> Dict[str, Dict[str, Any]]:
+        """Collect per-device identity fields in one command.
+
+        Uses `xpu-smi discovery --dump 1,8,16` where fields map to:
+        1: Device ID, 8: Driver Version, 16: Memory Physical Size.
+        """
+        result = self._run_command([xpu_smi, "discovery", "--dump", "1,8,16"])
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+
+        output: Dict[str, Dict[str, Any]] = {}
+        try:
+            reader = csv.reader(result.stdout.splitlines())
+            next(reader, None)  # Header row.
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                device_id = row[0].strip()
+                if not device_id:
+                    continue
+                output[device_id] = {
+                    "driver_version": row[1].strip() or None,
+                    "memory_total_mib": self._parse_xpu_mib_value(row[2].strip()),
+                }
+        except Exception:
+            return {}
+
+        return output
+
+    def _get_xpu_device_text(
+        self, xpu_smi: str, device_id: Any, subcommand: str
+    ) -> str:
+        """Run a textual xpu-smi device query and return stdout."""
+        result = self._run_command([xpu_smi, subcommand, "-d", str(device_id)])
+        if result.returncode == 0:
+            return result.stdout
+        return ""
+
+    def _extract_xpu_field(self, text: str, field_name: str) -> Optional[str]:
+        """Extract a `Field: value` entry from xpu-smi table output."""
+        if not text:
+            return None
+
+        match = re.search(rf"{field_name}:\s*([^|\n]+)", text)
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return value or None
+
+    def _extract_table_value(self, text: str, label_pattern: str) -> Optional[str]:
+        """Extract the value column from a two-column xpu-smi table row."""
+        if not text:
+            return None
+
+        match = re.search(rf"\|\s*{label_pattern}\s*\|\s*([^|\n]+)", text)
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return value or None
+
+    def _parse_xpu_mib_value(self, value: Optional[str]) -> Optional[int]:
+        """Parse strings like `32768.00 MiB` into integer MiB."""
+        if not value:
+            return None
+
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", value)
+        if not match:
+            return None
+
+        try:
+            return int(float(match.group(1)))
+        except ValueError:
+            return None
+
+    def _parse_xpu_float_value(self, value: Optional[str]) -> Optional[float]:
+        """Parse a float-like metric value from xpu-smi text."""
+        if not value:
+            return None
+
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", value)
+        if not match:
+            return None
+
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    def _parse_xpu_int_value(self, value: Optional[str]) -> Optional[int]:
+        """Parse an integer-like metric value from xpu-smi text."""
+        parsed = self._parse_xpu_float_value(value)
+        if parsed is None:
+            return None
+        return int(parsed)
+
+    def _add_xpu_power_memory_info(self, device: Dict[str, Any]):
+        """Add power and memory metadata for a single Intel XPU device."""
+        power_draw = device.get("power_draw_w")
+        power_limit = device.get("power_limit_w")
+        if power_draw is not None:
+            if power_limit is not None:
+                self.add_metadata("Power", f"{power_draw:.2f}/{power_limit:.2f} W")
+            else:
+                self.add_metadata("Power", f"{power_draw:.2f} W")
+
+        memory_used = device.get("memory_used_mib")
+        memory_total = device.get("memory_total_mib")
+        if memory_used is not None and memory_total is not None:
+            warning = ""
+            try:
+                if memory_total > 0 and (memory_used / memory_total) >= 0.9:
+                    warning = " ⚠️"
+            except Exception:
+                pass
+            self.add_metadata("Memory", f"{memory_used}/{memory_total} MiB{warning}")
+
+    def _format_xpu_power_memory_string(self, device: Dict[str, Any]) -> Optional[str]:
+        """Format a combined power/memory string for per-device child nodes."""
+        info_parts = []
+
+        power_draw = device.get("power_draw_w")
+        power_limit = device.get("power_limit_w")
+        if power_draw is not None:
+            if power_limit is not None:
+                info_parts.append(f"Power: {power_draw:.2f}/{power_limit:.2f} W")
+            else:
+                info_parts.append(f"Power: {power_draw:.2f} W")
+
+        memory_used = device.get("memory_used_mib")
+        memory_total = device.get("memory_total_mib")
+        if memory_used is not None and memory_total is not None:
+            warning = ""
+            try:
+                if memory_total > 0 and (memory_used / memory_total) >= 0.9:
+                    warning = " ⚠️"
+            except Exception:
+                pass
+            info_parts.append(f"Memory: {memory_used}/{memory_total} MiB{warning}")
+
+        if info_parts:
+            return "; ".join(info_parts)
+        return None
+
+    def _get_xpu_versions(
+        self, xpu_smi: str
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Extract CLI, service, and Level Zero versions from `xpu-smi -v`."""
+        result = self._run_command([xpu_smi, "-v"])
+        if result.returncode != 0:
+            return None, None, None
+
+        cli_version = None
+        service_version = None
+        level_zero_version = None
+        current_section = None
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if line == "CLI:":
+                current_section = "cli"
+                continue
+            if line == "Service:":
+                current_section = "service"
+                continue
+            if line.startswith("Version:"):
+                version = line.split(":", 1)[1].strip()
+                if current_section == "cli":
+                    cli_version = version
+                elif current_section == "service":
+                    service_version = version
+            elif line.startswith("Level Zero Version:"):
+                level_zero_version = line.split(":", 1)[1].strip()
+
+        return cli_version, service_version, level_zero_version
 
     def _get_driver_cuda_versions(
         self, nvidia_smi: str
@@ -931,22 +1365,15 @@ class GPUInfo(NodeInfo):
         driver, cuda = None, None
         try:
             # Use query method for more reliable detection
-            result = subprocess.run(
-                [nvidia_smi, "--query-gpu=driver_version", "--format=csv,noheader"],
-                capture_output=True,
-                text=True,
-                timeout=10,
+            result = self._run_command(
+                [nvidia_smi, "--query-gpu=driver_version", "--format=csv,noheader"]
             )
             if result.returncode == 0 and result.stdout.strip():
                 driver = result.stdout.strip().splitlines()[0].strip()
 
             # Try to get CUDA version from nvidia-smi output
-            result = subprocess.run(
-                [nvidia_smi], capture_output=True, text=True, timeout=10
-            )
+            result = self._run_command([nvidia_smi])
             if result.returncode == 0:
-                import re
-
                 m = re.search(r"CUDA Version:\s*([0-9.]+)", result.stdout)
                 if m:
                     cuda = m.group(1)
@@ -958,8 +1385,6 @@ class GPUInfo(NodeInfo):
         self, driver_cuda: Optional[str], driver_version: Optional[str]
     ):
         """Add child nodes showing driver, nvidia-smi (driver max) and nvcc (installed toolkit) versions."""
-        import re
-
         # Add driver version
         if driver_version:
             driver_node = NodeInfo(
@@ -980,12 +1405,7 @@ class GPUInfo(NodeInfo):
 
         # Add nvcc version (installed CUDA toolkit)
         try:
-            result = subprocess.run(
-                ["nvcc", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            result = self._run_command(["nvcc", "--version"])
             if result.returncode == 0:
                 # Extract version from output like "release 12.9, V12.9.41"
                 m = re.search(r"release\s+([0-9.]+)", result.stdout, re.IGNORECASE)
@@ -1033,15 +1453,12 @@ class GPUInfo(NodeInfo):
     ) -> Optional[str]:
         """Get power and memory info string for a specific GPU."""
         try:
-            result = subprocess.run(
+            result = self._run_command(
                 [
                     nvidia_smi,
                     "--query-gpu=power.draw,power.limit,memory.used,memory.total",
                     "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
+                ]
             )
             if result.returncode == 0 and result.stdout.strip():
                 lines = result.stdout.strip().splitlines()
@@ -1089,7 +1506,6 @@ class GPUInfo(NodeInfo):
         Returns:
             NodeInfo with collected CUDA/NVIDIA information (INFO status, no validation)
         """
-        import re
 
         def sh(cmd: str) -> str:
             """Run command and return stdout only."""
@@ -1189,6 +1605,106 @@ class GPUInfo(NodeInfo):
 
         if not has_any_output:
             node.desc = "no CUDA/NVIDIA information detected"
+
+        return node
+
+    def _collect_xpu_info(self, xpu_smi: str) -> NodeInfo:
+        """Collect and display Intel XPU environment and package information."""
+
+        def sh(cmd: str) -> str:
+            """Run command and return stdout only."""
+            try:
+                p = subprocess.run(
+                    ["bash", "-c", f"{cmd} 2>/dev/null"],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+                return (p.stdout or "").strip()
+            except Exception:
+                return ""
+
+        signals = [
+            ("xpu-smi", f"{xpu_smi} -v"),
+            (
+                "ONEAPI_DEVICE_SELECTOR",
+                "env | grep -i '^ONEAPI_DEVICE_SELECTOR='",
+            ),
+            ("SYCL_DEVICE_FILTER", "env | grep -i '^SYCL_DEVICE_FILTER='"),
+            ("ZE_AFFINITY_MASK", "env | grep -i '^ZE_AFFINITY_MASK='"),
+            ("XPU_VISIBLE_DEVICES", "env | grep -i '^XPU_VISIBLE_DEVICES='"),
+            (
+                "dpkg:intel-xpu",
+                "dpkg -l | grep -Ei '^(ii|hi)\\s+(xpu-smi|xpum|intel-opencl-icd|intel-level-zero-gpu|level-zero|libze|intel-ocloc|intel-oneapi)'",
+            ),
+            (
+                "pip:xpu-related",
+                "python -m pip list --format=freeze | grep -Ei '(\\+xpu|triton-xpu|oneccl|intel-extension-for-pytorch|ipex|pytorch-triton-xpu)'",
+            ),
+        ]
+
+        node = NodeInfo(
+            label="XPU/Intel Information",
+            desc="",
+            status=NodeStatus.INFO,
+        )
+
+        has_any_output = False
+        for label, cmd in signals:
+            if label == "xpu-smi":
+                (
+                    cli_version,
+                    service_version,
+                    level_zero_version,
+                ) = self._get_xpu_versions(xpu_smi)
+                if not any([cli_version, service_version, level_zero_version]):
+                    continue
+
+                has_any_output = True
+                parts = []
+                if cli_version:
+                    parts.append(f"CLI {cli_version}")
+                if service_version:
+                    parts.append(f"Service {service_version}")
+                if level_zero_version:
+                    parts.append(f"Level Zero {level_zero_version}")
+                node.add_child(
+                    NodeInfo(
+                        label=label,
+                        desc=", ".join(parts),
+                        status=NodeStatus.INFO,
+                    )
+                )
+                continue
+
+            out = sh(cmd)
+            lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+            if not lines:
+                continue
+
+            has_any_output = True
+
+            if label in (
+                "ONEAPI_DEVICE_SELECTOR",
+                "SYCL_DEVICE_FILTER",
+                "ZE_AFFINITY_MASK",
+                "XPU_VISIBLE_DEVICES",
+            ):
+                node.add_child(
+                    NodeInfo(label=label, desc=lines[0], status=NodeStatus.INFO)
+                )
+            else:
+                signal_node = NodeInfo(label=label, desc="", status=NodeStatus.INFO)
+                for ln in lines:
+                    signal_node.add_child(
+                        NodeInfo(label=ln, status=NodeStatus.NONE, show_symbol=False)
+                    )
+                node.add_child(signal_node)
+
+        if not has_any_output:
+            node.desc = "no XPU/Intel information detected"
 
         return node
 
@@ -1806,7 +2322,7 @@ class HuggingFaceInfo(NodeInfo):
     This class directly uses ~/.cache/huggingface/hub instead of reading environment
     variables because this tool must work reliably in all environments, including when
     environment variables are misconfigured or not set. For dynamic configuration that
-    respects all HF environment variables, use dingo.common.config_dump at runtime.
+    respects all HF environment variables, use dynamo.common.config_dump at runtime.
     """
 
     def __init__(self, thorough_check: bool = False):
@@ -2370,7 +2886,13 @@ class NixlInfo(NodeInfo):
         except OSError as e:
             libnixl_err = str(e) if str(e) else "unable to load libnixl.so"
 
-        nixl_prefix = os.environ.get("NIXL_PREFIX") or "/opt/nvidia/nvda_nixl"
+        nixl_prefix = os.environ.get("NIXL_PREFIX")
+        if not nixl_prefix:
+            nixl_prefix = (
+                "/opt/intel/intel_nixl"
+                if shutil.which("xpu-smi")
+                else "/opt/nvidia/nvda_nixl"
+            )
         prefix_exists = os.path.isdir(nixl_prefix)
 
         # Derive a concise version string to show at the node level.
@@ -2454,7 +2976,8 @@ class PythonInfo(NodeInfo):
             torch = __import__("torch")
             version = getattr(torch, "__version__", "installed")
 
-            # Check CUDA availability
+            # Report backend availability explicitly so the summary shows whether
+            # this environment is wired for CUDA, XPU, both, or neither.
             cuda_status = None
             if hasattr(torch, "cuda"):
                 try:
@@ -2466,6 +2989,23 @@ class PythonInfo(NodeInfo):
                     )
                 except Exception:
                     pass
+
+            xpu_status = None
+            if hasattr(torch, "xpu"):
+                try:
+                    xpu_available = torch.xpu.is_available()
+                    xpu_status = (
+                        "✅torch.xpu.is_available"
+                        if xpu_available
+                        else "❌torch.xpu.is_available"
+                    )
+                except Exception:
+                    pass
+
+            backend_status = (
+                ", ".join(status for status in [cuda_status, xpu_status] if status)
+                or None
+            )
 
             # Get installation path
             install_path = None
@@ -2486,7 +3026,7 @@ class PythonInfo(NodeInfo):
             package_info = PythonPackageInfo(
                 package_name="PyTorch",
                 version=version,
-                cuda_status=cuda_status,
+                cuda_status=backend_status,
                 install_path=install_path,
                 is_framework=False,
             )
@@ -2511,7 +3051,7 @@ class FrameworkInfo(NodeInfo):
         if no_framework_check:
             # Why: In some environments (CI, minimal runtime containers) we may want to
             # validate the Dynamo install without requiring a framework/engine package
-            # (vllm/sglang) to be present.
+            # (vllm/sglang/tensorrt_llm) to be present.
             self.desc = "skipped (--no-framework-check)"
             return
 
@@ -2519,6 +3059,7 @@ class FrameworkInfo(NodeInfo):
         frameworks_to_check = [
             ("vllm", "vLLM"),
             ("sglang", "Sglang"),
+            ("tensorrt_llm", "tensorRT LLM"),
         ]
 
         frameworks_found = 0
@@ -2541,6 +3082,7 @@ class FrameworkInfo(NodeInfo):
             except Exception:
                 # Try alternative package names
                 alt_names = {
+                    "tensorrt_llm": "tensorrt-llm",
                     "sglang": "sglang",
                     "vllm": "vllm",
                 }
@@ -2560,6 +3102,7 @@ class FrameworkInfo(NodeInfo):
             exec_names = {
                 "vllm": "vllm",
                 "sglang": "sglang",
+                "tensorrt_llm": "trtllm-build",
             }
             if module_name in exec_names:
                 exec_path_raw = shutil.which(exec_names[module_name])
@@ -2707,11 +3250,11 @@ class DynamoRuntimeInfo(NodeInfo):
         import importlib.metadata
 
         try:
-            version = importlib.metadata.version("ai-dingo-runtime")
-            runtime_value = f"ai-dingo-runtime {version}"
+            version = importlib.metadata.version("ai-dynamo-runtime")
+            runtime_value = f"ai-dynamo-runtime {version}"
             is_installed = True
         except Exception:
-            runtime_value = "ai-dingo-runtime - Not installed"
+            runtime_value = "ai-dynamo-runtime - Not installed"
             is_installed = False
 
         super().__init__(
@@ -2803,18 +3346,18 @@ class DynamoRuntimeInfo(NodeInfo):
                     )
                     if essential_failed:
                         self.status = NodeStatus.ERROR
-                        self.desc = "ai-dingo-runtime - FAILED (essential modules not importable)"
+                        self.desc = "ai-dynamo-runtime - FAILED (essential modules not importable)"
                     else:
                         self.status = NodeStatus.OK
                 else:
                     self.status = NodeStatus.OK
                 # If not installed but components work via PYTHONPATH, update the message
                 if not is_installed and self.status == NodeStatus.OK:
-                    self.desc = "ai-dingo-runtime (via PYTHONPATH)"
+                    self.desc = "ai-dynamo-runtime (via PYTHONPATH)"
             else:
                 self.status = NodeStatus.ERROR
                 if self.runtime_check:
-                    self.desc = "ai-dingo-runtime - FAILED (no components found)"
+                    self.desc = "ai-dynamo-runtime - FAILED (no components found)"
         else:
             # No components discovered at all
             self.status = NodeStatus.ERROR
@@ -2867,7 +3410,7 @@ class DynamoRuntimeInfo(NodeInfo):
         return None
 
     def _discover_runtime_components(self, workspace_dir: Optional[str]) -> list:
-        """Discover ai-dingo-runtime components from filesystem.
+        """Discover ai-dynamo-runtime components from filesystem.
 
         Returns:
             List of runtime component module names
@@ -2896,11 +3439,11 @@ class DynamoRuntimeInfo(NodeInfo):
         return components
 
     def _find_dist_info(self) -> Optional[NodeInfo]:
-        """Find the dist-info directory for ai-dingo-runtime."""
+        """Find the dist-info directory for ai-dynamo-runtime."""
         import site
 
         for site_dir in site.getsitepackages():
-            pattern = os.path.join(site_dir, "ai_dingo_runtime*.dist-info")
+            pattern = os.path.join(site_dir, "ai_dynamo_runtime*.dist-info")
             matches = glob.glob(pattern)
             if matches:
                 path = matches[0]
@@ -2923,11 +3466,11 @@ class DynamoRuntimeInfo(NodeInfo):
         return None
 
     def _find_pth_file(self) -> Optional[NodeInfo]:
-        """Find the .pth file for ai-dingo-runtime."""
+        """Find the .pth file for ai-dynamo-runtime."""
         import site
 
         for site_dir in site.getsitepackages():
-            pth_path = os.path.join(site_dir, "ai_dingo_runtime.pth")
+            pth_path = os.path.join(site_dir, "ai_dynamo_runtime.pth")
             if os.path.exists(pth_path):
                 display_path = self._replace_home_with_var(pth_path)
                 try:
@@ -2971,11 +3514,11 @@ class DynamoFrameworkInfo(NodeInfo):
         import importlib.metadata
 
         try:
-            version = importlib.metadata.version("ai-dingo")
-            framework_value = f"ai-dingo {version}"
+            version = importlib.metadata.version("ai-dynamo")
+            framework_value = f"ai-dynamo {version}"
             is_installed = True
         except Exception:
-            framework_value = "ai-dingo - Not installed"
+            framework_value = "ai-dynamo - Not installed"
             is_installed = False
 
         super().__init__(
@@ -2987,8 +3530,8 @@ class DynamoFrameworkInfo(NodeInfo):
         # Add package info if installed
         if is_installed:
             for site_dir in site.getsitepackages():
-                # Look specifically for ai_dingo (not ai_dingo_runtime)
-                dist_pattern = os.path.join(site_dir, "ai_dingo-*.dist-info")
+                # Look specifically for ai_dynamo (not ai_dynamo_runtime)
+                dist_pattern = os.path.join(site_dir, "ai_dynamo-*.dist-info")
                 matches = glob.glob(dist_pattern)
                 if matches:
                     path = matches[0]
@@ -3089,9 +3632,10 @@ class DynamoFrameworkInfo(NodeInfo):
         if self.runtime_check and not components:
             # Try common framework components even if not discovered
             components = [
-                "dingo.frontend",
-                "dingo.vllm",
-                "dingo.sglang",
+                "dynamo.frontend",
+                "dynamo.vllm",
+                "dynamo.sglang",
+                "dynamo.trtllm",
             ]
 
         # Find where each component actually is and add them
@@ -3144,26 +3688,26 @@ class DynamoFrameworkInfo(NodeInfo):
                 # For runtime check, we need at least one component to work
                 if self.runtime_check and len(import_failures) == len(components):
                     self.status = NodeStatus.ERROR
-                    self.desc = "ai-dingo - FAILED (no components importable)"
+                    self.desc = "ai-dynamo - FAILED (no components importable)"
                 else:
                     self.status = NodeStatus.OK
                 # If not installed but components work via PYTHONPATH, update the message
                 if not is_installed and self.status == NodeStatus.OK:
-                    self.desc = "ai-dingo (via PYTHONPATH)"
+                    self.desc = "ai-dynamo (via PYTHONPATH)"
             else:
                 self.status = NodeStatus.ERROR
                 if self.runtime_check:
-                    self.desc = "ai-dingo - FAILED (no components found)"
+                    self.desc = "ai-dynamo - FAILED (no components found)"
         else:
             # No components discovered at all
             self.status = NodeStatus.ERROR
 
     def _discover_framework_components(self, workspace_dir: Optional[str]) -> list:
-        """Discover ai-dingo framework components from filesystem.
+        """Discover ai-dynamo framework components from filesystem.
 
         Returns:
             List of framework component module names
-            Example: ['dingo.frontend', 'dingo.planner', 'dingo.vllm', 'dingo.sglang']
+            Example: ['dynamo.frontend', 'dynamo.planner', 'dynamo.vllm', 'dynamo.sglang']
 
         Note: Scans components/src/dynamo/... directory for modules with __init__.py files.
         """
@@ -3171,12 +3715,6 @@ class DynamoFrameworkInfo(NodeInfo):
 
         if not workspace_dir:
             return components
-
-        dingo_frontend_path = os.path.join(
-            workspace_dir, "dingo", "frontend", "__init__.py"
-        )
-        if os.path.exists(dingo_frontend_path):
-            components.append("dingo.frontend")
 
         # Scan the components/src/dynamo/... Python directory for __init__.py files
         components_path = os.path.join(workspace_dir, "components", "src", "dynamo")
@@ -3483,7 +4021,7 @@ def main():
         "--runtime",
         dest="runtime_check",
         action="store_true",
-        help="Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers and validate Dynamo packages",
+        help="Skip compile-time dependency checks (Rust, Cargo, Maturin) for runtime containers and validate ai-dynamo packages",
     )
     parser.add_argument(
         "--no-gpu-check",
@@ -3494,7 +4032,7 @@ def main():
         "--no-framework-check",
         dest="no_framework_check",
         action="store_true",
-        help="Skip LLM framework package checks (vllm, sglang)",
+        help="Skip LLM framework package checks (vllm, sglang, tensorrt_llm)",
     )
     args = parser.parse_args()
 

@@ -42,14 +42,13 @@ GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated + LMCache + Multiproc (1 GPU)" "$MODEL" "$HTTP_PORT"
 
-python -m dingo.frontend &
+python -m dynamo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
   PROMETHEUS_MULTIPROC_DIR="$PROMETHEUS_MULTIPROC_DIR" \
-  python -m dingo.vllm --model "$MODEL" --enforce-eager \
+  python -m dynamo.vllm --model "$MODEL" --enforce-eager \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_CONCURRENT_SEQS" \
-  --block-size "${BLOCK_SIZE:-64}" \
   ${GPU_MEM_ARGS:---gpu-memory-utilization 0.75} \
   --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both","kv_buffer_device":"xpu"}' &
 

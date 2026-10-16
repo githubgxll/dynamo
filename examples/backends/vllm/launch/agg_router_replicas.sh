@@ -19,21 +19,19 @@ print_launch_banner --no-curl "Launching Aggregated + KV Routing + Replicas (2 G
     "Frontend R2: http://localhost:$HTTP_PORT_R2"
 
 # run two routers (different HTTP + system ports)
-# Note: use --router-reset-states only on one router to avoid wiping shared state twice.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_R1:-8091} \
-python -m dingo.frontend \
+python -m dynamo.frontend \
     --router-mode kv \
-    --router-reset-states \
     --http-port ${DYN_HTTP_PORT_R1:-8000} &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_R2:-8092} \
-python -m dingo.frontend \
+python -m dynamo.frontend \
     --router-mode kv \
     --http-port ${DYN_HTTP_PORT_R2:-8001} &
 
 # run workers (local indexer is enabled by default, so routers can query on restart)
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -41,7 +39,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \

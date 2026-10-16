@@ -1,0 +1,35 @@
+{
+  "schema": "h3-ref8-omni031/1",
+  "implementation_id": "omni031rc1-ref8-shift12-v1",
+  "omni_version": "0.31.0rc1",
+  "omni_commit": "6dd0d1f9310f7598b773c796b434c8000c2816ec",
+  "wheel_sha256": "93ff995e7fcde7a7132d460eb21102e727f68068ebd58744526ee3178149350c",
+  "source_sha256_before": "f811b4d754d295eebb0d6940f60af307e401da54f1adb12ae2dd97b942e24c2f",
+  "source_sha256_after": "4628f4b90b47aa824bfae141ea5c3c17713ea13f73c88135215afac556d774cf",
+  "changed_files": [
+    "diffusion/models/minimax_h3/lora.py"
+  ],
+  "fixtures": {
+    "denoise_loop.py": "be15b4ac4c0caa41daf4280bb82ca74262d5deceae04e6f098acf43404954932",
+    "lora.py": "f811b4d754d295eebb0d6940f60af307e401da54f1adb12ae2dd97b942e24c2f",
+    "pipeline_minimax_h3.py": "e8d37d9e086b72930d33b419efadbf25ff695bcef295cba8f3c0c2b59edc85e0",
+    "sampling.py": "f6473785702a9e99465089c260ce8777f6b8b5e8c5595e033df64a824d20fee0",
+    "sigma_schedule.py": "f6fe37c2d62ab0ea5450b7130cfe427eb381785709a6cdadd55332322dc151c2",
+    "time_request.py": "c20569799afd74c984e6a323a12c0a587dc6c70d84d375770c81cdccb503de9e"
+  },
+  "tools": {
+    "apply_patch.py": "8d65afcf9da7628e1d28a019d2cd16d712683ddf43d6264fc4529cd54ec0cb55",
+    "check_contract.py": "86b2557f9142ae775b5daff08e66d3a4a32e145854d16a98b69ce1b42d16cce9",
+    "native_contract.py": "1b890745ed992acc7f5e090fe5332d003005ce8e7578661924aff8c234b1e056",
+    "schedule_gate.py": "784e6c9bb55439417e3cc2cbd56c39e6e479e5f6fdc2a0fedc2427e96271d1c3"
+  },
+  "scope": "Fixed Omni 0.31.0rc1 sources; no dependency on the historical 0.30 image or parent-source checker",
+  "adapter": {
+    "filename": "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+    "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+    "sha256": "9bac880b1a5d7ac052171cf6cce769f0cceaaa42ffa51de4b8e41143a2bdd2d2",
+    "num_inference_steps": 8,
+    "flow_shift": 12,
+    "audio_flow_shift": 3
+  }
+}

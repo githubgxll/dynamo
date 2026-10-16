@@ -51,29 +51,29 @@ echo ""
 echo "=========================================="
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 export OTEL_SERVICE_NAME=dynamo-frontend
-python -m dingo.frontend &
+python -m dynamo.frontend &
 
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 export OTEL_SERVICE_NAME=dynamo-worker-decode
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --otlp-traces-endpoint="$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" \
     --disaggregation-mode decode \
-    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
+    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}' &
 
 export OTEL_SERVICE_NAME=dynamo-worker-prefill
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --otlp-traces-endpoint="$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" \
     --disaggregation-mode prefill \
-    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}' \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20081","enable_kv_cache_events":true}' &
 
 wait_any_exit

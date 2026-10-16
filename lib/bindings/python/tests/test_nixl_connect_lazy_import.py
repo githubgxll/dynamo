@@ -18,7 +18,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Pure Python import-error logic; no GPU needed. The `gpu_0` marker is
-# required so CI matrices that filter by GPU class (`-m gpu_0`) pick it up.
+# required by .ai/pytest-guidelines.md so CI matrices that filter by
+# GPU class (`-m gpu_0`) pick it up.
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
 

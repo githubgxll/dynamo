@@ -19,10 +19,9 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated + KV Routing (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
 # run frontend + KV router
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dingo.frontend \
-    --router-mode kv \
-    --router-reset-states &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dynamo.frontend \
+    --router-mode kv &
 
 # run workers
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
@@ -32,7 +31,7 @@ python -m dingo.frontend \
 # TODO: use build_vllm_gpu_mem_args to measure VRAM instead of relying on vLLM defaults
 #
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \
@@ -40,7 +39,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dingo.vllm \
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.vllm \
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.vllm \
     --model $MODEL \
     --block-size $BLOCK_SIZE \
     --enforce-eager \

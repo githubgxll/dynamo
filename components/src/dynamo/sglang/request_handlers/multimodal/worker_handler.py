@@ -1,0 +1,1294 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import asyncio
+import json
+import logging
+import sys
+from typing import Any, AsyncIterator, Callable, Literal, Optional, Protocol
+
+import sglang as sgl
+import torch
+
+from dynamo._core import Client, Context
+from dynamo.common.constants import DisaggregationMode, EmbeddingTransferMode
+from dynamo.common.multimodal import EMBEDDING_RECEIVER_FACTORIES, TransferRequest
+from dynamo.common.utils import nvtx_utils as _nvtx
+from dynamo.common.utils.engine_response import normalize_finish_reason
+from dynamo.llm.exceptions import InvalidArgument
+from dynamo.sglang._compat import require_reasoning_kwargs
+from dynamo.sglang._disagg import validate_disagg_parallel_sampling
+from dynamo.sglang.args import Config
+from dynamo.sglang.protocol import (
+    DisaggSglangMultimodalRequest,
+    SglangMultimodalRequest,
+)
+from dynamo.sglang.request_handlers.handler_base import BaseWorkerHandler
+from dynamo.sglang.thinking_budget import (
+    apply_thinking_budget,
+    thinking_budget_requested,
+)
+
+logger = logging.getLogger(__name__)
+
+try:
+    import cupy as array_module
+
+    if not array_module.cuda.is_available():
+        raise ImportError("CUDA is not available.")
+    DEVICE = "cuda"
+    logger.info("Using cupy for array operations (GPU mode).")
+except ImportError as e:
+    logger.warning(f"Failed to import cupy, falling back to numpy: {e}.")
+    import numpy as array_module
+
+    DEVICE = "cpu"
+
+
+class MultimodalConfig:
+    """Configuration specific to multimodal processing"""
+
+    EMBEDDINGS_DTYPE = torch.float16
+    EMBEDDINGS_DEVICE = "cpu"
+
+
+class EmbeddingsProcessorLike(Protocol):
+    async def process_embeddings(
+        self, request: SglangMultimodalRequest
+    ) -> tuple[torch.Tensor, int]:
+        ...
+
+    def create_multimodal_image_item(
+        self,
+        embeddings: torch.Tensor,
+        image_grid_thw: list[Any],
+    ) -> dict[str, Any]:
+        ...
+
+    def create_multimodal_video_item(
+        self,
+        embeddings: torch.Tensor,
+        video_grid_thw: list[Any],
+        second_per_grid_ts: list[float] | None = None,
+        video_timestamps: list[list[float]] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+    def release_embeddings(self, tensor_id: int) -> None:
+        ...
+
+
+class SglangUtils:
+    """General SGLang utilities (not multimodal-specific)"""
+
+    @staticmethod
+    def build_sampling_params(
+        request: SglangMultimodalRequest,
+        server_args: Any | None = None,
+        engine: Any | None = None,
+    ) -> dict:
+        """Build sampling parameters for SGLang engine (generic functionality)"""
+        sampling_params = {}
+
+        # Extract sampling options from request
+        sampling_options = request.request.sampling_options
+        stop_conditions = request.request.stop_conditions
+
+        if sampling_options.temperature is not None:
+            sampling_params["temperature"] = sampling_options.temperature
+        if sampling_options.top_p is not None:
+            sampling_params["top_p"] = sampling_options.top_p
+        if sampling_options.top_k is not None:
+            sampling_params["top_k"] = sampling_options.top_k
+        if sampling_options.n is not None:
+            sampling_params["n"] = sampling_options.n
+        if stop_conditions.max_tokens:
+            sampling_params["max_new_tokens"] = stop_conditions.max_tokens
+        if stop_conditions.min_tokens:
+            sampling_params["min_new_tokens"] = stop_conditions.min_tokens
+        if stop_conditions.ignore_eos:
+            sampling_params["ignore_eos"] = stop_conditions.ignore_eos
+
+        sampling_params = apply_thinking_budget(
+            request.request.model_dump(),
+            sampling_params,
+            server_args,
+            engine=engine,
+        )
+
+        logger.debug(f"Sampling params: {sampling_params}")
+        return sampling_params
+
+
+class EmbeddingsProcessor:
+    """Handles multimodal embeddings processing and multimodal item creation"""
+
+    def __init__(self, embedding_transfer_mode: EmbeddingTransferMode):
+        receiver = EMBEDDING_RECEIVER_FACTORIES.get(embedding_transfer_mode)
+        if receiver is None:
+            raise ValueError(
+                f"Invalid embedding transfer mode: {embedding_transfer_mode}"
+            )
+        self.embedding_receiver = receiver()
+
+    async def process_embeddings(
+        self, request: SglangMultimodalRequest
+    ) -> tuple[torch.Tensor, int]:
+        """Process one concatenated embedding tensor from serialized request."""
+        logger.debug(f"Processing embeddings with shape: {request.embeddings_shape}")
+
+        multimodal_groups = request.multimodal_inputs
+        if not multimodal_groups:
+            raise ValueError("multimodal_inputs is required")
+
+        transfer_request = request.transfer_payload
+        if transfer_request is None:
+            raise ValueError("transfer_payload is required on request")
+
+        if not isinstance(transfer_request, TransferRequest):
+            transfer_request = TransferRequest.model_validate(transfer_request)
+
+        embeddings_shape = request.embeddings_shape or tuple(
+            transfer_request.embeddings_shape
+        )
+        if len(embeddings_shape) < 2:
+            raise ValueError(f"Invalid embeddings shape: {embeddings_shape}")
+
+        tensor_id, embeddings = await self.embedding_receiver.receive_embeddings(
+            transfer_request
+        )
+        return embeddings, tensor_id
+
+    def release_embeddings(self, tensor_id: int) -> None:
+        self.embedding_receiver.release_tensor(tensor_id)
+
+    @staticmethod
+    def _create_processor_output_item(
+        embeddings: torch.Tensor,
+        grid_key: Literal["image_grid_thw", "video_grid_thw"],
+        grid_values: list[Any],
+        modality: Literal["IMAGE", "VIDEO"],
+    ) -> dict[str, Any]:
+        """Create shared processor_output fields for SGLang async_generate."""
+        precomputed = embeddings.to(MultimodalConfig.EMBEDDINGS_DTYPE)
+        grid_payload = torch.tensor(grid_values)
+
+        mm_item: dict[str, Any] = {
+            grid_key: grid_payload,
+            "format": "processor_output",
+            "precomputed_embeddings": precomputed,
+            "modality": modality,
+        }
+
+        return mm_item
+
+    @staticmethod
+    def create_multimodal_image_item(
+        embeddings: torch.Tensor,
+        image_grid_thw: list[Any],
+    ) -> dict[str, Any]:
+        """Create an image processor_output mm_item for SGLang async_generate."""
+        return EmbeddingsProcessor._create_processor_output_item(
+            embeddings,
+            "image_grid_thw",
+            image_grid_thw,
+            "IMAGE",
+        )
+
+    @staticmethod
+    def create_multimodal_video_item(
+        embeddings: torch.Tensor,
+        video_grid_thw: list[Any],
+        second_per_grid_ts: list[float] | None = None,
+        video_timestamps: list[list[float]] | None = None,
+    ) -> dict[str, Any]:
+        """Create a video processor_output mm_item for SGLang async_generate."""
+        mm_item = EmbeddingsProcessor._create_processor_output_item(
+            embeddings,
+            "video_grid_thw",
+            video_grid_thw,
+            "VIDEO",
+        )
+        if second_per_grid_ts is not None:
+            mm_item["second_per_grid_ts"] = torch.tensor(
+                second_per_grid_ts, dtype=torch.float32
+            )
+        if video_timestamps is not None:
+            # Keep per-video timestamp lists nested; Qwen VL indexes by video.
+            mm_item["video_timestamps"] = video_timestamps
+        return mm_item
+
+
+class StreamProcessor:
+    """Unified stream processing for SGLang responses"""
+
+    @staticmethod
+    async def process_sglang_stream(stream_source) -> AsyncIterator[str]:
+        """Process SGLang stream output.
+
+        With stream_output=True (enforced by Dynamo), SGLang sends disjoint segments
+        containing only new tokens since the last output. We pass these through directly.
+        """
+        try:
+            async for res in stream_source:
+                try:
+                    # With stream_output=True, output_ids contains only new tokens (disjoint)
+                    output_ids = res.get("output_ids", [])
+                    finish_reason = res.get("meta_info", {}).get("finish_reason")
+
+                    # Empty, non-final chunks can happen during scheduler idle ticks.
+                    # Keep waiting for the next chunk.
+                    if not output_ids and not finish_reason:
+                        continue
+
+                    output = {
+                        "token_ids": output_ids,
+                        # Preserve SGLang's choice index for n>1 multimodal
+                        # streams; older/non-n chunks are choice 0.
+                        "index": res.get("index") or 0,
+                        "text": res.get("text", ""),
+                        "finished": False,
+                    }
+
+                    if finish_reason:
+                        # For n > 1, choices can finish independently and SGLang
+                        # may continue emitting chunks for other choice indices.
+                        output.update(
+                            {
+                                "finish_reason": normalize_finish_reason(
+                                    finish_reason.get("type", "stop")
+                                ),
+                                "finished": True,
+                            }
+                        )
+
+                    yield json.dumps(output)
+
+                except KeyError as e:
+                    logger.error(
+                        f"Missing key in SGLang response: {e}, available keys: {list(res.keys())}"
+                    )
+                    error_output = {
+                        "token_ids": [],
+                        "finish_reason": "error",
+                        "error": f"Missing key: {e}",
+                        "finished": True,
+                    }
+                    yield json.dumps(error_output)
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing SGLang response: {e}")
+                    error_output = {
+                        "token_ids": [],
+                        "finish_reason": "error",
+                        "error": str(e),
+                        "finished": True,
+                    }
+                    yield json.dumps(error_output)
+                    break
+
+        except Exception as e:
+            logger.error(f"Error in stream processing: {e}")
+            error_output = {
+                "token_ids": [],
+                "finish_reason": "error",
+                "error": str(e),
+                "finished": True,
+            }
+            yield json.dumps(error_output)
+
+    @staticmethod
+    def create_bootstrap_info(
+        bootstrap_host: str, bootstrap_port: int, bootstrap_room: int
+    ) -> dict:
+        """Create bootstrap info dictionary"""
+        return {
+            "bootstrap_host": bootstrap_host,
+            "bootstrap_port": bootstrap_port,
+            "bootstrap_room": bootstrap_room,
+        }
+
+
+class ErrorResponseBuilder:
+    """Standardized error response builder"""
+
+    @staticmethod
+    def build_error_response(error: Exception, extra_fields=None) -> str:
+        """Build standardized error response"""
+        response = {
+            "token_ids": [],
+            "finish_reason": "error",
+            "error": str(error),
+            "finished": True,
+        }
+        if extra_fields:
+            response.update(extra_fields)
+        return json.dumps(response)
+
+
+async def _build_mm_items(
+    request: SglangMultimodalRequest, embeddings_processor: EmbeddingsProcessorLike
+) -> tuple[list[dict], list[dict], Optional[torch.Tensor], Optional[int]]:
+    """Process embeddings and build multimodal items for SGLang.
+
+    Returns:
+        Tuple of (image_mm_items, video_data_items, combined_embeddings, tensor_id).
+    """
+    image_mm_items: list[dict] = []
+    video_data_items: list[dict] = []
+
+    encoded_groups: list[tuple[str, Any, int, float | None, list[float] | None]] = []
+
+    for group in request.multimodal_inputs:
+        if group.num_mm_tokens is not None and group.num_mm_tokens > 0:
+            if group.image_grid_thw is not None:
+                encoded_groups.append(
+                    (
+                        "IMAGE",
+                        group.image_grid_thw,
+                        group.num_mm_tokens,
+                        None,
+                        None,
+                    )
+                )
+            elif group.video_grid_thw is not None:
+                encoded_groups.append(
+                    (
+                        "VIDEO",
+                        group.video_grid_thw,
+                        group.num_mm_tokens,
+                        group.second_per_grid_ts,
+                        group.video_timestamps,
+                    )
+                )
+            else:
+                raise ValueError("Encoded multimodal group missing grid metadata")
+
+    embeddings: Optional[torch.Tensor] = None
+    tensor_id: Optional[int] = None
+
+    if encoded_groups:
+        embeddings, tensor_id = await embeddings_processor.process_embeddings(request)
+
+        try:
+            grouped_grids: dict[str, list[Any]] = {"IMAGE": [], "VIDEO": []}
+            grouped_embeds: dict[str, list[torch.Tensor]] = {
+                "IMAGE": [],
+                "VIDEO": [],
+            }
+            video_second_per_grid_ts: list[float] = []
+            # SGLang expects one timestamp list per video in the grouped item.
+            video_timestamps: list[list[float]] = []
+
+            offset = 0
+            for (
+                modality,
+                grid_item,
+                token_count,
+                second_per_grid_ts,
+                timestamps,
+            ) in encoded_groups:
+                next_offset = offset + int(token_count)
+                if next_offset > embeddings.shape[0]:
+                    raise ValueError(
+                        "Encoded token counts exceed received embedding rows"
+                    )
+                grouped_grids[modality].append(grid_item)
+                grouped_embeds[modality].append(embeddings[offset:next_offset])
+                if modality == "VIDEO":
+                    if second_per_grid_ts is not None:
+                        video_second_per_grid_ts.append(second_per_grid_ts)
+                    if timestamps is not None:
+                        video_timestamps.append(timestamps)
+                offset = next_offset
+
+            if offset != embeddings.shape[0]:
+                raise ValueError(
+                    "Encoded token counts do not match received embeddings"
+                )
+
+            if grouped_embeds["IMAGE"]:
+                image_mm_items.append(
+                    embeddings_processor.create_multimodal_image_item(
+                        torch.cat(grouped_embeds["IMAGE"], dim=0),
+                        grouped_grids["IMAGE"],
+                    )
+                )
+            if grouped_embeds["VIDEO"]:
+                video_group_count = len(grouped_grids["VIDEO"])
+                if (
+                    video_second_per_grid_ts
+                    and len(video_second_per_grid_ts) != video_group_count
+                ):
+                    raise ValueError(
+                        "second_per_grid_ts must be present for every video group"
+                    )
+                if video_timestamps and len(video_timestamps) != video_group_count:
+                    raise ValueError(
+                        "video_timestamps must be present for every video group"
+                    )
+                video_data_items.append(
+                    embeddings_processor.create_multimodal_video_item(
+                        torch.cat(grouped_embeds["VIDEO"], dim=0),
+                        grouped_grids["VIDEO"],
+                        second_per_grid_ts=video_second_per_grid_ts or None,
+                        video_timestamps=video_timestamps or None,
+                    )
+                )
+        except BaseException:
+            try:
+                embeddings_processor.release_embeddings(tensor_id)
+            except BaseException:
+                logger.exception(
+                    "Failed to release multimodal embeddings allocation %s", tensor_id
+                )
+            raise
+
+    return image_mm_items, video_data_items, embeddings, tensor_id
+
+
+def _build_decode_mm_items(
+    request: SglangMultimodalRequest, bootstrap_room: int
+) -> dict[str, list[dict[str, Any]]]:
+    """Reconstruct positions on decode without transferring vision embeddings again."""
+    result: dict[str, list[dict[str, Any]]] = {}
+    for modality, grid_key, data_key in (
+        ("IMAGE", "image_grid_thw", "image_data"),
+        ("VIDEO", "video_grid_thw", "video_data"),
+    ):
+        groups = [
+            group
+            for group in request.multimodal_inputs
+            if group.num_mm_tokens and getattr(group, grid_key) is not None
+        ]
+        if not groups:
+            continue
+        item: dict[str, Any] = {
+            "format": "processor_output",
+            "modality": modality,
+            grid_key: torch.tensor([getattr(group, grid_key) for group in groups]),
+            # Decode receives KV, not features. Give its metadata-only item a
+            # request-local identity so SGLang need not hash absent features or
+            # reuse cached metadata from a different image with the same grid.
+            "hash": bootstrap_room * 2 + (modality == "VIDEO"),
+        }
+        if modality == "VIDEO":
+            for key in ("second_per_grid_ts", "video_timestamps"):
+                values = [getattr(group, key) for group in groups]
+                if any(value is not None for value in values):
+                    if any(value is None for value in values):
+                        raise ValueError(f"{key} must be present for every video group")
+                    item[key] = (
+                        torch.tensor(values) if key == "second_per_grid_ts" else values
+                    )
+        result[data_key] = [item]
+    return result
+
+
+class MultimodalWorkerHandler(BaseWorkerHandler[SglangMultimodalRequest, str]):
+    """
+    Multimodal worker handler for LLM inference with multimodal data.
+    Handles both aggregated and disaggregated modes.
+    """
+
+    def __init__(
+        self,
+        engine: sgl.Engine,
+        config: Config,
+        prefill_client: Client | None = None,
+        shutdown_event: Optional[asyncio.Event] = None,
+    ):
+        super().__init__(engine, config, None, None, shutdown_event)
+
+        # Initialize processors
+        self.embeddings_processor = EmbeddingsProcessor(
+            config.dynamo_args.embedding_transfer_mode
+        )
+
+        # Store serving mode and prefill client (like regular SGLang)
+        self.serving_mode = config.serving_mode
+        self.prefill_client = prefill_client
+
+        # Validate prefill client for disaggregated mode
+        if self.serving_mode == DisaggregationMode.DECODE:
+            if self.prefill_client is None:
+                raise ValueError(
+                    "prefill_client must be provided when serving_mode is decode"
+                )
+            logger.info("Multimodal decode worker handler initialized")
+        else:
+            logger.info("Multimodal aggregated worker handler initialized")
+
+    def _validate_and_parse_request(self, request) -> SglangMultimodalRequest:
+        """Validate and parse incoming request"""
+        if type(request) is not SglangMultimodalRequest:
+            if type(request) is str:
+                request = SglangMultimodalRequest.model_validate_json(request)
+            else:
+                request = SglangMultimodalRequest.model_validate(request)
+        return request
+
+    async def generate(
+        self, request: SglangMultimodalRequest, context: Context
+    ) -> AsyncIterator[str]:
+        """
+        Generate response using SGLang with multimodal data
+        Handles both aggregated and disaggregated modes (following regular SGLang DecodeWorkerHandler pattern)
+
+        Args:
+            request: Multimodal request with input and parameters.
+            context: Context object for cancellation handling.
+        """
+        rng_pd = _nvtx.start_range("mm:pd:generate", color="green")
+        rng_ttft = _nvtx.start_range("mm:pd:ttft", color="yellow")
+        ttft_ended = False
+
+        def _end_ttft() -> None:
+            nonlocal ttft_ended
+            if not ttft_ended:
+                _nvtx.end_range(rng_ttft)
+                ttft_ended = True
+
+        try:
+            request = self._validate_and_parse_request(request)
+
+            # Route to appropriate generation method based on serving mode
+            if self.serving_mode == DisaggregationMode.DECODE:
+                rng_disagg = _nvtx.start_range("mm:pd:generate_disagg", color="red")
+                try:
+                    async for output in self._generate_disaggregated(
+                        request, _end_ttft, context=context
+                    ):
+                        yield output
+                finally:
+                    _nvtx.end_range(rng_disagg)
+            else:
+                rng_agg = _nvtx.start_range("mm:pd:generate_agg", color="red")
+                try:
+                    async for output in self._generate_aggregated(
+                        request, _end_ttft, context=context
+                    ):
+                        yield output
+                finally:
+                    _nvtx.end_range(rng_agg)
+
+        except InvalidArgument:
+            raise
+        except Exception as e:
+            logger.error(f"Error in multimodal generation: {e}", exc_info=True)
+            yield ErrorResponseBuilder.build_error_response(e)
+        finally:
+            _end_ttft()
+            _nvtx.end_range(rng_pd)
+
+    async def _generate_disaggregated(
+        self,
+        request: SglangMultimodalRequest,
+        end_ttft: Callable[[], None],
+        context=None,
+    ) -> AsyncIterator[str]:
+        """Handle disaggregated mode generation"""
+        input_ids = request.request.token_ids
+        if not input_ids:
+            raise ValueError("input_ids is required")
+
+        request_data = request.request.model_dump()
+        validate_disagg_parallel_sampling(
+            {"sampling_params": {"n": request.request.sampling_options.n}}
+        )
+        sampling_params = SglangUtils.build_sampling_params(
+            request, self.config.server_args, self.engine
+        )
+
+        # Request bootstrap info from prefill worker
+        bootstrap_info = await self._get_bootstrap_from_prefill(
+            request, sampling_params, context=context
+        )
+
+        trace_header = (
+            context.trace_headers() if context and self.enable_trace else None
+        )
+
+        # Decode still needs the image/video grids to reconstruct M-RoPE positions.
+        # Only prefill receives the encoded features through NIXL.
+        decode_stream = await self.engine.async_generate(
+            input_ids=input_ids,
+            sampling_params=sampling_params,
+            stream=True,
+            **require_reasoning_kwargs(
+                self.engine,
+                request_data,
+                thinking_budget_requested=thinking_budget_requested(request_data),
+            ),
+            bootstrap_host=bootstrap_info["bootstrap_host"],
+            bootstrap_port=bootstrap_info["bootstrap_port"],
+            bootstrap_room=bootstrap_info["bootstrap_room"],
+            **_build_decode_mm_items(request, bootstrap_info["bootstrap_room"]),
+            external_trace_header=trace_header,
+            rid=context.trace_id if context else None,
+        )
+
+        rng_first = _nvtx.start_range("mm:dec:first_token", color="purple")
+        first_token = True
+        try:
+            async for output in StreamProcessor.process_sglang_stream(decode_stream):
+                if first_token:
+                    end_ttft()
+                    _nvtx.end_range(rng_first)
+                    first_token = False
+                yield output
+        finally:
+            if first_token:
+                end_ttft()
+                _nvtx.end_range(rng_first)
+
+    async def _generate_aggregated(
+        self,
+        request: SglangMultimodalRequest,
+        end_ttft: Callable[[], None],
+        context=None,
+    ) -> AsyncIterator[str]:
+        """Handle aggregated mode generation"""
+        input_ids = request.request.token_ids
+        if not input_ids:
+            raise ValueError("input_ids is required")
+        tensor_id: int | None = None
+        request_data = request.request.model_dump()
+        try:
+            sampling_params = SglangUtils.build_sampling_params(
+                request, self.config.server_args, self.engine
+            )
+            with _nvtx.annotate("mm:pd:load_multimodal", color="cyan"):
+                (
+                    image_mm_items,
+                    video_data,
+                    combined_embeddings,
+                    tensor_id,
+                ) = await _build_mm_items(request, self.embeddings_processor)
+
+            if combined_embeddings is not None:
+                logger.debug(
+                    "Generated combined multimodal item with embeddings shape: "
+                    f"{combined_embeddings.shape}"
+                )
+            else:
+                logger.debug("No precomputed multimodal embeddings generated")
+            logger.debug(f"Input token sequence length: {len(input_ids)}")
+
+            trace_header = (
+                context.trace_headers() if context and self.enable_trace else None
+            )
+
+            gen_params: dict[str, Any] = {
+                "input_ids": input_ids,
+                "sampling_params": sampling_params,
+                "stream": True,
+                "external_trace_header": trace_header,
+                "rid": context.trace_id if context else None,
+            }
+            gen_params.update(
+                require_reasoning_kwargs(
+                    self.engine,
+                    request_data,
+                    thinking_budget_requested=thinking_budget_requested(request_data),
+                )
+            )
+            if image_mm_items:
+                gen_params["image_data"] = image_mm_items
+            if video_data:
+                gen_params["video_data"] = video_data
+
+            agg_stream = await self.engine.async_generate(**gen_params)
+
+            rng_first = _nvtx.start_range("mm:dec:first_token", color="purple")
+            first_token = True
+            try:
+                async for output in StreamProcessor.process_sglang_stream(agg_stream):
+                    if first_token:
+                        if tensor_id is not None:
+                            self.embeddings_processor.release_embeddings(tensor_id)
+                            tensor_id = None
+                        end_ttft()
+                        _nvtx.end_range(rng_first)
+                        first_token = False
+                    yield output
+            finally:
+                if first_token:
+                    end_ttft()
+                    _nvtx.end_range(rng_first)
+
+        except RuntimeError as e:
+            if "shape mismatch" in str(e):
+                logger.error(
+                    "Shape mismatch error - this likely indicates a tokenization/embedding alignment issue"
+                )
+                logger.error(f"Request token IDs length: {len(input_ids)}")
+                logger.error(f"Embeddings shape: {request.embeddings_shape}")
+                logger.error(f"Token sequence preview: {input_ids[:20]}...")
+                error_msg = (
+                    f"Multimodal embedding alignment error: {str(e)}. "
+                    f"This usually happens when the tokenization changes between requests. "
+                    "Token count: "
+                    f"{len(input_ids)}, Embedding shape: "
+                    f"{request.embeddings_shape}"
+                )
+                yield ErrorResponseBuilder.build_error_response(RuntimeError(error_msg))
+            else:
+                yield ErrorResponseBuilder.build_error_response(e)
+        finally:
+            if tensor_id is not None:
+                self.embeddings_processor.release_embeddings(tensor_id)
+
+    async def _get_bootstrap_from_prefill(
+        self, request: SglangMultimodalRequest, sampling_params: dict, context=None
+    ) -> dict:
+        """Get bootstrap info from prefill worker"""
+        assert self.prefill_client is not None
+        prefill_stream = await self.prefill_client.generate(
+            DisaggSglangMultimodalRequest(
+                request=request,
+                sampling_params=sampling_params,
+            ).model_dump_json(),
+            context=context,
+        )
+
+        bootstrap_info = None
+        async for info in prefill_stream:
+            bootstrap_data = info.data() if hasattr(info, "data") else info
+            if isinstance(bootstrap_data, str):
+                bootstrap_info = json.loads(bootstrap_data)
+            else:
+                bootstrap_info = bootstrap_data
+            break
+
+        if not bootstrap_info:
+            raise RuntimeError("No bootstrap info received from prefill worker")
+
+        if bootstrap_info.get("finish_reason") == "error":
+            raise RuntimeError(
+                bootstrap_info.get("error", "Prefill worker failed the request")
+            )
+
+        return bootstrap_info
+
+    def cleanup(self):
+        super().cleanup()
+        self.engine.shutdown()
+        logger.info("Multimodal worker engine shutdown")
+
+
+class MultimodalPrefillWorkerHandler(
+    BaseWorkerHandler[DisaggSglangMultimodalRequest, str]
+):
+    """
+    Multimodal prefill worker handler for disaggregated inference
+    Processes multimodal inputs and coordinates with decode worker.
+    """
+
+    _REQUEST_REGISTRATION_TIMEOUT_SECONDS = 5.0
+
+    def __init__(
+        self,
+        engine: sgl.Engine,
+        config: Config,
+        shutdown_event: Optional[asyncio.Event] = None,
+    ):
+        super().__init__(engine, config, None, None, shutdown_event)
+
+        # Initialize processors
+        self.embeddings_processor = EmbeddingsProcessor(
+            config.dynamo_args.embedding_transfer_mode
+        )
+
+        # Get bootstrap info using BootstrapManager
+        self.bootstrap_host, self.bootstrap_port = self._get_bootstrap_info(engine)
+        self._consume_tasks: set[asyncio.Task[Any]] = set()
+
+        logger.info(
+            f"Multimodal prefill worker handler initialized - bootstrap host: {self.bootstrap_host}, bootstrap port: {self.bootstrap_port}"
+        )
+
+    async def generate(
+        self, disagg_request: DisaggSglangMultimodalRequest, context: Context
+    ) -> AsyncIterator[str]:
+        """
+        Handle prefill phase: process multimodal input and provide bootstrap info
+
+        Args:
+            disagg_request: Disaggregated multimodal request.
+            context: Context object for cancellation handling.
+        """
+        rng_bootstrap = _nvtx.start_range("mm:prefill:bootstrap", color="yellow")
+        bootstrap_ended = False
+
+        def _end_bootstrap() -> None:
+            nonlocal bootstrap_ended
+            if not bootstrap_ended:
+                _nvtx.end_range(rng_bootstrap)
+                bootstrap_ended = True
+
+        bootstrap_room = None
+        try:
+            # Validate and parse request
+            disagg_request = self._validate_and_parse_disagg_request(disagg_request)
+            validate_disagg_parallel_sampling(
+                {"sampling_params": disagg_request.sampling_params}
+            )
+
+            rid = context.trace_id or context.id()
+            bootstrap_room = self._generate_bootstrap_room()
+            results, tensor_id = await self._start_prefill_or_cancel(
+                disagg_request,
+                bootstrap_room,
+                rid,
+                context,
+            )
+            consumer_owns_tensor = asyncio.Event()
+            request_started = asyncio.Event()
+            task: asyncio.Task[Any] | None = None
+            try:
+                task = asyncio.create_task(
+                    self._consume_results(
+                        results,
+                        tensor_id,
+                        rid,
+                        context,
+                        consumer_owns_tensor,
+                        request_started,
+                    )
+                )
+                self._consume_tasks.add(task)
+                task.add_done_callback(self._consume_tasks.discard)
+
+                started_wait = asyncio.create_task(request_started.wait())
+                try:
+                    await asyncio.wait(
+                        (task, started_wait),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if not started_wait.done():
+                        started_wait.cancel()
+                        try:
+                            await started_wait
+                        except asyncio.CancelledError:
+                            pass
+
+                # Surface an immediate submission/cancellation failure before
+                # decode is authorized. Once consumer_owns_tensor is set, the
+                # consumer's try/finally owns the transferred tensor.
+                if task.done():
+                    await task
+                # Do not authorize decode until embeddings have been received and
+                # the result consumer has advanced SGLang's lazy request iterator.
+                # Otherwise decode can start waiting before prefill is submitted.
+                bootstrap_info = {
+                    "bootstrap_host": self.bootstrap_host,
+                    "bootstrap_port": self.bootstrap_port,
+                    "bootstrap_room": bootstrap_room,
+                }
+
+                _end_bootstrap()
+                yield json.dumps(bootstrap_info)
+
+                await task
+            except BaseException:
+                if not consumer_owns_tensor.is_set():
+                    if task is not None and not task.done():
+                        task.cancel()
+                    if tensor_id is not None:
+                        self.embeddings_processor.release_embeddings(tensor_id)
+                raise
+            finally:
+                pending_exception = sys.exc_info()[1]
+                if task is not None:
+                    if not task.done():
+                        task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as task_error:
+                        if pending_exception is None:
+                            raise
+                        if (
+                            task_error is not pending_exception
+                            and task_error
+                            is not getattr(pending_exception, "__cause__", None)
+                        ):
+                            logger.error(
+                                "Multimodal prefill consumer failed during request "
+                                "cleanup",
+                                exc_info=(
+                                    type(task_error),
+                                    task_error,
+                                    task_error.__traceback__,
+                                ),
+                            )
+
+        except InvalidArgument:
+            raise
+        except Exception as e:
+            logger.error(f"Error in prefill generation: {e}", exc_info=True)
+            extra_fields = (
+                {"bootstrap_room": bootstrap_room} if bootstrap_room is not None else {}
+            )
+            yield ErrorResponseBuilder.build_error_response(e, extra_fields)
+        finally:
+            _end_bootstrap()
+
+    def _validate_and_parse_disagg_request(
+        self, disagg_request
+    ) -> DisaggSglangMultimodalRequest:
+        """Validate and parse disaggregated request"""
+        if type(disagg_request) is not DisaggSglangMultimodalRequest:
+            if type(disagg_request) is str:
+                disagg_request = DisaggSglangMultimodalRequest.model_validate_json(
+                    disagg_request
+                )
+            else:
+                disagg_request = DisaggSglangMultimodalRequest.model_validate(
+                    disagg_request
+                )
+        return disagg_request
+
+    async def _start_prefill_generation(
+        self,
+        disagg_request: DisaggSglangMultimodalRequest,
+        bootstrap_room: int,
+        rid: Optional[str] = None,
+        context=None,
+    ) -> tuple[AsyncIterator[Any], Optional[int]]:
+        """Receive multimodal embeddings and submit the prefill to SGLang."""
+        # Get the SglangMultimodalRequest from the DisaggSglangMultimodalRequest
+        request = disagg_request.request
+        input_ids = request.request.token_ids
+        request_data = request.request.model_dump()
+        has_thinking_budget = thinking_budget_requested(request_data)
+        sampling_params = apply_thinking_budget(
+            request_data,
+            disagg_request.sampling_params,
+            self.config.server_args,
+            engine=self.engine,
+        )
+        tensor_id: int | None = None
+
+        # Process embeddings from encode worker using our embeddings processor
+        with _nvtx.annotate("mm:prefill:load_multimodal", color="cyan"):
+            (
+                image_mm_items,
+                video_data,
+                _,
+                tensor_id,
+            ) = await _build_mm_items(request, self.embeddings_processor)
+
+        trace_header = (
+            context.trace_headers() if context and self.enable_trace else None
+        )
+
+        try:
+            # Start SGLang prefill generation (like regular SGLang)
+            with _nvtx.annotate("mm:prefill:engine_async_generate", color="blue"):
+                gen_params = {
+                    "input_ids": input_ids,
+                    "sampling_params": sampling_params,
+                    "stream": True,
+                    "bootstrap_host": self.bootstrap_host,
+                    "bootstrap_port": self.bootstrap_port,
+                    "bootstrap_room": bootstrap_room,
+                    "external_trace_header": trace_header,
+                    "rid": rid,
+                }
+                gen_params.update(
+                    require_reasoning_kwargs(
+                        self.engine,
+                        request_data,
+                        thinking_budget_requested=has_thinking_budget,
+                    )
+                )
+
+                if image_mm_items:
+                    gen_params["image_data"] = image_mm_items
+                if video_data:
+                    gen_params["video_data"] = video_data
+
+                results = await self.engine.async_generate(**gen_params)
+        except BaseException:
+            if tensor_id is not None:
+                self.embeddings_processor.release_embeddings(tensor_id)
+            raise
+
+        return results, tensor_id
+
+    async def _start_prefill_or_cancel(
+        self,
+        disagg_request: DisaggSglangMultimodalRequest,
+        bootstrap_room: int,
+        rid: str,
+        context: Context,
+    ) -> tuple[AsyncIterator[Any], Optional[int]]:
+        """Cancel local preprocessing/submission if the client stops early."""
+        start_task = asyncio.create_task(
+            self._start_prefill_generation(
+                disagg_request,
+                bootstrap_room,
+                rid=rid,
+                context=context,
+            )
+        )
+        cancellation_future = context.async_killed_or_stopped()
+        try:
+            done, _ = await asyncio.wait(
+                (start_task, cancellation_future),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Prefer a completed submission if both signals arrive together. The
+            # registered-request phase will observe the sticky context state and
+            # abort by the same RID without dropping tensor ownership.
+            if start_task in done:
+                return await start_task
+
+            start_task.cancel()
+            try:
+                await start_task
+            except asyncio.CancelledError:
+                pass
+            raise asyncio.CancelledError
+        finally:
+            if not start_task.done():
+                start_task.cancel()
+                try:
+                    await start_task
+                except asyncio.CancelledError:
+                    pass
+            if not cancellation_future.done():
+                cancellation_future.cancel()
+                try:
+                    await cancellation_future
+                except asyncio.CancelledError:
+                    pass
+
+    async def _wait_for_request_registration(self, rid: str) -> None:
+        """Wait until SGLang owns the RID, without waiting for engine output."""
+        tokenizer_manager = getattr(self.engine, "tokenizer_manager", None)
+        rid_to_state = getattr(tokenizer_manager, "rid_to_state", None)
+        if rid_to_state is None:
+            raise RuntimeError("SGLang tokenizer manager has no request registry")
+
+        async def poll_registry() -> None:
+            while rid not in rid_to_state:
+                await asyncio.sleep(0.001)
+
+        try:
+            await asyncio.wait_for(
+                poll_registry(),
+                timeout=self._REQUEST_REGISTRATION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as e:
+            raise RuntimeError(
+                f"SGLang did not register prefill request {rid} within "
+                f"{self._REQUEST_REGISTRATION_TIMEOUT_SECONDS:g}s"
+            ) from e
+
+    async def _consume_results(
+        self,
+        results,
+        tensor_id: Optional[int],
+        rid: str,
+        context: Context,
+        owns_tensor: asyncio.Event,
+        request_started: asyncio.Event,
+    ) -> None:
+        """Consume prefill output while honoring request cancellation."""
+        released = False
+        request_id_future: asyncio.Future[str] = asyncio.Future()
+        first_result_task: asyncio.Task[Any] | None = None
+        next_result_task: asyncio.Task[Any] | None = None
+        registration_task: asyncio.Task[None] | None = None
+        pre_registration_cancellation: asyncio.Future[Any] | None = None
+
+        def process_result(result: dict[str, Any]) -> None:
+            nonlocal released
+            if tensor_id is not None and not released:
+                self.embeddings_processor.release_embeddings(tensor_id)
+                released = True
+
+        try:
+            owns_tensor.set()
+            registration_task = asyncio.create_task(
+                self._wait_for_request_registration(rid)
+            )
+            first_result_task = asyncio.create_task(anext(results))
+            pre_registration_cancellation = context.async_killed_or_stopped()
+
+            first_result: Any = None
+            first_result_ready = False
+            while not registration_task.done():
+                wait_for: set[asyncio.Future[Any]] = {
+                    registration_task,
+                    pre_registration_cancellation,
+                }
+                if first_result_task is not None and not first_result_task.done():
+                    wait_for.add(first_result_task)
+                done, _ = await asyncio.wait(
+                    wait_for,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if registration_task in done:
+                    break
+                if first_result_task is not None:
+                    first_result_is_done = first_result_task in done
+                else:
+                    first_result_is_done = False
+                if first_result_is_done and not first_result_ready:
+                    assert first_result_task is not None
+                    try:
+                        first_result = await first_result_task
+                    except StopAsyncIteration as e:
+                        raise RuntimeError(
+                            "SGLang prefill stream ended before producing a result"
+                        ) from e
+                    finally:
+                        first_result_task = None
+                    first_result_ready = True
+                if pre_registration_cancellation in done:
+                    raise asyncio.CancelledError
+
+            await registration_task
+            request_id_future.set_result(rid)
+            if not pre_registration_cancellation.done():
+                pre_registration_cancellation.cancel()
+                try:
+                    await pre_registration_cancellation
+                except asyncio.CancelledError:
+                    pass
+
+            async with self._cancellation_monitor(
+                request_id_future, context
+            ) as cancellation_task:
+                request_started.set()
+                if not first_result_ready:
+                    assert first_result_task is not None
+                    done, _ = await asyncio.wait(
+                        (first_result_task, cancellation_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancellation_task in done:
+                        await cancellation_task
+                        raise asyncio.CancelledError
+                    try:
+                        first_result = await first_result_task
+                    except StopAsyncIteration as e:
+                        raise RuntimeError(
+                            "SGLang prefill stream ended before producing a result"
+                        ) from e
+                    finally:
+                        first_result_task = None
+                process_result(first_result)
+
+                while True:
+                    next_result_task = asyncio.create_task(anext(results))
+                    done, _ = await asyncio.wait(
+                        (next_result_task, cancellation_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancellation_task in done:
+                        if not next_result_task.done():
+                            next_result_task.cancel()
+                            try:
+                                await next_result_task
+                            except asyncio.CancelledError:
+                                pass
+                        await cancellation_task
+                        raise asyncio.CancelledError
+                    try:
+                        result = await next_result_task
+                    except StopAsyncIteration:
+                        break
+                    finally:
+                        next_result_task = None
+                    process_result(result)
+        finally:
+            pending_exception = sys.exc_info()[1]
+            for task in (registration_task, pre_registration_cancellation):
+                if task is None:
+                    continue
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as task_error:
+                    if pending_exception is None:
+                        raise
+                    if task_error is not pending_exception:
+                        logger.error(
+                            "SGLang prefill registration task failed during cleanup",
+                            exc_info=(
+                                type(task_error),
+                                task_error,
+                                task_error.__traceback__,
+                            ),
+                        )
+            if next_result_task is not None:
+                if not next_result_task.done():
+                    next_result_task.cancel()
+                try:
+                    await next_result_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as task_error:
+                    if pending_exception is None:
+                        raise
+                    if task_error is not pending_exception:
+                        logger.error(
+                            "SGLang prefill next-result task failed during cleanup",
+                            exc_info=(
+                                type(task_error),
+                                task_error,
+                                task_error.__traceback__,
+                            ),
+                        )
+            if first_result_task is not None:
+                if not first_result_task.done():
+                    first_result_task.cancel()
+                try:
+                    await first_result_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as task_error:
+                    if pending_exception is None:
+                        raise
+                    if task_error is not pending_exception:
+                        logger.error(
+                            "SGLang prefill first-result task failed during cleanup",
+                            exc_info=(
+                                type(task_error),
+                                task_error,
+                                task_error.__traceback__,
+                            ),
+                        )
+            if tensor_id is not None and not released:
+                self.embeddings_processor.release_embeddings(tensor_id)
+
+    async def cleanup_async(self) -> None:
+        tasks = list(self._consume_tasks)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    logger.error(
+                        "Multimodal prefill consumer failed during handler cleanup",
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
+        self._consume_tasks.clear()
+
+        super().cleanup()
+        self.engine.shutdown()
+        logger.info("Multimodal prefill engine shutdown")

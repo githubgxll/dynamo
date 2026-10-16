@@ -18,6 +18,7 @@ CHAT_TEMPLATE="qwen2-vl"
 PROVIDED_CHAT_TEMPLATE=""
 CACHE_CAPACITY_GB=""
 TRANSFER_BACKEND="${DYN_SGLANG_DISAGGREGATION_TRANSFER_BACKEND:-nixl}"
+FRONTEND_DECODING=false
 
 # --single-gpu: Packs both workers (encode, PD) onto a single GPU.
 # This is intended for functional testing with small models (e.g. 2B) where CI
@@ -51,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             TRANSFER_BACKEND=$2
             shift 2
             ;;
+        --frontend-decoding)
+            FRONTEND_DECODING=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
@@ -62,6 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo "                       Enable encode-worker CPU embedding cache with this capacity"
             echo "  --disaggregation-transfer-backend <backend>"
             echo "                       SGLang disaggregation transfer backend (default: $TRANSFER_BACKEND)"
+            echo "  --frontend-decoding  Decode images in the Rust frontend and transfer pixels to the encode worker"
             echo "  -h, --help           Show this help message"
             exit 0
             ;;
@@ -121,6 +127,10 @@ if [[ -n "$CACHE_CAPACITY_GB" ]]; then
     ENCODE_EXTRA_ARGS="$ENCODE_EXTRA_ARGS --multimodal-embedding-cache-capacity-gb $CACHE_CAPACITY_GB"
 fi
 
+if [[ "$FRONTEND_DECODING" == "true" ]]; then
+    ENCODE_EXTRA_ARGS="$ENCODE_EXTRA_ARGS --frontend-decoding"
+fi
+
 if [[ "$SINGLE_GPU" == "true" ]]; then
     # Both workers share one GPU; cap activations tightly.
     SHARED_CAPS="--max-running-requests 2 --chunked-prefill-size 4096 --max-prefill-tokens 4096"
@@ -141,13 +151,13 @@ fi
 print_launch_banner --multimodal "Launching Multimodal E/PD ($GPU_LABEL)" "$MODEL_NAME" "$HTTP_PORT"
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dingo.frontend &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dynamo.frontend &
 
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dingo.sglang \
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang \
   --enable-multimodal \
   --disaggregation-mode encode \
   --model-path "$MODEL_NAME" \
@@ -171,7 +181,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting PD worker on GPU $DYN_WORKER_GPU..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-env ${_WORKER_CUDA_PIN:+"$_WORKER_CUDA_PIN"} python3 -m dingo.sglang \
+env ${_WORKER_CUDA_PIN:+"$_WORKER_CUDA_PIN"} python3 -m dynamo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --disaggregation-mode pd \

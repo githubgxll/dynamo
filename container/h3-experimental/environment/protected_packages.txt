@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Keep the core vllm-openai runtime solve intact while layering Omni's complete
+# default requirements. runtime_dependency_requirements.py also freezes every
+# installed nvidia-* distribution, including the upstream NCCL override.
+numpy
+torch
+torchvision
+torchaudio
+triton
+vllm
+transformers
+tokenizers
+# For reviewed Omni 0.29.0rc1/0.30.0/0.31.0rc1, transformers/tokenizers resolve
+# jointly with vLLM; all other installed packages listed here remain exact.
+# vLLM-Omni (v0.27.0rc1) may require a newer safetensors than the upstream
+# vLLM 0.27.1 image ships, so safetensors is intentionally left unfrozen here.
+# safetensors
+msgspec
+flashinfer-python
+flashinfer-cubin
+flashinfer-jit-cache
+flash-attn
+xformers
+lmcache
+nixl
+nixl-cu12
+nixl-cu13
+
+pynvvideocodec
+ai-dynamo
+ai-dynamo-runtime
+aisimulate
+gpu-memory-service
+apache-tvm-ffi
+tilelang
+quack-kernels
+tokenspeed-mla
+humming-kernels
+fastsafetensors
+instanttensor
+mooncake-transfer-engine-cuda13
+numba
+llvmlite

@@ -45,7 +45,7 @@ curl -s http://localhost:${HTTP_PORT}/v1/videos \\
 CURL
 
 
-python -m dingo.frontend &
+python -m dynamo.frontend &
 FRONTEND_PID=$!
 
 sleep 2
@@ -57,7 +57,7 @@ echo "Starting Omni worker..."
 # under torch.compile and triggering a graph break. Remove this flag once
 # vllm-omni hoists the rotary embedding into __init__.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dingo.vllm.omni \
+    python -m dynamo.vllm.omni \
     --model "$MODEL" \
     --output-modalities video \
     --media-output-fs-url file:///tmp/dynamo_media \

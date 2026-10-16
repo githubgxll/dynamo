@@ -60,13 +60,13 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated + KV Routing (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
 FRONTEND_ARGS=(--router-mode kv)
 if [ "$APPROX_MODE" = true ]; then
     FRONTEND_ARGS+=(--no-kv-events)
 fi
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dingo.frontend "${FRONTEND_ARGS[@]}" &
+python3 -m dynamo.frontend "${FRONTEND_ARGS[@]}" &
 
 # run worker
 # Build KV events args conditionally (only when not in approx mode)
@@ -78,7 +78,7 @@ if [ "$APPROX_MODE" = false ]; then
 fi
 
 OTEL_SERVICE_NAME=dynamo-worker-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER1:-8081} \
-python3 -m dingo.sglang \
+python3 -m dynamo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \
@@ -91,7 +91,7 @@ python3 -m dingo.sglang \
   "${TRACE_ARGS[@]}" &
 
 OTEL_SERVICE_NAME=dynamo-worker-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \

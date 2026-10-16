@@ -17,8 +17,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dingo.frontend &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dynamo.frontend &
 FRONTEND_PID=$!
 
 # run the mock worker + template validation generate()

@@ -1,0 +1,307 @@
+{
+  "schema": "h3-experimental-profiles/1",
+  "scope": "Six pinned native Omni 0.31 worker profiles; Base remains read-only mounted",
+  "common": {
+    "gpu_count": 4,
+    "tensor_parallel": 1,
+    "ulysses": 4,
+    "hsdp_shard": 4,
+    "hsdp_replicate": 1,
+    "text_encoder_tp": 4,
+    "vae_patch_parallel": 4,
+    "ring": 1,
+    "cfg_parallel": 1,
+    "dtype": "bfloat16",
+    "eager": true,
+    "attention": "FLASH_ATTN",
+    "concurrency": 1,
+    "cache": "none",
+    "quality": "omit",
+    "quantization": "none",
+    "offload": false,
+    "vsa": false
+  },
+  "profiles": [
+    {
+      "id": "base-fl50",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": null,
+      "steps": 50,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "extra_start_args": [],
+      "served_model_name": "minimax-h3-base-fl50",
+      "load_mode": "none",
+      "allowed_tasks": [
+        "t2va",
+        "fl2va"
+      ],
+      "request_contract": {
+        "num_inference_steps": 50,
+        "flow_shift": 12,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "fl2va",
+          "audio_flow_shift": 3
+        }
+      },
+      "expected_sigma_boundaries": 51,
+      "expected_denoiser_forwards": 50
+    },
+    {
+      "id": "base-ref50",
+      "base_partition": "ref2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/Ref2VA",
+      "adapter_path": null,
+      "steps": 50,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "extra_start_args": [],
+      "served_model_name": "minimax-h3-base-ref50",
+      "load_mode": "none",
+      "allowed_tasks": [
+        "ref2va"
+      ],
+      "request_contract": {
+        "num_inference_steps": 50,
+        "flow_shift": 12,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "ref2va",
+          "audio_flow_shift": 3
+        }
+      },
+      "expected_sigma_boundaries": 51,
+      "expected_denoiser_forwards": 50
+    },
+    {
+      "id": "turbo-fl8",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "9b0efe3613b43a84e30febaa43af27432ea9d0711eac7bba904b2556b175f6d4",
+      "steps": 8,
+      "video_shift": 6,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "--lora-scale",
+        "1.0"
+      ],
+      "allowed_tasks": [
+        "t2va",
+        "fl2va"
+      ],
+      "base_revision": null,
+      "served_model_name": "minimax-h3-turbo-fl8",
+      "load_mode": "request_lora",
+      "request_contract": {
+        "num_inference_steps": 8,
+        "flow_shift": 6,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "fl2va",
+          "audio_flow_shift": 3
+        },
+        "lora": {
+          "name": "turbo-fl8",
+          "path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+          "scale": 1.0
+        }
+      },
+      "expected_sigma_boundaries": 9,
+      "expected_denoiser_forwards": 8
+    },
+    {
+      "id": "turbo-ref8",
+      "base_partition": "ref2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/Ref2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "9bac880b1a5d7ac052171cf6cce769f0cceaaa42ffa51de4b8e41143a2bdd2d2",
+      "steps": 8,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "--lora-scale",
+        "1.0"
+      ],
+      "allowed_tasks": [
+        "ref2va"
+      ],
+      "base_revision": null,
+      "served_model_name": "minimax-h3-turbo-ref8",
+      "load_mode": "request_lora",
+      "requires_patch": "omni031rc1-ref8-shift12-v1",
+      "request_contract": {
+        "num_inference_steps": 8,
+        "flow_shift": 12,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "ref2va",
+          "audio_flow_shift": 3
+        },
+        "lora": {
+          "name": "turbo-ref8",
+          "path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+          "scale": 1.0
+        }
+      },
+      "expected_sigma_boundaries": 9,
+      "expected_denoiser_forwards": 8
+    },
+    {
+      "id": "turbo-fl4",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+      "revision": "3ec17a324ced54151364f24f8b5fb6bf7e26414f",
+      "sha256": "c3d4a2cf618efea71b9e21a4baaa12d412f1eb6c2b6f86efacaf0ebb6814b689",
+      "steps": 4,
+      "video_shift": 6,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "required:path_must_match_scale_1.0",
+      "extra_start_args": [
+        "--lora-backend",
+        "peft",
+        "--lora-path",
+        "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+        "--lora-scale",
+        "1.0"
+      ],
+      "allowed_tasks": [
+        "t2va",
+        "fl2va"
+      ],
+      "base_revision": null,
+      "served_model_name": "minimax-h3-turbo-fl4",
+      "load_mode": "request_lora",
+      "request_contract": {
+        "num_inference_steps": 4,
+        "flow_shift": 6,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "fl2va",
+          "audio_flow_shift": 3
+        },
+        "lora": {
+          "name": "turbo-fl4",
+          "path": "/opt/h3-adapters/lightx2v/3ec17a324ced54151364f24f8b5fb6bf7e26414f/minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+          "scale": 1.0
+        }
+      },
+      "expected_sigma_boundaries": 5,
+      "expected_denoiser_forwards": 4
+    },
+    {
+      "id": "fasth3-dense4",
+      "base_partition": "fl2va",
+      "base_path": "/userdata/mengsz/MiniMax-H3/FL2VA",
+      "adapter_path": "/opt/h3-adapters/fasth3/f509e629374cac104e7f62daecce6d1488a3041d/dense-datafree/adapter_model.safetensors",
+      "revision": "f509e629374cac104e7f62daecce6d1488a3041d",
+      "sha256": "4ce198c83132251b7fd0de2503823aa49c53983f068318f66cb19eaefb7fcc12",
+      "steps": 4,
+      "video_shift": 12,
+      "audio_shift": 3,
+      "guidance_scale": 1,
+      "request_lora": "forbidden",
+      "extra_start_args": [
+        "--lora-path",
+        "/opt/h3-adapters/fasth3/f509e629374cac104e7f62daecce6d1488a3041d/dense-datafree/adapter_model.safetensors"
+      ],
+      "allowed_tasks": [
+        "t2va"
+      ],
+      "base_revision": "9bfb6693f2cf6de171db46d1aa586f67d773a1da",
+      "served_model_name": "minimax-h3-fasth3-dense4",
+      "load_mode": "startup_fusion",
+      "request_contract": {
+        "num_inference_steps": 4,
+        "flow_shift": 12,
+        "guidance_scale": 1,
+        "extra_params": {
+          "task": "t2va",
+          "audio_flow_shift": 3
+        }
+      },
+      "expected_sigma_boundaries": 5,
+      "expected_denoiser_forwards": 4,
+      "base_schedule": [
+        0.999,
+        0.749,
+        0.5,
+        0.25,
+        0.0
+      ]
+    }
+  ],
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1"
+  },
+  "common_argv": [
+    "--omni",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8000",
+    "--dtype",
+    "bfloat16",
+    "--trust-remote-code",
+    "--num-gpus",
+    "4",
+    "--tensor-parallel-size",
+    "1",
+    "--ulysses-degree",
+    "4",
+    "--ring-degree",
+    "1",
+    "--cfg-parallel-size",
+    "1",
+    "--use-hsdp",
+    "--hsdp-shard-size",
+    "4",
+    "--hsdp-replicate-size",
+    "1",
+    "--text-encoder-tp-size",
+    "4",
+    "--vae-patch-parallel-size",
+    "4",
+    "--vae-parallel-mode",
+    "tile",
+    "--vae-use-tiling",
+    "--diffusion-attention-backend",
+    "FLASH_ATTN",
+    "--enforce-eager",
+    "--cache-backend",
+    "none",
+    "--no-ulysses-a2a-permute",
+    "--max-num-seqs",
+    "1",
+    "--request-batch-max-wait-ms",
+    "0",
+    "--enable-diffusion-pipeline-profiler",
+    "--init-timeout",
+    "10800",
+    "--stage-init-timeout",
+    "10800"
+  ]
+}

@@ -39,14 +39,14 @@ curl -s -X POST http://localhost:${HTTP_PORT}/v1/images/generations \\
 CURL
 
 
-python -m dingo.frontend &
+python -m dynamo.frontend &
 FRONTEND_PID=$!
 
 sleep 2
 
 echo "Starting Omni worker..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dingo.vllm.omni \
+    python -m dynamo.vllm.omni \
     --model "$MODEL" \
     --output-modalities image \
     --media-output-fs-url file:///tmp/dynamo_media \

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dynamo._core import DistributedRuntime
-from dingo.common.utils.runtime import create_runtime
+from dynamo.common.utils.runtime import create_runtime
 from dynamo.runtime import dynamo_worker
 
 pytestmark = [
@@ -50,6 +50,14 @@ def test_event_plane_parameter_in_signature():
     sig = inspect.signature(DistributedRuntime)
     assert "event_plane" in sig.parameters
     param = sig.parameters["event_plane"]
+    assert param.default is None
+
+
+def test_response_plane_parameter_in_signature():
+    """DistributedRuntime.__init__ should accept explicit response-plane selection."""
+    sig = inspect.signature(DistributedRuntime)
+    assert "response_plane" in sig.parameters
+    param = sig.parameters["response_plane"]
     assert param.default is None
 
 
@@ -136,6 +144,37 @@ def test_invalid_event_plane_errors():
     asyncio.run(_run())
 
 
+@pytest.mark.forked
+def test_explicit_response_plane_overrides_ambient_value(monkeypatch):
+    async def _run():
+        monkeypatch.setenv("DYN_RESPONSE_PLANE", "invalid")
+        runtime = DistributedRuntime(
+            asyncio.get_running_loop(),
+            "file",
+            "tcp",
+            event_plane="zmq",
+            response_plane="tcp",
+        )
+        runtime.shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.forked
+def test_invalid_response_plane_errors():
+    async def _run():
+        with pytest.raises(ValueError, match="Invalid response_plane value"):
+            DistributedRuntime(
+                asyncio.get_running_loop(),
+                "file",
+                "tcp",
+                event_plane="zmq",
+                response_plane="invalid",
+            )
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # dynamo_worker() decorator tests
 # ---------------------------------------------------------------------------
@@ -212,7 +251,7 @@ def test_create_runtime_accepts_use_kv_events_kwarg():
     assert param.default is None
 
 
-@patch("dingo.common.utils.runtime.DistributedRuntime")
+@patch("dynamo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_use_kv_events_true_emits_warning(mock_runtime_cls):
     """create_runtime(use_kv_events=True) should emit a DeprecationWarning.
 
@@ -241,7 +280,7 @@ def test_create_runtime_use_kv_events_true_emits_warning(mock_runtime_cls):
     asyncio.run(_run())
 
 
-@patch("dingo.common.utils.runtime.DistributedRuntime")
+@patch("dynamo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_use_kv_events_false_emits_warning(mock_runtime_cls):
     """create_runtime(use_kv_events=False) should also emit a DeprecationWarning.
 
@@ -267,7 +306,7 @@ def test_create_runtime_use_kv_events_false_emits_warning(mock_runtime_cls):
     asyncio.run(_run())
 
 
-@patch("dingo.common.utils.runtime.DistributedRuntime")
+@patch("dynamo.common.utils.runtime.DistributedRuntime")
 def test_create_runtime_no_use_kv_events_no_warning(mock_runtime_cls):
     """Omitting use_kv_events should not emit a DeprecationWarning.
 

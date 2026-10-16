@@ -15,7 +15,7 @@
 # Output: artifacts/obs_YYYYMMDD_HHMMSS/ with subdirs for each data source.
 #
 # Prerequisites:
-#   - dingo.mocker and dingo.frontend installed
+#   - dynamo.mocker and dynamo.frontend installed
 #   - aiperf installed
 #   - Optional: nsys, perf, bpftrace, flamegraph tools (auto-detected)
 
@@ -409,7 +409,7 @@ for MN in "${MODEL_NAMES[@]}"; do
         fi
 
         MN_SAFE="${MN//\//_}"
-        HF_HUB_OFFLINE=1 DYN_SYSTEM_PORT=$WORKER_PORT DYN_EVENT_PLANE="$EVENT_PLANE" python -m dingo.mocker "${MOCKER_ARGS[@]}" \
+        HF_HUB_OFFLINE=1 DYN_SYSTEM_PORT=$WORKER_PORT DYN_EVENT_PLANE="$EVENT_PLANE" python -m dynamo.mocker "${MOCKER_ARGS[@]}" \
             > "$OUTPUT_DIR/logs/mocker_${MN_SAFE}_${i}.log" 2>&1 &
         ALL_PIDS+=($!)
         echo "  Worker $WORKER_IDX ($MN #$i): PID ${ALL_PIDS[-1]}, port $WORKER_PORT"
@@ -462,7 +462,7 @@ if [[ "$HAS_NSYS" == true ]]; then
         --cpuctxsw=none \
         --output="${OUTPUT_DIR}/nsys/frontend" \
         --force-overwrite=true \
-        python -m dingo.frontend \
+        python -m dynamo.frontend \
         > "$OUTPUT_DIR/logs/frontend.log" 2>&1 &
     NSYS_WRAPPER_PID=$!
     ALL_PIDS+=($NSYS_WRAPPER_PID)
@@ -471,7 +471,7 @@ if [[ "$HAS_NSYS" == true ]]; then
     FRONTEND_PID=""
     for _try in $(seq 1 30); do
         sleep 1
-        _child=$(pgrep -P "$NSYS_WRAPPER_PID" -f "python.*dingo.frontend" 2>/dev/null | head -1 || true)
+        _child=$(pgrep -P "$NSYS_WRAPPER_PID" -f "python.*dynamo.frontend" 2>/dev/null | head -1 || true)
         if [[ -n "$_child" ]]; then
             FRONTEND_PID="$_child"
             break
@@ -485,7 +485,7 @@ if [[ "$HAS_NSYS" == true ]]; then
     echo "  nsys wrapper PID: $NSYS_WRAPPER_PID"
     echo "  Frontend PID: $FRONTEND_PID"
 else
-    env "${FRONTEND_ENV[@]}" python -m dingo.frontend \
+    env "${FRONTEND_ENV[@]}" python -m dynamo.frontend \
         > "$OUTPUT_DIR/logs/frontend.log" 2>&1 &
     FRONTEND_PID=$!
     ALL_PIDS+=($FRONTEND_PID)

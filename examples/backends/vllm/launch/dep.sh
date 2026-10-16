@@ -15,15 +15,17 @@ print_launch_banner "Launching Data Parallel / Expert Parallelism (4 GPUs)" "$MO
 
 
 # run ingress
-# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dingo.frontend --router-mode kv &
+# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dynamo.frontend --router-mode kv &
 
 # Data Parallel Attention / Expert Parallelism
 # Routing to DP workers managed by Dynamo
 # Chose Qwen3-30B because its a small MOE that can fit on smaller GPUs (L40S for example)
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
+# --no-enable-flashinfer-autotune: the FlashInfer MoE autotune warmup hits a CUDA illegal
+# memory access on Blackwell (sm100). for non-sm100 production use, can remove this flag.
 VLLM_NIXL_SIDE_CHANNEL_PORT=20096 \
-python3 -m dingo.vllm \
+python3 -m dynamo.vllm \
 --model Qwen/Qwen3-30B-A3B \
 --data-parallel-hybrid-lb \
 --data-parallel-size 4 \
@@ -31,6 +33,7 @@ python3 -m dingo.vllm \
 --data-parallel-start-rank 0 \
 --enable-expert-parallel \
 --enforce-eager \
+--no-enable-flashinfer-autotune \
 --kv-events-config "{\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:20080\",\"enable_kv_cache_events\":true}" &
 
 echo "All workers starting. (press Ctrl+C to stop)..."

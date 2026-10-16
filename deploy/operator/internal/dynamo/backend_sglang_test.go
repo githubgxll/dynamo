@@ -1,10 +1,16 @@
 package dynamo
 
 import (
+	"errors"
 	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1alpha1"
+	commonconsts "github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -26,6 +32,10 @@ func (m *MockSimpleDeployer) GetHostNames(serviceName string, numberOfNodes int3
 
 func (m *MockSimpleDeployer) GetNodeRank() (string, bool) {
 	return "1", false // simple rank, no shell interpretation needed
+}
+
+func (m *MockSimpleDeployer) GetPodRank() string {
+	return "1"
 }
 
 func (m *MockSimpleDeployer) NeedsDNSWait() bool {
@@ -52,8 +62,35 @@ func (m *MockShellDeployer) GetNodeRank() (string, bool) {
 	return "$(WORKER_INDEX)", true // needs shell interpretation
 }
 
+func (m *MockShellDeployer) GetPodRank() string {
+	return "$(WORKER_INDEX)"
+}
+
 func (m *MockShellDeployer) NeedsDNSWait() bool {
 	return true
+}
+
+func TestSGLangBackend_RoleTemplateMultinodePreservesUserLaunchArguments(t *testing.T) {
+	backend := &SGLangBackend{roleLaunchOwnership: roleLaunchOwnedByPodTemplate}
+	container := &corev1.Container{
+		Command:        []string{"python3"},
+		Args:           []string{"-m", "dynamo.sglang", "--nnodes=2", "--node-rank=1", "--dist-init-addr=leader:29500"},
+		LivenessProbe:  &corev1.Probe{},
+		ReadinessProbe: &corev1.Probe{},
+		StartupProbe:   &corev1.Probe{},
+	}
+	wantCommand := append([]string(nil), container.Command...)
+	wantArgs := append([]string(nil), container.Args...)
+	component := betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{
+		Multinode: &v1alpha1.MultinodeSpec{NodeCount: 2},
+	})
+
+	require.NoError(t, backend.UpdateContainer(container, 2, RoleWorker, component, "test-service", &GroveMultinodeDeployer{}, staticContainerGPUCount(0)))
+	require.Equal(t, wantCommand, container.Command)
+	require.Equal(t, wantArgs, container.Args)
+	require.Nil(t, container.LivenessProbe)
+	require.Nil(t, container.ReadinessProbe)
+	require.Nil(t, container.StartupProbe)
 }
 
 func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
@@ -66,6 +103,7 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 		multinodeDeployer MultinodeDeployer
 		initialCommand    []string
 		initialArgs       []string
+		annotations       map[string]string
 		expectedCommand   []string
 		expectedArgs      []string
 		description       string
@@ -76,9 +114,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleMain,
 			multinodeDeployer: &MockSimpleDeployer{},
 			initialCommand:    []string{"python3"},
-			initialArgs:       []string{"-m", "dingo.sglang"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
 			expectedCommand:   []string{"python3"},
-			expectedArgs:      []string{"-m", "dingo.sglang"},
+			expectedArgs:      []string{"-m", "dynamo.sglang"},
 			description:       "Single node should not modify python commands",
 		},
 		{
@@ -87,9 +125,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &MockSimpleDeployer{},
 			initialCommand:    []string{"python3"},
-			initialArgs:       []string{"-m", "dingo.sglang", "--model", "llama"},
+			initialArgs:       []string{"-m", "dynamo.sglang", "--model", "llama"},
 			expectedCommand:   []string{"python3"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--model", "llama", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--model", "llama", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
 			description:       "Direct python command with simple deployer should append flags",
 		},
 		{
@@ -102,9 +140,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &LWSMultinodeDeployer{},
 			initialCommand:    []string{"python3"},
-			initialArgs:       []string{"-m", "dingo.sglang", "--model", "llama"},
+			initialArgs:       []string{"-m", "dynamo.sglang", "--model", "llama"},
 			expectedCommand:   []string{"python3"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--model", "llama", "--dist-init-addr", "$(LWS_LEADER_ADDRESS):29500", "--nnodes", "2", "--node-rank", "$(LWS_WORKER_INDEX)"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--model", "llama", "--dist-init-addr", "$(LWS_LEADER_ADDRESS):29500", "--nnodes", "2", "--node-rank", "$(LWS_WORKER_INDEX)"},
 			description:       "LWS worker with direct python command should append flags without sh -c wrapping",
 		},
 		{
@@ -115,10 +153,48 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &LWSMultinodeDeployer{},
 			initialCommand:    []string{"python3"},
-			initialArgs:       []string{"-m", "dingo.sglang"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
 			expectedCommand:   []string{"python3"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--dist-init-addr", "$(LWS_LEADER_ADDRESS):29500", "--nnodes", "2", "--node-rank", "0"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--dist-init-addr", "$(LWS_LEADER_ADDRESS):29500", "--nnodes", "2", "--node-rank", "0"},
 			description:       "LWS leader with direct python command should append flags with kubelet-expanded leader hostname",
+		},
+		{
+			name:              "new multinode leader uses topology aliases",
+			numberOfNodes:     2,
+			role:              RoleLeader,
+			multinodeDeployer: &GroveMultinodeDeployer{},
+			initialCommand:    []string{"python3"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
+			annotations: map[string]string{
+				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.6.0",
+			},
+			expectedCommand: []string{"python3"},
+			expectedArgs: []string{
+				"-m", "dynamo.sglang",
+				"--dist-init-addr", commonconsts.DynamoLeaderAddressEnvVarReference + ":29500",
+				"--nnodes", "2",
+				"--node-rank", commonconsts.DynamoRankEnvVarReference,
+			},
+			description: "New leaders should use provider-independent topology aliases",
+		},
+		{
+			name:              "new multinode worker uses topology aliases",
+			numberOfNodes:     3,
+			role:              RoleWorker,
+			multinodeDeployer: &GroveMultinodeDeployer{},
+			initialCommand:    []string{"python3"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
+			annotations: map[string]string{
+				commonconsts.KubeAnnotationDynamoOperatorOriginVersion: "1.6.0",
+			},
+			expectedCommand: []string{"python3"},
+			expectedArgs: []string{
+				"-m", "dynamo.sglang",
+				"--dist-init-addr", commonconsts.DynamoLeaderAddressEnvVarReference + ":29500",
+				"--nnodes", "3",
+				"--node-rank", commonconsts.DynamoRankEnvVarReference,
+			},
+			description: "New workers should use provider-independent topology aliases without a shell wrapper",
 		},
 		{
 			name:              "python command shell deployer - shell wrapping",
@@ -126,9 +202,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &MockShellDeployer{},
 			initialCommand:    []string{"python3"},
-			initialArgs:       []string{"-m", "dingo.sglang", "--model", "llama"},
+			initialArgs:       []string{"-m", "dynamo.sglang", "--model", "llama"},
 			expectedCommand:   []string{"sh", "-c"},
-			expectedArgs:      []string{"exec python3 -m dingo.sglang --model llama --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
+			expectedArgs:      []string{"exec python3 -m dynamo.sglang --model llama --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
 			description:       "Direct python command with shell deployer should wrap with sh -c exec",
 		},
 		{
@@ -137,9 +213,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &MockShellDeployer{},
 			initialCommand:    []string{"python"},
-			initialArgs:       []string{"-m", "dingo.sglang"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
 			expectedCommand:   []string{"python"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--dist-init-addr", "$(LEADER_HOST):29500", "--nnodes", "3", "--node-rank", "0"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--dist-init-addr", "$(LEADER_HOST):29500", "--nnodes", "3", "--node-rank", "0"},
 			description:       "Leader role should never use shell wrapping",
 		},
 		{
@@ -148,9 +224,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &MockSimpleDeployer{},
 			initialCommand:    []string{"python3.11"},
-			initialArgs:       []string{"-m", "dingo.sglang"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
 			expectedCommand:   []string{"python3.11"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
 			description:       "Python version variants should be recognized",
 		},
 		{
@@ -159,9 +235,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &MockSimpleDeployer{},
 			initialCommand:    []string{"/usr/bin/python3.8"},
-			initialArgs:       []string{"-m", "dingo.sglang", "--model", "llama"},
+			initialArgs:       []string{"-m", "dynamo.sglang", "--model", "llama"},
 			expectedCommand:   []string{"/usr/bin/python3.8"},
-			expectedArgs:      []string{"-m", "dingo.sglang", "--model", "llama", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
+			expectedArgs:      []string{"-m", "dynamo.sglang", "--model", "llama", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
 			description:       "Absolute path Python commands should be recognized",
 		},
 		{
@@ -170,9 +246,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &MockShellDeployer{},
 			initialCommand:    []string{"/home/user/.pyenv/shims/python3.9"},
-			initialArgs:       []string{"-m", "dingo.sglang"},
+			initialArgs:       []string{"-m", "dynamo.sglang"},
 			expectedCommand:   []string{"sh", "-c"},
-			expectedArgs:      []string{"exec /home/user/.pyenv/shims/python3.9 -m dingo.sglang --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
+			expectedArgs:      []string{"exec /home/user/.pyenv/shims/python3.9 -m dynamo.sglang --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
 			description:       "Pyenv shims Python paths should be recognized and wrapped with shell",
 		},
 		{
@@ -180,9 +256,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleWorker,
 			multinodeDeployer: &MockSimpleDeployer{},
-			initialCommand:    []string{"python3", "-m", "dingo.sglang"},
+			initialCommand:    []string{"python3", "-m", "dynamo.sglang"},
 			initialArgs:       []string{"--model-path", "Qwen/Qwen3-0.6B", "--tp-size", "8"},
-			expectedCommand:   []string{"python3", "-m", "dingo.sglang"},
+			expectedCommand:   []string{"python3", "-m", "dynamo.sglang"},
 			expectedArgs:      []string{"--model-path", "Qwen/Qwen3-0.6B", "--tp-size", "8", "--dist-init-addr", "leader.example.com:29500", "--nnodes", "2", "--node-rank", "1"},
 			description:       "Multi-element python command should have flags appended to args",
 		},
@@ -191,10 +267,10 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleWorker,
 			multinodeDeployer: &MockShellDeployer{},
-			initialCommand:    []string{"python3", "-m", "dingo.sglang"},
+			initialCommand:    []string{"python3", "-m", "dynamo.sglang"},
 			initialArgs:       []string{"--model-path", "Qwen/Qwen3-0.6B"},
 			expectedCommand:   []string{"sh", "-c"},
-			expectedArgs:      []string{"exec python3 -m dingo.sglang --model-path Qwen/Qwen3-0.6B --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
+			expectedArgs:      []string{"exec python3 -m dynamo.sglang --model-path Qwen/Qwen3-0.6B --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
 			description:       "Multi-element python command with shell deployer should wrap entire command",
 		},
 		{
@@ -202,10 +278,10 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 			numberOfNodes:     2,
 			role:              RoleWorker,
 			multinodeDeployer: &MockShellDeployer{},
-			initialCommand:    []string{"python3", "-m", "dingo.sglang"},
+			initialCommand:    []string{"python3", "-m", "dynamo.sglang"},
 			initialArgs:       []string{},
 			expectedCommand:   []string{"sh", "-c"},
-			expectedArgs:      []string{"exec python3 -m dingo.sglang --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
+			expectedArgs:      []string{"exec python3 -m dynamo.sglang --dist-init-addr $(LEADER_HOST):29500 --nnodes 2 --node-rank $(WORKER_INDEX)"},
 			description:       "Multi-element python command with no args should still work with shell wrapper",
 		},
 		{
@@ -228,7 +304,9 @@ func TestSGLangBackend_PythonCommandInjection(t *testing.T) {
 				Args:    append([]string{}, tt.initialArgs...),
 			}
 
-			backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", tt.multinodeDeployer)
+			require.NoError(t, backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{
+				Annotations: tt.annotations,
+			}), "test-service", tt.multinodeDeployer, staticContainerGPUCount(0)))
 
 			if !reflect.DeepEqual(container.Command, tt.expectedCommand) {
 				t.Errorf("UpdateContainer() command = %v, want %v", container.Command, tt.expectedCommand)
@@ -260,8 +338,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleMain,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang"},
-			expectedArgs:      []string{"python -m dingo.sglang"},
+			initialArgs:       []string{"python -m dynamo.sglang"},
+			expectedArgs:      []string{"python -m dynamo.sglang"},
 			description:       "Single node should not modify shell commands",
 		},
 		{
@@ -270,8 +348,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang"},
-			expectedArgs:      []string{"python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0"},
+			initialArgs:       []string{"python -m dynamo.sglang"},
+			expectedArgs:      []string{"python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0"},
 			description:       "Shell commands should use regex injection for python commands",
 		},
 		{
@@ -280,8 +358,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"echo blah | wc -l && python -m dingo.sglang && ls -al"},
-			expectedArgs:      []string{"echo blah | wc -l && python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0 && ls -al"},
+			initialArgs:       []string{"echo blah | wc -l && python -m dynamo.sglang && ls -al"},
+			expectedArgs:      []string{"echo blah | wc -l && python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0 && ls -al"},
 			description:       "Complex shell commands should inject flags only into python part",
 		},
 		{
@@ -290,8 +368,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleWorker,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang"},
-			expectedArgs:      []string{"python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank $((GROVE_PCLQ_POD_INDEX + 1))"},
+			initialArgs:       []string{"python -m dynamo.sglang"},
+			expectedArgs:      []string{"python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 3 --node-rank $((GROVE_PCLQ_POD_INDEX + 1))"},
 			description:       "Shell command worker should get grove env vars in node rank",
 		},
 		{
@@ -300,8 +378,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &LWSMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang"},
-			expectedArgs:      []string{"python -m dingo.sglang --dist-init-addr $(LWS_LEADER_ADDRESS):29500 --nnodes 2 --node-rank 0"},
+			initialArgs:       []string{"python -m dynamo.sglang"},
+			expectedArgs:      []string{"python -m dynamo.sglang --dist-init-addr $(LWS_LEADER_ADDRESS):29500 --nnodes 2 --node-rank 0"},
 			description:       "LWS shell commands should use LWS variables",
 		},
 		{
@@ -310,8 +388,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang | tee /tmp/log"},
-			expectedArgs:      []string{"python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0 | tee /tmp/log"},
+			initialArgs:       []string{"python -m dynamo.sglang | tee /tmp/log"},
+			expectedArgs:      []string{"python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0 | tee /tmp/log"},
 			description:       "Shell commands with pipes should inject flags before pipe",
 		},
 		{
@@ -320,8 +398,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"echo start", "python -m dingo.sglang", "echo done"},
-			expectedArgs:      []string{"echo start", "python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0", "echo done"},
+			initialArgs:       []string{"echo start", "python -m dynamo.sglang", "echo done"},
+			expectedArgs:      []string{"echo start", "python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0", "echo done"},
 			description:       "Shell commands with multiple args should process each individually, modify only the python arg",
 		},
 		{
@@ -340,8 +418,8 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 			role:              RoleLeader,
 			multinodeDeployer: &GroveMultinodeDeployer{},
 			initialCommand:    []string{"sh", "-c"},
-			initialArgs:       []string{"python -m dingo.sglang", "python -m dingo.sglang --other-flags"},
-			expectedArgs:      []string{"python -m dingo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0", "python -m dingo.sglang --other-flags"},
+			initialArgs:       []string{"python -m dynamo.sglang", "python -m dynamo.sglang --other-flags"},
+			expectedArgs:      []string{"python -m dynamo.sglang --dist-init-addr $(GROVE_PCSG_NAME)-$(GROVE_PCSG_INDEX)-test-service-ldr-0.$(GROVE_HEADLESS_SERVICE):29500 --nnodes 2 --node-rank 0", "python -m dynamo.sglang --other-flags"},
 			description:       "Should stop processing after first successful python flag injection",
 		},
 	}
@@ -353,7 +431,7 @@ func TestSGLangBackend_ShellCommandInjection(t *testing.T) {
 				Args:    append([]string{}, tt.initialArgs...),
 			}
 
-			backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", tt.multinodeDeployer)
+			require.NoError(t, backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", tt.multinodeDeployer, staticContainerGPUCount(0)))
 
 			if !reflect.DeepEqual(container.Args, tt.expectedArgs) {
 				t.Errorf("UpdateContainer() args = %v, want %v", container.Args, tt.expectedArgs)
@@ -461,7 +539,7 @@ func TestSGLangBackend_GetMultinodeFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			flags, needsShell := backend.getMultinodeFlags(tt.numberOfNodes, tt.role, "test-service", tt.multinodeDeployer)
+			flags, needsShell := backend.getMultinodeFlags(tt.numberOfNodes, tt.role, "test-service", tt.multinodeDeployer, false)
 
 			if flags != tt.expectedFlags {
 				t.Errorf("getMultinodeFlags() flags = %q, want %q", flags, tt.expectedFlags)
@@ -521,13 +599,13 @@ func TestSGLangBackend_ProbeRemoval(t *testing.T) {
 			startupProbe := &corev1.Probe{InitialDelaySeconds: 5}
 
 			container := &corev1.Container{
-				Args:           []string{"python -m dingo.sglang"},
+				Args:           []string{"python -m dynamo.sglang"},
 				LivenessProbe:  livenessProbe,
 				ReadinessProbe: readinessProbe,
 				StartupProbe:   startupProbe,
 			}
 
-			backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", tt.multinodeDeployer)
+			require.NoError(t, backend.UpdateContainer(container, tt.numberOfNodes, tt.role, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", tt.multinodeDeployer, staticContainerGPUCount(0)))
 
 			if tt.expectProbesRemoved {
 				if container.LivenessProbe != nil {
@@ -631,7 +709,7 @@ func TestSGLangBackend_UpdateContainer_UseAsCompilationCache(t *testing.T) {
 			originalEnvCount := len(container.Env)
 
 			// Call UpdateContainer (single node to avoid multinode logic)
-			backend.UpdateContainer(container, 1, RoleMain, betaComponent(t, tt.component), "test-service", &GroveMultinodeDeployer{})
+			require.NoError(t, backend.UpdateContainer(container, 1, RoleMain, betaComponent(t, tt.component), "test-service", &GroveMultinodeDeployer{}, staticContainerGPUCount(0)))
 
 			if tt.expectNoEnvVarChanges {
 				// Check that no new environment variables were added
@@ -639,6 +717,349 @@ func TestSGLangBackend_UpdateContainer_UseAsCompilationCache(t *testing.T) {
 					t.Errorf("Expected no environment variable changes, but env count changed from %d to %d", originalEnvCount, len(container.Env))
 				}
 			}
+		})
+	}
+}
+
+func TestSGLangBackend_ReservesOneNixlExporterPortPerColocatedRank(t *testing.T) {
+	backend := &SGLangBackend{}
+
+	workerPorts := []corev1.ContainerPort{
+		{Protocol: corev1.ProtocolTCP, Name: commonconsts.DynamoSystemPortName, ContainerPort: int32(commonconsts.DynamoSystemPort)},
+		{Protocol: corev1.ProtocolTCP, Name: commonconsts.DynamoNixlPortName, ContainerPort: int32(commonconsts.DynamoNixlPort)},
+	}
+	frontendPorts := []corev1.ContainerPort{
+		{Protocol: corev1.ProtocolTCP, Name: commonconsts.DynamoContainerPortName, ContainerPort: int32(commonconsts.DynamoServicePort)},
+	}
+	allEightPorts := map[string]int32{
+		"nixl": 19090, "nixl-1": 19091, "nixl-2": 19092, "nixl-3": 19093,
+		"nixl-4": 19094, "nixl-5": 19095, "nixl-6": 19096, "nixl-7": 19097,
+	}
+	firstFourPorts := map[string]int32{
+		"nixl": 19090, "nixl-1": 19091, "nixl-2": 19092, "nixl-3": 19093,
+	}
+
+	tests := []struct {
+		name               string
+		ports              []corev1.ContainerPort
+		telemetryEnable    string
+		telemetryValueFrom *corev1.EnvVarSource
+		telemetryExporter  string
+		exporterAbsent     bool
+		exporterValueFrom  *corev1.EnvVarSource
+		telemetryPort      string
+		portEmpty          bool
+		portValueFrom      *corev1.EnvVarSource
+		containerGPUs      int64
+		expectedPorts      map[string]int32
+		expectedError      string
+	}{
+		{
+			name:            "one rank needs no extra port",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			containerGPUs:   1,
+			expectedPorts:   map[string]int32{"nixl": 19090},
+		},
+		{
+			name:            "eight co-located ranks reserve eight ports",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			containerGPUs:   8,
+			expectedPorts:   allEightPorts,
+		},
+		{
+			name:            "a non-y truthy enable value preserves the existing port declarations",
+			ports:           workerPorts,
+			telemetryEnable: "true",
+			containerGPUs:   4,
+			expectedPorts:   map[string]int32{"nixl": 19090},
+		},
+		{
+			name:            "a leading-space enable value is rejected",
+			ports:           workerPorts,
+			telemetryEnable: " y",
+			containerGPUs:   -1,
+			expectedError:   "not a boolean value recognized by NIXL",
+		},
+		{
+			name:            "a malformed enable value is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "maybe",
+			containerGPUs:   -1,
+			expectedError:   "not a boolean value recognized by NIXL",
+		},
+		{
+			name:            "more ranks than the reserved range is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			containerGPUs:   16,
+			expectedError:   "16 co-located GPUs each need a NIXL exporter port",
+		},
+		{
+			name:            "the operator default of disabled telemetry reserves nothing",
+			ports:           workerPorts,
+			telemetryEnable: "n",
+			containerGPUs:   -1,
+			expectedPorts:   map[string]int32{"nixl": 19090},
+		},
+		{
+			name:            "a frontend shares the backend framework but declares no NIXL port",
+			ports:           frontendPorts,
+			telemetryEnable: "y",
+			containerGPUs:   -1,
+			expectedPorts:   map[string]int32{},
+		},
+		{
+			name:  "a sourced enable value reserves the range it cannot read",
+			ports: workerPorts,
+			telemetryValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-enable",
+				},
+			},
+			containerGPUs: 8,
+			expectedPorts: allEightPorts,
+		},
+		{
+			name:  "a sourced enable value reserves the whole range rather than refusing the deployment",
+			ports: workerPorts,
+			telemetryValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-enable",
+				},
+			},
+			containerGPUs: 16,
+			expectedPorts: allEightPorts,
+		},
+		{
+			name:            "a sourced base the operator cannot declare is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			portValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-port",
+				},
+			},
+			containerGPUs: 4,
+			expectedError: "cannot declare the exporter range",
+		},
+		{
+			name:  "a sourced base is rejected even when the enable value is unreadable too",
+			ports: workerPorts,
+			telemetryValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-enable",
+				},
+			},
+			portValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-port",
+				},
+			},
+			containerGPUs: 8,
+			expectedError: "cannot declare the exporter range",
+		},
+		{
+			name:            "an overridden base moves every declared port with it",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   "30500",
+			containerGPUs:   4,
+			expectedPorts: map[string]int32{
+				"nixl": 30500, "nixl-1": 30501, "nixl-2": 30502, "nixl-3": 30503,
+			},
+		},
+		{
+			name: "a rank port written against another base moves with it too",
+			ports: append(slices.Clone(workerPorts),
+				corev1.ContainerPort{Protocol: corev1.ProtocolTCP, Name: "nixl-1", ContainerPort: 19091}),
+			telemetryEnable: "y",
+			telemetryPort:   "30500",
+			containerGPUs:   4,
+			expectedPorts: map[string]int32{
+				"nixl": 30500, "nixl-1": 30501, "nixl-2": 30502, "nixl-3": 30503,
+			},
+		},
+		{
+			name:            "a base with no room for the range is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   strconv.Itoa(maxTCPPort),
+			containerGPUs:   4,
+			expectedError:   "exceeds the maximum port",
+		},
+		{
+			name:              "an uppercase exporter reserves no Prometheus rank ports",
+			ports:             workerPorts,
+			telemetryEnable:   "y",
+			telemetryExporter: "PROMETHEUS",
+			containerGPUs:     -1,
+			expectedPorts:     map[string]int32{"nixl": 19090},
+		},
+		{
+			name:              "another valid exporter reserves no Prometheus rank ports",
+			ports:             workerPorts,
+			telemetryEnable:   "y",
+			telemetryExporter: "doca",
+			containerGPUs:     -1,
+			expectedPorts:     map[string]int32{"nixl": 19090},
+		},
+		{
+			name:              "a whitespace-padded exporter reserves no Prometheus rank ports",
+			ports:             workerPorts,
+			telemetryEnable:   "y",
+			telemetryExporter: "prometheus ",
+			containerGPUs:     -1,
+			expectedPorts:     map[string]int32{"nixl": 19090},
+		},
+		{
+			name:            "no exporter selection reserves no additional ports",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			exporterAbsent:  true,
+			containerGPUs:   8,
+			expectedPorts:   map[string]int32{"nixl": 19090},
+		},
+		{
+			name:            "a sourced exporter reserves the range it cannot read",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			exporterValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "telemetry"},
+					Key:                  "nixl-exporter",
+				},
+			},
+			containerGPUs: 16,
+			expectedPorts: allEightPorts,
+		},
+		{
+			name:            "a base padded with whitespace is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   " 19090 ",
+			containerGPUs:   4,
+			expectedError:   `is set to " 19090 ", which is not a number`,
+		},
+		{
+			name:            "a hexadecimal base moves every declared port with it",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   "0x4A92",
+			containerGPUs:   4,
+			expectedPorts:   firstFourPorts,
+		},
+		{
+			name:            "a base written as words is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   "nineteen thousand",
+			containerGPUs:   4,
+			expectedError:   `is set to "nineteen thousand", which is not a number`,
+		},
+		{
+			name:            "an empty base is rejected rather than read as the default",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			portEmpty:       true,
+			containerGPUs:   4,
+			expectedError:   `is set to "", which is not a number`,
+		},
+		{
+			name:            "an ephemeral base is rejected because it cannot be declared",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   "0",
+			containerGPUs:   4,
+			expectedError:   "ephemeral port the operator cannot declare or scrape",
+		},
+		{
+			name:            "a base past the maximum port is rejected",
+			ports:           workerPorts,
+			telemetryEnable: "y",
+			telemetryPort:   "70000",
+			containerGPUs:   4,
+			expectedError:   "is set to 70000, which is outside the port range",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Log("Render the container the way the component defaults do")
+			telemetryPort := tt.telemetryPort
+			switch {
+			case tt.portValueFrom != nil || tt.portEmpty:
+				// The API rejects a variable carrying both, so a sourced base has
+				// no inline value for the operator to fall back on.
+				telemetryPort = ""
+			case telemetryPort == "":
+				telemetryPort = strconv.Itoa(commonconsts.DynamoNixlPort)
+			}
+			telemetryExporter := tt.telemetryExporter
+			if telemetryExporter == "" && tt.exporterValueFrom == nil {
+				telemetryExporter = "prometheus"
+			}
+			env := []corev1.EnvVar{
+				{Name: "DYN_SYSTEM_PORT", Value: strconv.Itoa(commonconsts.DynamoSystemPort)},
+				{Name: "NIXL_TELEMETRY_ENABLE", Value: tt.telemetryEnable, ValueFrom: tt.telemetryValueFrom},
+			}
+			// Leave the exporter variable absent for the no-exporter case.
+			if !tt.exporterAbsent {
+				env = append(env, corev1.EnvVar{Name: "NIXL_TELEMETRY_EXPORTER", Value: telemetryExporter, ValueFrom: tt.exporterValueFrom})
+			}
+			env = append(env, corev1.EnvVar{Name: "NIXL_TELEMETRY_PROMETHEUS_PORT", Value: telemetryPort, ValueFrom: tt.portValueFrom})
+			container := &corev1.Container{
+				Ports: slices.Clone(tt.ports),
+				Env:   env,
+			}
+
+			t.Log("A negative GPU count marks the cases that must never resolve one")
+			containerGPUCount := staticContainerGPUCount(tt.containerGPUs)
+			if tt.containerGPUs < 0 {
+				containerGPUCount = func() (int64, error) {
+					return 0, errors.New("resolving the GPU count needs a Kubernetes client")
+				}
+			}
+
+			err := backend.UpdateContainer(container, 1, RoleMain, betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{}), "test-service", &GroveMultinodeDeployer{}, containerGPUCount)
+			if tt.expectedError != "" {
+				t.Log("A range that cannot be declared is reported, not silently truncated")
+				require.ErrorContains(t, err, tt.expectedError)
+				return
+			}
+			require.NoError(t, err)
+
+			t.Log("Every co-located rank has a port of its own, and no rank shares one")
+			nixlPorts := map[string]int32{}
+			seen := map[int32]string{}
+			for _, port := range container.Ports {
+				if !strings.HasPrefix(port.Name, commonconsts.DynamoNixlPortName) {
+					continue
+				}
+				nixlPorts[port.Name] = port.ContainerPort
+				if other, duplicate := seen[port.ContainerPort]; duplicate {
+					t.Errorf("ports %q and %q both bind %d", other, port.Name, port.ContainerPort)
+				}
+				seen[port.ContainerPort] = port.Name
+			}
+			require.Equal(t, tt.expectedPorts, nixlPorts)
+
+			t.Log("Every port declared for something other than NIXL keeps its number")
+			// The NIXL ports move with an overridden base, so expectedPorts above is
+			// what pins them; here only the ports the reservation must not touch.
+			for _, port := range tt.ports {
+				if strings.HasPrefix(port.Name, commonconsts.DynamoNixlPortName) {
+					continue
+				}
+				require.Contains(t, container.Ports, port)
+			}
+			require.NotContains(t, seen, int32(commonconsts.DynamoSystemPort))
 		})
 	}
 }

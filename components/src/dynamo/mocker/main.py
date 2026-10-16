@@ -1,0 +1,288 @@
+#  SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#  SPDX-License-Identifier: Apache-2.0
+
+# Offline virtual-clock replay lives in AISimulate.
+
+import argparse
+import asyncio
+import logging
+import os
+import signal
+from pathlib import Path
+
+import uvloop
+
+os.environ.setdefault("DYN_COMPUTE_THREADS", "0")
+
+from dynamo.common.configuration.groups.router_args import build_router_config
+from dynamo.common.utils.runtime import create_runtime
+from dynamo.llm import EngineType, EntrypointArgs, fetch_model, make_engine, run_input
+from dynamo.runtime.logging import configure_dynamo_logging
+
+from .args import parse_args, resolve_planner_profile_data
+from .config import (
+    apply_worker_engine_args_overrides,
+    build_runtime_config,
+    load_mocker_engine_args,
+)
+from .utils.kv_cache import compute_kv_bytes_per_token
+
+configure_dynamo_logging()
+logger = logging.getLogger(__name__)
+
+
+async def graceful_shutdown(runtimes: list):
+    """
+    Shutdown dynamo distributed runtime instances.
+    The endpoints will be immediately invalidated so no new requests will be accepted.
+    """
+    logger.info("Received shutdown signal, shutting down DistributedRuntime instances")
+    for runtime in runtimes:
+        runtime.shutdown()
+    logger.info("DistributedRuntime shutdown complete")
+
+
+async def prefetch_model(model_path: str) -> str:
+    """Resolve ``model_path`` to a local directory, fetching config/tokenizer if needed.
+
+    ``fetch_model`` returns the cached snapshot directory without contacting the
+    hub when config.json and the tokenizer files are already present, and downloads
+    only those files otherwise. Resolving once here means neither the workers nor
+    the KV-bytes estimate below resolve a hub ID over the network. Returns the
+    original path on failure so callers degrade to their previous behavior.
+    """
+
+    if Path(model_path).exists():
+        logger.info(f"Using local model path: {model_path}")
+        return model_path
+
+    logger.info(f"Pre-fetching model from HuggingFace: {model_path}")
+    try:
+        local_path = await fetch_model(model_path, ignore_weights=True)
+        logger.info(f"Model cached at: {local_path}")
+        return str(local_path)
+    except Exception as e:
+        # The binding raises the base ``Exception`` for every Rust-side failure
+        # (``to_pyerr``), so there is nothing narrower to catch. Falling back is
+        # deliberate: the workers, and the transformers branch of the KV-bytes
+        # estimate, still resolve the hub ID themselves.
+        logger.warning(
+            "Failed to pre-fetch model: %s. "
+            "Workers will attempt individual downloads (may cause rate limiting).",
+            e,
+        )
+        return model_path
+
+
+async def worker():
+    """Main worker function that launches mocker instances.
+
+    Each mocker gets its own DistributedRuntime instance for true isolation,
+    while still sharing the same event loop and tokio runtime.
+    """
+    args = parse_args()
+    # Resolve planner-profile-data: convert profile results dir to NPZ if needed
+    profile_data_result = resolve_planner_profile_data(args.planner_profile_data)
+    args.planner_profile_data = profile_data_result.npz_path
+
+    try:
+        # Only when something needs the local files: many workers (rate limiting)
+        # or the KV-bytes estimate below (reads config.json).
+        local_model_path = None
+        if args.model_path and (
+            args.num_workers > 1 or args.kv_bytes_per_token is None
+        ):
+            local_model_path = await prefetch_model(args.model_path)
+
+        # Auto-compute kv_bytes_per_token from model config if not explicitly set
+        if args.kv_bytes_per_token is None and args.model_path:
+            args.kv_bytes_per_token = compute_kv_bytes_per_token(
+                local_model_path or args.model_path, args.kv_cache_dtype
+            )
+
+        engine_args = load_mocker_engine_args(args)
+        logger.info(
+            "Loaded canonical engine config from JSON file"
+            if args.extra_engine_args
+            else "Created canonical engine config from CLI arguments"
+        )
+
+        engine_args = apply_worker_engine_args_overrides(
+            engine_args, kv_bytes_per_token=args.kv_bytes_per_token
+        )
+
+        logger.info(
+            f"Launching {args.num_workers} mocker worker(s) with isolated DistributedRuntime instances"
+        )
+        await launch_workers(args, engine_args)
+    finally:
+        if profile_data_result is not None:
+            del profile_data_result  # Triggers tmpdir cleanup via __del__
+
+
+def compute_stagger_delay(num_workers: int, stagger_delay: float) -> float:
+    """Compute the stagger delay based on worker count to give the frontend time to process registrations.
+    Returns the delay in seconds between worker launches.
+    """
+    if stagger_delay >= 0:
+        return stagger_delay
+
+    if stagger_delay != -1:
+        raise ValueError(
+            f"Invalid --stagger-delay value: {stagger_delay}. "
+            "Use -1 for auto mode, 0 to disable, or a positive value for explicit delay."
+        )
+
+    # Auto mode: stagger based on worker count
+    if num_workers <= 32:
+        return 0.0
+    elif num_workers <= 128:
+        return 0.1
+    else:
+        return 0.2
+
+
+async def launch_workers(args: argparse.Namespace, base_engine_args):
+    """Launch mocker worker(s) with isolated DistributedRuntime instances.
+
+    Each worker gets its own DistributedRuntime, which means:
+    - Separate etcd/NATS connections
+    - Separate Component instances (no shared overhead)
+    - Independent service registration and stats scraping
+    - But still sharing the same tokio runtime (efficient)
+    """
+    futures = []
+    runtimes = []
+
+    stagger_delay = compute_stagger_delay(args.num_workers, args.stagger_delay)
+    batch_size = 32
+    batch_pause = 2.0
+
+    if stagger_delay > 0:
+        total_time = (args.num_workers - 1) * stagger_delay
+        if args.num_workers > batch_size:
+            num_batches = (args.num_workers + batch_size - 1) // batch_size
+            total_time += batch_pause * (num_batches - 1)
+        logger.info(
+            f"Staggering {args.num_workers} worker launches: "
+            f"{stagger_delay}s between workers, {batch_pause}s pause every {batch_size} workers "
+            f"(estimated total: {total_time:.1f}s)"
+        )
+
+    needs_per_worker_overrides = bool(
+        args.bootstrap_ports_list
+        or args.zmq_kv_events_ports_list
+        or args.zmq_replay_ports_list
+        or base_engine_args["engine"]["aic_nextn"] is not None
+    )
+
+    # An advertised router config rides in this worker set's model deployment
+    # card and overrides the frontend's global mode for this set only. Left as
+    # None, the card carries nothing and the worker inherits the frontend's mode.
+    advertised_router_config = build_router_config(args.router_advertisement)
+    if advertised_router_config is not None:
+        logger.info(
+            "Advertising router mode '%s' in the model card",
+            args.router_advertisement.router_mode,
+        )
+
+    for worker_id in range(args.num_workers):
+        logger.info(f"Creating mocker worker {worker_id + 1}/{args.num_workers}")
+
+        # Create a separate DistributedRuntime for this worker (on same event loop)
+
+        runtime, loop = create_runtime(
+            args.discovery_backend,
+            args.request_plane,
+            args.event_plane,
+            response_plane=args.response_plane,
+        )
+        runtimes.append(runtime)
+
+        if needs_per_worker_overrides:
+            worker_engine_args = apply_worker_engine_args_overrides(
+                base_engine_args,
+                bootstrap_port=(
+                    args.bootstrap_ports_list[worker_id]
+                    if args.bootstrap_ports_list
+                    else None
+                ),
+                zmq_kv_events_port=(
+                    args.zmq_kv_events_ports_list[worker_id]
+                    if args.zmq_kv_events_ports_list
+                    else None
+                ),
+                zmq_replay_port=(
+                    args.zmq_replay_ports_list[worker_id]
+                    if args.zmq_replay_ports_list
+                    else None
+                ),
+                ais_mtp_seed=(
+                    (base_engine_args["engine"]["aic_mtp_seed"] + worker_id) % (1 << 64)
+                    if base_engine_args["engine"]["aic_nextn"] is not None
+                    else None
+                ),
+            )
+        else:
+            worker_engine_args = base_engine_args
+
+        kv_cache_block_size, runtime_config = build_runtime_config(worker_engine_args)
+        if args.sglang_generate:
+            runtime_config.set_engine_specific("sglang_generate", "true")
+
+        # Create EntrypointArgs for this worker
+        entrypoint_args = EntrypointArgs(
+            engine_type=EngineType.Mocker,
+            model_path=args.model_path,
+            model_name=args.model_name,
+            endpoint_id=args.endpoint,
+            extra_engine_args=None,
+            mocker_engine_args=worker_engine_args,
+            runtime_config=runtime_config,
+            kv_cache_block_size=kv_cache_block_size,
+            is_prefill=args.is_prefill_worker,
+            is_decode=args.is_decode_worker,
+            router_config=advertised_router_config,
+        )
+
+        # Create the engine with this worker's isolated runtime
+        engine_config = await make_engine(runtime, entrypoint_args)
+
+        # run_input returns a Rust Future (not a Python coroutine)
+        future = run_input(runtime, args.endpoint, engine_config)
+        futures.append(future)
+
+        # Stagger worker launches for large deployments
+        if stagger_delay > 0 and worker_id < args.num_workers - 1:
+            await asyncio.sleep(stagger_delay)
+            # Add extra pause between batches to let frontend catch up
+            if (worker_id + 1) % batch_size == 0:
+                logger.info(
+                    f"Batch {(worker_id + 1) // batch_size} complete, "
+                    f"pausing {batch_pause}s for frontend to process..."
+                )
+                await asyncio.sleep(batch_pause)
+
+    logger.info(f"All {args.num_workers} mocker worker(s) created and running")
+
+    # Set up signal handler for graceful shutdown
+    def signal_handler():
+        asyncio.create_task(graceful_shutdown(runtimes))
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, signal_handler)
+
+    logger.info("Signal handlers set up for graceful shutdown")
+
+    try:
+        # Wait for all futures to complete
+        await asyncio.gather(*futures, return_exceptions=True)
+    finally:
+        # Clean up runtimes (in case they weren't already shut down by signal handler)
+        logger.info("Shutting down DistributedRuntime instances")
+        for runtime in runtimes:
+            runtime.shutdown()
+
+
+def main():
+    uvloop.run(worker())
