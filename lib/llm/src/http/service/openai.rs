@@ -125,17 +125,10 @@ fn map_error_code_to_error_type(code: StatusCode) -> String {
     }
 }
 
-/// Classify error for metrics based on status code and message
-fn classify_error_for_metrics(code: StatusCode, message: &str) -> ErrorType {
+/// Classify errors by status; public validation messages need no special prefix.
+pub(super) fn classify_error_for_metrics(code: StatusCode, _message: &str) -> ErrorType {
     match code {
-        StatusCode::BAD_REQUEST => {
-            // 400
-            if message.starts_with("Validation:") {
-                ErrorType::Validation
-            } else {
-                ErrorType::Internal
-            }
-        }
+        StatusCode::BAD_REQUEST => ErrorType::Validation,
         StatusCode::NOT_FOUND => ErrorType::NotFound, // 404
         StatusCode::NOT_IMPLEMENTED => ErrorType::NotImplemented, // 501
         StatusCode::TOO_MANY_REQUESTS => ErrorType::Overload, // 429
@@ -1279,7 +1272,7 @@ async fn handler_chat_completions(
 
 /// Checks if an Annotated event represents a backend error and extracts error information.
 /// Returns Some((message, status_code)) if it's an error, None otherwise.
-fn extract_backend_error_if_present<T: serde::Serialize>(
+pub(super) fn extract_backend_error_if_present<T: serde::Serialize>(
     event: &Annotated<T>,
 ) -> Option<(String, StatusCode)> {
     #[derive(serde::Deserialize)]
@@ -1316,13 +1309,20 @@ fn extract_backend_error_if_present<T: serde::Serialize>(
         };
 
         // Try to parse as error JSON to extract status code
-        if let Ok(error_payload) = serde_json::from_str::<ErrorPayload>(&error_str) {
-            let code = error_payload
-                .code
-                .and_then(|c| StatusCode::from_u16(c).ok())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        if let Ok(error_payload) = serde_json::from_str::<ErrorPayload>(&error_str)
+            && let Some(code) = error_payload.code
+        {
+            let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let message = error_payload.message.unwrap_or(error_str);
             return Some((message, code));
+        }
+
+        // Typed validation errors carry a public message, not necessarily JSON.
+        // An explicit backend JSON status above retains precedence.
+        if let Some(error) = event.error.as_ref()
+            && let Some(invalid) = find_invalid_argument_in_chain(error)
+        {
+            return Some((invalid.message().to_string(), StatusCode::BAD_REQUEST));
         }
 
         return Some((error_str, StatusCode::INTERNAL_SERVER_ERROR));
@@ -2251,9 +2251,6 @@ async fn responses(
                 yield event.map_err(axum::Error::new);
             }
 
-            // Track whether the backend sent an error event during the stream.
-            let mut saw_error = false;
-
             while let Some(annotated_chunk) = engine_stream.next().await {
                 process_chat_response_and_observe_metrics(
                     &annotated_chunk,
@@ -2261,9 +2258,17 @@ async fn responses(
                     &mut http_queue_guard,
                 );
 
-                if extract_backend_error_if_present(&annotated_chunk).is_some() {
-                    saw_error = true;
-                    continue;
+                if let Some((message, status)) = extract_backend_error_if_present(&annotated_chunk) {
+                    let mut failure = super::disconnect::StreamingError::new(message, status);
+                    match converter.failure_event(failure.error_type, &failure.message) {
+                        Ok(event) => {
+                            failure.native_event = Some(event);
+                            yield Err(axum::Error::new(failure));
+                        }
+                        Err(error) => yield Err(axum::Error::new(error)),
+                    }
+                    // Never poll a failed backend again or emit response.completed.
+                    return;
                 }
 
                 let Some(stream_resp) = annotated_chunk.data else {
@@ -2276,11 +2281,7 @@ async fn responses(
                 }
             }
 
-            if saw_error {
-                converter.append_error_events(&mut events);
-            } else {
-                converter.append_end_events(&mut events);
-            }
+            converter.append_end_events(&mut events);
             for event in events.drain(..) {
                 yield event.map_err(axum::Error::new);
             }
@@ -3538,6 +3539,57 @@ mod tests {
         assert!(!response.1.message.contains("payload_bytes"));
     }
 
+    #[tokio::test]
+    async fn typed_multimodal_validation_survives_leading_annotations() {
+        use dynamo_runtime::error::{BackendError, DynamoError, ErrorType};
+        for modality in ["image", "video", "audio"] {
+            for kind in [
+                ErrorType::InvalidArgument,
+                ErrorType::Backend(BackendError::InvalidArgument),
+            ] {
+                let message = format!("At most 0 {modality}(s) may be provided in one request.");
+                let mut event = Annotated::<NvCreateChatCompletionStreamResponse>::from_error("");
+                event.error = Some(
+                    DynamoError::builder()
+                        .error_type(kind)
+                        .message(&message)
+                        .build(),
+                );
+                let annotation =
+                    Annotated::from_annotation("request_id", &"req-validation").unwrap();
+                let result = check_for_backend_error(stream::iter(vec![annotation, event])).await;
+                let Err(response) = result else {
+                    panic!("validation must fail before folding")
+                };
+                assert_eq!(response.0, StatusCode::BAD_REQUEST);
+                assert_eq!(
+                    extract_error_type_from_response(&response),
+                    super::ErrorType::Validation
+                );
+                assert_eq!(response.1.message, message);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_json_status_precedes_typed_validation() {
+        use dynamo_runtime::error::{DynamoError, ErrorType};
+        for status in [404, 429] {
+            let message =
+                serde_json::json!({"message": "public backend error", "code": status}).to_string();
+            let mut event = Annotated::<serde_json::Value>::from_error("");
+            event.error = Some(
+                DynamoError::builder()
+                    .error_type(ErrorType::InvalidArgument)
+                    .message(message)
+                    .build(),
+            );
+            let (message, code) = extract_backend_error_if_present(&event).unwrap();
+            assert_eq!(code.as_u16(), status);
+            assert_eq!(message, "public backend error");
+        }
+    }
+
     #[test]
     fn test_backend_invalid_argument_surfaces_as_400() {
         // `Backend(InvalidArgument)` is what `py_err_to_dynamo` produces
@@ -4598,9 +4650,9 @@ mod tests {
             classify_error_for_metrics(StatusCode::BAD_REQUEST, "Validation: Invalid parameter");
         assert_eq!(error_type, ErrorType::Validation);
 
-        // 400 WITHOUT "Validation:" to internal (fallback)
+        // Backend validation messages need not use the frontend's prefix.
         let error_type = classify_error_for_metrics(StatusCode::BAD_REQUEST, "Some other error");
-        assert_eq!(error_type, ErrorType::Internal);
+        assert_eq!(error_type, ErrorType::Validation);
     }
 
     #[test]

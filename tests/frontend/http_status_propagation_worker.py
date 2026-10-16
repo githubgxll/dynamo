@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Worker for the HTTP-status-propagation e2e test. Raises a duck-typed
-`.status=415` exception so the test can assert the status survives the wire."""
+"""Worker exercising HTTP-like, validation, and unexpected errors over the wire."""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 
 import uvloop
@@ -31,12 +31,29 @@ class _StatusLikeError(Exception):
         self.message = message
 
 
-async def generate(request, context):
-    raise _StatusLikeError(status=EXPECTED_STATUS, message=EXPECTED_MESSAGE)
-    yield  # unreachable; needed to make this an async generator
+def make_generate(error_kind: str, message: str, after_chunk: bool):
+    async def generate(request, context):
+        if after_chunk:
+            yield {"token_ids": [9707]}
+        if error_kind == "invalid_argument":
+            from dynamo.llm.exceptions import InvalidArgument
+
+            raise InvalidArgument(message)
+        if error_kind == "value_error":
+            raise ValueError(message)
+        if error_kind == "unknown":
+            raise RuntimeError(message)
+        raise _StatusLikeError(status=EXPECTED_STATUS, message=message)
+
+    return generate
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--error-kind", default="http_status")
+    parser.add_argument("--message", default=EXPECTED_MESSAGE)
+    parser.add_argument("--after-chunk", action="store_true")
+    args = parser.parse_args()
     runtime = DistributedRuntime(asyncio.get_running_loop(), "etcd", "tcp")
     endpoint = runtime.endpoint(ENDPOINT_PATH)
     await register_model(
@@ -47,7 +64,9 @@ async def main():
         model_name=MODEL_NAME,
         worker_type=WorkerType.Aggregated,
     )
-    await endpoint.serve_endpoint(generate)
+    await endpoint.serve_endpoint(
+        make_generate(args.error_kind, args.message, args.after_chunk)
+    )
 
 
 if __name__ == "__main__":

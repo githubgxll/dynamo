@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -134,6 +135,91 @@ def _make_engine_response(request_id: str = "req-1", finished: bool = True):
     resp.metrics = None
     resp.kv_transfer_params = {"do_remote_decode": False}
     return resp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["base", "decode_token", "decode_text", "prefill"])
+@pytest.mark.parametrize("phase", ["construction", "iteration"])
+async def test_engine_validation_errors_across_generation_paths(monkeypatch, mode, phase):
+    from dynamo.llm.exceptions import InvalidArgument
+
+    from dingo.vllm import generation_errors
+
+    class ValidationError(Exception):
+        pass
+
+    monkeypatch.setattr(generation_errors, "_VALIDATION_ERRORS", (ValidationError,))
+    error = ValidationError("max_tokens exceeds the remaining context length")
+
+    def generate(*args, **kwargs):
+        if phase == "construction":
+            raise error
+
+        async def stream():
+            raise error
+            yield  # pragma: no cover
+
+        return stream()
+
+    config = _make_config(enable_multimodal=False, disaggregation_mode="DECODE")
+    handler = _make_handler(config=config)
+    handler.config = config
+    handler.engine_client = MagicMock()
+    handler.engine_client.generate = generate
+    handler.runtime = MagicMock()
+    handler.default_sampling_params = {}
+    handler.model_max_len = None
+    handler.input_param_manager = MagicMock()
+    handler.input_param_manager.get_input_param.return_value = [1, 2, 3]
+    handler._resolve_lora_request = MagicMock(return_value=None)
+    handler._get_mm_processor_kwargs = MagicMock(return_value={})
+    handler._extract_multimodal_data = AsyncMock(return_value=None)
+    handler._build_prompt_from_request = MagicMock(
+        return_value=({"prompt_token_ids": [1, 2, 3]}, None, None)
+    )
+    handler._to_local_dp_rank = MagicMock(return_value=None)
+    handler._log_with_lora_context = MagicMock()
+    sampling_params = SimpleNamespace(extra_args=None)
+    monkeypatch.setattr(
+        mod, "build_sampling_params", MagicMock(return_value=sampling_params)
+    )
+    monkeypatch.setattr(
+        mod, "build_sampling_params_openai", MagicMock(return_value=sampling_params)
+    )
+    monkeypatch.setattr(mod, "make_kv_connector_protocol", MagicMock())
+    monitor_exits = []
+
+    @asynccontextmanager
+    async def monitor(*args, **kwargs):
+        try:
+            yield
+        finally:
+            monitor_exits.append(True)
+
+    handler._abort_monitor = monitor
+    context = MagicMock()
+    context.trace_headers.return_value = {}
+    request = _make_raw_frontend_request()
+    if mode == "base":
+        stream = handler.generate_tokens({}, sampling_params, "req-validation")
+    elif mode == "decode_token":
+        stream = handler._generate_token_mode(request, context, "req-validation")
+    elif mode == "decode_text":
+        stream = handler._generate_text_mode(request, context, "req-validation")
+    else:
+        stream = mod.PrefillWorkerHandler._generate_token_mode(
+            handler, request, context, "req-validation"
+        )
+
+    with pytest.raises(InvalidArgument) as caught:
+        async for _ in stream:
+            pytest.fail("Validation failure must not yield a normal output")
+
+    assert str(error) in str(caught.value)
+    assert caught.value.__cause__ is error
+    handler.runtime.shutdown.assert_not_called()
+    assert monitor_exits == ([] if mode == "base" else [True])
+    assert handler._deferred_aborts == {}
 
 
 @pytest.mark.asyncio

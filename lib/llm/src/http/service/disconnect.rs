@@ -39,6 +39,44 @@ use crate::http::service::metrics::{CancellationLabels, ErrorType, InflightGuard
 
 use dynamo_runtime::config::environment_names::llm::DYN_HTTP_BACKEND_STREAM_TIMEOUT_SECS as BACKEND_STREAM_TIMEOUT_ENV;
 
+/// A classified backend failure, retained across Axum's boxed error boundary.
+/// Only public messages are stored here; native Responses frames can replace
+/// the Chat/Completions error envelope without losing failure accounting.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(super) struct StreamingError {
+    pub message: String,
+    pub status: axum::http::StatusCode,
+    pub error_type: &'static str,
+    pub native_event: Option<Event>,
+}
+
+impl StreamingError {
+    pub fn new(message: String, status: axum::http::StatusCode) -> Self {
+        let (message, status, error_type) = match SanitizedError::for_backend_status(status) {
+            Some(sanitized) => {
+                tracing::error!(%status, %message, "Backend streaming error");
+                (
+                    sanitized.to_string(),
+                    sanitized.status(),
+                    sanitized.openai_type_slug(),
+                )
+            }
+            None => (message, status, "invalid_request_error"),
+        };
+        Self {
+            message,
+            status,
+            error_type,
+            native_event: None,
+        }
+    }
+
+    fn metrics_error_type(&self) -> ErrorType {
+        super::openai::classify_error_for_metrics(self.status, &self.message)
+    }
+}
+
 /// Read the backend stream inactivity timeout from the environment.
 /// Returns `None` if unset or zero (timeout disabled).
 ///
@@ -232,27 +270,30 @@ fn monitor_for_disconnects_with_timeout(
                             yield event;
                         }
                         Some(Err(err)) => {
-                            // Mark error as internal since it's a streaming error
-                            inflight_guard.mark_error(ErrorType::Internal);
+                            tracing::error!("Streaming error: {err}");
+                            let mut failure = err.into_inner().downcast::<StreamingError>()
+                                .map(|error| *error)
+                                .unwrap_or_else(|_| StreamingError::new(
+                                    String::new(), axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                ));
+                            inflight_guard.mark_error(failure.metrics_error_type());
                             // We're terminating the stream intentionally here with a
                             // structured error + [DONE]; disarm so the stream handle
                             // doesn't later record this as ClosedUnexpectedly (which
                             // would mis-attribute the fault as a client disconnect).
                             stream_handle.disarm();
-                            tracing::error!("Streaming error: {err}");
-                            // Emit a structured OpenAI-style error frame + `data: [DONE]`
-                            // so naive `data:`-line parsers see both the error and a
-                            // stream terminator. Body derived from SanitizedError so
-                            // the sanitized message + status live in one place.
-                            let sanitized = SanitizedError::Internal;
-                            let err_json = serde_json::json!({
-                                "error": {
-                                    "message": sanitized.to_string(),
-                                    "type": sanitized.openai_type_slug(),
-                                    "code": sanitized.status().as_u16(),
-                                }
-                            });
-                            yield Event::default().data(err_json.to_string());
+                            if let Some(event) = failure.native_event.take() {
+                                yield event;
+                            } else {
+                                let err_json = serde_json::json!({
+                                    "error": {
+                                        "message": failure.message,
+                                        "type": failure.error_type,
+                                        "code": failure.status.as_u16(),
+                                    }
+                                });
+                                yield Event::default().data(err_json.to_string());
+                            }
                             yield Event::default().data("[DONE]");
                             // Break to prevent any subsequent mark_ok() from overwriting the error
                             break;
@@ -626,6 +667,142 @@ mod tests {
             "[{case}] SSE body leaked raw backend error detail to the client. \
              Expected `{leaked_detail}` to be absent. Body:\n{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn typed_validation_terminates_early_and_late_streams() {
+        use crate::http::service::metrics::{
+            EventConverter, process_response_using_event_converter_and_observe_metrics,
+        };
+        use crate::types::Annotated;
+        use dynamo_runtime::error::{BackendError, DynamoError, ErrorType as DynamoErrorType};
+
+        for modality in ["image", "video", "audio"] {
+            for kind in [
+                DynamoErrorType::InvalidArgument,
+                DynamoErrorType::Backend(BackendError::InvalidArgument),
+            ] {
+                for prefix in [0, 2] {
+                    let (metrics, guard, ctx, _) = setup_test("validation", "req-validation");
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let handle = ConnectionHandle::create_disabled(tx);
+                    let mut collector = metrics.clone().create_response_collector("validation");
+                    let mut queue = Some(metrics.clone().create_http_queue_guard("validation"));
+                    let message =
+                        format!("At most 0 {modality}(s) may be provided in one request.");
+                    let mut annotation = Annotated::<serde_json::Value>::from_error("");
+                    annotation.error = Some(
+                        DynamoError::builder()
+                            .error_type(kind)
+                            .message(&message)
+                            .build(),
+                    );
+                    let failure = process_response_using_event_converter_and_observe_metrics(
+                        EventConverter(annotation),
+                        &mut collector,
+                        &mut queue,
+                    )
+                    .unwrap_err();
+                    let source = async_stream::stream! {
+                        // Hold queue accounting until this upstream stream is dropped.
+                        let _queue = queue;
+                        for _ in 0..prefix { yield Ok(Event::default().data("chunk")); }
+                        yield Err(failure);
+                        panic!("backend must not be polled after a terminal error");
+                    };
+                    let body = collect_sse_body(monitor_for_disconnects_with_timeout(
+                        source, ctx, guard, handle, None,
+                    ))
+                    .await;
+                    assert!(body.contains(&message));
+                    assert!(body.contains("\"code\":400"));
+                    assert!(body.contains("invalid_request_error"));
+                    assert_eq!(body.matches("data: [DONE]").count(), 1);
+                    assert_eq!(body.matches("data: chunk").count(), prefix);
+                    assert_eq!(metrics.get_inflight_count("validation"), 0);
+                    assert_eq!(metrics.get_client_disconnect_count(), 0);
+                    assert!(matches!(
+                        rx.await.unwrap(),
+                        ConnectionStatus::ClosedGracefully
+                    ));
+                    assert_eq!(
+                        metrics.get_request_counter(
+                            "validation",
+                            &Endpoint::ChatCompletions,
+                            &RequestType::Stream,
+                            &Status::Error,
+                            &ErrorType::Validation
+                        ),
+                        1
+                    );
+                    assert_eq!(
+                        metrics.get_request_counter(
+                            "validation",
+                            &Endpoint::ChatCompletions,
+                            &RequestType::Stream,
+                            &Status::Success,
+                            &ErrorType::None
+                        ),
+                        0
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_failure_is_native_and_counted_as_error() {
+        use crate::protocols::openai::responses::{
+            ResponseParams, stream_converter::ResponseStreamConverter,
+        };
+        for status in [
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let (metrics, guard, ctx, handle) = setup_test("responses", "req-responses");
+            let mut converter =
+                ResponseStreamConverter::new("model".into(), ResponseParams::default());
+            let mut failure =
+                StreamingError::new("At most 0 image(s) may be provided".into(), status);
+            failure.native_event = Some(
+                converter
+                    .failure_event(failure.error_type, &failure.message)
+                    .unwrap(),
+            );
+            let source = async_stream::stream! {
+                for event in converter.emit_start_events() { yield event.map_err(axum::Error::new); }
+                yield Err(axum::Error::new(failure));
+                panic!("native failure must terminate the stream");
+            };
+            let body = collect_sse_body(monitor_for_disconnects_with_timeout(
+                source, ctx, guard, handle, None,
+            ))
+            .await;
+            assert!(body.contains("event: response.failed"));
+            assert!(!body.contains("response.completed"));
+            assert_eq!(body.matches("data: [DONE]").count(), 1);
+            let failed: serde_json::Value = body
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+                .find(|event| event["type"] == "response.failed")
+                .unwrap();
+            assert_eq!(failed["response"]["status"], "failed");
+            if status.is_client_error() {
+                assert_eq!(failed["response"]["error"]["code"], "invalid_request_error");
+                assert_eq!(
+                    failed["response"]["error"]["message"],
+                    "At most 0 image(s) may be provided"
+                );
+            } else {
+                assert!(!body.contains("At most 0"));
+                assert_eq!(
+                    failed["response"]["error"]["message"],
+                    "Internal server error"
+                );
+            }
+            assert_eq!(metrics.get_inflight_count("responses"), 0);
+        }
     }
 
     /// Upstream worker killed mid-stream → mpsc channel reports `Disconnected` to the

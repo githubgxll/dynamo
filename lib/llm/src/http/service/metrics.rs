@@ -1834,6 +1834,16 @@ fn observe_annotation_metrics<T>(
 fn annotated_to_sse_event<T: Serialize>(
     annotated: crate::types::Annotated<T>,
 ) -> Result<Option<Event>, axum::Error> {
+    // Classify before serializing or flattening the annotation: typed validation
+    // and explicit backend status codes must survive the Axum error boundary.
+    if annotated.event.as_deref() == Some("error")
+        && let Some((message, status)) = super::openai::extract_backend_error_if_present(&annotated)
+    {
+        return Err(axum::Error::new(super::disconnect::StreamingError::new(
+            message, status,
+        )));
+    }
+
     let mut event = Event::default();
 
     if let Some(ref data) = annotated.data {
@@ -1841,23 +1851,6 @@ fn annotated_to_sse_event<T: Serialize>(
     }
 
     if let Some(ref msg) = annotated.event {
-        if msg == "error" {
-            let error_message = if let Some(ref dynamo_err) = annotated.error
-                && !dynamo_err.message().is_empty()
-            {
-                dynamo_err.message().to_string()
-            } else if let Some(ref comments) = annotated.comment {
-                let joined = comments.join(" -- ");
-                if joined.trim().is_empty() {
-                    "unspecified error".to_string()
-                } else {
-                    joined
-                }
-            } else {
-                "unspecified error".to_string()
-            };
-            return Err(axum::Error::new(error_message));
-        }
         event = event.event(msg);
     }
 
@@ -3236,14 +3229,39 @@ mod tests {
     }
 
     #[test]
-    fn test_error_event_uses_dynamo_error_message() {
+    fn explicit_backend_status_survives_sse_conversion() {
+        for status in [404, 415, 429, 500, 503] {
+            let message =
+                serde_json::json!({"code": status, "message": "backend detail"}).to_string();
+            let error = run_event_converter(error_annotated(
+                Some(dynamo_runtime::error::DynamoError::msg(message)),
+                None,
+            ))
+            .unwrap_err()
+            .into_inner()
+            .downcast::<super::super::disconnect::StreamingError>()
+            .unwrap();
+            assert_eq!(error.status.as_u16(), status);
+            assert_eq!(
+                error.message,
+                if status < 500 {
+                    "backend detail"
+                } else {
+                    "Internal server error"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_event_sanitizes_untyped_dynamo_error() {
         use dynamo_runtime::error::DynamoError;
         let result = run_event_converter(error_annotated(
             Some(DynamoError::msg("image load failed: 403 Forbidden")),
             None,
         ));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("403 Forbidden"));
+        assert_eq!(result.unwrap_err().to_string(), "Internal server error");
     }
 
     #[test]
@@ -3251,21 +3269,21 @@ mod tests {
         let result =
             run_event_converter(error_annotated(None, Some(vec!["connection lost".into()])));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("connection lost"));
+        assert_eq!(result.unwrap_err().to_string(), "Internal server error");
     }
 
     #[test]
     fn test_error_event_unspecified_when_no_message() {
         let result = run_event_converter(error_annotated(None, None));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "unspecified error");
+        assert_eq!(result.unwrap_err().to_string(), "Internal server error");
     }
 
     #[test]
     fn test_error_event_empty_comment_falls_through() {
         let result = run_event_converter(error_annotated(None, Some(vec!["".into()])));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "unspecified error");
+        assert_eq!(result.unwrap_err().to_string(), "Internal server error");
     }
 
     #[test]

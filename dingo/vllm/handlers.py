@@ -98,6 +98,7 @@ from dingo.vllm.kv_connector_protocols import (
 from .args import Config
 from .constants import DisaggregationMode, EmbeddingTransferMode
 from .engine_monitor import VllmEngineMonitor
+from .generation_errors import generate_with_validation
 from .multimodal_utils.hash_utils import compute_mm_uuids_from_images
 from .multimodal_utils.model import (
     ModelFamily,
@@ -2987,7 +2988,8 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
                 request_id,
                 lora_request,
             )
-            gen = self.engine_client.generate(
+            gen = generate_with_validation(
+                self.engine_client.generate,
                 prompt,
                 sampling_params,
                 request_id,
@@ -3457,7 +3459,8 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             context, request_id, abort_guard=abort_guard
         ):
             try:
-                gen = self.engine_client.generate(
+                gen = generate_with_validation(
+                    self.engine_client.generate,
                     prompt,
                     sampling_params,
                     request_id,
@@ -3655,7 +3658,8 @@ class PrefillWorkerHandler(BaseWorkerHandler):
 
         async with self._abort_monitor(context, request_id, is_prefill=True):
             try:
-                gen = self.engine_client.generate(
+                gen = generate_with_validation(
+                    self.engine_client.generate,
                     prompt,
                     sampling_params,
                     request_id,
