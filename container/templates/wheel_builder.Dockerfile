@@ -8,9 +8,15 @@
 ##################################
 
 {% if builder_image %}
-# Group reusable stage: the fingerprint covers current main native inputs.
-# This image includes NIXL but excludes Dynamo application source/wheels.
+# This image contains the complete reusable_builder_base stage (toolchains,
+# Python build tools, gdrcopy, FFmpeg, UCX, libfabric and NIXL). It is versioned
+# by the CI from the files that define those dependencies, so ordinary Dynamo
+# source changes can start from the published image on any runner.
 FROM {{ builder_image }} AS wheel_builder_base
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 {% else %}
 
 {% if platform == "multi" and device == "cuda" %}
@@ -18,8 +24,8 @@ FROM {{ builder_image }} AS wheel_builder_base
 # always pulled as the correct native arch regardless of the current TARGETPLATFORM.
 # BuildKit only fetches and builds the stage that TARGETARCH resolves to; the other
 # is a no-op for each sub-build.
-FROM --platform=linux/amd64 quay.io/pypa/manylinux_2_28_x86_64 AS manylinux_amd64
-FROM --platform=linux/arm64 quay.io/pypa/manylinux_2_28_aarch64 AS manylinux_arm64
+FROM --platform=linux/amd64 quay.io/pypa/manylinux_2_28_x86_64:{{ context.dynamo.manylinux_image_tag }}@{{ context.dynamo.manylinux_image_digest.x86_64 }} AS manylinux_amd64
+FROM --platform=linux/arm64 quay.io/pypa/manylinux_2_28_aarch64:{{ context.dynamo.manylinux_image_tag }}@{{ context.dynamo.manylinux_image_digest.aarch64 }} AS manylinux_arm64
 {% endif %}
 
 ##################################
@@ -34,11 +40,21 @@ FROM ${WHEEL_BUILDER_IMAGE} AS wheel_builder_base
 {% endif %}
 
 # Redeclare ARGs for this stage
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 ARG TARGETARCH
 ARG CARGO_BUILD_JOBS
 ARG DEVICE
 
 WORKDIR /workspace
+
+# The self-hosted Dingo CI runner accesses source repositories through a
+# TLS-inspection proxy whose CA is unavailable inside BuildKit containers.
+# Scope the workaround to this builder stage; final runtime images only copy
+# build artifacts and do not inherit this Git configuration.
+RUN git config --global http.sslVerify false
 
 # Compliance: always create the rust license-harvest dir so the licenses stage's
 # `COPY --from=wheel_builder /opt/dynamo/rust-licenses` never fails, even for
@@ -77,24 +93,16 @@ COPY --from=dynamo_base $CARGO_HOME $CARGO_HOME
 
 {% if device == "xpu" %}
 RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
-    echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | tee /etc/apt/sources.list.d/oneAPI.list
+    echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | tee /etc/apt/sources.list.d/oneAPI.list && \
+    add-apt-repository -y ppa:kobuk-team/intel-graphics
 
-ADD --checksum=sha256:f60e802b6f41350393e34b24793db888a8be514054769bd17e7a6e9c0c058b87 \
-    https://github.com/intel/xpumanager/releases/download/v1.3.6/xpu-smi_1.3.6_20260206.143628.1004f6cb.u24.04_amd64.deb \
-    /tmp/xpu-smi.deb
+# Fetch UCX patch
+RUN wget --tries=3 --waitretry=5 https://raw.githubusercontent.com/intel/llm-scaler/35a14cbc08d714f460a29b7a7328df5620c8530f/vllm/patches/ai-dynamo-xpu/patches/ucx-v1.12.0.patch -O /tmp/ucx.patch
 
-# Install xpu-smi without explicitly changing the Intel compute runtime stack.
-RUN apt-get update && \
-    if command -v xpu-smi >/dev/null 2>&1; then \
-        echo "xpu-smi already present in base image, skipping install"; \
-    else \
-        if apt-cache show intel-gsc >/dev/null 2>&1; then \
-            apt-get install -y --no-install-recommends /tmp/xpu-smi.deb; \
-        else \
-            echo "WARNING: intel-gsc is not available from configured apt sources; skipping xpu-smi install"; \
-        fi; \
-    fi && \
-    rm -f /tmp/xpu-smi.deb && \
+# Install Intel GPU runtime packages
+RUN apt update -y && apt upgrade -y && \
+    apt-get install -y libze1 libze-dev libze-intel-gpu1 intel-opencl-icd  \
+    libze-intel-gpu-raytracing intel-ocloc intel-oneapi-compiler-dpcpp-cpp-2025.3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 {% endif %}
 
@@ -138,10 +146,44 @@ RUN apt-get update -y \
 # --setopt=tsflags=nocontexts: skip SELinux file-context labeling. The manylinux
 # image lacks the SELinux policy store that some compute nodes expect; without
 # this flag, dnf fails with "ValueError: SELinux policy is not managed".
+# Avoid the public mirrorlist in CI: TLS interception can terminate its handshake
+# before package downloads start. Use the same fixed Huawei Cloud mirror as the
+# self-hosted runner, including EPEL (needed by dkms), and retry transient errors.
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
-    dnf install -y --setopt=tsflags=nocontexts almalinux-release-synergy && \
-    dnf config-manager --set-enabled powertools && \
-    dnf install -y --setopt=tsflags=nocontexts \
+    set -eux; \
+    configure_dnf_repos() { \
+        sed -i \
+            -e 's|^mirrorlist=|# mirrorlist=|' \
+            -e 's|^# *baseurl=https://repo\.almalinux\.org/|baseurl=https://repo.huaweicloud.com/|' \
+            -e 's|^# *baseurl=http://repo\.almalinux\.org/|baseurl=https://repo.huaweicloud.com/|' \
+            -e 's|^baseurl=https://repo\.almalinux\.org/|baseurl=https://repo.huaweicloud.com/|' \
+            -e 's|^baseurl=http://repo\.almalinux\.org/|baseurl=https://repo.huaweicloud.com/|' \
+            /etc/yum.repos.d/almalinux*.repo; \
+        for repo_file in /etc/yum.repos.d/epel*.repo; do \
+            [ -e "${repo_file}" ] || continue; \
+            sed -i \
+                -e 's|^metalink=|# metalink=|' \
+                -e 's|^# *baseurl=https://download\.example/pub/epel/|baseurl=https://repo.huaweicloud.com/epel/|' \
+                -e 's|^# *baseurl=http://download\.example/pub/epel/|baseurl=https://repo.huaweicloud.com/epel/|' \
+                -e 's|^baseurl=https://download\.fedoraproject\.org/pub/epel/|baseurl=https://repo.huaweicloud.com/epel/|' \
+                -e 's|^baseurl=http://download\.fedoraproject\.org/pub/epel/|baseurl=https://repo.huaweicloud.com/epel/|' \
+                "${repo_file}"; \
+        done; \
+    }; \
+    configure_dnf_repos; \
+    for attempt in 1 2 3 4 5; do \
+        if dnf install -y --setopt=tsflags=nocontexts almalinux-release-synergy; then \
+            break; \
+        fi; \
+        dnf clean metadata; \
+        if [ "${attempt}" -eq 5 ]; then exit 1; fi; \
+        echo "Synergy repository install attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done; \
+    configure_dnf_repos; \
+    dnf config-manager --set-enabled powertools; \
+    for attempt in 1 2 3 4 5; do \
+        if dnf install -y --setopt=tsflags=nocontexts \
         # Autotools (required for UCX, libfabric ./autogen.sh and ./configure)
         autoconf \
         automake \
@@ -177,7 +219,14 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
         libcurl-devel \
         openssl-devel \
         libuuid-devel \
-        zlib-devel
+        zlib-devel; then \
+            break; \
+        fi; \
+        dnf clean metadata; \
+        if [ "${attempt}" -eq 5 ]; then exit 1; fi; \
+        echo "System dependency install attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done
 
 # Default comes from context.yaml; keep it in sync with upstream NIXL's
 # contrib/Dockerfile.manylinux. NIXL v1.0.x needs newer hwloc than RHEL8 ships.
@@ -219,12 +268,9 @@ RUN set -eux; \
 # Point build tools explicitly at the modern protoc
 ENV PROTOC=/usr/local/bin/protoc
 
-# Install uv package manager, ahead of the copy manylinux bundles in
-# /usr/local/bin. See dynamo_base.Dockerfile for why it gets its own directory.
-COPY --from=ghcr.io/astral-sh/uv:{{ context.dynamo.uv_version }} /uv /uvx /opt/uv/bin/
-ENV PATH=/opt/uv/bin:${PATH}
-
 {% if device == "xpu" or device == "cpu" %}
+# Install uv package manager
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib64:${LD_LIBRARY_PATH:-}
 {% else %}
 ENV CUDA_PATH=/usr/local/cuda \
@@ -237,12 +283,10 @@ ENV CUDA_PATH=/usr/local/cuda \
 ARG PYTHON_VERSION
 ENV VIRTUAL_ENV=/workspace/.venv
 # Cache uv downloads; uv handles its own locking for this cache.
-# pyyaml: needed by the compliance NOTICES-bundling steps below (overrides.py
-# imports yaml at module scope); the system python3 doesn't ship it.
-RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export UV_CACHE_DIR=/root/.cache/uv UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 && \
-    uv venv ${VIRTUAL_ENV} --python $PYTHON_VERSION --seed && \
-    uv pip install --upgrade auditwheel meson pybind11 patchelf maturin[patchelf] tomlkit pyyaml
+    uv venv ${VIRTUAL_ENV} --python $PYTHON_VERSION && \
+    uv pip install --upgrade meson pybind11 patchelf maturin[patchelf] tomlkit
 
 ARG NIXL_UCX_REF
 
@@ -262,7 +306,7 @@ RUN ARCH_ALT=$([ "${TARGETARCH}" = "amd64" ] && echo "x86_64" || echo "aarch64")
 # sccache binary is pre-installed in dynamo_base; stage it off-PATH so
 # Meson doesn't auto-detect it as a CUDA compiler launcher
 # (https://github.com/mesonbuild/meson/issues/11118).
-# Keep sccache off PATH to avoid Meson auto-wrapping nvcc; use explicit wrappers.
+# Compiler integrations use SCCACHE_EXECUTABLE explicitly when enabled.
 COPY --from=dynamo_base /usr/local/bin/sccache /opt/sccache/sccache
 
 ARG USE_SCCACHE
@@ -310,36 +354,15 @@ ENV SCCACHE_BUCKET=${USE_SCCACHE:+${SCCACHE_BUCKET}} \
     SCCACHE_GHA_VERSION=${USE_SCCACHE:+${SCCACHE_GHA_VERSION}} \
     SCCACHE_EXECUTABLE=${USE_SCCACHE:+/opt/sccache/sccache}
 
-# Build FFmpeg for every framework's video-encode path, SGLang included. The
-# build is VP9-only (libvpx) — it contains no H.264, H.265, or AAC encoder in
-# any form — so SGLang's video-generation handler gets a VP9 encoder to write
-# with, matching vLLM/TRT-LLM.
-# Build FFmpeg so libs are available for Rust checks in CI.
-# We build the ffmpeg CLI with the libvpx_vp9 encoder so Python code can encode
-# video without the GPL-licensed binary shipped by imageio-ffmpeg.
-# Stays LGPL-only AND royalty-free: --disable-gpl --disable-nonfree are preserved,
-# and no H.264/H.265/AAC codec is built in any form. Video encode is VP9 only
-# (libvpx, BSD). NVENC is intentionally NOT enabled: the hardware H.264 encoder is
-# still a distributable H.264 codec surface, so it is omitted entirely — see the
-# post-build guard below that fails the build if any H.264 surface reappears.
-#
-# MEDIA CODEC ALLOWLIST: the in-tree libavcodec should carry only
-# the media formats we actually build and use, not ffmpeg's full default decoder
-# set. A blanket --disable-decoders/--disable-demuxers/--disable-parsers plus a
-# narrow allowlist keeps the shipped libav*.so limited to that set. The allowlist
-# covers exactly two paths: (1) the encode CLI ingesting rawvideo frames from
-# imageio over a pipe and encoding with libvpx_vp9, and (2) the Rust media-ffmpeg
-# VideoDecoder decoding VP8/VP9 in mp4/webm/mkv (test fixtures are VP9-in-mp4).
-# No H.264 parser/decoder/encoder is enabled — H.264 is not built at all. Image
-# decode does not use ffmpeg (it goes through the Rust `image` crate), so no
-# still-image decoders are enabled here.
-# The `fd` protocol is enabled alongside `pipe`: `ffmpeg -i -` reads stdin via
-# the `fd:` protocol on ffmpeg 8.x and 9.x (not `pipe:`), so omitting it breaks
-# the imageio encode path with "Protocol not found. Did you mean file:fd:?".
-# Both are pure fd/stream I/O and carry no codec implementation.
-#
+# Always build FFmpeg so libs are available for Rust checks in CI.
+# We also build the ffmpeg CLI with h264_nvenc + libvpx_vp9 encoders so Python
+# code can encode video without the GPL-licensed binary shipped by imageio-ffmpeg.
+# Stays LGPL-only: --disable-gpl --disable-nonfree are preserved; H.264 comes from
+# NVIDIA's NVENC (proprietary HW encoder, already a runtime dependency of these
+# GPU images) and VP9 from libvpx (BSD).
 # Do not delete the source tarball for legal reasons.
 ARG FFMPEG_VERSION
+ARG NV_CODEC_HEADERS_REF
 ARG LIBVPX_REF
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
@@ -354,39 +377,70 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     apt-get update -y && apt-get install -y build-essential pkg-config xz-utils git yasm; \
     apt-get clean && rm -rf /var/lib/apt/lists/*; \
     elif [ "$DEVICE" = "cuda" ]; then \
-    dnf install -y --setopt=tsflags=nocontexts pkg-config xz git yasm; \
+    for attempt in 1 2 3 4 5; do \
+        if dnf install -y --disablerepo='epel*' --setopt=tsflags=nocontexts \
+            pkg-config xz git yasm; then \
+            break; \
+        fi; \
+        dnf clean all; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "DNF install attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done; \
     fi && \
-    # No nv-codec-headers: NVENC/NVDEC are not built, so the NVIDIA codec API
-    # headers are not needed. This keeps H.264 (incl. the h264_nvenc HW encoder)
-    # out of the in-tree ffmpeg entirely.
+    # nv-codec-headers: provides the NVENC/NVDEC API headers ffmpeg compiles against.
+    # Header-only, no runtime dep here; libcuda/libnvidia-encode are loaded at runtime
+    # in the consuming container.
     cd /tmp && \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf nv-codec-headers; \
+        if git -c http.version=HTTP/1.1 clone --depth 1 --branch ${NV_CODEC_HEADERS_REF} \
+            https://github.com/FFmpeg/nv-codec-headers.git; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "nv-codec-headers clone attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done && \
+    make -C nv-codec-headers PREFIX=/usr/local install && \
     # libvpx: BSD-licensed VP9 encoder needed for the WebM output path. Built from
     # source so we don't need to track distro package names (libvpx-dev on Debian
     # vs libvpx-devel via EPEL on RHEL/manylinux).
-    git clone --depth 1 --branch ${LIBVPX_REF} https://chromium.googlesource.com/webm/libvpx.git && \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf libvpx; \
+        if git -c http.version=HTTP/1.1 clone --depth 1 --branch ${LIBVPX_REF} \
+            https://chromium.googlesource.com/webm/libvpx.git; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "libvpx clone attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done && \
     cd libvpx && \
     ./configure --prefix=/usr/local --enable-shared --disable-static --disable-examples --disable-unit-tests --disable-tools --disable-docs && \
     make -j$(nproc) && \
     make install && \
     ldconfig && \
     cd /tmp && \
-    # Retry the ffmpeg fetch in a shell loop: curl's own --retry does not cover
-    # SSL/connection-level failures (e.g. `curl: (35) SSL_ERROR_SYSCALL`) unless
-    # --retry-all-errors is used, which needs curl >= 7.71 (the manylinux build
-    # base ships 7.61). The loop retries on ANY failure and is version-agnostic.
+    # The manylinux curl is too old for --retry-all-errors, so use a shell loop
+    # that also retries TLS handshake failures such as curl exit 35.
+    FFMPEG_ARCHIVE="ffmpeg-${FFMPEG_VERSION}.tar.xz" && \
     for attempt in 1 2 3 4 5; do \
-        curl --retry 3 --retry-delay 5 --retry-connrefused --connect-timeout 30 -fL \
-            -o ffmpeg-${FFMPEG_VERSION}.tar.xz \
-            https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz && break; \
-        echo "ffmpeg download attempt ${attempt}/5 failed; retrying in 10s" >&2; \
-        sleep 10; \
+        if curl --fail --location --connect-timeout 30 --max-time 300 \
+            --output "${FFMPEG_ARCHIVE}.part" \
+            "https://ffmpeg.org/releases/${FFMPEG_ARCHIVE}"; then \
+            mv "${FFMPEG_ARCHIVE}.part" "${FFMPEG_ARCHIVE}"; \
+            break; \
+        fi; \
+        rm -f "${FFMPEG_ARCHIVE}.part"; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        echo "FFmpeg download attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
     done && \
-    test -s ffmpeg-${FFMPEG_VERSION}.tar.xz && \
-    tar xf ffmpeg-${FFMPEG_VERSION}.tar.xz && \
+    tar xf "${FFMPEG_ARCHIVE}" && \
     cd ffmpeg-${FFMPEG_VERSION} && \
     ./configure \
         --prefix=/usr/local \
-        --build-suffix=_dynamo \
         --disable-gpl \
         --disable-nonfree \
         --disable-doc \
@@ -394,64 +448,20 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         --disable-x86asm \
         --disable-network \
         --disable-bsfs \
-        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb \
         --disable-devices \
         --disable-libdrm \
         --enable-shared \
+        --enable-nvenc \
         --enable-libvpx \
         --disable-encoders \
-        --enable-encoder=libvpx_vp9 \
-        --disable-decoders \
-        --enable-decoder=vp8,vp9,rawvideo \
+        --enable-encoder=h264_nvenc,libvpx_vp9 \
         --disable-muxers \
         --enable-muxer=mov,mp4,matroska,webm \
-        --disable-demuxers \
-        --enable-demuxer=mov,matroska,rawvideo \
-        --disable-parsers \
-        --enable-parser=vp8,vp9 \
-        --disable-protocols \
-        --enable-protocol=file,pipe,fd && \
+        --enable-protocol=file,pipe && \
     make -j$(nproc) && \
     make install && \
-    # ldconfig BEFORE the guard below, not after. The binary carries no RPATH, so
-    # until the cache knows about these libraries it cannot start -- and the guard
-    # discards stderr, so an unstartable binary produces empty output, matches no
-    # disallowed codec, and passes having checked nothing. Measured on a shipped
-    # image: with the ffmpeg libraries missing from the cache the run fails with
-    # "error while loading shared libraries" and the guard still passes.
-    ldconfig && \
-    # --build-suffix renames the pkg-config files too, so `pkg-config libavformat`
-    # stops resolving and ffmpeg-sys-next's probe fails the Rust build outright.
-    # Canonical-name symlinks keep that working; each .pc still reports
-    # -lavformat_dynamo, so consumers link the suffixed library.
-    for pc in /usr/local/lib/pkgconfig/*_dynamo.pc; do \
-        ln -sf "$(basename "$pc")" "${pc%_dynamo.pc}.pc"; \
-    done && \
-    # Positive check first: everything below is an absence test, and an absence
-    # test over empty output proves nothing. VP9 is present here by construction.
-    { /usr/local/bin/ffmpeg -hide_banner -encoders 2>/dev/null \
-        | grep -qiE 'libvpx[-_]vp9' \
-      || { echo "ERROR: the in-tree ffmpeg does not list its VP9 encoder; it is" >&2; \
-           echo "       either broken or unable to start, and the codec guard" >&2; \
-           echo "       below would then pass without checking anything." >&2; \
-           exit 1; }; } && \
-    # Compliance guard: fail the build if any royalty-bearing / HW codec surface
-    # leaked into the in-tree ffmpeg. By construction this build is VP9-only, so a
-    # match here means a config regression. Check the implementation-carrying
-    # surfaces (encoders/decoders/parsers), not -codecs (lists names even when no
-    # implementation is built) and not -bsfs: bitstream filters (e.g.
-    # aac_adtstoasc, h264_mp4toannexb) only reframe an already-encoded stream, are
-    # pulled in as mov/mp4 muxer dependencies, and carry no codec implementation.
-    for surface in encoders decoders parsers; do \
-        if /usr/local/bin/ffmpeg -hide_banner "-${surface}" 2>/dev/null \
-             | grep -qiE 'h\.?264|h\.?265|hevc|(^| )aac|nvenc|cuvid|nvdec'; then \
-            echo "ERROR: in-tree ffmpeg exposes a disallowed codec via -${surface}" >&2; \
-            /usr/local/bin/ffmpeg -hide_banner "-${surface}" 2>/dev/null \
-             | grep -iE 'h\.?264|h\.?265|hevc|(^| )aac|nvenc|cuvid|nvdec' >&2; \
-            exit 1; \
-        fi; \
-    done && \
     /tmp/use-sccache.sh show-stats "FFMPEG" && \
+    ldconfig && \
     mkdir -p /usr/local/src/ffmpeg && \
     find /tmp/ffmpeg-${FFMPEG_VERSION} \( -name config.log -o -name config.status \) -delete && \
     mv /tmp/ffmpeg-${FFMPEG_VERSION}* /usr/local/src/ffmpeg/
@@ -467,14 +477,12 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         eval $(/tmp/use-sccache.sh setup-env); \
     fi && \
     cd /usr/local/src && \
-    : "${NIXL_UCX_REF:?}" && \
-    git init -q ucx && cd ucx && \
-    git remote add origin https://github.com/openucx/ucx.git && \
-    git fetch --depth 1 origin "${NIXL_UCX_REF}" && \
-    git checkout -q FETCH_HEAD && \
-    # The intel/llm-scaler xe-GDR patch (ucx-v1.12.0.patch) is upstream since
-    # UCX v1.21.0 (ib_md.c xe srcversion check, ze_copy_md.c HOST bit); restore
-    # the fetch + git apply for DEVICE=xpu if this ref ever drops below v1.21.0.
+    git clone https://github.com/openucx/ucx.git && \
+    cd ucx &&  \
+    git checkout $NIXL_UCX_REF &&	 \
+    if [ "$DEVICE" = "xpu" ]; then \
+    git apply --ignore-whitespace /tmp/ucx.patch; \
+    fi && \
     ./autogen.sh &&      \
     if [ "$DEVICE" = "xpu" ]; then \
      ./contrib/configure-release     \
@@ -539,11 +547,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         eval $(/tmp/use-sccache.sh setup-env); \
     fi && \
     cd /usr/local/src && \
-    : "${NIXL_LIBFABRIC_REF:?}" && \
-    git init -q libfabric && cd libfabric && \
-    git remote add origin "${NIXL_LIBFABRIC_REPO}" && \
-    git fetch --depth 1 origin "${NIXL_LIBFABRIC_REF}" && \
-    git checkout -q FETCH_HEAD && \
+    git clone "${NIXL_LIBFABRIC_REPO}" && \
+    cd libfabric && \
+    git checkout $NIXL_LIBFABRIC_REF && \
     ./autogen.sh && \
     ./configure --prefix="/usr/local/libfabric" \
                 --disable-verbs \
@@ -577,7 +583,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     if [ "$USE_SCCACHE" = "true" ]; then \
         eval $(/tmp/use-sccache.sh setup-env cmake); \
     fi && \
-    git clone --recurse-submodules --shallow-submodules --depth 1 --branch "${AWS_SDK_CPP_VERSION}" \
+    git clone --recurse-submodules --depth 1 --branch ${AWS_SDK_CPP_VERSION} \
         https://github.com/aws/aws-sdk-cpp.git /tmp/aws-sdk-cpp && \
     mkdir -p /tmp/aws-sdk-cpp/build && \
     cd /tmp/aws-sdk-cpp/build && \
@@ -597,23 +603,32 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 
 {% endif %}{# builder_image #}
 
+
 ##################################
 ##### runtime_wheel_builder ######
 ##################################
-# Builds ai-dynamo, ai-dynamo-runtime, and gpu_memory_service wheels, sans nixl.
+# Builds ai-dingo, ai-dingo-runtime, and gpu_memory_service wheels, sans nixl.
 
 FROM wheel_builder_base AS runtime_wheel_builder
+
+# Re-declare after FROM so --builder-image does not retain its baked-in
+# compilation parallelism when the current build has a smaller resource budget.
+ARG CARGO_BUILD_JOBS
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16}
+
+# Build-only Python indexes; do not persist mirror settings in runtime images.
+ARG PIP_INDEX_URL
+ARG UV_DEFAULT_INDEX
 
 {% if target not in ("dev", "local-dev") %}
 # Copy source code (order matters for layer caching)
 COPY .cargo/ /opt/dynamo/.cargo/
 COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml hatch_build.py /opt/dynamo/
 COPY lib/ /opt/dynamo/lib/
-COPY components/ /opt/dynamo/components/
+COPY dingo/ /opt/dynamo/dingo/
 
-# Build ai-dynamo (pure Python) and ai-dynamo-runtime (maturin) wheels
+# Build ai-dingo (pure Python) and ai-dingo-runtime (maturin) wheels
 ARG USE_SCCACHE
-ARG TARGETARCH
 ARG ENABLE_MEDIA_FFMPEG
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
@@ -621,9 +636,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     --mount=type=cache,target=/root/.cargo/git,sharing=shared \
-    --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+    --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
-    export UV_CACHE_DIR=/root/.cache/uv && \
+    export UV_CACHE_DIR=/root/.cache/uv UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=10 && \
     export SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}} && \
     if [ "$USE_SCCACHE" = "true" ]; then \
         eval $(/tmp/use-sccache.sh setup-env cmake); \
@@ -633,68 +648,12 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     cd /opt/dynamo && \
     uv build --wheel --out-dir /opt/dynamo/dist && \
     cd /opt/dynamo/lib/bindings/python && \
-{% if framework == "sglang" and device == "xpu" %}    maturin build --release --features "kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,nvtx" --out /opt/dynamo/dist && \
-{% else %}    if [ "$ENABLE_MEDIA_FFMPEG" = "true" ]; then \
-    # Skip maturin's built-in repair: it would graft the in-tree libav* into the
-    # wheel, which the codec gate rejects. Repair with those sonames excluded so
-    # they stay external and resolve to the image's /usr/local/lib copies. This
-    # media-enabled wheel is intentionally image-only and non-self-contained.
-    #
-    # The exclusions name the _dynamo-suffixed sonames, because that is what the
-    # wheel's DT_NEEDED entries carry. auditwheel globs these against the soname
-    # and 'libavcodec.so.*' does not match 'libavcodec_dynamo.so.62', so leaving
-    # them unsuffixed silently re-enables the grafting this exists to prevent.
-{% if device == "xpu" %}        ARCH_ALT=x86_64 && \
-    MANYLINUX_POLICY=manylinux_2_39_x86_64 && \
-{% else %}
-        case "${TARGETARCH}" in \
-            amd64) ARCH_ALT=x86_64 ;; \
-            arm64) ARCH_ALT=aarch64 ;; \
-            *) echo "ERROR: unexpected TARGETARCH='${TARGETARCH}'; cannot pick a manylinux platform tag" >&2; exit 1 ;; \
-        esac && \
-    MANYLINUX_POLICY=manylinux_{{ "2_35" if device == "cpu" else "2_28" }}_${ARCH_ALT} && \
-{% endif %}
-        maturin build --release --features "media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,nvtx" --auditwheel skip --out target/wheels && \
-        auditwheel repair \
-            --exclude 'libavcodec_dynamo.so.*' \
-            --exclude 'libavdevice_dynamo.so.*' \
-            --exclude 'libavfilter_dynamo.so.*' \
-            --exclude 'libavformat_dynamo.so.*' \
-            --exclude 'libavutil_dynamo.so.*' \
-            --exclude 'libswresample_dynamo.so.*' \
-            --exclude 'libswscale_dynamo.so.*' \
-            --plat ${MANYLINUX_POLICY} \
-            --wheel-dir /opt/dynamo/dist \
-            target/wheels/ai_dynamo_runtime-*.whl; \
+    if [ "$ENABLE_MEDIA_FFMPEG" = "true" ]; then \
+        maturin build --release --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,aic-forward-pass" --out /opt/dynamo/dist; \
     else \
-        maturin build --release --features "kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,nvtx" --out /opt/dynamo/dist; \
+        maturin build --release --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,aic-forward-pass" --out /opt/dynamo/dist; \
     fi && \
-{% endif %}    /tmp/use-sccache.sh show-stats "Dynamo Runtime"
-
-# Complete the root Cargo workspace after the expensive runtime build. Planner
-# wheel metadata and optional source archival both validate every member.
-COPY examples/router/custom-policy-example/ /opt/dynamo/examples/router/custom-policy-example/
-COPY deploy/inference-gateway/ext-proc/ /opt/dynamo/deploy/inference-gateway/ext-proc/
-COPY deploy/inference-gateway/sidecar/ /opt/dynamo/deploy/inference-gateway/sidecar/
-
-{% if target == "planner" or (target == "runtime" and framework in ("vllm", "sglang", "trtllm")) %}
-COPY container/deps/requirements.aisimulate.txt /opt/dynamo/container/deps/requirements.aisimulate.txt
-
-# AISimulate is released separately as an abi3 wheel. Stage the pinned wheel
-# directly from NVIDIA's package index. Download only this
-# distribution; runtime images own dependency installation through their
-# requirements files and local wheels.
-RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
-    export UV_CACHE_DIR=/root/.cache/uv && \
-    source ${VIRTUAL_ENV}/bin/activate && \
-    python -m pip download \
-        --only-binary=:all: \
-        --no-deps \
-        --no-index \
-        --find-links https://pypi.nvidia.com/aisimulate/ \
-        --dest /opt/dynamo/dist \
-        --requirement /opt/dynamo/container/deps/requirements.aisimulate.txt
-{% endif %}
+    /tmp/use-sccache.sh show-stats "Dynamo Runtime"
 
 # Compliance: harvest each crate's real LICENSE files from the cargo registry
 # source cache so the rust NOTICES generator can inline upstream license text
@@ -722,14 +681,11 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
 # machine-readable inventory); this adds the texts the redistributed wheel's
 # MIT/BSD/Apache attribution clauses require. Best-effort + non-fatal: a failure
 # leaves the wheel with its SBOM intact rather than breaking the build.
-# Must run with the build venv's python: bundle_wheel_notices imports
-# compliance.overrides, which needs pyyaml (installed in the venv above);
-# the bare system python3 lacks it and the step would no-op with a warning.
 COPY container/compliance /opt/compliance
 RUN set -u; injected=0; \
-    for whl in /opt/dynamo/dist/ai_dynamo_runtime*.whl /opt/dynamo/dist/aisimulate*.whl; do \
+    for whl in /opt/dynamo/dist/ai_dingo_runtime*.whl; do \
         [ -e "$whl" ] || continue; \
-        PYTHONPATH=/opt ${VIRTUAL_ENV}/bin/python3 -m compliance.bundle_wheel_notices \
+        PYTHONPATH=/opt python3 -m compliance.bundle_wheel_notices \
             --wheel "$whl" --licenses-dir /opt/dynamo/rust-licenses -v \
             && injected=$((injected+1)) || echo "::warning::wheel NOTICES bundling failed for $whl (SBOM retained)"; \
     done; \
@@ -774,7 +730,7 @@ COPY lib/gpu_memory_service/ /opt/dynamo/lib/gpu_memory_service/
 {% if device == "cuda" %}
 # Build gpu_memory_service wheel (C++ extension only needs Python headers, no CUDA/torch)
 ARG ENABLE_GPU_MEMORY_SERVICE
-RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     if [ "$ENABLE_GPU_MEMORY_SERVICE" = "true" ]; then \
         export UV_CACHE_DIR=/root/.cache/uv && \
         source ${VIRTUAL_ENV}/bin/activate && \
@@ -786,19 +742,16 @@ RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.
 ##################################
 ##### wheel_builder ##############
 ##################################
-{% if ("nixl_ref" in context[framework] or device == "xpu") and target != "frontend" %}
+{% if "nixl_ref" in context[framework] or device == "xpu" %}
 # Builds NIXL (native + Python wheel) and NIXL-linked extension wheels, then
 # consolidates all wheels.
 # Runtime templates COPY from this stage.
 # Note: XPU triggers this path even when the framework section lacks nixl_ref,
 # because no upstream XPU runtime image ships pre-built NIXL.
-# Note: frontend is excluded — it installs NIXL from PyPI at NIXL_REF and does
-# not install KVBM, so nothing in that image consumes a from-source NIXL build.
 
 FROM wheel_builder_base AS reusable_builder_base
 
 # Build and install nixl
-{% if not builder_image %}
 ARG TARGETARCH
 ARG DEVICE
 ARG NIXL_REF
@@ -807,6 +760,7 @@ ARG USE_SCCACHE
 ARG CUDA_MAJOR
 {% endif %}
 
+{% if not builder_image %}
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
     --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
@@ -817,11 +771,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         eval $(/tmp/use-sccache.sh setup-env); \
     fi && \
     source ${VIRTUAL_ENV}/bin/activate && \
-    : "${NIXL_REF:?}" && \
-    git init -q nixl && cd nixl && \
-    git remote add origin https://github.com/ai-dynamo/nixl.git && \
-    git fetch --depth 1 origin "${NIXL_REF}" && \
-    git checkout -q FETCH_HEAD && \
+    git clone "https://github.com/ai-dynamo/nixl.git" && \
+    cd nixl && \
+    git checkout ${NIXL_REF} && \
     if [ "$DEVICE" = "cuda" ]; then \
         PKG_NAME="nixl-cu${CUDA_MAJOR}"; \
     else \
@@ -875,7 +827,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
     --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
-    --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+    --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export UV_CACHE_DIR=/root/.cache/uv && \
     export SCCACHE_S3_KEY_PREFIX="${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}}" && \
@@ -888,20 +840,23 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 
 {% endif %}{# not builder_image #}
 
-# Application source stays after the reusable native stage.
+# Dynamo source is intentionally copied only after the reusable builder stage,
+# so code-only commits never invalidate the published dependency image.
 FROM reusable_builder_base AS wheel_builder
+
 ARG CARGO_BUILD_JOBS
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16}
+
 ARG TARGETARCH
 ARG DEVICE
 ARG USE_SCCACHE
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-16}
 
 {% if target not in ("dev", "local-dev") %}
 # Copy source code (order matters for layer caching)
 COPY .cargo/ /opt/dynamo/.cargo/
 COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml hatch_build.py /opt/dynamo/
 COPY lib/ /opt/dynamo/lib/
-COPY components/ /opt/dynamo/components/
+COPY dingo/ /opt/dynamo/dingo/
 
 # Build kvbm wheel (with nixl linkage via auditwheel repair)
 ARG ENABLE_KVBM
@@ -911,7 +866,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     --mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN \
     --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     --mount=type=cache,target=/root/.cargo/git,sharing=shared \
-    --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=shared \
+    --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     export AWS_WEB_IDENTITY_TOKEN_FILE=/run/secrets/aws-token && \
     export UV_CACHE_DIR=/root/.cache/uv && \
     export SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX:-${TARGETARCH}} && \
@@ -946,11 +901,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
 COPY --from=runtime_wheel_builder /opt/dynamo/dist/ /opt/dynamo/dist/
 
 # Compliance: bundle third-party Rust NOTICES into the kvbm wheel built in this
-# stage (the ai-dynamo-runtime wheel was already bundled in runtime_wheel_builder
+# stage (the ai-dingo-runtime wheel was already bundled in runtime_wheel_builder
 # and arrives consolidated above). Harvest kvbm's crate licenses from the cargo
 # registry, then inject into its auditwheel-repaired wheel. Best-effort/non-fatal.
-# Venv python required: compliance.overrides needs pyyaml, absent from the
-# system python3 (see the runtime_wheel_builder bundling step).
 COPY container/compliance /opt/compliance
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     set -u; \
@@ -965,17 +918,16 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=shared \
     done; \
     for whl in /opt/dynamo/dist/kvbm*.whl; do \
         [ -e "$whl" ] || continue; \
-        PYTHONPATH=/opt ${VIRTUAL_ENV}/bin/python3 -m compliance.bundle_wheel_notices \
+        PYTHONPATH=/opt python3 -m compliance.bundle_wheel_notices \
             --wheel "$whl" --licenses-dir /opt/dynamo/rust-licenses -v \
             || echo "::warning::kvbm wheel NOTICES bundling failed (SBOM retained)"; \
     done; \
     echo "kvbm wheel NOTICES step done"
 
 {% else %}
-# SGLang CUDA uses NIXL from the upstream lmsysorg/sglang runtime image and the
-# frontend installs it from PyPI; neither builds Dynamo KVBM. Keep this alias so
-# downstream stages can still COPY Dynamo wheels and build tools from a common
-# wheel_builder stage name.
+# SGLang CUDA uses NIXL from the upstream lmsysorg/sglang runtime image and
+# does not build Dynamo KVBM. Keep this alias so downstream stages can still
+# COPY Dynamo wheels and build tools from a common wheel_builder stage name.
 # SGLang dev/source builds may link nixl-sys against stubs when native NIXL is
 # absent; block-manager/KVBM runtime work should use vllm/trtllm/none images.
 FROM wheel_builder_base AS reusable_builder_base

@@ -31,13 +31,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ai-dynamo/dynamo/deploy/operator/api/config/v1alpha1"
-	commonController "github.com/ai-dynamo/dynamo/deploy/operator/internal/controller_common"
-	"github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
 	gpupkg "github.com/ai-dynamo/dynamo/deploy/operator/internal/gpu"
 	"k8s.io/utils/ptr"
 )
@@ -47,11 +45,10 @@ func newFakeReconciler(objs ...client.Object) *DynamoGraphDeploymentRequestRecon
 	_ = corev1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	return &DynamoGraphDeploymentRequestReconciler{
-		Client:        fakeClient,
-		APIReader:     fakeClient,
-		Recorder:      &events.FakeRecorder{},
-		Config:        &configv1alpha1.OperatorConfiguration{},
-		RuntimeConfig: &commonController.RuntimeConfig{Gate: features.Defaults()},
+		Client:    fakeClient,
+		APIReader: fakeClient,
+		Recorder:  &record.FakeRecorder{},
+		Config:    &configv1alpha1.OperatorConfiguration{},
 	}
 }
 
@@ -80,14 +77,18 @@ func dcgmPod(name, ip string) *corev1.Pod {
 	}
 }
 
-func TestGPUDiscoveryEnabled(t *testing.T) {
-	assert.Panics(t, func() { (*DynamoGraphDeploymentRequestReconciler)(nil).gpuDiscoveryEnabled() })
-	assert.Panics(t, func() { (&DynamoGraphDeploymentRequestReconciler{}).gpuDiscoveryEnabled() })
+func TestGPUDiscoveryEnabledDefaults(t *testing.T) {
+	assert.True(t, (*DynamoGraphDeploymentRequestReconciler)(nil).gpuDiscoveryEnabled())
+	assert.True(t, (&DynamoGraphDeploymentRequestReconciler{}).gpuDiscoveryEnabled())
 	assert.True(t, (&DynamoGraphDeploymentRequestReconciler{
-		RuntimeConfig: &commonController.RuntimeConfig{Gate: features.Defaults()},
+		Config: &configv1alpha1.OperatorConfiguration{},
 	}).gpuDiscoveryEnabled())
 	assert.False(t, (&DynamoGraphDeploymentRequestReconciler{
-		RuntimeConfig: &commonController.RuntimeConfig{Gate: features.Gates{}},
+		Config: &configv1alpha1.OperatorConfiguration{
+			GPU: configv1alpha1.GPUConfiguration{
+				DiscoveryEnabled: ptr.To(false),
+			},
+		},
 	}).gpuDiscoveryEnabled())
 }
 
@@ -134,7 +135,7 @@ func TestEnrichHardwareFromDiscovery_SkipsOptionalMetadataWhenNodeDiscoveryDisab
 	node.Labels[gpupkg.LabelNFDRDMAAvailable] = "true"
 	r := newFakeReconciler(node)
 	r.GPUDiscovery = nil
-	r.RuntimeConfig.Gate = features.Gates{}
+	r.Config.GPU.DiscoveryEnabled = ptr.To(false)
 
 	dgdr := &nvidiacomv1beta1.DynamoGraphDeploymentRequest{
 		Spec: nvidiacomv1beta1.DynamoGraphDeploymentRequestSpec{
@@ -384,7 +385,7 @@ func TestCreateProfilingJobPersistsDiscoveredHardware(t *testing.T) {
 	r := &DynamoGraphDeploymentRequestReconciler{
 		Client:            fakeClient,
 		APIReader:         fakeClient,
-		Recorder:          &events.FakeRecorder{},
+		Recorder:          &record.FakeRecorder{},
 		Config:            &configv1alpha1.OperatorConfiguration{},
 		GPUDiscovery:      gpupkg.NewGPUDiscovery(nil),
 		GPUDiscoveryCache: cache,
@@ -408,10 +409,6 @@ func TestCreateProfilingJobPersistsDiscoveredHardware(t *testing.T) {
 	assert.Equal(t, "pcie", stored.Spec.Hardware.Interconnect)
 	require.NotNil(t, stored.Spec.Hardware.RDMA)
 	assert.True(t, *stored.Spec.Hardware.RDMA)
-
-	requeue, err = r.createProfilingJob(ctx, &stored)
-	require.NoError(t, err)
-	require.True(t, requeue)
 
 	requeue, err = r.createProfilingJob(ctx, &stored)
 	require.NoError(t, err)
@@ -451,7 +448,7 @@ func TestCreateProfilingJobWithManualHardwareDoesNotRequireAPIReader(t *testing.
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dgdr).Build()
 	r := &DynamoGraphDeploymentRequestReconciler{
 		Client:      fakeClient,
-		Recorder:    &events.FakeRecorder{},
+		Recorder:    &record.FakeRecorder{},
 		Config:      &configv1alpha1.OperatorConfiguration{},
 		RBACManager: &MockRBACManager{},
 	}
@@ -460,10 +457,6 @@ func TestCreateProfilingJobWithManualHardwareDoesNotRequireAPIReader(t *testing.
 	require.NoError(t, fakeClient.Get(ctx, types.NamespacedName{Name: dgdr.Name, Namespace: dgdr.Namespace}, &fetched))
 
 	requeue, err := r.createProfilingJob(ctx, &fetched)
-	require.NoError(t, err)
-	require.True(t, requeue)
-
-	requeue, err = r.createProfilingJob(ctx, &fetched)
 	require.NoError(t, err)
 	require.False(t, requeue)
 
@@ -531,7 +524,7 @@ func TestEnrichHardwareFromDiscovery_NormalizesBareModelFromDCGM(t *testing.T) {
 			r := &DynamoGraphDeploymentRequestReconciler{
 				Client:            fakeClient,
 				APIReader:         fakeClient,
-				Recorder:          &events.FakeRecorder{},
+				Recorder:          &record.FakeRecorder{},
 				GPUDiscovery:      gpupkg.NewGPUDiscovery(mockScraper),
 				GPUDiscoveryCache: gpupkg.NewGPUDiscoveryCache(),
 			}

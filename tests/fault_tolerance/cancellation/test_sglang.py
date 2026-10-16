@@ -23,8 +23,8 @@ from tests.fault_tolerance.cancellation.utils import (
     verify_frontend_cancellation_metrics,
     verify_runtime_cancellation_metrics,
 )
-from tests.utils.constants import FAULT_TOLERANCE_MODEL_NAME, DynamoPortRange
-from tests.utils.managed_process import ManagedProcess, check_health_ready
+from tests.utils.constants import FAULT_TOLERANCE_MODEL_NAME
+from tests.utils.managed_process import ManagedProcess
 from tests.utils.payloads import check_health_generate, check_models_api
 from tests.utils.port_utils import allocate_port, deallocate_port
 
@@ -61,7 +61,7 @@ class DynamoWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             FAULT_TOLERANCE_MODEL_NAME,
             "--served-model-name",
@@ -96,12 +96,12 @@ class DynamoWorkerProcess(ManagedProcess):
         if mode in ["prefill", "decode"]:
             # Prefill and decode workers check their own status endpoint
             health_check_urls = [
-                (f"http://localhost:{system_port}/health", check_health_ready)
+                (f"http://localhost:{system_port}/health", self.is_ready)
             ]
         else:
             # Aggregated workers check both system status and frontend
             health_check_urls = [
-                (f"http://localhost:{system_port}/health", check_health_ready),
+                (f"http://localhost:{system_port}/health", self.is_ready),
                 (f"http://localhost:{frontend_port}/v1/models", check_models_api),
                 (f"http://localhost:{frontend_port}/health", check_health_generate),
             ]
@@ -122,8 +122,7 @@ class DynamoWorkerProcess(ManagedProcess):
         # Forward-pass metrics: SGLang publishes FPM over a per-worker ipc://
         # path, so the env var only enables the feature (the value is never
         # bound). Allocate one per worker for cleanup symmetry with system_port.
-        self.fpm_port = allocate_port(DynamoPortRange.FPM.value)
-        request.addfinalizer(lambda port=self.fpm_port: deallocate_port(port))
+        self.fpm_port = allocate_port(20380)
         env["DYN_FORWARDPASS_METRIC_PORT"] = str(self.fpm_port)
 
         # Set GPU assignment for disaggregated mode (like disagg.sh)
@@ -156,7 +155,7 @@ class DynamoWorkerProcess(ManagedProcess):
                 "SGLANG:EngineCore",
             ],
             straggler_commands=[
-                "-m dynamo.sglang",
+                "-m dingo.sglang",
             ],
             log_dir=log_dir,
         )
@@ -174,6 +173,22 @@ class DynamoWorkerProcess(ManagedProcess):
             logging.warning(f"Failed to release SGLang worker port: {e}")
 
         return super().__exit__(exc_type, exc_val, exc_tb)
+
+    def is_ready(self, response) -> bool:
+        """Check the health of the worker process"""
+        try:
+            data = response.json()
+            if data.get("status") == "ready":
+                logger.info(f"{self.mode.capitalize()} worker status is ready")
+                return True
+            logger.warning(
+                f"{self.mode.capitalize()} worker status is not ready: {data.get('status')}"
+            )
+        except ValueError:
+            logger.warning(
+                f"{self.mode.capitalize()} worker health response is not valid JSON"
+            )
+        return False
 
 
 @pytest.mark.timeout(160)  # 3x average
@@ -206,8 +221,7 @@ def test_request_cancellation_sglang_aggregated(
     logger.info("Sanity check if latest test is getting executed")
 
     # Allocate ports to avoid conflicts with parallel tests
-    system_port = allocate_port(DynamoPortRange.SERVE.value)
-    request.addfinalizer(lambda port=system_port: deallocate_port(port))
+    system_port = allocate_port(9100)
 
     # Step 1: Start the frontend (allocates its own port)
     with DynamoFrontendProcess(request) as frontend:
@@ -319,10 +333,8 @@ def test_request_cancellation_sglang_decode_cancel(
     """
 
     # Allocate ports to avoid conflicts with parallel tests
-    decode_system_port = allocate_port(DynamoPortRange.SERVE.value)
-    request.addfinalizer(lambda port=decode_system_port: deallocate_port(port))
-    prefill_system_port = allocate_port(DynamoPortRange.SERVE.value)
-    request.addfinalizer(lambda port=prefill_system_port: deallocate_port(port))
+    decode_system_port = allocate_port(9100)
+    prefill_system_port = allocate_port(9200)
 
     # Step 1: Start the frontend (allocates its own port)
     with DynamoFrontendProcess(request) as frontend:
@@ -359,22 +371,17 @@ def test_request_cancellation_sglang_decode_cancel(
                     frontend.frontend_port, "chat_completion_stream"
                 )
 
-                # Each poll below waits on another process's log line reaching the
-                # file through stderr; 500 ms, the helper's default, is too short.
-
                 # Poll for "New Request ID" pattern in decode worker (Dynamo context ID)
                 request_id, decode_log_offset = poll_for_pattern(
                     process=decode_worker,
                     pattern="New Request ID: ",
                     match_type="contains",
-                    max_wait_ms=10000,
                 )
 
                 # Verify same request ID reached prefill worker
                 _, prefill_log_offset = poll_for_pattern(
                     process=prefill_worker,
                     pattern=f"New Request ID: {request_id}",
-                    max_wait_ms=10000,
                 )
 
                 # Read one response first to trigger SGLang ID logging in decode worker
@@ -386,27 +393,23 @@ def test_request_cancellation_sglang_decode_cancel(
                     pattern="New SGLang Request ID: ",
                     log_offset=decode_log_offset,
                     match_type="contains",
-                    max_wait_ms=10000,
                 )
 
                 # Now we know SGLang has the request in decode worker, cancel it
                 cancellable_req.cancel()
                 logger.info(f"Cancelled request ID: {request_id}")
 
-                # The budget covers the whole cancellation chain: socket close,
-                # frontend Kill, request plane, monitor wake-up.
+                # Poll for "Aborted Request ID" in decode worker
                 _, decode_log_offset = poll_for_pattern(
                     process=decode_worker,
                     pattern=f"Aborted Request ID: {request_id}",
                     log_offset=decode_log_offset,
-                    max_wait_ms=5000,
                 )
 
                 # Verify frontend log has kill message
                 _, frontend_log_offset = poll_for_pattern(
                     process=frontend,
                     pattern="issued control message control_msg=Kill",
-                    max_wait_ms=5000,
                 )
 
                 logger.info(

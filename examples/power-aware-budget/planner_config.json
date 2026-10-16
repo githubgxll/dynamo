@@ -1,7 +1,0 @@
-{
-  "environment": "kubernetes",
-  "backend": "vllm",
-  "mode": "disagg",
-  "enable_power_awareness": true,
-  "total_gpu_power_limit": 5200
-}

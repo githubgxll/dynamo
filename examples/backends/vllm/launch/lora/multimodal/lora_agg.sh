@@ -121,7 +121,7 @@ esac
 
 echo ""
 echo "Starting frontend..."
-python -m dynamo.frontend &
+python -m dingo.frontend &
 FRONTEND_PID=$!
 
 # Wait for frontend to become ready
@@ -144,7 +144,7 @@ echo "Starting vLLM worker..."
 # --max-lora-rank: Maximum LoRA rank (increase if your adapters have higher rank)
 CUDA_VISIBLE_DEVICES="$GPU_DEVICE" \
 DYN_SYSTEM_PORT="$SYSTEM_PORT" \
-    python -m dynamo.vllm \
+    python -m dingo.vllm \
         --enable-multimodal \
         --model "$MODEL_NAME" \
         --enable-lora \

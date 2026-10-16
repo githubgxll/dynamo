@@ -1,26 +1,21 @@
 # Built-in Dockerfile frontend: avoid a separate docker/dockerfile registry pull.
-# BASE_IMAGE is the just-built, digest-pinned runtime from the reviewed main.
+# BASE_IMAGE is the just-built, digest-pinned runtime from the reviewed gateway source.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS environment
 ARG BASE_IMAGE
 ARG H3_EXPERIMENTAL_SOURCE_COMMIT
 USER root
-ENV DYNAMO_MAIN_SOURCE_SHA=049eece3f32f8d38dc1d8c52d4b793cb30e394bb \
+ENV DYNAMO_GATEWAY_SOURCE_SHA=e8c9195672f761ec09344a641730844c9e6c9e99 \
     DYNAMO_VLLM_BASE_IMAGE=vllm/vllm-openai:v0.31.0-ubuntu2404@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460 \
     H3_EXPERIMENTAL_SOURCE_COMMIT=${H3_EXPERIMENTAL_SOURCE_COMMIT} \
     H3_EXPERIMENTAL_BASE_IMAGE=${BASE_IMAGE}
 COPY environment/ /opt/h3-experimental/environment/
-# Restore Omni's CLI software mux/decode path without replacing main's
-# separately suffixed FFmpeg 9 _dynamo shared libraries used by native Dynamo.
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg && \
-    ln -sfn /usr/bin/ffmpeg /usr/local/bin/ffmpeg && \
-    ln -sfn /usr/bin/ffprobe /usr/local/bin/ffprobe && \
-    rm -rf /var/lib/apt/lists/*
-RUN --mount=type=secret,id=pip-index-url \
-    --mount=type=secret,id=uv-default-index \
-    python3 -c 'import os,re; assert re.fullmatch(r"[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}",os.environ["H3_EXPERIMENTAL_BASE_IMAGE"]); assert re.fullmatch(r"[0-9a-f]{40}",os.environ["H3_EXPERIMENTAL_SOURCE_COMMIT"])' && \
-    bash /opt/h3-experimental/environment/install_environment.sh
+# The framework stage already solved and audited the complete dependency graph
+# before its license-policy gate. Inherit its FFmpeg/ffprobe and package set.
+RUN --network=none python3 -c 'import os,re; assert re.fullmatch(r"[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}",os.environ["H3_EXPERIMENTAL_BASE_IMAGE"]); assert re.fullmatch(r"[0-9a-f]{40}",os.environ["H3_EXPERIMENTAL_SOURCE_COMMIT"])' && \
+    python3 -B /opt/h3-experimental/environment/audit_environment.py && \
+    python3 -B /opt/h3-experimental/environment/media_smoke.py && \
+    python3 -B /opt/h3-experimental/environment/service_smoke.py
 
 FROM ${BASE_IMAGE} AS assets
 USER root
@@ -57,7 +52,8 @@ RUN --network=none python3 -B /opt/h3-experimental/assets/verify_assets.py \
     python3 -B /opt/h3-experimental/profiles/check_profiles.py --installed \
       --output /opt/h3-experimental/build-info/profiles-check.json && \
     python3 -B /opt/h3-experimental/environment/audit_environment.py --output-dir /opt/h3-experimental/build-info && \
-    python3 -B /opt/h3-experimental/environment/media_smoke.py --output-dir /opt/h3-experimental/build-info
+    python3 -B /opt/h3-experimental/environment/media_smoke.py --output-dir /opt/h3-experimental/build-info && \
+    python3 -B /opt/h3-experimental/environment/service_smoke.py --output-dir /opt/h3-experimental/build-info
 # Keep the maintained parent's entrypoint/command. Pods explicitly select one
 # profile via python3 /opt/h3-experimental/profiles/launch.py --profile ... --start.
 # Base checkpoints remain outside the image on a preexisting read-only mount.

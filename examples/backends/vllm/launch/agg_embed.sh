@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --model <name>  Specify embedding model (default: $MODEL)"
             echo "  -h, --help      Show this help message"
             echo ""
-            echo "Any additional options are passed through to dynamo.vllm."
+            echo "Any additional options are passed through to dingo.vllm."
             echo "Note: --runner pooling, --dtype float32, and --pooler-config"
             echo "are set here. Override via EXTRA_ARGS if your model requires"
             echo "different pooling."
@@ -58,8 +58,8 @@ print_curl_footer <<CURL
 CURL
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # Tunable: most embedding workloads have short inputs (typically
 # 60-200 tokens; OpenAI's text-embedding-3 cap is 8K). Defaulting to
@@ -84,7 +84,7 @@ fi
 # --dtype float32: matches Qwen3-Embedding's released weights; override
 #   if your model is shipped at a different precision.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python3 -m dynamo.vllm \
+    python3 -m dingo.vllm \
     --embedding-worker \
     --model "$MODEL" \
     --runner pooling \

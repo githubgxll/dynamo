@@ -53,11 +53,13 @@ fn init_pyo3_tokio_rt() {
         let cfg =
             RuntimeConfig::from_settings().expect("failed to build runtime config from settings");
 
-        // Build through `tokio_builder` rather than repeating its fields here, so this runtime
-        // picks up everything the config describes — including DYN_ENABLE_POLL_HISTOGRAM — and
-        // cannot drift from the runtimes the rest of the bindings create.
-        let rt = cfg
-            .tokio_builder()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(
+                cfg.num_worker_threads
+                    .unwrap_or_else(|| std::thread::available_parallelism().unwrap().get()),
+            )
+            .max_blocking_threads(cfg.max_blocking_threads)
+            .enable_all()
             .build()
             .expect("failed to build fallback tokio runtime for pyo3_async_runtimes");
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fmt;
 use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
@@ -11,12 +12,13 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 use crate::protocols::WorkerId;
-use crate::services::common::http::{json_error, json_ok, json_rejection};
+use crate::services::common::replica_sync::{PeerManager, setup_replica_sync};
 use crate::services::common::replica_sync_http;
 
-use super::service::SelectionService;
+use super::core::{SelectionCore, SelectionServiceConfig};
 use super::types::{
     OutputBlockRequest, OverlapScoresRequest, PotentialLoadsRequest, REQUEST_BODY_LIMIT_BYTES,
     ReservationRequest, SelectAndReserveRequest, SelectRequest, WorkerPatchRequest, WorkerRequest,
@@ -25,11 +27,11 @@ use super::types::{
 #[derive(Debug, Deserialize)]
 struct FilterQuery {
     model_name: Option<String>,
-    routing_group: Option<String>,
+    tenant_id: Option<String>,
 }
 
 pub struct AppState {
-    pub service: Arc<SelectionService>,
+    pub core: Arc<SelectionCore>,
 }
 
 async fn create_worker(
@@ -40,7 +42,7 @@ async fn create_worker(
         Ok(payload) => payload,
         Err(error) => return json_rejection(error),
     };
-    match state.service.upsert_worker(req).await {
+    match state.core.upsert_worker(req).await {
         Ok(worker) => (StatusCode::CREATED, Json(worker)).into_response(),
         Err(error) => error.into_response(),
     }
@@ -55,7 +57,7 @@ async fn patch_worker(
         Ok(payload) => payload,
         Err(error) => return json_rejection(error),
     };
-    match state.service.patch_worker(worker_id, req).await {
+    match state.core.patch_worker(worker_id, req).await {
         Ok(worker) => Json(worker).into_response(),
         Err(error) => error.into_response(),
     }
@@ -65,7 +67,7 @@ async fn delete_worker(
     State(state): State<Arc<AppState>>,
     Path(worker_id): Path<WorkerId>,
 ) -> Response {
-    match state.service.delete_worker(worker_id).await {
+    match state.core.delete_worker(worker_id).await {
         Ok(worker) => Json(worker).into_response(),
         Err(error) => error.into_response(),
     }
@@ -75,10 +77,11 @@ async fn list_workers(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FilterQuery>,
 ) -> Response {
-    Json(state.service.list_workers(
-        params.model_name.as_deref(),
-        params.routing_group.as_deref(),
-    ))
+    Json(
+        state
+            .core
+            .list_workers(params.model_name.as_deref(), params.tenant_id.as_deref()),
+    )
     .into_response()
 }
 
@@ -92,7 +95,7 @@ async fn select(
         Err(error) => return json_rejection(error),
     };
     match state
-        .service
+        .core
         .select_with_policy_class(req, policy_class_from_headers(&headers))
         .await
     {
@@ -111,7 +114,7 @@ async fn select_and_reserve(
         Err(error) => return json_rejection(error),
     };
     match state
-        .service
+        .core
         .select_and_reserve_with_policy_class(req, policy_class_from_headers(&headers))
         .await
     {
@@ -128,7 +131,7 @@ async fn create_reservation(
         Ok(payload) => payload,
         Err(error) => return json_rejection(error),
     };
-    match state.service.create_reservation(req).await {
+    match state.core.create_reservation(req).await {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
         Err(error) => error.into_response(),
     }
@@ -136,9 +139,9 @@ async fn create_reservation(
 
 async fn prefill_complete(
     State(state): State<Arc<AppState>>,
-    Path(selection_id): Path<String>,
+    Path(reservation_id): Path<String>,
 ) -> Response {
-    match state.service.prefill_complete(&selection_id).await {
+    match state.core.prefill_complete(&reservation_id).await {
         Ok(()) => json_ok(StatusCode::OK),
         Err(error) => error.into_response(),
     }
@@ -146,9 +149,9 @@ async fn prefill_complete(
 
 async fn delete_reservation(
     State(state): State<Arc<AppState>>,
-    Path(selection_id): Path<String>,
+    Path(reservation_id): Path<String>,
 ) -> Response {
-    match state.service.free_reservation(&selection_id).await {
+    match state.core.free_reservation(&reservation_id).await {
         Ok(()) => json_ok(StatusCode::OK),
         Err(error) => error.into_response(),
     }
@@ -156,7 +159,7 @@ async fn delete_reservation(
 
 async fn add_output_block(
     State(state): State<Arc<AppState>>,
-    Path(selection_id): Path<String>,
+    Path(reservation_id): Path<String>,
     payload: Result<Json<OutputBlockRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match payload {
@@ -164,8 +167,8 @@ async fn add_output_block(
         Err(error) => return json_rejection(error),
     };
     match state
-        .service
-        .add_output_block(&selection_id, req.decay_fraction)
+        .core
+        .add_output_block(&reservation_id, req.decay_fraction)
     {
         Ok(()) => json_ok(StatusCode::OK),
         Err(error) => error.into_response(),
@@ -177,7 +180,7 @@ async fn health() -> Response {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Response {
-    let response = state.service.ready();
+    let response = state.core.ready();
     if response.ready {
         Json(response).into_response()
     } else {
@@ -186,10 +189,11 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn loads(State(state): State<Arc<AppState>>, Query(params): Query<FilterQuery>) -> Response {
-    Json(state.service.loads(
-        params.model_name.as_deref(),
-        params.routing_group.as_deref(),
-    ))
+    Json(
+        state
+            .core
+            .loads(params.model_name.as_deref(), params.tenant_id.as_deref()),
+    )
     .into_response()
 }
 
@@ -201,7 +205,7 @@ async fn potential_loads(
         Ok(payload) => payload,
         Err(error) => return json_rejection(error),
     };
-    match state.service.potential_loads(req).await {
+    match state.core.potential_loads(req).await {
         Ok(response) => Json(response).into_response(),
         Err(error) => error.into_response(),
     }
@@ -215,14 +219,14 @@ async fn overlap_scores(
         Ok(payload) => payload,
         Err(error) => return json_rejection(error),
     };
-    match state.service.overlap_scores(req).await {
+    match state.core.overlap_scores(req).await {
         Ok(response) => Json(response).into_response(),
         Err(error) => error.into_response(),
     }
 }
 
 async fn dump_events(State(state): State<Arc<AppState>>) -> Response {
-    Json(state.service.indexer_snapshot().await).into_response()
+    Json(state.core.dump_indexer_events().await).into_response()
 }
 
 async fn not_found() -> Response {
@@ -231,6 +235,22 @@ async fn not_found() -> Response {
 
 async fn method_not_allowed() -> Response {
     json_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
+}
+
+fn json_ok(status: StatusCode) -> Response {
+    (status, Json(serde_json::json!({"status": "ok"}))).into_response()
+}
+
+fn json_error(status: StatusCode, error: impl fmt::Display) -> Response {
+    (
+        status,
+        Json(serde_json::json!({"error": error.to_string()})),
+    )
+        .into_response()
+}
+
+fn json_rejection(error: JsonRejection) -> Response {
+    json_error(error.status(), error.body_text())
 }
 
 fn policy_class_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -242,20 +262,20 @@ fn policy_class_from_headers(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn create_router(state: Arc<AppState>) -> Router {
+pub(crate) fn create_router(state: Arc<AppState>, peer_manager: Option<PeerManager>) -> Router {
     Router::new()
         .route("/select", post(select))
         .route("/select_and_reserve", post(select_and_reserve))
         .route("/reservations", post(create_reservation))
         .route(
-            "/reservations/{selection_id}/prefill_complete",
+            "/reservations/{reservation_id}/prefill_complete",
             post(prefill_complete),
         )
         .route(
-            "/reservations/{selection_id}/output_block",
+            "/reservations/{reservation_id}/output_block",
             post(add_output_block),
         )
-        .route("/reservations/{selection_id}", delete(delete_reservation))
+        .route("/reservations/{reservation_id}", delete(delete_reservation))
         .route("/workers", post(create_worker).get(list_workers))
         .route(
             "/workers/{worker_id}",
@@ -267,32 +287,74 @@ pub(crate) fn create_router(state: Arc<AppState>) -> Router {
         .route("/potential_loads", post(potential_loads))
         .route("/overlap_scores", post(overlap_scores))
         .route("/dump", get(dump_events))
-        .merge(replica_sync_http::router(state.service.peer_manager()))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(axum::extract::DefaultBodyLimit::max(
             REQUEST_BODY_LIMIT_BYTES,
         ))
         .with_state(state)
+        .merge(replica_sync_http::router(peer_manager))
 }
 
-/// Serve a caller-built selection service until shutdown.
-pub async fn run_server(port: u16, service: SelectionService) -> anyhow::Result<()> {
-    tracing::info!(port, "Starting Dynamo selection service");
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    let service = Arc::new(service);
-    let app = create_router(Arc::new(AppState {
-        service: Arc::clone(&service),
-    }));
-    let shutdown_service = Arc::clone(&service);
-    let result = axum::serve(listener, app)
+pub async fn run_server(config: SelectionServiceConfig) -> anyhow::Result<()> {
+    let cancel_token = CancellationToken::new();
+    let shutdown_token = cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        tracing::info!("received shutdown signal");
+        shutdown_token.cancel();
+    });
+
+    let replica_runtime = setup_replica_sync(
+        config.replica_sync_port,
+        &config.replica_sync_peers,
+        cancel_token.child_token(),
+    )?;
+
+    tracing::info!(
+        port = config.port,
+        threads = config.threads,
+        indexer_peers = config.indexer_peers.len(),
+        replica_sync = replica_runtime.is_some(),
+        "Starting Dynamo selection service"
+    );
+
+    let core = Arc::new(SelectionCore::new_for_server(
+        config.kv_router_config,
+        config.threads,
+        cancel_token.clone(),
+        replica_runtime,
+    ));
+    if !config.indexer_peers.is_empty() {
+        match core.recover_indexer_from_peers(&config.indexer_peers).await {
+            Ok(true) => tracing::info!("Selection indexer recovery completed"),
+            Ok(false) => {
+                tracing::warn!("No reachable selection indexer peers; starting with empty state")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Selection indexer recovery failed; starting with empty state")
+            }
+        }
+    }
+    core.signal_indexer_ready();
+
+    let peer_manager = if config.replica_sync_port.is_some() {
+        let dispatch_core = Arc::clone(&core);
+        Some(PeerManager::start(
+            config.replica_sync_peers,
+            cancel_token.child_token(),
+            move |event| dispatch_core.dispatch_replica_event(event),
+        )?)
+    } else {
+        None
+    };
+
+    let app = create_router(Arc::new(AppState { core }), peer_manager);
+    let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
+    axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("received shutdown signal");
-            shutdown_service.shutdown().await;
+            cancel_token.cancelled().await;
         })
-        .await;
-    service.shutdown().await;
-    result?;
+        .await?;
     Ok(())
 }

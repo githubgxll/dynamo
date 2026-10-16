@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --http-port <port>           Frontend HTTP port (default: 8000)"
             echo "  -h, --help                   Show this help message"
             echo ""
-            echo "Additional flags are forwarded to dynamo.sglang."
+            echo "Additional flags are forwarded to dingo.sglang."
             echo ""
             echo "Examples:"
             echo "  # Local file storage"
@@ -93,14 +93,14 @@ fi
 
 # Launch frontend
 echo "Starting Dynamo Frontend on port $HTTP_PORT..."
-python3 -m dynamo.frontend \
+python3 -m dingo.frontend \
     --http-port "$HTTP_PORT" &
 
 sleep 2
 
 # Launch image diffusion worker
 echo "Starting Image Diffusion Worker..."
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
     --model-path "$MODEL_PATH" \
     --served-model-name "$MODEL_PATH" \
     --image-diffusion-worker \

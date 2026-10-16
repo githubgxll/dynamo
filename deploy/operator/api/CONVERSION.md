@@ -160,13 +160,23 @@ Allowed local helpers:
 - Saved entries for named lists must include the list-map key, such as
   `ComponentName` for DGD components.
 
-## DGDR Conversion
+## Legacy DGDR Exception
 
-- Preserve DGDR fields that the target version cannot represent only through
-  the structural `nvidia.com/dgdr-spec` and `nvidia.com/dgdr-status` payloads.
-- Dynamo 1.0/1.1 per-field DGDR conversion annotations are retired and ignored
-  as conversion inputs, but remain scrubbed from converted metadata. Do not
-  reintroduce per-field compatibility annotations.
+- Do not add new legacy formats.
+- Existing legacy DGDR annotations are temporary downgrade shims only.
+- Keep legacy keys named `legacyAnn*`.
+- Keep their `TODO(sttts)` removal comments.
+- Isolate legacy reads/writes in legacy helpers.
+- Decode legacy data into the same typed `restored` model used by structural
+  conversion.
+- Legacy data is an old-value cache only.
+- Legacy data must not override fields representable by live `src`.
+- Keep the old converter as a test oracle while downgrade compatibility is
+  required.
+- Legacy-vs-structural fuzz tests may normalize inputs to the old converter's
+  representable behavior.
+- Main round-trip fuzz tests must not keep workarounds for fixed structural
+  conversion bugs.
 
 ## API Changes
 

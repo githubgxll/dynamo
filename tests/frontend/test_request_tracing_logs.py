@@ -25,7 +25,7 @@ import pytest
 import requests
 
 from tests.frontend.conftest import MockerWorkerProcess, wait_for_http_completions_ready
-from tests.utils.constants import QWEN, DynamoPortRange
+from tests.utils.constants import QWEN
 from tests.utils.managed_process import DynamoFrontendProcess
 from tests.utils.port_utils import allocate_port, deallocate_port
 
@@ -136,17 +136,12 @@ def assert_lifecycle_logs(req_logs, expected_status="success"):
 
 
 def assert_cancellation(req_logs):
-    """Assert cancelled completion with cancelled error_type is logged.
-
-    Client cancellation is an expected outcome, not a server error, so the
-    completion line reports `status="cancelled"` at INFO. The Prometheus
-    contract still labels it `status="error", error_type="cancelled"`.
-    """
+    """Assert error completion with cancelled error_type is logged."""
     completed = [
         e
         for e in req_logs
         if e.get("message") == "request completed"
-        and e.get("status") == "cancelled"
+        and e.get("status") == "error"
         and e.get("error_type") == "cancelled"
     ]
     msgs = [(e.get("message"), e.get("status"), e.get("error_type")) for e in req_logs]
@@ -252,7 +247,7 @@ def tracing_services_disagg(
 ):
     """Disaggregated frontend + prefill/decode mocker workers with JSONL logging."""
     ports = dynamo_dynamic_ports
-    decode_system_port = allocate_port(DynamoPortRange.SERVE.value)
+    decode_system_port = allocate_port(8200)
     try:
         with DynamoFrontendProcess(
             request,
@@ -604,7 +599,7 @@ def tracing_services_disagg_slow(
 ):
     """Disaggregated frontend + slow prefill/decode workers for crash testing."""
     ports = dynamo_dynamic_ports
-    decode_system_port = allocate_port(DynamoPortRange.SERVE.value)
+    decode_system_port = allocate_port(8200)
     try:
         with DynamoFrontendProcess(
             request,

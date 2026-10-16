@@ -8,7 +8,6 @@ use serde::Serialize;
 
 use crate::indexer::{LowerTierMatchDetails, TieredMatchDetails};
 use crate::protocols::{StorageTier, WorkerId, WorkerWithDpRank};
-#[cfg(any(test, feature = "standalone-selection"))]
 use crate::scheduling::SelectedWorkerTierSnapshot;
 
 /// Per-instance match summary aligned with Mooncake RFC #1403.
@@ -25,7 +24,6 @@ pub struct MooncakeOverlapSummary {
 }
 
 impl MooncakeOverlapSummary {
-    #[cfg(any(test, feature = "standalone-selection"))]
     pub(crate) fn from_selected_worker_tiers(
         snapshot: &SelectedWorkerTierSnapshot,
         block_size: u32,
@@ -122,7 +120,6 @@ mod tests {
             device: MatchDetails {
                 overlap_scores: device,
                 last_matched_hashes: Default::default(),
-                kv_transfer_candidates: None,
             },
             lower_tier: HashMap::from([(StorageTier::HostPinned, host), (StorageTier::Disk, disk)]),
         };

@@ -18,7 +18,7 @@ wheel stays valid). No-op for wheels with no cargo SBOM (e.g. pure-Python).
 
 Usage:
     python3 -m compliance.bundle_wheel_notices \\
-        --wheel dist/ai_dynamo_runtime-*.whl \\
+        --wheel dist/ai_dingo_runtime-*.whl \\
         --licenses-dir /opt/dynamo/rust-licenses
 """
 

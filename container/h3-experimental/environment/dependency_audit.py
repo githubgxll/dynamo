@@ -25,9 +25,6 @@ BASE_TAG = "v0.31.0-ubuntu2404"
 VLLM_VERSION, OMNI_VERSION = "0.31.0", "0.31.0rc1"
 NCCL_NAME, NCCL_VERSION, TORCH_VERSION = "nvidia-nccl-cu13", "2.30.7", "2.13.0+cu130"
 NCCL_METADATA_VERSION = "2.29.7"
-MAIN_SHA = "049eece3f32f8d38dc1d8c52d4b793cb30e394bb"
-PYNV_VERSION = "2.2.3"
-PYNV_METADATA_VERSION = "2.0.4"
 EXPECTED_FRAMEWORK_VERSIONS = {"vllm": VLLM_VERSION, "vllm-omni": OMNI_VERSION}
 SHADOWABLE_MODULES = {
     "cryptography": "cryptography", "pyjwt": "jwt", "six": "six", "oauthlib": "oauthlib",
@@ -187,8 +184,6 @@ def is_nccl_requirement(requirement, *, uv_diagnostic=False):
 def finalize_status(report):
     if report["errors"]:
         report["status"] = "FAIL"
-    elif any("pynvvideocodec" in item.lower() for item in report["known_metadata_exceptions"]):
-        report["status"] = "PASS_WITH_REVIEWED_METADATA_OVERRIDES"
     elif report["known_metadata_exceptions"]:
         report["status"] = "PASS_WITH_UPSTREAM_NCCL_OVERRIDE"
     else:
@@ -196,7 +191,7 @@ def finalize_status(report):
 
 
 def audit_dependencies(distributions=None, *, python_version=None, environment=None,
-                       nccl_evidence=None, pynv_evidence=None, effective_distribution=None, origin_resolver=None):
+                       nccl_evidence=None, root_extras=None, effective_distribution=None, origin_resolver=None):
     python_version = python_version or platform.python_version()
     marker_environment = default_environment()
     marker_environment.update({"python_full_version": python_version,
@@ -207,7 +202,7 @@ def audit_dependencies(distributions=None, *, python_version=None, environment=N
         "packages": {}, "distribution_records": {}, "shadowed_distributions": [], "active_extras": {},
         "frameworks": {}, "checked_requirements": 0, "known_metadata_exceptions": [], "errors": [],
         "upstream_nccl_evidence": evidence,
-        "main_pynv_evidence": pynv_evidence or {"verified": False},
+        "requested_root_extras": {canonicalize_name(k): sorted(v) for k, v in (root_extras or {}).items()},
         "validation_scope": "Installed default requirements and recursively referenced extras; GPU/media E2E still required"}
     records = select_distributions(list(md.distributions() if distributions is None else distributions), report,
                                    effective_distribution or md.distribution, origin_resolver or import_origin)
@@ -226,7 +221,7 @@ def audit_dependencies(distributions=None, *, python_version=None, environment=N
                                               for extra in {"", *extras})
 
     def closure(roots):
-        extras = {key: set() for key in roots if key in records}
+        extras = {key: set((root_extras or {}).get(key, ())) for key in roots if key in records}
         changed = True
         while changed:
             changed = False
@@ -259,14 +254,6 @@ def audit_dependencies(distributions=None, *, python_version=None, environment=N
                 and marker_environment.get("sys_platform") == "linux" and marker_environment.get("platform_machine") == "x86_64"
                 and records.get("vllm", {}).get("version") == VLLM_VERSION and evidence.get("verified") is True):
             return "override", detail
-        if (key == "vllm" and record["version"] == VLLM_VERSION
-                and target == "pynvvideocodec" and installed == PYNV_VERSION
-                and str(requirement.specifier) == f"=={PYNV_METADATA_VERSION}"
-                and not requirement.extras and requirement.marker is None
-                and requirement.url is None and (pynv_evidence or {}).get("verified") is True
-                and marker_environment.get("sys_platform") == "linux"
-                and marker_environment.get("platform_machine") == "x86_64"):
-            return "override", detail
         return "error", detail
 
     def check_closure(extras):
@@ -284,12 +271,15 @@ def audit_dependencies(distributions=None, *, python_version=None, environment=N
         return result
 
     try:
+        for name in root_extras or {}:
+            if canonicalize_name(name) not in records:
+                report["errors"].append(f"Required extra root missing: {name}")
         global_result = check_closure(closure(records))
         for field in ("errors", "known_metadata_exceptions"):
             report[field].extend(global_result[field])
         for field in ("checked_requirements", "active_extras"):
             report[field] = global_result[field]
-        for project in ("vllm", "vllm-omni"):
+        for project in dict.fromkeys(("vllm", "vllm-omni", *(root_extras or {}))):
             if project not in records:
                 report["frameworks"][project] = {"status": "MISSING"}
                 continue
@@ -298,11 +288,8 @@ def audit_dependencies(distributions=None, *, python_version=None, environment=N
                 if active(requirement, set()):
                     direct["requirements"].append(str(requirement))
                     kind, detail = check_edge(project, requirement)
-                    # Only vLLM's exact reviewed main PyNvVideoCodec edge may
-                    # use its recorded override; no Omni default edge may.
-                    if kind == "override" and project == "vllm":
-                        direct["known_metadata_exceptions"].append(detail)
-                    elif kind != "pass":
+                    # No root default edge is waived; NCCL exists only in Torch's closure.
+                    if kind != "pass":
                         direct["errors"].append(detail)
             finalize_status(direct)
             tree = check_closure(closure([project]))
@@ -339,16 +326,13 @@ def validate_framework_dependencies():
 
 
 def review_uv_check(report, exit_code, output):
-    """Accept only the complete set of source-verified NCCL/PyNv diagnostics."""
+    """Accept only the source-verified upstream Torch/NCCL diagnostic."""
     report["uv_pip_check_exit_code"] = exit_code
     known = report["known_metadata_exceptions"]
     expected = set()
     if any(x.startswith("torch==") and "nvidia-nccl-cu13" in x for x in known):
         if report["upstream_nccl_evidence"].get("verified") is True:
             expected.add("nccl")
-    if any(x.startswith("vllm==") and "pynvvideocodec" in x.lower() for x in known):
-        if report.get("main_pynv_evidence", {}).get("verified") is True:
-            expected.add("pynv")
     if exit_code not in (0, 1):
         report["errors"].append(f"uv pip check failed as a tool (exit {exit_code})")
     elif exit_code == 0 and known:
@@ -369,11 +353,6 @@ def review_uv_check(report, exit_code, output):
                 requirement = Requirement(raw)
                 if owner == "torch" and installed == NCCL_VERSION and is_nccl_requirement(requirement, uv_diagnostic=True):
                     found.append("nccl")
-                elif (owner == "vllm" and installed == PYNV_VERSION
-                      and canonicalize_name(requirement.name) == "pynvvideocodec"
-                      and str(requirement.specifier) == f"=={PYNV_METADATA_VERSION}"
-                      and not requirement.extras and requirement.marker is None and requirement.url is None):
-                    found.append("pynv")
                 else:
                     found.append("UNKNOWN")
             except Exception:
@@ -381,7 +360,7 @@ def review_uv_check(report, exit_code, output):
         if (not expected or len(expected) != len(known) or not header
                 or int(header[1]) != len(expected) or len(found) != len(expected)
                 or set(found) != expected):
-            report["errors"].append("uv pip check failure is not exactly the verified upstream Torch/NCCL and main PyNvVideoCodec diagnostics; review uv-pip-check.txt")
+            report["errors"].append("uv pip check failure is not exactly the verified upstream Torch/NCCL diagnostic; review uv-pip-check.txt")
     finalize_status(report)
 
 

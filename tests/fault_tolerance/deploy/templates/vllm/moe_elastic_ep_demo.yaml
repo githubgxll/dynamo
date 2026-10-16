@@ -27,9 +27,9 @@ spec:
       replicas: 1
       extraPodSpec:
         mainContainer:
-          # Update tag to match worker image below
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.0
-    worker:
+          # Update tag to match VllmDecodeWorker image below
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:my-tag
+    VllmDecodeWorker:
       envFromSecret: hf-token-secret
       componentType: worker
       # Single pod with 4 GPUs — elastic EP scales DP workers within this pod via Ray
@@ -74,7 +74,7 @@ spec:
           persistentVolumeClaim:
             claimName: model-cache
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:my-tag
           imagePullPolicy: Always
           workingDir: /workspace/examples/backends/vllm
           volumeMounts:
@@ -83,7 +83,7 @@ spec:
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite

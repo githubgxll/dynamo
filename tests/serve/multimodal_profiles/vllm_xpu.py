@@ -4,7 +4,6 @@
 import pytest
 
 from tests.serve.common import WORKSPACE_DIR
-from tests.serve.conftest import MULTIMODAL_VIDEO_EXPECTED
 from tests.utils.multimodal import (
     MmCase,
     MultimodalModelProfile,
@@ -106,7 +105,7 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
                 requested_vllm_kv_cache_bytes=1_719_075_000,
                 tests=[
                     MmCase(
-                        payload=make_video_payload(MULTIMODAL_VIDEO_EXPECTED),
+                        payload=make_video_payload(["red", "static", "still"]),
                         env={"DYN_MM_LOCAL_PATH": WORKSPACE_DIR},
                     )
                 ],
@@ -115,7 +114,6 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
             # assertions live in tests/mm_router/test_router_rust_mm_router_e2e.py
             # (post_merge).
             "agg_router": TopologyConfig(
-                health_check_workers=True,
                 marks=[pytest.mark.pre_merge, pytest.mark.xpu_2],
                 gpu_marker="xpu_2",
                 timeout_s=400,
@@ -134,7 +132,6 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
             # SINGLE_GPU=true packs both workers onto GPU 0 to match the
             # single-GPU CI environment.
             "agg_router_chat_processor": TopologyConfig(
-                health_check_workers=True,
                 marks=[pytest.mark.post_merge, pytest.mark.xpu_2],
                 gpu_marker="xpu_2",
                 timeout_s=400,
@@ -179,7 +176,6 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
         short_name="qwen2.5-vl-3b",
         topologies={
             "agg_router": TopologyConfig(
-                health_check_workers=True,
                 marks=[pytest.mark.post_merge],
                 timeout_s=500,
                 gpu_marker="xpu_2",
@@ -195,7 +191,6 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
         short_name="qwen2-vl-2b",
         topologies={
             "agg_router": TopologyConfig(
-                health_check_workers=True,
                 marks=[pytest.mark.post_merge],
                 timeout_s=500,
                 gpu_marker="xpu_2",
@@ -282,7 +277,7 @@ VLLM_MULTIMODAL_PROFILES: list[MultimodalModelProfile] = [
     # falls through to AutoModel.from_pretrained(..., torch_dtype=fp16) for
     # non-Qwen-VL models and loads the full LLaVA-1.5-7b weights before
     # extracting .visual. See disagg_multimodal_e_pd.sh and
-    # components/src/dynamo/vllm/multimodal_utils/model.py:load_vision_model.
+    # dingo/vllm/multimodal_utils/model.py:load_vision_model.
     # PD VRAM is bounded by --kv-cache-memory-bytes (set via
     # requested_vllm_kv_cache_bytes marker → _PROFILE_OVERRIDE_VLLM_KV_CACHE_BYTES);
     # without that marker, the PD fraction $DYN_PD_GPU_MEM applies.

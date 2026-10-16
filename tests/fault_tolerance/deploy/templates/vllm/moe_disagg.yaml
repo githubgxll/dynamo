@@ -14,8 +14,8 @@ spec:
         imagePullSecrets:
         - name: nvcr-imagepullsecret
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.0
-    decode:
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:my-tag
+    VllmDecodeWorker:
       envFromSecret: hf-token-secret
       componentType: worker
       subComponentType: decode
@@ -51,12 +51,12 @@ spec:
         imagePullSecrets:
         - name: nvcr-imagepullsecret
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:my-tag
           workingDir: /workspace/examples/backends/vllm
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite
@@ -80,7 +80,7 @@ spec:
             - "10"
             - --no-enable-prefix-caching
             - --enforce-eager
-    prefill:
+    VllmPrefillWorker:
       envFromSecret: hf-token-secret
       componentType: worker
       subComponentType: prefill
@@ -116,12 +116,12 @@ spec:
         imagePullSecrets:
         - name: nvcr-imagepullsecret
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.4.0
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:my-tag
           workingDir: /workspace/examples/backends/vllm
           command:
           - python3
           - -m
-          - dynamo.vllm
+          - dingo.vllm
           args:
             - --model
             - deepseek-ai/DeepSeek-V2-Lite

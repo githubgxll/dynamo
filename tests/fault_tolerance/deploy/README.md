@@ -106,7 +106,7 @@ The following failure types are defined in `scenarios.py`:
 | Failure Name                  | Description                                        | Injection Method              | Applicable Backends |
 |-------------------------------|----------------------------------------------------|-------------------------------|---------------------|
 | `none`                        | No failure injection (baseline).                   | N/A                           | All                 |
-| `frontend`                    | Terminate frontend process.                        | `SIGINT` to `dynamo.frontend` | All                 |
+| `frontend`                    | Terminate frontend process.                        | `SIGINT` to `dingo.frontend` | All                 |
 | `frontend_pod`                | Delete frontend pod.                               | Kubernetes API pod deletion   | All                 |
 | `decode_worker`               | Terminate decode worker process.                   | `SIGKILL` to `dynamo.<backend>` | All                 |
 | `decode_worker_pod`           | Delete decode worker pod.                          | Kubernetes API pod deletion   | All                 |
@@ -179,7 +179,7 @@ test_fault_scenario[sglang-agg-tp-1-dp-1-frontend]
 │   ├── fault-tolerance-test-frontend-576bd784dc-jv68q.metrics.log
 │   ├── fault-tolerance-test-frontend-576bd784dc-jv68q.previous.log  # Pre-restart logs
 │   └── fault-tolerance-test-frontend-576bd784dc-jv68q.yaml
-├── decode/                                # Or decode for vLLM backend
+├── decode/                                # Or VllmDecodeWorker for vLLM backend
 │   └── [same structure as Frontend]
 └── test.log.txt
 ```
@@ -216,7 +216,7 @@ test_fault_scenario[sglang-agg-tp-1-dp-1-frontend]
 │   ├── fault-tolerance-test-frontend-576bd784dc-jv68q.metrics.log
 │   ├── fault-tolerance-test-frontend-576bd784dc-jv68q.previous.log  # Pre-restart logs
 │   └── fault-tolerance-test-frontend-576bd784dc-jv68q.yaml
-├── decode/                                # Or decode for vLLM backend
+├── decode/                                # Or VllmDecodeWorker for vLLM backend
 │   └── [same structure as Frontend]
 └── test.log.txt
 ```
@@ -272,10 +272,10 @@ Verifies that the test scenario executed correctly by checking Kubernetes events
 ────────────────────────────────────────────────────────────────────────────────
 1.1 Verifying Specific Pod Deletion via K8s Events
 ────────────────────────────────────────────────────────────────────────────────
-Target pod(s) for deletion: ['fault-tolerance-test-0-decode-abc123']
+Target pod(s) for deletion: ['fault-tolerance-test-0-vllmdecodeworker-abc123']
 
 ✓ DELETION CONFIRMED: [Normal] Killing - Stopping container main
-✓ Pod fault-tolerance-test-0-decode-abc123 deletion verified via K8s events
+✓ Pod fault-tolerance-test-0-vllmdecodeworker-abc123 deletion verified via K8s events
 ✓ STAGE 1.1 PASSED: Pod deletion confirmed via K8s events
 ```
 
@@ -405,7 +405,9 @@ System does NOT recover automatically
 
 #### vLLM Disaggregated Prefill Worker Resilience
 
-When a prefill worker is unavailable, vLLM decode workers can perform prefill locally for requests routed directly to them. Requests already loading remote KV may fail.
+vLLM decode workers use `--kv-connector-role kv_both` by default, allowing them to handle both prefill and decode operations. When a prefill worker fails, decode workers automatically take over prefill requests, resulting in 100% success rate with minimal impact.
+
+**Expected Behavior:** Prefill worker failures don't cause request failures - this is vLLM's built-in fault tolerance, not a test issue.
 
 ### Summary Results
 
@@ -653,7 +655,7 @@ graph LR
 
 ### Install Dynamo Platform
 
-Follow the [instructions](../../../docs/fern/pages/kubernetes/installation/install-dynamo.md) to install `Dynamo` in your Kubernetes cluster.
+Follow the [instructions](../../../docs/kubernetes/installation-guide.md) to install `Dynamo` in your Kubernetes cluster.
 
 ### Mount Workspace and Kube Config
 

@@ -8,7 +8,6 @@ Usage:
     python counter_worker.py <count_file> <device_type> <endpoint_path>
                               [--router-mode MODE] [--discovery-backend BACKEND]
                               [--request-plane PLANE]
-                              [--initial-taint TAINT]...
 
     count_file:    path to file where the request count is written after each request
     device_type:   "cpu" sets CUDA_VISIBLE_DEVICES=""; "gpu" sets CUDA_VISIBLE_DEVICES="0"
@@ -19,16 +18,16 @@ import argparse
 import asyncio
 import os
 
-from dynamo.common.configuration.arg_group import ArgGroup
-from dynamo.common.configuration.groups.kv_router_args import (
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.kv_router_args import (
     KvRouterArgGroup,
     KvRouterConfigBase,
 )
-from dynamo.common.configuration.groups.router_args import (
+from dingo.common.configuration.groups.router_args import (
     RouterArgGroup,
     RouterConfigBase,
 )
-from dynamo.common.configuration.utils import add_argument
+from dingo.common.configuration.utils import add_argument
 
 request_count = 0
 
@@ -54,7 +53,6 @@ class CounterWorkerConfig(RouterConfigBase, KvRouterConfigBase):
     endpoint_path: str
     discovery_backend: str
     request_plane: str
-    initial_taint: list[str]
 
 
 class CounterWorkerArgGroup(ArgGroup):
@@ -64,12 +62,6 @@ class CounterWorkerArgGroup(ArgGroup):
         parser.add_argument("count_file")
         parser.add_argument("device_type")
         parser.add_argument("endpoint_path")
-        parser.add_argument(
-            "--initial-taint",
-            action="append",
-            default=[],
-            help="Initial model routing taint. May be repeated.",
-        )
         add_argument(
             parser,
             flag_name="--discovery-backend",
@@ -84,12 +76,7 @@ class CounterWorkerArgGroup(ArgGroup):
             default="tcp",
             help="Request plane.",
         )
-        # A worker, but one whose whole purpose is to advertise a per-worker
-        # config, so it opts into a concrete default rather than inheriting.
-        # Values stated explicitly to preserve this worker's prior behavior.
-        RouterArgGroup(
-            default_router_mode="round-robin", include_frontend_only=True
-        ).add_arguments(parser)
+        RouterArgGroup().add_arguments(parser)
         KvRouterArgGroup().add_arguments(parser)
 
 
@@ -119,11 +106,9 @@ async def main():
         # "0" works even without a physical GPU since detection is purely env-var based.
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-    from dynamo.common.model_taints import register_model_taint_route
     from dynamo.llm import (
         KvRouterConfig,
         ModelInput,
-        ModelRuntimeConfig,
         ModelType,
         RouterConfig,
         RouterMode,
@@ -143,8 +128,6 @@ async def main():
         router_mode, kv_router_config, **config.router_kwargs()
     )
 
-    runtime_config = ModelRuntimeConfig()
-    runtime_config.taints = set(config.initial_taint)
     loop = asyncio.get_event_loop()
     runtime = DistributedRuntime(loop, config.discovery_backend, config.request_plane)
     endpoint = runtime.endpoint(config.endpoint_path)
@@ -156,11 +139,9 @@ async def main():
         HF_MODEL_NAME,
         "counter",
         router_config=router_config,
-        runtime_config=runtime_config,
         worker_type=WorkerType.Aggregated,
     )
 
-    register_model_taint_route(runtime, endpoint)
     await endpoint.serve_endpoint(generate)
 
 

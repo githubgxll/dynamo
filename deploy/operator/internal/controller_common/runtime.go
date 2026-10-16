@@ -17,13 +17,20 @@
 
 package controller_common
 
-import "github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
-
 // RuntimeConfig holds runtime state that is resolved after startup (e.g., auto-detection results).
 // This is separate from the static OperatorConfiguration loaded from config files.
 type RuntimeConfig struct {
-	// Gate contains the resolved operator features.
-	Gate features.Gates
+	// GroveEnabled is the resolved Grove availability (config override merged with auto-detection)
+	GroveEnabled bool
+	// LWSEnabled is the resolved LWS availability (config override merged with auto-detection)
+	LWSEnabled bool
+	// KaiSchedulerEnabled is the resolved Kai-scheduler availability (config override merged with auto-detection)
+	KaiSchedulerEnabled bool
+	// DRAEnabled indicates whether Dynamic Resource Allocation (resource.k8s.io/v1) is available
+	DRAEnabled bool
+	// IstioEnabled is the resolved Istio DestinationRule reconciliation state
+	// after merging config overrides with API auto-detection.
+	IstioEnabled bool
 	// ExcludedNamespaces for cluster-wide mode namespace filtering
 	ExcludedNamespaces ExcludedNamespacesInterface
 }

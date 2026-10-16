@@ -23,6 +23,9 @@ def main():
     import torchcodec
     from torchcodec.decoders import VideoDecoder
     from vllm_omni.diffusion.utils.media_utils import mux_video_audio_bytes
+    from vllm_omni.entrypoints.openai import video_api_utils
+    from vllm_omni.entrypoints.openai.serving_video import OmniOpenAIServingVideo
+    from dingo.common.video_encoding import VideoEncoder
     from transformers import AutoTokenizer, UMT5EncoderModel
     # Import checks intentionally use real Linux packages; this script is not run
     # as a simulated local Windows acceptance test.
@@ -32,6 +35,20 @@ def main():
     fps, sample_rate = 24, 32000
     waveform = np.zeros((2, round(sample_rate * len(frames) / fps)), dtype=np.float32)
     payload = mux_video_audio_bytes(frames, waveform, fps=float(fps), audio_sample_rate=sample_rate)
+    # Exercise the colleague service's real 0.31 encoder integration as well as
+    # native Omni muxing. No engine, GPU, model, URL or external download is used.
+    normalized = OmniOpenAIServingVideo._normalize_video_outputs(list(frames))
+    assert len(normalized) == 1, "Gateway video normalization changed"
+    encoder = VideoEncoder(2)
+    try:
+        gateway_payload = encoder.encode(video_api_utils, normalized[0], fps=fps,
+                                         audio=waveform, audio_sample_rate=sample_rate,
+                                         video_codec_options={"preset": "ultrafast", "threads": "0"})
+    finally:
+        encoder.close()
+    with av.open(io.BytesIO(gateway_payload), mode="r") as container:
+        assert container.streams.video[0].codec_context.name == "h264"
+        assert container.streams.audio[0].codec_context.name == "aac"
     with av.open(io.BytesIO(payload), mode="r") as container:
         video, audio = container.streams.video[0], container.streams.audio[0]
         assert video.codec_context.name == "h264", video.codec_context.name
@@ -56,6 +73,7 @@ def main():
     ffmpeg = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, check=True).stdout.splitlines()[0]
     report = {"status": "PASS_REAL_CPU_MEDIA_SMOKE", "torch": torch.__version__,
               "mux_bytes": len(payload), "ffmpeg": ffmpeg,
+              "gateway_encoder_mux_bytes": len(gateway_payload), "gateway_encoder_cpu_smoke": True,
               "streams": [{k: s.get(k) for k in ("codec_type", "codec_name", "width", "height", "sample_rate")} for s in streams],
               "cv2_mp4_decode": True, "torchcodec_cpu_mp4_decode": True,
               "scope": "Synthetic CPU H.264/AAC encode/decode and imports; no model weights, GPU kernels or perceptual quality acceptance"}

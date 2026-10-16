@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --num-inference-steps <n>     Denoising steps (default: 50)"
             echo "  -h, --help                    Show this help message"
             echo ""
-            echo "Additional flags are forwarded to dynamo.sglang."
+            echo "Additional flags are forwarded to dingo.sglang."
             exit 0
             ;;
         *)
@@ -117,18 +117,17 @@ CURL
 
 # Launch frontend
 echo "Starting Dynamo Frontend on port $HTTP_PORT..."
-python3 -m dynamo.frontend \
+python3 -m dingo.frontend \
     --http-port "$HTTP_PORT" &
 
 sleep 2
 
 # Launch video generation worker
 echo "Starting T2V Worker ($WAN_SIZE)..."
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
     --model-path "$MODEL_PATH" \
     --served-model-name "$MODEL_PATH" \
     --tp "$TP_SIZE" \
-    --nccl-port "${DYN_SYSTEM_PORT2:-30005}" \
     --video-generation-worker \
     --media-output-fs-url "$FS_URL" \
     --trust-remote-code \

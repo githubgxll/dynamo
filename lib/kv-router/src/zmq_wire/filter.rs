@@ -4,23 +4,21 @@
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
-use serde::de::IgnoredAny;
 
 use crate::protocols::BlockExtraInfo;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(super) enum KvCacheEventTrailingField {
-    Unsigned(u32),
-    Text(String),
-    Ignored(IgnoredAny),
+    GroupIdx(u32),
+    KvCacheSpecKind(KvCacheSpecKind),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(super) enum BlockStoredTrailingField {
-    BlockMmInfos(Vec<Option<BlockExtraInfo>>),
     Common(KvCacheEventTrailingField),
+    BlockMmInfos(Vec<Option<BlockExtraInfo>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,19 +107,18 @@ pub(crate) struct KvCacheEventMetadata {
 }
 
 impl KvCacheEventMetadata {
-    pub(super) fn record_legacy_trailing(&mut self, trailing: KvCacheEventTrailingField) {
+    pub(super) fn record_trailing(&mut self, trailing: KvCacheEventTrailingField) {
         match trailing {
-            KvCacheEventTrailingField::Unsigned(value) => {
+            KvCacheEventTrailingField::GroupIdx(value) => {
                 if self.group_idx.is_none() {
                     self.group_idx = Some(value);
                 } else if self.kv_cache_spec_sliding_window.is_none() {
                     self.kv_cache_spec_sliding_window = Some(value);
                 }
             }
-            KvCacheEventTrailingField::Text(kind) => {
-                self.kv_cache_spec_kind = Some(KvCacheSpecKind::from_wire(&kind));
+            KvCacheEventTrailingField::KvCacheSpecKind(kind) => {
+                self.kv_cache_spec_kind = Some(kind);
             }
-            KvCacheEventTrailingField::Ignored(_) => {}
         }
     }
 }

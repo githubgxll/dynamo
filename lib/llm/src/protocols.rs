@@ -15,7 +15,6 @@ pub mod anthropic;
 pub mod codec;
 pub mod common;
 pub mod openai;
-pub mod sglang;
 pub mod tensor;
 pub(crate) mod unified;
 

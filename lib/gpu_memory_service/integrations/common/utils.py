@@ -11,35 +11,20 @@ from typing import TYPE_CHECKING
 
 import torch
 from gpu_memory_service.client.torch.allocator import prune_allocations
-from gpu_memory_service.client.torch.module import (
-    rebind_nonparameter_tensors,
-    register_module_tensors,
-)
+from gpu_memory_service.client.torch.module import register_module_tensors
 from gpu_memory_service.common.locks import RequestedLockType
 
 if TYPE_CHECKING:
     from gpu_memory_service.client.memory_manager import GMSClientMemoryManager
 
 logger = logging.getLogger(__name__)
-
-
-def torch_device():
-    """Return the torch device module (torch.cuda or torch.xpu) for the active VMM device."""
-    from gpu_memory_service.common.vmm import VMMDeviceType, get_vmm_device_type
-
-    device_type = get_vmm_device_type()
-    if device_type == VMMDeviceType.CUDA:
-        return torch.cuda
-    if device_type == VMMDeviceType.XPU:
-        return torch.xpu
-    raise RuntimeError(f"Unsupported VMM device type: {device_type!r}")
+GMS_TAGS = ("weights", "kv_cache")
 
 
 @dataclass(frozen=True)
 class GMSCommittedMemoryStats:
     committed_bytes: int
     pruned_bytes: int
-    pruned_count: int = 0
 
 
 def get_gms_lock_mode(extra_config: dict):
@@ -90,22 +75,20 @@ def setup_meta_tensor_workaround() -> None:
         pass
 
 
-def prepare_gms_write(
+def finalize_gms_write(
     allocator: "GMSClientMemoryManager",
     model: torch.nn.Module,
 ) -> GMSCommittedMemoryStats:
-    """Register model tensors and prune unreferenced allocations.
+    """Finalize GMS write mode: register tensors, commit, reconnect in read mode.
 
-    This is the first half of a GMS write: it does not commit. The allocator
-    keeps its RW lease until :func:`publish_gms_write`, which lets a caller
-    defer publication (e.g. until after vLLM memory profiling).
+    Flow: register tensors -> sync -> unmap + commit -> connect(RO) -> remap
 
     Args:
         allocator: The GMS client memory manager in write mode.
         model: The loaded model with weights to register.
 
     Returns:
-        Committed/pruned byte stats for the write awaiting publication.
+        Committed/pruned byte stats.
     """
     referenced_allocation_ids = register_module_tensors(allocator, model)
     before_prune_bytes = allocator.total_bytes
@@ -122,55 +105,21 @@ def prepare_gms_write(
     pruned_bytes = before_prune_bytes - total_bytes
     pruned_count = before_prune_count - len(allocator.mappings)
 
-    return GMSCommittedMemoryStats(
-        committed_bytes=int(total_bytes),
-        pruned_bytes=int(pruned_bytes),
-        pruned_count=pruned_count,
-    )
-
-
-def publish_gms_write(allocator: "GMSClientMemoryManager") -> None:
-    """Publish a prepared write: commit, reconnect read-only, restore VAs."""
     allocator.commit()
+
     allocator.connect(RequestedLockType.RO)
     allocator.remap_all_vas()
 
-
-def finalize_gms_write(
-    allocator: "GMSClientMemoryManager",
-    model: torch.nn.Module,
-) -> GMSCommittedMemoryStats:
-    """Finalize GMS write mode: register tensors, commit, reconnect in read mode.
-
-    Flow: register tensors -> sync -> unmap + commit -> connect(RO) -> remap
-    -> rebind non-parameter tensors to private clones
-
-    The rebind mirrors the importer binding semantics from
-    ``materialize_module_from_gms``: after publish, the read-only GMS
-    mapping backs parameters only, while buffers and tensor attributes that
-    may be written later (fp8 KV scale re-initialization on wake,
-    quantization range updates) live in ordinary CUDA memory.
-
-    Args:
-        allocator: The GMS client memory manager in write mode.
-        model: The loaded model with weights to register.
-
-    Returns:
-        Committed/pruned byte stats.
-    """
-    stats = prepare_gms_write(allocator, model)
-    publish_gms_write(allocator)
-    rebound_bytes = rebind_nonparameter_tensors(allocator, model)
-
     logger.info(
         "[GMS] Committed %.2f GiB, switched to read mode with %d mappings "
-        "(pruned %d allocations / %.2f GiB before commit; rebound %.2f MiB "
-        "of non-parameter tensors to private memory)",
-        stats.committed_bytes / (1 << 30),
+        "(pruned %d allocations / %.2f GiB before commit)",
+        total_bytes / (1 << 30),
         len(allocator.mappings),
-        stats.pruned_count,
-        stats.pruned_bytes / (1 << 30),
-        rebound_bytes / (1 << 20),
+        pruned_count,
+        pruned_bytes / (1 << 30),
     )
 
-    return stats
+    return GMSCommittedMemoryStats(
+        committed_bytes=int(total_bytes),
+        pruned_bytes=int(pruned_bytes),
+    )

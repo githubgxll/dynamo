@@ -17,8 +17,6 @@ import requests
 from tests.gpu_memory_service.common.gms import GMSServer
 from tests.utils.constants import FAULT_TOLERANCE_MODEL_NAME, DefaultPort
 from tests.utils.engine_process import EngineProcess
-from tests.utils.gpu_args import build_gpu_mem_args
-from tests.utils.http_checks import check_health_ready
 from tests.utils.managed_process import DynamoFrontendProcess
 from tests.utils.payloads import check_health_generate, check_models_api
 from tests.utils.port_utils import allocate_ports, deallocate_ports
@@ -158,7 +156,7 @@ class GMSEngineProcess(EngineProcess, ABC):
                 **self.env_updates(),
             },
             health_check_urls=[
-                (f"http://localhost:{system_port}/health", check_health_ready),
+                (f"http://localhost:{system_port}/health", self._is_ready),
                 (f"http://localhost:{frontend_port}/v1/models", check_models_api),
                 (f"http://localhost:{frontend_port}/health", check_health_generate),
             ],
@@ -189,6 +187,12 @@ class GMSEngineProcess(EngineProcess, ABC):
     def resume_payload(self) -> dict:
         return {}
 
+    def _is_ready(self, response) -> bool:
+        try:
+            return response.json().get("status") == "ready"
+        except ValueError:
+            return False
+
     def _request_engine(
         self,
         route: str,
@@ -196,22 +200,8 @@ class GMSEngineProcess(EngineProcess, ABC):
         timeout: int,
         action: str,
     ) -> dict:
-        return self._post_engine(
-            f"control/{route}",
-            payload,
-            timeout,
-            action,
-        )
-
-    def _post_engine(
-        self,
-        route: str,
-        payload: dict,
-        timeout: int,
-        action: str,
-    ) -> dict:
         response = requests.post(
-            f"http://localhost:{self.system_port}/engine/{route}",
+            f"http://localhost:{self.system_port}/engine/control/{route}",
             json=payload,
             timeout=timeout,
         )
@@ -286,7 +276,7 @@ class VLLMWithGMSProcess(GMSEngineProcess):
         command = [
             sys.executable,
             "-m",
-            "dynamo.vllm",
+            "dingo.vllm",
             "--model",
             FAULT_TOLERANCE_MODEL_NAME,
             "--load-format",
@@ -295,13 +285,11 @@ class VLLMWithGMSProcess(GMSEngineProcess):
             "--enable-sleep-mode",
             "--max-num-seqs",
             "1",
+            "--gpu-memory-utilization",
+            "0.8",
             "--kv-events-config",
             kv_events_cfg,
         ]
-        command.extend(
-            build_gpu_mem_args("build_vllm_gpu_mem_args")
-            or ["--gpu-memory-utilization", "0.8"]
-        )
         extra_config = self.model_loader_extra_config()
         if extra_config is not None:
             command.extend(
@@ -316,97 +304,10 @@ class VLLMWithGMSProcess(GMSEngineProcess):
         return {"level": 2}
 
 
-class TRTLLMWithGMSProcess(GMSEngineProcess):
-    """TensorRT-LLM engine with GMS weights + pause/resume enabled."""
-
+class SGLangWithGMSProcess(GMSEngineProcess):
     pause_route = "release_memory_occupation"
     resume_route = "resume_memory_occupation"
 
-    # Override via environment variables for CI or custom setups.
-    TRTLLM_GMS_MODEL_NAME = os.environ.get(
-        "TRTLLM_GMS_MODEL_NAME", FAULT_TOLERANCE_MODEL_NAME
-    )
-    TRTLLM_GMS_FREE_GPU_MEMORY_FRACTION = os.environ.get(
-        "TRTLLM_GMS_FREE_GPU_MEMORY_FRACTION", "0.9"
-    )
-    TRTLLM_GMS_MAX_SEQ_LEN = os.environ.get("TRTLLM_GMS_MAX_SEQ_LEN", "256")
-    TRTLLM_GMS_MAX_NUM_TOKENS = os.environ.get("TRTLLM_GMS_MAX_NUM_TOKENS", "256")
-    TRTLLM_GMS_OVERRIDE_ENGINE_ARGS = os.environ.get(
-        "TRTLLM_GMS_OVERRIDE_ENGINE_ARGS", ""
-    )
-
-    def __init__(
-        self,
-        request,
-        frontend_port: int,
-        *,
-        engine_id: str,
-        read_only_weights: bool = False,
-        override_engine_args: str | None = None,
-    ):
-        reserved_ports = allocate_ports(1, DefaultPort.SYSTEM1.value)
-        self._override_engine_args = override_engine_args
-        try:
-            super().__init__(
-                request,
-                engine_id,
-                reserved_ports[0],
-                frontend_port,
-                reserved_ports,
-                read_only_weights=read_only_weights,
-            )
-        except Exception:
-            deallocate_ports(reserved_ports)
-            raise
-
-    def env_updates(self) -> dict[str, str]:
-        env = {
-            "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),
-            "TLLM_WORKER_USE_SINGLE_PROCESS": "1",
-            "MPI4PY_MPIABI": "openmpi",
-            "OMPI_MCA_coll_ucc_enable": "0",
-        }
-        venv = os.environ.get("VIRTUAL_ENV")
-        if venv:
-            venv_lib = os.path.join(venv, "lib")
-            existing = os.environ.get("LD_LIBRARY_PATH", "")
-            env["LD_LIBRARY_PATH"] = f"{venv_lib}:{existing}" if existing else venv_lib
-        return env
-
-    def command(self) -> list[str]:
-        command = [
-            sys.executable,
-            "-m",
-            "dynamo.trtllm",
-            "--model",
-            self.TRTLLM_GMS_MODEL_NAME,
-            "--gpus-per-node",
-            "1",
-            "--load-format",
-            "gms",
-            "--free-gpu-memory-fraction",
-            self.TRTLLM_GMS_FREE_GPU_MEMORY_FRACTION,
-            "--max-seq-len",
-            self.TRTLLM_GMS_MAX_SEQ_LEN,
-            "--max-num-tokens",
-            self.TRTLLM_GMS_MAX_NUM_TOKENS,
-        ]
-        effective_override = self._override_engine_args
-        if effective_override is None:
-            effective_override = self.TRTLLM_GMS_OVERRIDE_ENGINE_ARGS
-        if effective_override:
-            command.extend(["--override-engine-args", effective_override])
-
-        extra_config = self.model_loader_extra_config()
-        if extra_config is not None:
-            command.extend(["--model-loader-extra-config", extra_config])
-        return command
-
-    def pause_payload(self) -> dict:
-        return {}
-
-
-class SGLangWithGMSProcess(GMSEngineProcess):
     def __init__(
         self,
         request,
@@ -434,7 +335,7 @@ class SGLangWithGMSProcess(GMSEngineProcess):
         command = [
             sys.executable,
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             FAULT_TOLERANCE_MODEL_NAME,
             "--load-format",
@@ -462,32 +363,3 @@ class SGLangWithGMSProcess(GMSEngineProcess):
 
     def pause_payload(self) -> dict:
         return {}
-
-    def pause(self) -> dict:
-        result = self._post_engine(
-            "pause_generation",
-            {"mode": "retract"},
-            30,
-            "pause generation",
-        )
-        self._post_engine(
-            "release_memory_occupation",
-            self.pause_payload(),
-            30,
-            "release memory occupation",
-        )
-        return result
-
-    def resume(self, timeout: int = 30) -> dict:
-        self._post_engine(
-            "resume_memory_occupation",
-            self.resume_payload(),
-            timeout,
-            "resume memory occupation",
-        )
-        return self._post_engine(
-            "continue_generation",
-            {},
-            timeout,
-            "continue generation",
-        )

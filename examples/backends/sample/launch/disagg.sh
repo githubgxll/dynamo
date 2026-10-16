@@ -4,7 +4,7 @@
 #
 # Disaggregated serving with the sample (echo) backend — GPU-free smoke test.
 #
-# Spawns dynamo.frontend plus one prefill worker and one decode worker, both
+# Spawns dingo.frontend plus one prefill worker and one decode worker, both
 # backed by the sample engine. Prefill workers register as WorkerType::Prefill
 # (the unified Rust Worker overrides registration based on
 # WorkerConfig.disaggregation_mode); the frontend's PrefillRouter forwards
@@ -51,7 +51,7 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Sample Disaggregated Serving (CPU-only)" "$MODEL_NAME" "$HTTP_PORT"
 
 # run frontend
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Per-worker DYN_SYSTEM_PORT so parallel CI runs don't collide on the metrics
 # port. Mirrors examples/backends/vllm/launch/disagg.sh.
@@ -59,7 +59,7 @@ python3 -m dynamo.frontend &
 # Distinct --component name keeps the two workers visible separately in
 # discovery, mirroring the per-role components in vLLM/SGLang/TRT-LLM.
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-python3 -m dynamo.common.backend.sample_main \
+python3 -m dingo.common.backend.sample_main \
   --model-name "$MODEL_NAME" \
   --component sample-prefill \
   --disaggregation-mode prefill \
@@ -67,7 +67,7 @@ python3 -m dynamo.common.backend.sample_main \
 
 # run decode worker
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-python3 -m dynamo.common.backend.sample_main \
+python3 -m dingo.common.backend.sample_main \
   --model-name "$MODEL_NAME" \
   --component sample-decode \
   --disaggregation-mode decode \

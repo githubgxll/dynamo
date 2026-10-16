@@ -24,11 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Pattern
 
 from typing_extensions import Required, TypedDict
 
-from tests.deploy.dgd_utils import DeploymentSpec, ManagedDeployment
-from tests.fault_tolerance.deploy.worker_names import (
-    WORKER_MAP,
-    get_worker_service_name,
-)
+from tests.utils.managed_deployment import DeploymentSpec, ManagedDeployment
 
 if TYPE_CHECKING:
     from tests.fault_tolerance.deploy.base_checker import BaseChecker
@@ -88,22 +84,40 @@ class DeploymentInfo(TypedDict, total=False):
 OVERFLOW_SUFFIX = f"_{TestPhase.OVERFLOW.name.lower()}"
 RECOVERY_SUFFIX = f"_{TestPhase.RECOVERY.name.lower()}"
 
+# Worker name mapping for different backends
+WORKER_MAP = {
+    "vllm": {
+        "decode": "VllmDecodeWorker",
+        "prefill": "VllmPrefillWorker",
+    },
+    "sglang": {
+        "decode": "decode",
+        "prefill": "prefill",
+    },
+    "trtllm": {
+        "decode": "decode",
+        "decode_agg": "TRTLLMWorker",  # Aggregated uses different name
+        "prefill": "prefill",
+    },
+}
+
 # Process ready patterns for recovery detection
 WORKER_READY_PATTERNS: Dict[str, Pattern] = {
     # Frontend
     "Frontend": re.compile(r"added model"),
-    # vLLM and SGLang workers (shared short names)
-    "decode": re.compile(
-        r"worker for (?P<model_name>.*?) has been initialized"
-        r"|Model registration succeeded|Decode worker handler initialized|Worker handler initialized"
+    # vLLM workers
+    "VllmDecodeWorker": re.compile(
+        r"VllmWorker for (?P<model_name>.*?) has been initialized"
     ),
-    "worker": re.compile(
-        r"worker for (?P<model_name>.*?) has been initialized"
-        r"|Model registration succeeded|Worker handler initialized"
+    "VllmPrefillWorker": re.compile(
+        r"VllmWorker for (?P<model_name>.*?) has been initialized"
+    ),
+    # SGLang workers - look for their specific initialization messages
+    "decode": re.compile(
+        r"Model registration succeeded|Decode worker handler initialized|Worker handler initialized"
     ),
     "prefill": re.compile(
-        r"worker for (?P<model_name>.*?) has been initialized"
-        r"|Model registration succeeded|Prefill worker handler initialized|Worker handler initialized"
+        r"Model registration succeeded|Prefill worker handler initialized|Worker handler initialized"
     ),
     # TensorRT-LLM workers
     "TRTLLMWorker": re.compile(
@@ -754,10 +768,14 @@ def _set_replicas(deployment_spec, backend, deploy_type, replicas):
     spec["Frontend"].replicas = replicas
 
     if backend in WORKER_MAP:
-        worker_service = get_worker_service_name(backend, deploy_type)
+        # For trtllm agg deployments, use different worker name
+        if backend == "trtllm" and deploy_type == "agg":
+            decode_worker = WORKER_MAP[backend]["decode_agg"]
+        else:
+            decode_worker = WORKER_MAP[backend]["decode"]
 
-        # Always scale the aggregate worker or disaggregated decode worker.
-        spec[worker_service].replicas = replicas
+        # always scale decode
+        spec[decode_worker].replicas = replicas
         # scale prefill only for disagg
         if deploy_type == "disagg":
             spec[WORKER_MAP[backend]["prefill"]].replicas = replicas
@@ -770,17 +788,21 @@ def _set_tensor_parallel(
     spec = deployment_spec["spec"]
 
     if backend in WORKER_MAP:
-        worker_service = get_worker_service_name(backend, deploy_type)
+        # For trtllm agg deployments, use different worker name
+        if backend == "trtllm" and deploy_type == "agg":
+            decode_worker = WORKER_MAP[backend]["decode_agg"]
+        else:
+            decode_worker = WORKER_MAP[backend]["decode"]
         prefill_worker = WORKER_MAP[backend]["prefill"]
 
         if deploy_type == "agg":
             if hasattr(spec, "set_tensor_parallel"):
-                spec.set_tensor_parallel(tp_size, [worker_service])
+                spec.set_tensor_parallel(tp_size, [decode_worker])
             else:
-                spec[worker_service].tensor_parallel_size = tp_size
+                spec[decode_worker].tensor_parallel_size = tp_size
         elif deploy_type == "disagg":
             spec[prefill_worker].tensor_parallel_size = tp_size
-            spec[worker_service].tensor_parallel_size = tp_size
+            spec[decode_worker].tensor_parallel_size = tp_size
 
 
 def _create_deployments_for_backend(backend: str) -> Dict[str, DeploymentInfo]:
@@ -896,7 +918,7 @@ DEPLOYMENT_SPECS.update(_create_moe_deployments_for_backend("vllm"))
 #
 # Example:
 #
-#   "prefill_worker": [Failure(30, "prefill", "dynamo.vllm", "SIGKILL")],
+#   "prefill_worker": [Failure(30, "VllmPrefillWorker", "dingo.vllm", "SIGKILL")],
 #
 # terminates 1 prefill worker after 30 seconds
 def _create_backend_failures(backend, deploy_type="disagg"):
@@ -908,7 +930,11 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     """
     workers = WORKER_MAP[backend]
 
-    worker_service = get_worker_service_name(backend, deploy_type)
+    # Use correct worker name based on deployment type
+    if backend == "trtllm" and deploy_type == "agg":
+        decode_worker = workers["decode_agg"]
+    else:
+        decode_worker = workers["decode"]
 
     prefill_worker = workers["prefill"]
     process_name = f"dynamo.{backend}"
@@ -916,16 +942,16 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     failures = {
         "frontend": [
             TerminateProcessFailure(
-                30, ["Frontend"], "SIGINT", process_name="dynamo.frontend"
+                30, ["Frontend"], "SIGINT", process_name="dingo.frontend"
             )
         ],
         "frontend_pod": [DeletePodFailure(30, ["Frontend"])],
         "decode_worker": [
             TerminateProcessFailure(
-                30, [worker_service], "SIGKILL", process_name=process_name
+                30, [decode_worker], "SIGKILL", process_name=process_name
             )
         ],
-        "decode_worker_pod": [DeletePodFailure(30, [worker_service])],
+        "decode_worker_pod": [DeletePodFailure(30, [decode_worker])],
         "prefill_worker": [
             TerminateProcessFailure(
                 30, [prefill_worker], "SIGKILL", process_name=process_name
@@ -938,7 +964,7 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     if backend == "vllm":
         failures["vllm_decode_engine_core"] = [
             TerminateProcessFailure(
-                30, [worker_service], "SIGKILL", process_name="VLLM::EngineCore"
+                30, [decode_worker], "SIGKILL", process_name="VLLM::EngineCore"
             )
         ]
         failures["vllm_prefill_engine_core"] = [
@@ -949,12 +975,12 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     elif backend == "sglang":
         failures["sglang_decode_scheduler"] = [
             TerminateProcessFailure(
-                30, [worker_service], "SIGKILL", process_name="sglang::scheduler"
+                30, [decode_worker], "SIGKILL", process_name="sglang::scheduler"
             )
         ]
         failures["sglang_decode_detokenizer"] = [
             TerminateProcessFailure(
-                30, [worker_service], "SIGKILL", process_name="sglang::detokenizer"
+                30, [decode_worker], "SIGKILL", process_name="sglang::detokenizer"
             )
         ]
         failures["sglang_prefill_scheduler"] = [
@@ -970,7 +996,7 @@ def _create_backend_failures(backend, deploy_type="disagg"):
     elif backend == "trtllm":
         failures["trtllm_decode_engine_core"] = [
             TerminateProcessFailure(
-                30, [worker_service], "SIGKILL", process_name="TRTLLM::EngineCore"
+                30, [decode_worker], "SIGKILL", process_name="TRTLLM::EngineCore"
             )
         ]
         failures["trtllm_prefill_engine_core"] = [
@@ -1214,8 +1240,11 @@ def add_token_overflow_scenarios():
 
         workers = WORKER_MAP[backend]
 
-        deploy_type = "agg" if is_agg else "disagg"
-        worker_service = get_worker_service_name(backend, deploy_type)
+        # Get the correct decode worker name
+        if backend == "trtllm" and is_agg:
+            decode_worker = workers["decode_agg"]
+        else:
+            decode_worker = workers["decode"]
 
         prefill_worker = workers["prefill"]
 
@@ -1229,9 +1258,9 @@ def add_token_overflow_scenarios():
 
         # Add arguments to appropriate workers
         if is_agg:
-            # For aggregated, add only to the generic worker.
+            # For aggregated, add only to decode worker
             deployment_spec.add_arg_to_service(
-                worker_service, arg_name, str(MAX_SEQ_LEN)
+                decode_worker, arg_name, str(MAX_SEQ_LEN)
             )
         else:
             # For disaggregated, add to both prefill and decode workers
@@ -1239,7 +1268,7 @@ def add_token_overflow_scenarios():
                 prefill_worker, arg_name, str(MAX_SEQ_LEN)
             )
             deployment_spec.add_arg_to_service(
-                worker_service, arg_name, str(MAX_SEQ_LEN)
+                decode_worker, arg_name, str(MAX_SEQ_LEN)
             )
 
         # Create overflow failure
@@ -1291,7 +1320,10 @@ def add_rolling_upgrade_scenarios():
             service_names: list[str] = []
 
             # setting replicas to 2 so we have availability of 1 replica at a time
-            service_names.append(get_worker_service_name(backend, worker_mode))
+            if worker_mode == "agg" and backend == "trtllm":
+                service_names.append(WORKER_MAP[backend]["decode_agg"])
+            else:
+                service_names.append(WORKER_MAP[backend]["decode"])
 
             if worker_mode == "disagg":
                 service_names.append(WORKER_MAP[backend]["prefill"])

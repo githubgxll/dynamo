@@ -90,7 +90,11 @@ impl LayoutConfig {
     pub fn head_dim(&self) -> Option<usize> {
         self.num_heads.map(|nh| {
             let divisor = self.page_size * nh;
-            self.inner_dim.checked_div(divisor).unwrap_or(0)
+            if divisor > 0 {
+                self.inner_dim / divisor
+            } else {
+                0
+            }
         })
     }
 

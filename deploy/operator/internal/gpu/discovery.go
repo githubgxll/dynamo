@@ -88,7 +88,6 @@ const (
 const (
 	tokenGB200  = "GB200"
 	tokenGB10   = "GB10"
-	tokenB300   = "B300"
 	tokenB200   = "B200"
 	tokenH200   = "H200"
 	tokenH100   = "H100"
@@ -129,9 +128,8 @@ type gpuRule struct {
 
 var gpuRules = []gpuRule{
 	// Blackwell
-	{token: tokenGB200, singleSKU: nvidiacomv1beta1.GPUSKUTypeGB200},
+	{token: tokenGB200, sxmSKU: nvidiacomv1beta1.GPUSKUTypeGB200SXM},
 	{token: tokenGB10, singleSKU: nvidiacomv1beta1.GPUSKUTypeGB10},
-	{token: tokenB300, sxmSKU: nvidiacomv1beta1.GPUSKUTypeB300SXM},
 	{token: tokenB200, sxmSKU: nvidiacomv1beta1.GPUSKUTypeB200SXM},
 
 	// Hopper
@@ -373,7 +371,7 @@ func (g *GPUDiscovery) discoverGPUsFromDCGMFilteredUncached(ctx context.Context,
 	var bestNode *GPUInfo
 	var bestSKU nvidiacomv1beta1.GPUSKUType
 	for _, n := range allNodes {
-		if !matchesDiscoveredSKU(filterSKU, n.sku) {
+		if filterSKU != "" && n.sku != filterSKU {
 			continue
 		}
 		if bestNode == nil ||
@@ -829,7 +827,7 @@ func DiscoverGPUsFiltered(ctx context.Context, k8sClient client.Reader, filterSK
 	var bestNode *GPUInfo
 	var bestSKU nvidiacomv1beta1.GPUSKUType
 	for _, n := range allNodes {
-		if !matchesDiscoveredSKU(filterSKU, n.sku) {
+		if filterSKU != "" && n.sku != filterSKU {
 			continue
 		}
 		if bestNode == nil ||
@@ -959,11 +957,6 @@ func InferHardwareSystem(gpuProduct string) nvidiacomv1beta1.GPUSKUType {
 		if rule.token == tokenA30 && !containsModelToken(gpuProduct, tokenA30) {
 			continue
 		}
-
-		// B300 must not match GB300, but compact product names can attach its SXM suffix.
-		if rule.token == tokenB300 && !containsB300ModelToken(gpuProduct) {
-			continue
-		}
 		if strings.Contains(normalized, rule.token) {
 			if rule.singleSKU != "" {
 				return rule.singleSKU
@@ -976,7 +969,7 @@ func InferHardwareSystem(gpuProduct string) nvidiacomv1beta1.GPUSKUType {
 			}
 			// Token matched but no form factor indicator was present in the string
 			// (e.g. "NVIDIA H200" from DCGM has no SXM/HGX/DGX suffix). If the GPU
-			// has no PCIe variant it must be SXM-only (H200, B200).
+			// has no PCIe variant it must be SXM-only (H200, B200, GB200).
 			if rule.sxmSKU != "" {
 				return rule.sxmSKU
 			}
@@ -984,16 +977,6 @@ func InferHardwareSystem(gpuProduct string) nvidiacomv1beta1.GPUSKUType {
 	}
 
 	return ""
-}
-
-// matchesDiscoveredSKU keeps the deprecated GB200 selector compatible without rewriting it.
-func matchesDiscoveredSKU(filterSKU, discoveredSKU nvidiacomv1beta1.GPUSKUType) bool {
-	if filterSKU == "" || filterSKU == discoveredSKU {
-		return true
-	}
-
-	//nolint:staticcheck // SA1019: Existing selectors must continue to match GB200 nodes.
-	return filterSKU == nvidiacomv1beta1.GPUSKUTypeGB200SXM && discoveredSKU == nvidiacomv1beta1.GPUSKUTypeGB200
 }
 
 // normalize standardizes a GPU product string to simplify matching.
@@ -1018,24 +1001,6 @@ func containsModelToken(input, token string) bool {
 		end := idx + len(token)
 		if (idx == 0 || !isASCIIAlphaNum(upper[idx-1])) &&
 			(end == len(upper) || !isASCIIAlphaNum(upper[end])) {
-			return true
-		}
-		start = idx + 1
-	}
-	return false
-}
-
-func containsB300ModelToken(input string) bool {
-	upper := strings.ToUpper(input)
-	for start := 0; start < len(upper); {
-		idx := strings.Index(upper[start:], tokenB300)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		end := idx + len(tokenB300)
-		if (idx == 0 || !isASCIIAlphaNum(upper[idx-1])) &&
-			(end == len(upper) || !isASCIIAlphaNum(upper[end]) || strings.HasPrefix(upper[end:], tokenSXM)) {
 			return true
 		}
 		start = idx + 1

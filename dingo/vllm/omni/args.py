@@ -1,0 +1,732 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Omni-specific argument parsing for python -m dingo.vllm.omni."""
+
+import argparse
+import dataclasses
+import json
+import logging
+import os
+from typing import Any, Optional
+
+import huggingface_hub
+from vllm.transformers_utils.repo_utils import get_model_path
+from vllm_omni.engine.arg_utils import OmniEngineArgs
+
+try:
+    from vllm.utils import FlexibleArgumentParser
+except ImportError:
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+from dingo.common.configuration.arg_group import ArgGroup
+from dingo.common.configuration.groups.runtime_args import (
+    DynamoRuntimeArgGroup,
+    DynamoRuntimeConfig,
+)
+from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_diffusion_quantization_config(value: str) -> Optional[dict[str, Any]]:
+    """Parse a JSON string into a diffusion quantization config dict.
+
+    Accepts the same shape vLLM-Omni expects (e.g.
+    ``{"method":"fp8","activation_scheme":"dynamic"}``). Returns ``None`` for
+    empty values so the Optional default semantics are preserved and an empty
+    config is not forwarded to AsyncOmni.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"diffusion_quantization_config must be valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError(
+            "diffusion_quantization_config must be a JSON object"
+        )
+    return parsed
+
+
+@dataclasses.dataclass
+class OmniDiffusionKwargs:
+    """AsyncOmni constructor kwargs for diffusion engine configuration.
+
+    Every field here is passed directly to AsyncOmni(**kwargs) and consumed by
+    _create_default_diffusion_stage_cfg() in vllm-omni. Adding a new vllm-omni
+    diffusion flag only requires adding it here and to OmniArgGroup — the
+    passthrough in base_handler is automatic.
+    """
+
+    enable_layerwise_offload: bool = False
+    layerwise_num_gpu_layers: int = 1
+    vae_use_slicing: bool = False
+    vae_use_tiling: bool = False
+    boundary_ratio: float = 0.875
+    flow_shift: Optional[float] = None
+    cache_backend: Optional[str] = None
+    cache_config: Optional[str] = None
+    enable_cache_dit_summary: bool = False
+    enable_cpu_offload: bool = False
+    enforce_eager: bool = False
+    # vLLM-Omni diffusion pipeline knobs that Dynamo previously injected via a
+    # runtime wrapper. Exposing them here lets deployments set them through the
+    # CLI / env vars without monkey-patching _build_omni_kwargs.
+    diffusion_compile_dynamic: bool = False
+    enable_diffusion_pipeline_profiler: bool = False
+    diffusion_attention_backend: Optional[str] = None
+    diffusion_quantization_config: Optional[dict] = None
+    # Opt-in diffusion scheduler controls. None preserves the upstream default.
+    step_execution: bool = False
+    max_num_seqs: Optional[int] = None
+
+
+@dataclasses.dataclass
+class OmniParallelKwargs:
+    """Diffusion parallelism configuration passed to DiffusionParallelConfig.
+
+    Every field here maps 1:1 to a DiffusionParallelConfig field (excluding
+    tensor_parallel_size which comes from engine_args, and fixed/derived fields).
+    Adding a new parallelism field only requires adding it here and to OmniArgGroup.
+    """
+
+    ulysses_degree: int = 1
+    ring_degree: int = 1
+    cfg_parallel_size: int = 1
+    vae_patch_parallel_size: int = 1
+    use_hsdp: bool = False
+    hsdp_shard_size: int = -1
+    hsdp_replicate_size: int = 1
+    # Text-encoder tensor parallelism and VAE parallel mode are DiffusionParallelConfig
+    # fields that Dynamo previously injected via a runtime wrapper.
+    text_encoder_tp_size: int = 1
+    vae_parallel_mode: str = "tile"
+
+
+class OmniArgGroup(ArgGroup):
+    """CLI argument definitions for Dynamo vLLM-Omni."""
+
+    name = "dynamo-omni"
+
+    def add_arguments(self, parser) -> None:
+        g = parser.add_argument_group(
+            "Omni Diffusion Options",
+            "Diffusion pipeline parameters for vLLM-Omni multi-stage generation.",
+        )
+
+        add_argument(
+            g,
+            flag_name="--stage-configs-path",
+            env_var="DYN_OMNI_STAGE_CONFIGS_PATH",
+            default=None,
+            help="Path to vLLM-Omni stage configuration YAML file (optional).",
+        )
+
+        add_argument(
+            g,
+            flag_name="--default-video-fps",
+            env_var="DYN_OMNI_DEFAULT_VIDEO_FPS",
+            default=16,
+            arg_type=int,
+            help="Default frames per second for generated videos.",
+        )
+
+        add_argument(
+            g,
+            flag_name="--request-adapter",
+            env_var="DYN_OMNI_REQUEST_ADAPTER",
+            default=None,
+            choices=["minimax_h3"],
+            help=(
+                "Optional model-specific request adapter. Disabled by default, "
+                "so non-video and non-MiniMax workers keep the generic request path."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-workflow",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_WORKFLOW",
+            default=None,
+            choices=["fl2va", "ref2va"],
+            help=(
+                "Checkpoint workflow served by the request adapter. MiniMax-H3 "
+                "workers must declare either fl2va or ref2va explicitly."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-media-dir",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_MEDIA_DIR",
+            default="/tmp/dynamo_media",
+            help="Local directory used for validated request-adapter media inputs.",
+        )
+        add_argument(
+            g,
+            flag_name="--request-adapter-media-max-bytes",
+            env_var="DYN_OMNI_REQUEST_ADAPTER_MEDIA_MAX_BYTES",
+            default=2 * 1024 * 1024 * 1024,
+            arg_type=int,
+            help=(
+                "Maximum aggregate bytes retained by the request-adapter media "
+                "cache. New unique media is rejected when the cache is full."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--detached-video-task-root",
+            env_var="DYN_OMNI_DETACHED_VIDEO_TASK_ROOT",
+            default=None,
+            help=(
+                "Shared Video Gateway artifact root used by the opt-in detached "
+                "task protocol. Disabled by default."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--detached-video-drain-timeout",
+            env_var="DYN_OMNI_DETACHED_VIDEO_DRAIN_TIMEOUT",
+            default=1800.0,
+            arg_type=float,
+            help=(
+                "Maximum seconds an explicitly detached Omni worker waits for "
+                "accepted video tasks during graceful shutdown."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--detached-video-prefetch-capacity",
+            env_var="DYN_OMNI_DETACHED_VIDEO_PREFETCH_CAPACITY",
+            arg_type=int,
+            default=0,
+            help="Additional detached requests waiting locally; 0 or 1, separate from engine execution capacity.",
+        )
+
+        # OmniDiffusionKwargs fields
+        add_negatable_bool_argument(
+            g,
+            flag_name="--step-execution",
+            env_var="DYN_OMNI_STEP_EXECUTION",
+            default=False,
+            help="Enable Omni diffusion step execution (required for concurrent H3 tasks).",
+        )
+        add_argument(
+            g,
+            flag_name="--max-num-seqs",
+            env_var="DYN_OMNI_MAX_NUM_SEQS",
+            default=None,
+            arg_type=int,
+            help="Maximum concurrent sequences in the Omni diffusion engine; unset keeps its default.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enable-layerwise-offload",
+            env_var="DYN_OMNI_ENABLE_LAYERWISE_OFFLOAD",
+            default=False,
+            help="Enable layerwise (blockwise) offloading on DiT modules to reduce GPU memory.",
+        )
+        add_argument(
+            g,
+            flag_name="--layerwise-num-gpu-layers",
+            env_var="DYN_OMNI_LAYERWISE_NUM_GPU_LAYERS",
+            default=1,
+            arg_type=int,
+            help="Number of ready layers (blocks) to keep on GPU during generation.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--vae-use-slicing",
+            env_var="DYN_OMNI_VAE_USE_SLICING",
+            default=False,
+            help="Enable VAE slicing for memory optimization in diffusion models.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--vae-use-tiling",
+            env_var="DYN_OMNI_VAE_USE_TILING",
+            default=False,
+            help="Enable VAE tiling for memory optimization in diffusion models.",
+        )
+        add_argument(
+            g,
+            flag_name="--boundary-ratio",
+            env_var="DYN_OMNI_BOUNDARY_RATIO",
+            default=0.875,
+            arg_type=float,
+            help=(
+                "Boundary split ratio for low/high DiT transformers. "
+                "Default 0.875 uses both transformers for best quality. "
+                "Set to 1.0 to load only the low-noise transformer (saves memory)."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--flow-shift",
+            env_var="DYN_OMNI_FLOW_SHIFT",
+            default=None,
+            arg_type=float,
+            help="Scheduler flow_shift parameter (5.0 for 720p, 12.0 for 480p).",
+        )
+        add_argument(
+            g,
+            flag_name="--cache-backend",
+            env_var="DYN_OMNI_CACHE_BACKEND",
+            default=None,
+            choices=["cache_dit", "tea_cache"],
+            help=(
+                "Cache backend for diffusion acceleration. "
+                "'cache_dit' enables DBCache + SCM + TaylorSeer. "
+                "'tea_cache' enables TeaCache."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--cache-config",
+            env_var="DYN_OMNI_CACHE_CONFIG",
+            default=None,
+            help="Cache configuration as JSON string (overrides defaults).",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enable-cache-dit-summary",
+            env_var="DYN_OMNI_ENABLE_CACHE_DIT_SUMMARY",
+            default=False,
+            help="Enable cache-dit summary logging after diffusion forward passes.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enable-cpu-offload",
+            env_var="DYN_OMNI_ENABLE_CPU_OFFLOAD",
+            default=False,
+            help="Enable CPU offloading for diffusion models to reduce GPU memory usage.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enforce-eager",
+            env_var="DYN_OMNI_ENFORCE_EAGER",
+            default=False,
+            help="Disable torch.compile and force eager execution for diffusion models.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--diffusion-compile-dynamic",
+            env_var="DYN_OMNI_DIFFUSION_COMPILE_DYNAMIC",
+            default=False,
+            help=(
+                "Enable dynamic shape for torch.compile of the diffusion "
+                "transformer. When False (default), the compile uses a fixed "
+                "shape, which is faster but requires consistent input "
+                "dimensions across requests."
+            ),
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--enable-diffusion-pipeline-profiler",
+            env_var="DYN_OMNI_ENABLE_DIFFUSION_PIPELINE_PROFILER",
+            default=False,
+            help=(
+                "Enable the diffusion pipeline profiler. When True, the "
+                "pipeline records detailed timing for each stage (e.g. "
+                "text_encoder, dit, vae)."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--diffusion-attention-backend",
+            env_var="DYN_OMNI_DIFFUSION_ATTENTION_BACKEND",
+            default=None,
+            help=(
+                "Attention backend for the diffusion transformer. Supported "
+                "values: FLASH_ATTN, FLASH_ATTN_3, TORCH_SDPA, CUTLASS, "
+                "TRITON_ATTN"
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--diffusion-quantization-config",
+            env_var="DYN_OMNI_DIFFUSION_QUANTIZATION_CONFIG",
+            default=None,
+            arg_type=_parse_diffusion_quantization_config,
+            help=(
+                "Quantization configuration for the diffusion transformer. "
+                "Accepts a JSON string (e.g. "
+                '{"method":"fp8","activation_scheme":"dynamic"}).'
+            ),
+        )
+
+        # TTS parameters
+        tts_g = parser.add_argument_group(
+            "Omni TTS Options",
+            "TTS/audio-specific parameters for vLLM-Omni speech generation.",
+        )
+        add_argument(
+            tts_g,
+            flag_name="--tts-max-instructions-length",
+            env_var="DYN_OMNI_TTS_MAX_INSTRUCTIONS_LENGTH",
+            default=500,
+            arg_type=int,
+            help="Maximum character length for TTS voice instructions.",
+        )
+        add_argument(
+            tts_g,
+            flag_name="--tts-max-new-tokens-min",
+            env_var="DYN_OMNI_TTS_MAX_NEW_TOKENS_MIN",
+            default=1,
+            arg_type=int,
+            help="Minimum allowed value for max_new_tokens in TTS requests.",
+        )
+        add_argument(
+            tts_g,
+            flag_name="--tts-max-new-tokens-max",
+            env_var="DYN_OMNI_TTS_MAX_NEW_TOKENS_MAX",
+            default=4096,
+            arg_type=int,
+            help="Maximum allowed value for max_new_tokens in TTS requests.",
+        )
+        add_argument(
+            tts_g,
+            flag_name="--tts-ref-audio-timeout",
+            env_var="DYN_OMNI_TTS_REF_AUDIO_TIMEOUT",
+            default=15,
+            arg_type=int,
+            help="Timeout in seconds for downloading reference audio URLs.",
+        )
+        add_argument(
+            tts_g,
+            flag_name="--tts-ref-audio-max-bytes",
+            env_var="DYN_OMNI_TTS_REF_AUDIO_MAX_BYTES",
+            default=50 * 1024 * 1024,
+            arg_type=int,
+            help="Maximum size in bytes for reference audio files (default: 50MB).",
+        )
+
+        # OmniParallelKwargs fields
+        add_argument(
+            g,
+            flag_name="--ulysses-degree",
+            env_var="DYN_OMNI_ULYSSES_DEGREE",
+            default=1,
+            arg_type=int,
+            help="Number of GPUs used for Ulysses sequence parallelism in diffusion.",
+        )
+        add_argument(
+            g,
+            flag_name="--ring-degree",
+            env_var="DYN_OMNI_RING_DEGREE",
+            default=1,
+            arg_type=int,
+            help="Number of GPUs used for ring sequence parallelism in diffusion.",
+        )
+        add_argument(
+            g,
+            flag_name="--cfg-parallel-size",
+            env_var="DYN_OMNI_CFG_PARALLEL_SIZE",
+            default=1,
+            arg_type=int,
+            choices=[1, 2, 3],
+            help="Number of GPUs used for classifier free guidance parallelism.",
+        )
+        add_argument(
+            g,
+            flag_name="--vae-patch-parallel-size",
+            env_var="DYN_OMNI_VAE_PATCH_PARALLEL_SIZE",
+            default=1,
+            arg_type=int,
+            help="Number of ranks used for VAE patch/tile parallelism during decode/encode.",
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--use-hsdp",
+            env_var="DYN_OMNI_USE_HSDP",
+            default=False,
+            help=(
+                "Enable Hybrid Sharded Data Parallel (HSDP) for diffusion models. "
+                "Shards model weights across GPUs to reduce per-GPU memory usage."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--hsdp-shard-size",
+            env_var="DYN_OMNI_HSDP_SHARD_SIZE",
+            default=-1,
+            arg_type=int,
+            help="Number of GPUs to shard model weights across when using HSDP (-1 = auto).",
+        )
+        add_argument(
+            g,
+            flag_name="--hsdp-replicate-size",
+            env_var="DYN_OMNI_HSDP_REPLICATE_SIZE",
+            default=1,
+            arg_type=int,
+            help="Number of HSDP replica groups (default: 1).",
+        )
+        add_argument(
+            g,
+            flag_name="--text-encoder-tp-size",
+            env_var="DYN_OMNI_TEXT_ENCODER_TP_SIZE",
+            default=1,
+            arg_type=int,
+            help=(
+                "Tensor parallel size for the diffusion text encoder. "
+                "Defaults to 1; set to 8 to match the MiniMax-H3 optimized config."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--vae-parallel-mode",
+            env_var="DYN_OMNI_VAE_PARALLEL_MODE",
+            default="tile",
+            choices=["tile", "context"],
+            help=(
+                "Parallel mode for the video VAE. "
+                "'tile' (default) splits the VAE decode into tiles; "
+                "'context' uses context parallelism."
+            ),
+        )
+
+        # Disaggregated stage worker flags
+        add_argument(
+            g,
+            flag_name="--stage-id",
+            env_var="DYN_OMNI_STAGE_ID",
+            default=None,
+            arg_type=int,
+            help=(
+                "Stage ID for disaggregated omni mode. "
+                "Run a single stage as an independent Dynamo worker. "
+                "Requires --stage-configs-path."
+            ),
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--omni-router",
+            env_var="DYN_OMNI_ROUTER",
+            default=False,
+            help=(
+                "Run as the stage router, orchestrating the multi-stage DAG. "
+                "Requires --stage-configs-path. Mutually exclusive with --stage-id."
+            ),
+        )
+        add_negatable_bool_argument(
+            g,
+            flag_name="--realtime",
+            env_var="DYN_OMNI_REALTIME",
+            default=False,
+            help=(
+                "Serve a ModelType.Realtime bidirectional endpoint (OpenAI "
+                "Realtime API) backed by vLLM-Omni streaming generation, instead "
+                "of the unary multimodal endpoint."
+            ),
+        )
+
+
+class OmniConfig(DynamoRuntimeConfig):
+    """Configuration for Dynamo vLLM-Omni worker."""
+
+    component: str = "backend"
+    endpoint: Optional[str] = None
+
+    model: str
+    served_model_name: Optional[str] = None
+    engine_args: OmniEngineArgs
+
+    stage_configs_path: Optional[str] = None
+    default_video_fps: int = 16
+    request_adapter: Optional[str] = None
+    request_adapter_workflow: Optional[str] = None
+    request_adapter_media_dir: str = "/tmp/dynamo_media"
+    request_adapter_media_max_bytes: int = 2 * 1024 * 1024 * 1024
+    detached_video_task_root: Optional[str] = None
+    detached_video_drain_timeout: float = 1800.0
+    detached_video_prefetch_capacity: int = 0
+
+    # Nested structs — each group of fields has a clear destination
+    diffusion: OmniDiffusionKwargs = dataclasses.field(
+        default_factory=OmniDiffusionKwargs
+    )
+    parallel: OmniParallelKwargs = dataclasses.field(default_factory=OmniParallelKwargs)
+
+    # TTS parameters
+    tts_max_instructions_length: int = 500
+    tts_max_new_tokens_min: int = 1
+    tts_max_new_tokens_max: int = 4096
+    tts_ref_audio_timeout: int = 15
+    tts_ref_audio_max_bytes: int = 50 * 1024 * 1024
+
+    # Disaggregated stage worker fields
+    stage_id: Optional[int] = None
+    omni_router: bool = False
+
+    # Realtime (bidirectional) serving mode
+    realtime: bool = False
+
+    @classmethod
+    def from_cli_args(cls, args: argparse.Namespace) -> "OmniConfig":
+        config = super().from_cli_args(args)
+        config.diffusion = dataclasses.replace(
+            OmniDiffusionKwargs(),
+            **{
+                f.name: getattr(args, f.name)
+                for f in dataclasses.fields(OmniDiffusionKwargs)
+                if hasattr(args, f.name)
+            },
+        )
+        config.parallel = dataclasses.replace(
+            OmniParallelKwargs(),
+            **{
+                f.name: getattr(args, f.name)
+                for f in dataclasses.fields(OmniParallelKwargs)
+                if hasattr(args, f.name)
+            },
+        )
+        return config
+
+    def validate(self) -> None:
+        DynamoRuntimeConfig.validate(self)
+        capacity = self.diffusion.max_num_seqs
+        if capacity is not None and (
+            isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1
+        ):
+            raise ValueError("--max-num-seqs must be a positive integer")
+        if self.diffusion.step_execution and self.diffusion.cache_backend:
+            raise ValueError("--step-execution cannot be combined with --cache-backend")
+        if (
+            self.request_adapter == "minimax_h3"
+            and capacity is not None
+            and capacity > 1
+            and not self.diffusion.step_execution
+        ):
+            raise ValueError("concurrent MiniMax-H3 requires --step-execution")
+        if self.default_video_fps <= 0:
+            raise ValueError("--default-video-fps must be > 0")
+        if self.request_adapter is None and self.request_adapter_workflow is not None:
+            raise ValueError("--request-adapter-workflow requires --request-adapter")
+        if (
+            self.request_adapter == "minimax_h3"
+            and self.request_adapter_workflow not in {"fl2va", "ref2va"}
+        ):
+            raise ValueError(
+                "--request-adapter minimax_h3 requires "
+                "--request-adapter-workflow fl2va or ref2va"
+            )
+        if self.request_adapter is not None and not self.request_adapter_media_dir:
+            raise ValueError("--request-adapter-media-dir must not be empty")
+        if self.request_adapter_media_max_bytes <= 0:
+            raise ValueError("--request-adapter-media-max-bytes must be > 0")
+        if self.detached_video_task_root is not None:
+            if not self.detached_video_task_root.strip():
+                raise ValueError("--detached-video-task-root must not be empty")
+            if self.request_adapter != "minimax_h3":
+                raise ValueError(
+                    "--detached-video-task-root requires --request-adapter minimax_h3"
+                )
+            if self.stage_id is not None or self.omni_router or self.realtime:
+                raise ValueError(
+                    "--detached-video-task-root supports aggregated unary Omni only"
+                )
+        if self.detached_video_drain_timeout <= 0:
+            raise ValueError("--detached-video-drain-timeout must be > 0")
+        if type(
+            self.detached_video_prefetch_capacity
+        ) is not int or self.detached_video_prefetch_capacity not in {0, 1}:
+            raise ValueError("--detached-video-prefetch-capacity must be 0 or 1")
+        if self.detached_video_prefetch_capacity and not self.detached_video_task_root:
+            raise ValueError("detached prefetch requires --detached-video-task-root")
+        if self.parallel.ulysses_degree <= 0:
+            raise ValueError("--ulysses-degree must be > 0")
+        if self.parallel.ring_degree <= 0:
+            raise ValueError("--ring-degree must be > 0")
+        if not (0 < self.diffusion.boundary_ratio <= 1):
+            raise ValueError("--boundary-ratio must be in (0, 1]")
+        if self.stage_configs_path is None:
+            if self.stage_id is not None:
+                raise ValueError("--stage-id requires --stage-configs-path")
+            if self.omni_router:
+                raise ValueError("--omni-router requires --stage-configs-path")
+        if self.stage_id is not None and self.stage_id < 0:
+            raise ValueError("--stage-id must be >= 0")
+        if self.stage_id is not None and self.omni_router:
+            raise ValueError("--stage-id and --omni-router are mutually exclusive")
+        if self.realtime and (self.stage_id is not None or self.omni_router):
+            raise ValueError(
+                "--realtime cannot be combined with --stage-id or --omni-router"
+            )
+
+
+def parse_omni_args() -> OmniConfig:
+    """Parse command-line arguments for the vLLM-Omni backend."""
+    dynamo_runtime_argspec = DynamoRuntimeArgGroup()
+    omni_argspec = OmniArgGroup()
+
+    parser = argparse.ArgumentParser(
+        description="Dynamo vLLM-Omni worker",
+        formatter_class=argparse.RawTextHelpFormatter,
+        allow_abbrev=False,
+    )
+
+    dynamo_runtime_argspec.add_arguments(parser)
+    omni_argspec.add_arguments(parser)
+
+    vg = parser.add_argument_group(
+        "vLLM-Omni Engine Options. Please refer to vLLM-Omni documentation for more details."
+    )
+    vllm_parser = FlexibleArgumentParser(add_help=False)
+    OmniEngineArgs.add_cli_args(vllm_parser)
+
+    for action in vllm_parser._actions:
+        if not action.option_strings:
+            continue
+        vg._group_actions.append(action)
+
+    args, unknown = parser.parse_known_args()
+    config = OmniConfig.from_cli_args(args)
+
+    if config.endpoint is None:
+        config.endpoint = "generate"
+
+    vllm_args = vllm_parser.parse_args(unknown)
+    config.model = vllm_args.model
+
+    # Resolve repo id to local snapshot path under HF_HUB_OFFLINE so
+    # vllm-omni diffusion workers don't hit transformers v5's offline
+    # LocalEntryNotFoundError (vLLM's EngineArgs does the same rewrite).
+    if (
+        huggingface_hub.constants.HF_HUB_OFFLINE
+        and config.model
+        and not os.path.exists(config.model)
+    ):
+        model_id = config.model
+        config.model = get_model_path(
+            config.model, getattr(vllm_args, "revision", None)
+        )
+        if model_id != config.model:
+            # Preserve the original repo id as the user-facing model name
+            # so /v1/models still advertises "Wan-AI/..." not the snapshot path.
+            if getattr(config, "served_model_name", None) is None:
+                config.served_model_name = model_id
+            logger.info(
+                "HF_HUB_OFFLINE is True; replaced omni model_id [%s] "
+                "with model_path [%s] so vllm-omni diffusion workers "
+                "see a local snapshot.",
+                model_id,
+                config.model,
+            )
+
+    engine_args = OmniEngineArgs.from_cli_args(vllm_args)
+    # The Omni parser owns this flag, but disaggregated modes also read the
+    # native engine_args object. Keep the two views consistent.
+    if config.diffusion.max_num_seqs is not None:
+        engine_args.max_num_seqs = config.diffusion.max_num_seqs
+
+    if getattr(engine_args, "served_model_name", None) is not None:
+        served = engine_args.served_model_name
+        if len(served) > 1:
+            raise ValueError("We do not support multiple model names.")
+        config.served_model_name = served[0]
+
+    config.engine_args = engine_args
+    config.validate()
+    return config

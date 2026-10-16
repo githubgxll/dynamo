@@ -1,0 +1,415 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pytest
+
+from dingo.video_gateway.adapters import create_adapter
+from dingo.video_gateway.config import (
+    MINIMAX_H3_PROTOCOL_REVISION,
+    canonical_backend_target,
+    parse_config,
+)
+
+
+def _raw(tmp_path):
+    return {
+        "schema_version": 1,
+        "deployment_id": "renamed-deployment",
+        "runtime": {},
+        "http": {},
+        "task_store": {"kind": "memory"},
+        "artifact_store": {"kind": "filesystem", "root": str(tmp_path)},
+        "pools": [
+            {
+                "pool_id": "first-pool",
+                "served_models": ["alias-a"],
+                "backend_model": "internal-a",
+                "backend_target": "dyn://not-a-k8s-namespace.component-a.endpoint-a",
+                "adapter": {
+                    "name": "minimax_h3",
+                    "workflow": "fl2va",
+                },
+            },
+            {
+                "pool_id": "second-pool",
+                "served_models": ["alias-b"],
+                "backend_model": "internal-b",
+                "backend_target": "other-scope.component-b.endpoint-b",
+                "adapter": {
+                    "name": "minimax_h3",
+                    "workflow": "ref2va",
+                },
+            },
+        ],
+    }
+
+
+def test_config_maps_arbitrary_full_targets_without_namespace_assumptions(tmp_path):
+    config = parse_config(_raw(tmp_path))
+
+    assert config.pool_for_model("alias-a").backend_target == (
+        "dyn://not-a-k8s-namespace.component-a.endpoint-a"
+    )
+    assert config.pool_for_model("alias-b").endpoint_path == (
+        "other-scope.component-b.endpoint-b"
+    )
+    assert config.pools[0].configuration_revision.startswith("sha256:")
+    assert config.pools[0].execution_mode == "stream"
+
+
+@pytest.mark.parametrize("capacity", [True, False, 1.5, "2", None])
+def test_worker_capacity_requires_integer_without_coercion(tmp_path, capacity):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = {"worker_capacity": capacity}
+    with pytest.raises(ValueError, match="worker_capacity must be an integer"):
+        parse_config(raw)
+
+
+def test_legacy_compatibility_version_is_derived_without_revision_drift(tmp_path):
+    raw = _raw(tmp_path)
+    without_legacy = parse_config(deepcopy(raw))
+    for pool in raw["pools"]:
+        pool["adapter"]["compatibility_version"] = MINIMAX_H3_PROTOCOL_REVISION
+
+    with_legacy = parse_config(raw)
+
+    assert with_legacy.pools[0].adapter.compatibility_version == (
+        MINIMAX_H3_PROTOCOL_REVISION
+    )
+    assert with_legacy.pools[0].configuration_revision == (
+        without_legacy.pools[0].configuration_revision
+    )
+
+
+def test_obsolete_manual_compatibility_version_cannot_claim_another_protocol(
+    tmp_path,
+):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["adapter"]["compatibility_version"] = "vllm-omni-0.28"
+
+    with pytest.raises(ValueError, match="built-in protocol revision"):
+        parse_config(raw)
+
+
+def test_detached_execution_requires_explicit_pool_setting(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    config = parse_config(raw)
+    assert config.pools[0].execution_mode == "detached"
+
+    raw["pools"][0]["execution_mode"] = "implicit"
+    with pytest.raises(ValueError, match="execution_mode"):
+        parse_config(raw)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"worker_prefetch_capacity": 1},
+        {"worker_prefetch_capacity": 2, "early_release_slot": True},
+        {"worker_prefetch_capacity": True, "early_release_slot": True},
+        {"worker_prefetch_capacity": 1.5, "early_release_slot": True},
+        {"finalization_timeout_s": float("nan")},
+        {"finalization_timeout_s": float("inf")},
+        {"finalization_timeout_s": 0},
+        {"finalization_max_retries": -1},
+        {"finalization_max_retries": 17},
+        {"finalization_concurrency": 0},
+        {"finalization_concurrency": 4, "finalization_pending_limit": 3},
+    ],
+)
+def test_invalid_continuous_execution_settings_fail_fast(tmp_path, settings):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    raw["pools"][0]["scheduling"] = settings
+    with pytest.raises(ValueError):
+        parse_config(raw)
+
+
+def test_early_release_requires_detached_mode(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["scheduling"] = {"early_release_slot": True}
+    with pytest.raises(ValueError, match="detached"):
+        parse_config(raw)
+
+
+def test_continuous_execution_defaults_off_and_does_not_change_adapter_revision(
+    tmp_path,
+):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["execution_mode"] = "detached"
+    original = parse_config(raw).pools[0]
+    assert original.scheduling.early_release_slot is False
+    assert original.scheduling.worker_prefetch_capacity == 0
+    raw["pools"][0]["scheduling"] = {
+        "early_release_slot": True,
+        "worker_prefetch_capacity": 1,
+    }
+    updated = parse_config(raw).pools[0]
+    assert updated.configuration_revision == original.configuration_revision
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["two.parts", "four.parts.are.invalid", "dyn://scope.bad/name.endpoint", ""],
+)
+def test_invalid_backend_targets_fail_fast(target):
+    with pytest.raises(ValueError):
+        canonical_backend_target(target)
+
+
+def test_duplicate_public_model_fails_fast(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][1]["served_models"] = ["alias-a"]
+
+    with pytest.raises(ValueError, match="maps to multiple pools"):
+        parse_config(raw)
+
+
+def test_unknown_adapter_fails_fast(tmp_path):
+    raw = deepcopy(_raw(tmp_path))
+    raw["pools"][0]["adapter"]["name"] = "implicit-plugin"
+
+    with pytest.raises(ValueError, match="unknown video adapter"):
+        parse_config(raw)
+
+
+def test_string_boolean_is_rejected(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["scheduling"] = {"accept_without_workers": "false"}
+
+    with pytest.raises(TypeError, match="must be a boolean"):
+        parse_config(raw)
+
+
+def test_unknown_model_adapter_option_fails_before_runtime_start(tmp_path):
+    raw = _raw(tmp_path)
+    raw["pools"][0]["adapter"]["typo_flow_shift"] = 12
+    config = parse_config(raw)
+
+    with pytest.raises(ValueError, match="unknown MiniMax-H3 adapter options"):
+        create_adapter(config.pools[0])
+
+
+def test_unknown_discovery_backend_fails_config_validation(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {"discovery_backend": "namespace-name"}
+
+    with pytest.raises(ValueError, match="discovery_backend"):
+        parse_config(raw)
+
+
+def test_video_discovery_watchdog_is_opt_in_and_configurable(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).runtime.discovery_watchdog.enabled is False
+
+    raw["runtime"] = {
+        "discovery_backend": "etcd",
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 1.5,
+            "mismatch_grace_s": 4.5,
+        },
+    }
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "endpoints": ["http://etcd-0:2379", "http://etcd-1:2379"],
+    }
+
+    watchdog = parse_config(raw).runtime.discovery_watchdog
+    assert watchdog.enabled is True
+    assert watchdog.interval_s == 1.5
+    assert watchdog.mismatch_grace_s == 4.5
+
+
+def test_video_discovery_watchdog_rejects_non_etcd_state(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {"discovery_watchdog": {"enabled": True}}
+
+    with pytest.raises(ValueError, match="requires etcd"):
+        parse_config(raw)
+
+
+def test_video_discovery_watchdog_rejects_too_short_grace(tmp_path):
+    raw = _raw(tmp_path)
+    raw["runtime"] = {
+        "discovery_watchdog": {
+            "enabled": True,
+            "interval_s": 2,
+            "mismatch_grace_s": 1,
+        }
+    }
+
+    with pytest.raises(ValueError, match="at least interval_s"):
+        parse_config(raw)
+
+
+def test_vllm_omni_http_compatibility_options(tmp_path):
+    raw = _raw(tmp_path)
+    raw["http"] = {
+        "default_model": "alias-a",
+        "async_submit_status_code": 200,
+    }
+
+    config = parse_config(raw)
+
+    assert config.http.default_model == "alias-a"
+    assert config.http.async_submit_status_code == 200
+
+
+def test_etcd_task_store_accepts_explicit_member_endpoints(tmp_path):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "endpoints": [
+            "http://etcd-0.etcd-peer:2379",
+            "http://etcd-1.etcd-peer:2379/",
+            "http://etcd-2.etcd-peer:2379",
+        ],
+    }
+
+    config = parse_config(raw)
+
+    assert config.task_store.url is None
+    assert config.task_store.endpoints == (
+        "http://etcd-0.etcd-peer:2379",
+        "http://etcd-1.etcd-peer:2379",
+        "http://etcd-2.etcd-peer:2379",
+    )
+
+
+def test_etcd_task_store_rejects_url_and_endpoints_together(tmp_path):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "endpoints": ["http://etcd-0:2379"],
+    }
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        parse_config(raw)
+
+
+def test_default_model_must_be_configured(tmp_path):
+    raw = _raw(tmp_path)
+    raw["http"] = {"default_model": "missing"}
+
+    with pytest.raises(ValueError, match="is not a configured served model"):
+        parse_config(raw)
+
+
+def test_lifecycle_and_artifact_watermarks_are_configurable(tmp_path):
+    raw = _raw(tmp_path)
+    raw["lifecycle"] = {
+        "completed_ttl_s": 120,
+        "sweeper_batch_size": 64,
+        "orphan_cleanup_dry_run": True,
+    }
+    raw["artifact_store"].update(
+        {"hard_min_free_bytes": 1024, "soft_min_free_bytes": 4096}
+    )
+
+    config = parse_config(raw)
+
+    assert config.lifecycle.completed_ttl_s == 120
+    assert config.lifecycle.sweeper_batch_size == 64
+    assert config.lifecycle.orphan_cleanup_dry_run is True
+    assert config.artifact_store.hard_min_free_bytes == 1024
+    assert config.artifact_store.soft_min_free_bytes == 4096
+
+
+def test_task_store_watch_response_timeout_is_opt_in(tmp_path):
+    raw = _raw(tmp_path)
+    assert parse_config(raw).task_store.watch_response_timeout_s is None
+
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": 6,
+    }
+    config = parse_config(raw)
+
+    assert config.task_store.watch_response_timeout_s == 6
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_task_store_watch_response_timeout_must_be_positive(tmp_path, value):
+    raw = _raw(tmp_path)
+    raw["task_store"] = {
+        "kind": "etcd_http",
+        "url": "http://etcd:2379",
+        "watch_response_timeout_s": value,
+    }
+
+    with pytest.raises(ValueError, match="watch_response_timeout_s"):
+        parse_config(raw)
+
+
+def test_artifact_soft_watermark_cannot_be_below_hard_watermark(tmp_path):
+    raw = _raw(tmp_path)
+    raw["artifact_store"].update(
+        {"hard_min_free_bytes": 4096, "soft_min_free_bytes": 1024}
+    )
+
+    with pytest.raises(ValueError, match="soft_min_free_bytes"):
+        parse_config(raw)
+
+
+@pytest.mark.parametrize("status", [199, 201, 204])
+def test_async_submit_status_code_is_restricted(tmp_path, status):
+    raw = _raw(tmp_path)
+    raw["http"] = {"async_submit_status_code": status}
+
+    with pytest.raises(ValueError, match="must be 200 or 202"):
+        parse_config(raw)
+
+
+def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
+    config = parse_config(_raw(tmp_path))
+
+    assert config.media.max_parts == 32
+    assert config.media.max_single_file_bytes == 50 * 1024 * 1024
+    assert config.media.max_result_encoded_bytes >= config.media.max_result_bytes
+    assert (
+        config.media.inflight_memory_budget_bytes >= config.media.max_task_memory_bytes
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("http", "max_body_bytes", 513 * 1024 * 1024, "hard cap"),
+        ("media", "max_single_file_bytes", 51 * 1024 * 1024, "hard cap"),
+        ("media", "max_parts", 33, "hard cap"),
+        ("media", "max_result_bytes", 129 * 1024 * 1024, "hard cap"),
+    ],
+)
+def test_media_protocol_hard_caps_cannot_be_overridden(
+    tmp_path, section, field, value, message
+):
+    raw = _raw(tmp_path)
+    raw[section] = {field: value}
+
+    with pytest.raises(ValueError, match=message):
+        parse_config(raw)
+
+
+def test_media_budget_must_fit_one_maximum_task(tmp_path):
+    raw = _raw(tmp_path)
+    raw["media"] = {"inflight_memory_budget_bytes": 128 * 1024 * 1024}
+
+    with pytest.raises(ValueError, match="fit one maximum-size task"):
+        parse_config(raw)
+
+
+def test_media_limit_boolean_is_not_accepted_as_an_integer(tmp_path):
+    raw = _raw(tmp_path)
+    raw["media"] = {"max_parts": True}
+
+    with pytest.raises(TypeError, match="must be an integer"):
+        parse_config(raw)

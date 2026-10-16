@@ -9,12 +9,15 @@ MODEL="Qwen/Qwen3-0.6B"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/../../../common/launch_utils.sh"
 
-# Handle --help BEFORE installing the kill-process-group EXIT trap; an early
-# exit would otherwise tear down the caller's process group.
-WORKER_MODULE="dynamo.vllm"
+# Consume --unified and handle --help BEFORE installing the
+# kill-process-group EXIT trap; an early exit would otherwise tear down
+# the caller's process group.
+pick_worker_module dingo.vllm dingo.vllm.unified_main "$@"
+set -- "${REMAINING_ARGS[@]}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    echo "Usage: $0"
+    echo "Usage: $0 [--unified]"
+    echo "  --unified  Use the unified backend entry point (python -m dingo.vllm.unified_main)"
     exit 0
 fi
 if [[ $# -gt 0 ]]; then
@@ -28,8 +31,8 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Disaggregated Serving (2 GPUs)" "$MODEL" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
 # TODO: use build_vllm_gpu_mem_args to measure VRAM instead of relying on vLLM defaults
@@ -38,7 +41,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m "$WORKER_MODULE" \
     --model "$MODEL" \
     --enforce-eager \
     --disaggregation-mode decode \
-    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}' &
+    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
 VLLM_NIXL_SIDE_CHANNEL_PORT=20097 \
@@ -47,7 +50,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m "$WORKER_MODULE" \
     --model "$MODEL" \
     --enforce-eager \
     --disaggregation-mode prefill \
-    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer"}' \
+    --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
     --kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:20081","enable_kv_cache_events":true}' &
 
 # Exit on first worker failure; kill 0 in the EXIT trap tears down the rest

@@ -38,12 +38,6 @@ Fields:
 
 ## Usage
 
-Install the local data-generator package from the Dynamo repository root:
-
-```bash
-uv pip install -e ./benchmarks
-```
-
 ### Basic Usage
 
 ```bash

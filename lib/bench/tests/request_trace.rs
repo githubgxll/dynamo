@@ -25,20 +25,14 @@ fn pi_direct_dynamo_lowering_builds_agentic_trace() {
         panic!("Pi request trace should lower as agentic");
     };
 
-    assert_eq!(direct.block_size(), 16);
-    assert_eq!(direct.node_count(), 17);
+    assert_eq!(direct.block_size, 16);
+    assert_eq!(direct.turns.len(), 17);
+    assert!(direct.turns.iter().any(|turn| !turn.wait_for.is_empty()));
     assert!(
         direct
-            .nodes()
+            .turns
             .iter()
-            .any(|node| !node.dependencies().is_empty())
-    );
-    assert!(
-        direct
-            .nodes()
-            .iter()
-            .flat_map(|node| node.dependencies())
-            .any(|dependency| dependency.delay_ms > 0.0)
+            .any(|turn| turn.delay_after_dependencies_ms > 0.0)
     );
 }
 

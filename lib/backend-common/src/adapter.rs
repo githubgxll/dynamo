@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use dynamo_llm::first_token::FirstTokenSource;
 use dynamo_llm::protocols::common::llm_backend::LLMEngineOutput;
 use dynamo_llm::protocols::common::preprocessor::PreprocessedRequest;
 use dynamo_runtime::engine::AsyncEngineContext;
@@ -30,7 +29,7 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::disagg::DisaggregationMode;
-use crate::engine::{FirstTokenNotifier, GenerateContext, LLMEngine, RawEngine};
+use crate::engine::{GenerateContext, LLMEngine, RawEngine};
 
 /// Test-only override count. Compiled out of release builds — tests acquire
 /// an `OtlpExportOverride` RAII guard to force-enable the recording
@@ -136,21 +135,11 @@ impl Drop for CancelMonitorGuard {
 pub(crate) struct EngineAdapter {
     engine: Arc<dyn LLMEngine>,
     mode: DisaggregationMode,
-    first_token_source: Option<FirstTokenSource>,
 }
 
 impl EngineAdapter {
     pub(crate) fn new(engine: Arc<dyn LLMEngine>, mode: DisaggregationMode) -> Self {
-        Self {
-            engine,
-            mode,
-            first_token_source: None,
-        }
-    }
-
-    pub(crate) fn with_first_token_source(mut self, source: FirstTokenSource) -> Self {
-        self.first_token_source = Some(source);
-        self
+        Self { engine, mode }
     }
 }
 
@@ -269,8 +258,8 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
         }
 
         // Capture this worker's trace identity once, for stamping on the
-        // first non-empty chunk. Yields None when `DistributedTraceIdLayer`
-        // is not installed.
+        // first non-empty chunk. Yields None in non-JSONL deployments where
+        // `DistributedTraceIdLayer` is not installed.
         let worker_trace_link: Option<dynamo_llm::protocols::common::preprocessor::TraceLink> = {
             let link = span.in_scope(|| {
                 dynamo_runtime::logging::get_distributed_tracing_context().map(|tc| {
@@ -283,7 +272,7 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
             if link.is_none() {
                 tracing::trace!(
                     "worker_trace_link inactive — no DistributedTraceContext on \
-                     engine.generate (enable OTLP export or JSONL trace context)"
+                     engine.generate (requires JSONL mode + OTEL_EXPORT_ENABLED)"
                 );
             }
             link
@@ -300,18 +289,8 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
             (None, None)
         };
 
-        let dp_rank = request.routing.as_ref().and_then(|routing| routing.dp_rank);
-        let first_token = FirstTokenNotifier::for_request(
-            ft_tx.clone(),
-            self.first_token_source.as_ref(),
-            ctx.id(),
-            dp_rank,
-        );
-        let gen_ctx = GenerateContext::with_first_token_notifier(
-            ctx.clone(),
-            first_token.clone(),
-            handle.metadata().clone(),
-        );
+        let gen_ctx =
+            GenerateContext::with_metadata(ctx.clone(), ft_tx.clone(), handle.metadata().clone());
         // `.instrument()` the setup call so a setup-time error lands on the
         // same span as the streaming body.
         let chunks = self
@@ -321,13 +300,9 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
             .await
             .map_err(|e| {
                 span.record("error_kind", "setup_failed");
+                // Short, stable description — full error message is
+                // available via the trace_id-correlated log stream.
                 span.set_status(Status::error("setup_failed"));
-                tracing::debug!(
-                    request_id = ctx.id(),
-                    error = %e,
-                    error_type = ?e.error_type(),
-                    "engine.generate setup failed",
-                );
                 Error::from(e)
             })?;
         let request_start = Instant::now();
@@ -416,8 +391,11 @@ impl AsyncEngine<SingleIn<PreprocessedRequest>, ManyOut<Annotated<LLMEngineOutpu
                                 stream_span.record("ttft_ms", format!("{:.2}", ttft_ms).as_str());
                                 last_token_at = Some(Instant::now());
                             }
-                            if let Some(notifier) = &first_token {
-                                notifier.notify();
+                            if let Some(tx) = &ft_tx {
+                                // Receiver is held by the monitor task; send only
+                                // fails if it panicked, in which case the abort is
+                                // already moot.
+                                let _ = tx.send(true);
                             }
                             if let Some(link) = &worker_trace_link {
                                 chunk.worker_trace_link = Some(link.clone());
@@ -551,12 +529,6 @@ impl AsyncEngine<SingleIn<serde_json::Value>, ManyOut<Annotated<serde_json::Valu
             .map_err(|e| {
                 span.record("error_kind", "setup_failed");
                 span.set_status(Status::error("setup_failed"));
-                tracing::debug!(
-                    request_id = ctx.id(),
-                    error = %e,
-                    error_type = ?e.error_type(),
-                    "raw engine.generate setup failed",
-                );
                 Error::from(e)
             })?;
 
@@ -865,7 +837,7 @@ mod tests {
         let input = Context::new(make_request(vec![1]));
         let err = adapter.generate(input).await.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("InvalidRequest"), "got: {msg}");
+        assert!(msg.contains("BackendInvalidArgument"), "got: {msg}");
         assert!(msg.contains("bad param"), "got: {msg}");
     }
 

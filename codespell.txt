@@ -1,2 +1,0 @@
-dynmo->dynamo
-dynemo->dynamo

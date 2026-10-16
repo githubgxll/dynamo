@@ -2,7 +2,7 @@
 
 Task definition JSON files for the ECS deployment guide.
 
-**Full guide:** [docs/kubernetes/cloud-providers/ecs/ecs.md](../../../docs/fern/pages/kubernetes/installation/managed-kubernetes/eks/ecs.mdx)
+**Full guide:** [docs/kubernetes/cloud-providers/ecs/ecs.md](../../../docs/kubernetes/cloud-providers/ecs/ecs.md)
 
 ## Contents
 

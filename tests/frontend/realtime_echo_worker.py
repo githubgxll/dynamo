@@ -5,7 +5,7 @@
 
 Registers a ``ModelType.Realtime`` + ``ModelInput.Text`` model and serves a
 Python ``async def generate(request_stream, context)`` bidirectional engine
-via ``serve_bidirectional_endpoint``. A launched ``dynamo.frontend`` discovers
+via ``serve_bidirectional_endpoint``. A launched ``dingo.frontend`` discovers
 this worker via the configured discovery backend (the e2e uses the file
 backend, ``DYN_FILE_KV``) and installs a typed realtime PushRouter to it.
 """
@@ -67,50 +67,34 @@ async def _python_realtime_echo(request_stream, context):
             audio = client_event.get("audio", "")
             response_id = f"resp_{uuid.uuid4().hex}"
             item_id = f"item_{uuid.uuid4().hex}"
-            # Intentionally reuse this mutable dict across yields. The Rust
-            # network engine must serialize each frame before polling us again,
-            # otherwise queued PyObject handles would all observe later updates.
-            response_event = {
+
+            yield {
                 "type": "response.created",
                 "event_id": _event_id(),
                 "response": _response_payload(response_id, "in_progress"),
             }
-
-            yield response_event
-            response_event.clear()
-            response_event.update(
-                {
-                    "type": "response.output_audio.delta",
-                    "event_id": _event_id(),
-                    "response_id": response_id,
-                    "item_id": item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "delta": audio,
-                }
-            )
-            yield response_event
-            response_event.clear()
-            response_event.update(
-                {
-                    "type": "response.output_audio.done",
-                    "event_id": _event_id(),
-                    "response_id": response_id,
-                    "item_id": item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                }
-            )
-            yield response_event
-            response_event.clear()
-            response_event.update(
-                {
-                    "type": "response.done",
-                    "event_id": _event_id(),
-                    "response": _response_payload(response_id, "completed"),
-                }
-            )
-            yield response_event
+            yield {
+                "type": "response.output_audio.delta",
+                "event_id": _event_id(),
+                "response_id": response_id,
+                "item_id": item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": audio,
+            }
+            yield {
+                "type": "response.output_audio.done",
+                "event_id": _event_id(),
+                "response_id": response_id,
+                "item_id": item_id,
+                "output_index": 0,
+                "content_index": 0,
+            }
+            yield {
+                "type": "response.done",
+                "event_id": _event_id(),
+                "response": _response_payload(response_id, "completed"),
+            }
         else:
             yield {
                 "type": "error",

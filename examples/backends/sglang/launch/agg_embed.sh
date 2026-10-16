@@ -55,12 +55,12 @@ print_curl_footer <<CURL
 CURL
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # run worker
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --embedding-worker \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \

@@ -63,7 +63,7 @@ def main():
         if not path.is_dir():
             raise FileNotFoundError(path)
         count += command(name, [sys.executable, "-B", "-X", "utf8", "-m", "unittest", "discover", "-s", str(path), "-p", "test_*.py", "-v"])
-    count += command("ci-and-main-renderer-regressions", [sys.executable, "-B", "-X", "utf8", str(ROOT / ".github/scripts/test_h3_experimental_ci.py")])
+    count += command("ci-and-gateway-renderer-regressions", [sys.executable, "-B", "-X", "utf8", str(ROOT / ".github/scripts/test_h3_experimental_ci.py")])
     command("ref8-local-fixed-source-contract", [sys.executable, "-B", "-X", "utf8", str(PROFILE / "ref8/check_contract.py"), "--local", "--report", str(RUN / "ref8-local.json")])
     command("six-profile-local-contract", [sys.executable, "-B", "-X", "utf8", str(PROFILE / "profiles/check_profiles.py"), "--local", "--output", str(RUN / "profiles-local.json")])
     scripts = list(PROFILE.rglob("*.py")) + list(Path(__file__).resolve().parent.rglob("*.py"))

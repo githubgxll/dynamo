@@ -18,12 +18,11 @@
 set -euo pipefail
 trap 'echo "Error at line $LINENO. Exiting."' ERR
 
-# Namespace for the workload (model, EPP, InferencePool, HTTPRoute).
+# Namespace where the Gateway will be deployed.
 # Defaults to 'default' if NAMESPACE env var is not set.
 NAMESPACE=${NAMESPACE:-default}
-# Namespace for the agentgateway controller and the Gateway it manages.
 AGW_NAMESPACE=${AGW_NAMESPACE:-agentgateway-system}
-echo "Installing workload namespace: $NAMESPACE; Gateway into namespace: $AGW_NAMESPACE"
+echo "Installing inference-gateway into namespace: $NAMESPACE"
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -58,7 +57,7 @@ helm upgrade -i --namespace "$AGW_NAMESPACE" --version "$AGW_VERSION" agentgatew
 # AgentgatewayParameters must live in the same namespace as the Gateway because
 # Gateway API's infrastructure.parametersRef is a LocalParametersReference
 # (no namespace field).
-kubectl apply --server-side -n "$AGW_NAMESPACE" -f - <<'EOF'
+kubectl apply --server-side -n "$NAMESPACE" -f - <<'EOF'
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayParameters
 metadata:
@@ -72,7 +71,7 @@ spec:
             sidecar.istio.io/inject: "false"
 EOF
 
-kubectl apply -n "$AGW_NAMESPACE" -f - <<EOF
+kubectl apply -n "$NAMESPACE" -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -88,14 +87,7 @@ spec:
     - name: http
       port: 80
       protocol: HTTP
-      # The Gateway lives in \$AGW_NAMESPACE but workloads (and their
-      # HTTPRoutes) live in \$NAMESPACE, so allow routes from any namespace.
-      # The default (same-namespace only) would leave the workload route
-      # unattached.
-      allowedRoutes:
-        namespaces:
-          from: All
 EOF
 
-kubectl wait gateway/inference-gateway -n "$AGW_NAMESPACE" \
+kubectl wait gateway/inference-gateway -n "$NAMESPACE" \
   --for=condition=Programmed --timeout=180s

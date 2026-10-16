@@ -22,7 +22,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 
-DEFAULT_ROOTS = ("ai-dynamo", "ai-dynamo-runtime", "vllm", "aisimulate", "gpu-memory-service")
+DEFAULT_ROOTS = ("ai-dingo[video-gateway]", "ai-dingo-runtime", "vllm", "gpu-memory-service")
 # Reviewed released wheels need their shared Python APIs solved jointly with
 # the inherited vLLM defaults. An unknown future release retains the base pins.
 JOINT_API_OMNI_VERSIONS = {"0.31.0rc1"}
@@ -90,7 +90,7 @@ def protected_constraints(inventory, configured_names, *, omni_version):
 def runtime_requirements(inventory, *, roots=DEFAULT_ROOTS, environment=None):
     """Collect installed default requirements, preserving requested extras.
 
-    Extra-only roots such as ai-dynamo[vllm] are deliberately not requested:
+    Extra-only roots such as ai-dingo[vllm] are deliberately not requested:
     their backend pins describe a different vLLM version. All default vLLM and
     vLLM-Omni dependencies are resolved together by the caller instead.
     """
@@ -101,18 +101,24 @@ def runtime_requirements(inventory, *, roots=DEFAULT_ROOTS, environment=None):
     marker_environment["extra"] = ""
     lines = []
     for project in roots:
-        name = canonicalize_name(project)
+        root = Requirement(project)
+        name = canonicalize_name(root.name)
+        active_extras = {"", *root.extras}
         version = unique_version(records, name)
         # Repeated discovery of one metadata directory is kept in the snapshot;
         # conflicting requirements for a critical root must not be hidden.
         requirement_sets = {tuple(sorted(record["requires_dist"])) for record in records[name]}
         if len(requirement_sets) != 1:
             raise ValueError(f"Conflicting installed requirements for {name}")
-        lines.append(f"# Active default requirements from installed {name}=={version}")
+        lines.append(f"# Active requirements from installed {name}=={version}; extras={sorted(root.extras)}")
         for raw in sorted(next(iter(requirement_sets))):
             requirement = Requirement(raw)
-            if requirement.marker and not requirement.marker.evaluate(marker_environment):
+            if requirement.marker and not any(requirement.marker.evaluate({**marker_environment, "extra": extra}) for extra in active_extras):
                 continue
+            # The root extra is already evaluated on the actual build platform.
+            # Do not leave an extra marker for pip to re-evaluate as empty.
+            if requirement.marker and "extra" in str(requirement.marker):
+                requirement.marker = None
             lines.append(str(requirement))
     return lines
 

@@ -102,7 +102,7 @@ def main():
             require(bool(re.fullmatch(r'[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}', base)), 'Base image must use a digest')
             inputs = {'schema': 'h3-experimental-inputs/1', 'source_commit': source, 'base_image': base,
                       'versions': versions, 'assets_lock_sha256': report['assets_lock_sha256'],
-                      'dynamo_main_source_sha': os.environ.get('DYNAMO_MAIN_SOURCE_SHA'),
+                      'dynamo_gateway_source_sha': os.environ.get('DYNAMO_GATEWAY_SOURCE_SHA'),
                       'dynamo_vllm_base_image': os.environ.get('DYNAMO_VLLM_BASE_IMAGE')}
             require(args.output is not None, 'Installed gate needs evidence output')
             args.output.parent.mkdir(parents=True, exist_ok=True)

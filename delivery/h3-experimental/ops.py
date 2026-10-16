@@ -62,10 +62,10 @@ def prospective_tree(lock):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="index-", dir=EVIDENCE) as temp:
         env = git_environment(Path(temp) / "index")
-        git("read-tree", lock["main_commit"], env=env)
+        git("read-tree", lock["service_base_commit"], env=env)
         git("add", "--all", "--", ".", env=env)
         tree = git("write-tree", env=env)
-        raw = git("diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z", lock["main_commit"], env=env, binary=True)
+        raw = git("diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z", lock["service_base_commit"], env=env, binary=True)
         fields = raw.decode("utf-8").split("\0")
         delta = {}
         for i in range(0, len(fields) - 1, 2):
@@ -89,7 +89,7 @@ def identity(lock):
         raise ValueError("Origin is not the reviewed githubgxll/dynamo repository")
     if git("branch", "--show-current") != lock["remote_branch"]:
         raise ValueError("Use the designated experimental branch in this prepared checkout")
-    git("cat-file", "-e", lock["main_commit"] + "^{commit}")
+    git("cat-file", "-e", lock["service_base_commit"] + "^{commit}")
     git("merge-base", "--is-ancestor", lock["remote_baseline"], "HEAD")
 
 
@@ -97,10 +97,10 @@ def seal():
     lock = read_json(HERE / "source-lock.json")
     identity(lock)
     _, delta = prospective_tree(lock)
-    dump(ROOT / SEAL_PATH, {"schema": "h3-main-overlay-seal/1", "main_commit": lock["main_commit"],
+    dump(ROOT / SEAL_PATH, {"schema": "h3-gateway-overlay-seal/1", "service_base_commit": lock["service_base_commit"],
                             "remote_baseline": lock["remote_baseline"], "delta": delta,
-                            "scope": "Exact Git blobs and deletions relative to the reviewed main snapshot; seal excludes itself"})
-    print(f"Sealed {len(delta)} H3 overlay paths against main {lock['main_commit']}")
+                            "scope": "Exact Git blobs and deletions relative to the reviewed gateway snapshot; seal excludes itself"})
+    print(f"Sealed {len(delta)} H3 overlay paths against service base {lock['service_base_commit']}")
 
 
 def check():
@@ -108,7 +108,7 @@ def check():
     identity(lock)
     sealed = read_json(ROOT / SEAL_PATH)
     tree, delta = prospective_tree(lock)
-    if sealed["main_commit"] != lock["main_commit"] or sealed["remote_baseline"] != lock["remote_baseline"] or sealed["delta"] != delta:
+    if sealed["service_base_commit"] != lock["service_base_commit"] or sealed["remote_baseline"] != lock["remote_baseline"] or sealed["delta"] != delta:
         expected = sealed["delta"]
         changed = sorted(p for p in set(expected) | set(delta) if expected.get(p) != delta.get(p))
         raise ValueError("Prepared inputs changed; review and reseal before submission: " + ", ".join(changed[:30]))
@@ -122,10 +122,10 @@ def check():
     result = subprocess.run([sys.executable, "-B", "-X", "utf8", str(HERE / "check_local.py")], cwd=ROOT, check=False)
     if result.returncode:
         raise RuntimeError("Local implementation checks failed")
-    # Only the new overlay must meet whitespace requirements; inherited main is verbatim.
+    # Only the new overlay must meet whitespace requirements; inherited gateway source is verbatim.
     paths = [p for p, value in delta.items() if value["status"] != "D"]
-    git("diff", "--check", lock["main_commit"], tree, "--", *paths)
-    report = {"status": "PASS_LOCAL_RECIPE_ONLY", "main_commit": lock["main_commit"],
+    git("diff", "--check", lock["service_base_commit"], tree, "--", *paths)
+    report = {"status": "PASS_LOCAL_RECIPE_ONLY", "service_base_commit": lock["service_base_commit"],
               "head": git("rev-parse", "HEAD"), "prospective_tree": tree, "sealed_overlay_paths": len(delta),
               "not_run": ["Linux Docker build", "Harbor publish/pull", "H100", "Base mount identity", "generated media E2E"]}
     dump(EVIDENCE / run_id() / "preparation.json", report)
@@ -149,9 +149,9 @@ def prepare_remote(lock):
     branch = lock["remote_branch"]
     if branch != EXPERIMENT_BRANCH:
         raise ValueError("Only the designated MiniMax-H3 branch may be submitted")
-    git("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main", network=True)
-    if git("rev-parse", "refs/remotes/origin/main") != lock["main_commit"]:
-        raise ValueError("Upstream main has changed since review. Review its new dependencies before rebuilding.")
+    git("fetch", "--no-tags", "origin", "+refs/heads/DingoRouter-video-gateway:refs/remotes/origin/DingoRouter-video-gateway", network=True)
+    if git("rev-parse", "refs/remotes/origin/DingoRouter-video-gateway") != lock["service_base_commit"]:
+        raise ValueError("Upstream DingoRouter-video-gateway changed since review. Review service and dependency changes before rebuilding.")
     remote = remote_head(branch)
     if remote is None:
         if lock.get("allow_remote_branch_creation") is not True:
@@ -194,7 +194,7 @@ def index_entries():
 def stage_validated_tree(expected_tree):
     """Install only the checked tree in the index; never change working files.
 
-    A main-tracked path can also match .gitignore. Re-adding those paths from
+    A service-base-tracked path can also match .gitignore. Re-adding those paths from
     the old branch index both rejects ignored paths and loses POSIX file modes
     on Windows. The validated tree already has their exact blobs and modes.
     """
@@ -252,7 +252,7 @@ def submit(confirmed):
         if refreshed_tree != expected_tree:
             raise ValueError("Working files changed after validation; rerun checks before submission")
         stage_validated_tree(expected_tree)
-        git("commit", "-s", "-m", "feat(h3): migrate experimental distilled image to main and Omni 0.31")
+        git("commit", "-s", "-m", "build(h3): align Omni 0.31 experimental image with video gateway")
     if git("rev-parse", "HEAD^{tree}") != expected_tree or git("status", "--porcelain"):
         raise ValueError("Files changed during submission; inspect and rerun checks")
     git("push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}", network=True)
@@ -270,13 +270,13 @@ def safe_relative(name):
 
 def verify_publication(directory, lock):
     record = read_json(directory / "image.json")
-    if record.get("schema") != "h3-experimental-publication/1" or record.get("main_commit") != lock["main_commit"]:
-        raise ValueError("Wrong publication/main source")
+    if record.get("schema") != "h3-experimental-publication/1" or record.get("service_base_commit") != lock["service_base_commit"]:
+        raise ValueError("Wrong publication/service base source")
     if not HEX40.fullmatch(record.get("source_commit", "")) or not DIGEST.fullmatch(record.get("digest", "")):
         raise ValueError("Invalid source/image identity")
     if record.get("deployment_image") != lock["harbor_repository"] + "@" + record["digest"]:
         raise ValueError("Wrong Harbor destination")
-    expected_tag = lock["harbor_repository"] + ":omni031rc1-distilled-ref8shift12-" + record["source_commit"][:12]
+    expected_tag = lock["harbor_repository"] + ":omni031rc1-gateway-distilled-ref8shift12-" + record["source_commit"][:12]
     if record.get("image") != expected_tag:
         raise ValueError("Publication is not the submitted final distilled image tag")
     parent = record.get("framework_image", "")
@@ -287,6 +287,7 @@ def verify_publication(directory, lock):
     if not record.get("evidence_sha256"):
         raise ValueError("Missing publication evidence hashes")
     required = {
+        "experimental/service-smoke.json": "PASS_SERVICE_IMPORTS_AND_HELP_ONLY",
         "experimental/assets-report.json": "PASS_ASSETS_ONLY",
         "experimental/profiles-check.json": "PASS_INSTALLED_PROFILES_CPU_ONLY",
         "experimental/environment-check.json": "PASS_EXPERIMENTAL_ENVIRONMENT_CPU_ONLY",

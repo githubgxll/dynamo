@@ -17,8 +17,7 @@ expression: "canonicalize(serde_json::to_value(events).unwrap())"
         "stop_sequence": null,
         "usage": {
           "input_tokens": 2,
-          "output_tokens": 0,
-          "cache_creation_input_tokens": 0
+          "output_tokens": 0
         }
       }
     }
@@ -42,12 +41,6 @@ expression: "canonicalize(serde_json::to_value(events).unwrap())"
       "delta": {
         "type": "text_delta",
         "text": "Pong."
-      },
-      "usage": {
-        "input_tokens": 2,
-        "output_tokens": 1,
-        "cache_creation_input_tokens": 0,
-        "total_tokens": 3
       }
     }
   },
@@ -66,9 +59,8 @@ expression: "canonicalize(serde_json::to_value(events).unwrap())"
         "stop_reason": "end_turn"
       },
       "usage": {
-        "input_tokens": 5,
-        "output_tokens": 2,
-        "cache_creation_input_tokens": 0
+        "input_tokens": 2,
+        "output_tokens": 2
       }
     }
   },

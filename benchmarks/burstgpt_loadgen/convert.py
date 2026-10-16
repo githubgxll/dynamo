@@ -7,7 +7,7 @@ import os
 import random
 
 import pandas as pd
-from prefix_data_generator.hasher import RollingHasher
+from aiperf.dataset.synthesis import RollingHasher
 from tqdm import tqdm
 
 

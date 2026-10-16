@@ -61,6 +61,7 @@ class RequestHandler:
             # sglang defaults this to 128
             "max_new_tokens": request["stop_conditions"]["max_tokens"],
         }
+        num_output_tokens_so_far = 0
         gen = await self.engine_client.async_generate(
             input_ids=request["token_ids"], sampling_params=sampling_params, stream=True
         )
@@ -68,10 +69,14 @@ class RequestHandler:
             # res is a dict
 
             finish_reason = res["meta_info"]["finish_reason"]
-            out = {"token_ids": res["output_ids"]}
             if finish_reason:
-                out["finish_reason"] = finish_reason["type"]
+                # Don't forward the stop token
+                out = {"token_ids": [], "finish_reason": finish_reason["type"]}
+            else:
+                next_total_toks = len(res["output_ids"])
+                out = {"token_ids": res["output_ids"][num_output_tokens_so_far:]}
             yield out
+            num_output_tokens_so_far = next_total_toks
 
 
 @dynamo_worker()
@@ -97,7 +102,6 @@ async def init(runtime: DistributedRuntime, config: Config):
     engine_args = ServerArgs(
         model_path=config.model,
         skip_tokenizer_init=True,
-        incremental_streaming_output=True,
     )
 
     engine_client = sglang.Engine(server_args=engine_args)

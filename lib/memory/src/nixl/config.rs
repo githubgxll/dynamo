@@ -78,23 +78,17 @@ impl NixlBackendConfig {
                     );
                 }
 
-                // Simple backend enablement (e.g., DYN_KVBM_NIXL_BACKEND_UCX=true).
-                // Empty or unrecognized values are rejected rather than treated
-                // as false: silently dropping a backend hides misconfiguration.
+                // Simple backend enablement (e.g., DYN_KVBM_NIXL_BACKEND_UCX=true)
                 let backend_name = remainder.to_uppercase();
-                match crate::parse_bool_opt(&value) {
-                    Some(true) => {
+                match crate::parse_bool(&value) {
+                    Ok(true) => {
                         backends.insert(backend_name, HashMap::new());
                     }
-                    Some(false) => {
+                    Ok(false) => {
                         // Explicitly disabled, don't add to backends
                         continue;
                     }
-                    None => bail!(
-                        "Invalid value for {}: '{}'. Expected one of: true/false, 1/0, on/off, yes/no",
-                        key,
-                        value
-                    ),
+                    Err(e) => bail!("Invalid value for {}: {}", key, e),
                 }
             }
         }

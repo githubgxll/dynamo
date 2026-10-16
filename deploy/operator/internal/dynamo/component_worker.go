@@ -7,11 +7,9 @@ package dynamo
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
 	commonconsts "github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
-	runtimefeatures "github.com/ai-dynamo/dynamo/deploy/operator/internal/features/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -27,11 +25,6 @@ func NewWorkerDefaults() *WorkerDefaults {
 
 func (w *WorkerDefaults) GetBaseContainer(context ComponentContext) (corev1.Container, error) {
 	container := w.getCommonContainer(context)
-	canaryHealthChecksEnabled := runtimefeatures.CanaryHealthChecks.Enabled(context.RuntimeVersion)
-	livenessFailureThreshold := int32(1)
-	if runtimefeatures.IncreasedWorkerFailureThreshold.Enabled(context.RuntimeVersion) {
-		livenessFailureThreshold = 3
-	}
 
 	// Add system port
 	container.Ports = []corev1.ContainerPort{
@@ -47,7 +40,6 @@ func (w *WorkerDefaults) GetBaseContainer(context ComponentContext) (corev1.Cont
 		},
 	}
 
-	// Restart legacy workers after one failed liveness check and newer workers after three.
 	container.LivenessProbe = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
@@ -57,7 +49,7 @@ func (w *WorkerDefaults) GetBaseContainer(context ComponentContext) (corev1.Cont
 		},
 		PeriodSeconds:    5,
 		TimeoutSeconds:   4, // TimeoutSeconds should be < PeriodSeconds
-		FailureThreshold: livenessFailureThreshold,
+		FailureThreshold: 1, // Note this default FailureThreshold is 3, with 1 a single failure will restart Pod
 	}
 
 	// ReadinessProbe in Dynamo worker context doesn't determine that the worker is ready to receive traffic
@@ -102,7 +94,7 @@ func (w *WorkerDefaults) GetBaseContainer(context ComponentContext) (corev1.Cont
 		},
 		{
 			Name:  "DYN_HEALTH_CHECK_ENABLED",
-			Value: strconv.FormatBool(canaryHealthChecksEnabled),
+			Value: "false",
 		},
 		{
 			Name:  "NIXL_TELEMETRY_ENABLE",

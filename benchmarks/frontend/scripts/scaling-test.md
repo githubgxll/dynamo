@@ -126,7 +126,7 @@ spec:
         mainContainer:
           image: <your-image>
           command: ["/bin/sh", "-c"]
-          args: ["python3 -m dynamo.frontend --router-mode round-robin --http-port 8000"]
+          args: ["python3 -m dingo.frontend --router-mode round-robin --http-port 8000"]
           env:
             - name: DYN_TOKENIZER
               value: "default"
@@ -147,7 +147,7 @@ spec:
             persistentVolumeClaim:
               claimName: model-cache
 
-    worker:
+    VllmWorker:
       componentType: worker
       replicas: 4                    # <-- number of backend replicas
       extraPodSpec:
@@ -162,7 +162,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >-
-              python3 -m dynamo.vllm
+              python3 -m dingo.vllm
               --model /model-store/hub/models--openai--gpt-oss-20b/snapshots/main
               --served-model-name openai/gpt-oss-20b
               --tensor-parallel-size 2
@@ -310,8 +310,8 @@ Key metrics for saturation analysis:
 
 - `dynamo_frontend_stage_duration_seconds{stage="preprocess"}` -- tokenization time
 - `dynamo_frontend_stage_duration_seconds{stage="transport_roundtrip"}` -- backend latency
-- `sum(dynamo_frontend_stage_requests{stage=~"preprocess|route|dispatch"})` -- requests waiting in pipeline stages (should be 0 below saturation)
-- `dynamo_frontend_active_requests` -- concurrent active requests
+- `dynamo_frontend_queued_requests` -- requests waiting in HTTP queue (should be 0 below saturation)
+- `dynamo_frontend_inflight_requests` -- concurrent in-flight requests
 - `dynamo_frontend_time_to_first_token_seconds` -- TTFT histogram buckets
 
 ---

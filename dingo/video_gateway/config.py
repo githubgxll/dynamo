@@ -1,0 +1,833 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Strict, namespace-agnostic configuration for the video gateway."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_LOGGER = logging.getLogger(__name__)
+MINIMAX_H3_PROTOCOL_REVISION = "dingo-vllm-omni-h3-detached-v1"
+_ADAPTER_PROTOCOL_REVISIONS = {
+    "minimax_h3": MINIMAX_H3_PROTOCOL_REVISION,
+}
+_KNOWN_ADAPTERS = set(_ADAPTER_PROTOCOL_REVISIONS)
+_MIB = 1024 * 1024
+_MAX_BODY_HARD_CAP = 512 * _MIB
+_MEDIA_HARD_CAPS = {
+    "max_total_file_bytes": 256 * _MIB,
+    "max_single_file_bytes": 50 * _MIB,
+    "max_text_field_bytes": 1024 * 1024,
+    "max_parts": 32,
+    "max_encoded_reference_bytes": 384 * _MIB,
+    "max_result_bytes": 128 * _MIB,
+}
+
+
+def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    return value
+
+
+def _only(data: Mapping[str, Any], allowed: set[str], name: str) -> None:
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ValueError(f"{name} contains unknown keys: {', '.join(unknown)}")
+
+
+def _required_string(data: Mapping[str, Any], key: str, name: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name}.{key} must be a non-empty string")
+    return value.strip()
+
+
+def _safe_identifier(value: str, name: str) -> str:
+    if not _SAFE_ID.fullmatch(value):
+        raise ValueError(f"{name} must match {_SAFE_ID.pattern!r}; received {value!r}")
+    return value
+
+
+def _boolean(data: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be a boolean")
+    return value
+
+
+def canonical_backend_target(value: str) -> str:
+    raw = value.strip()
+    raw = raw.removeprefix("dyn://")
+    parts = raw.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
+        raise ValueError(
+            "backend_target must be dyn://namespace.component.endpoint or "
+            "namespace.component.endpoint"
+        )
+    for index, part in enumerate(parts):
+        _safe_identifier(part, f"backend_target component {index}")
+    return "dyn://" + ".".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryWatchdogConfig:
+    enabled: bool = False
+    interval_s: float = 2.0
+    mismatch_grace_s: float = 6.0
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    discovery_backend: str = "etcd"
+    request_plane: str = "tcp"
+    event_plane: str | None = "zmq"
+    discovery_watchdog: DiscoveryWatchdogConfig = field(
+        default_factory=DiscoveryWatchdogConfig
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class HttpConfig:
+    host: str = "0.0.0.0"
+    port: int = 8000
+    upstream_url: str | None = None
+    max_body_bytes: int = 256 * 1024 * 1024
+    sync_timeout_s: float = 1800.0
+    default_model: str | None = None
+    async_submit_status_code: int = 202
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceCacheConfig:
+    enabled: bool = True
+    retention_s: float = 300.0
+    max_records: int = 50000
+    max_bytes: int = 64 * _MIB
+    token_env: str = "DINGO_VIDEO_PERFORMANCE_TOKEN"
+
+
+@dataclass(frozen=True, slots=True)
+class MediaConfig:
+    max_total_file_bytes: int = 256 * _MIB
+    max_single_file_bytes: int = 50 * _MIB
+    max_text_field_bytes: int = 64 * 1024
+    max_parts: int = 32
+    max_encoded_reference_bytes: int = 384 * _MIB
+    max_result_bytes: int = 128 * _MIB
+    task_memory_overhead_bytes: int = 64 * _MIB
+    inflight_memory_budget_bytes: int = 2 * 1024 * _MIB
+
+    @property
+    def max_result_encoded_bytes(self) -> int:
+        return ((self.max_result_bytes + 2) // 3) * 4
+
+    @property
+    def result_task_memory_bytes(self) -> int:
+        return self.max_result_encoded_bytes + self.task_memory_overhead_bytes
+
+    @property
+    def max_task_memory_bytes(self) -> int:
+        # Mixed-reference construction briefly holds both the individual data
+        # URLs and their final JSON envelope.
+        return 2 * self.max_encoded_reference_bytes + self.result_task_memory_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class TaskStoreConfig:
+    kind: str = "etcd_http"
+    url: str | None = None
+    endpoints: tuple[str, ...] = ()
+    prefix: str = "/dingo/video-gateway/v1"
+    request_timeout_s: float = 5.0
+    watch_response_timeout_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactStoreConfig:
+    kind: str = "filesystem"
+    root: Path = Path("/tmp/dingo-video-gateway")
+    hard_min_free_bytes: int = 0
+    soft_min_free_bytes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleConfig:
+    queue_ttl_s: float = 6 * 60 * 60
+    completed_ttl_s: float = 24 * 60 * 60
+    failed_ttl_s: float = 60 * 60
+    cancelled_ttl_s: float = 60 * 60
+    tombstone_ttl_s: float = 24 * 60 * 60
+    sweeper_interval_s: float = 30.0
+    sweeper_batch_size: int = 512
+    upload_grace_s: float = 60 * 60
+    orphan_grace_s: float = 24 * 60 * 60
+    orphan_scan_interval_s: float = 5 * 60
+    trash_grace_s: float = 60 * 60
+    orphan_cleanup_dry_run: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulingConfig:
+    worker_capacity: int = 1
+    worker_prefetch_capacity: int = 0
+    early_release_slot: bool = False
+    finalization_timeout_s: float = 60.0
+    finalization_max_retries: int = 2
+    finalization_retry_delay_s: float = 0.1
+    finalization_concurrency: int = 4
+    finalization_pending_limit: int = 64
+    queue_limit: int = 32
+    accept_without_workers: bool = False
+    execution_timeout_s: float = 1800.0
+    abort_grace_s: float = 15.0
+    discovery_interval_s: float = 1.0
+    dispatch_interval_s: float = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterConfig:
+    name: str
+    workflow: str
+    compatibility_version: str
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PoolConfig:
+    pool_id: str
+    served_models: tuple[str, ...]
+    backend_model: str
+    backend_target: str
+    execution_mode: str
+    adapter: AdapterConfig
+    scheduling: SchedulingConfig
+    configuration_revision: str
+
+    @property
+    def endpoint_path(self) -> str:
+        return self.backend_target.removeprefix("dyn://")
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayConfig:
+    schema_version: int
+    deployment_id: str
+    runtime: RuntimeConfig
+    http: HttpConfig
+    media: MediaConfig
+    task_store: TaskStoreConfig
+    artifact_store: ArtifactStoreConfig
+    lifecycle: LifecycleConfig
+    pools: tuple[PoolConfig, ...]
+    pools_by_model: Mapping[str, PoolConfig] = field(repr=False)
+    pools_by_id: Mapping[str, PoolConfig] = field(repr=False)
+    performance_cache: PerformanceCacheConfig = field(
+        default_factory=PerformanceCacheConfig
+    )
+
+    def pool_for_model(self, model: str) -> PoolConfig | None:
+        return self.pools_by_model.get(model)
+
+
+def _performance_cache_config(raw: Any) -> PerformanceCacheConfig:
+    data = _mapping({} if raw is None else raw, "performance_cache")
+    _only(
+        data,
+        {"enabled", "retention_s", "max_records", "max_bytes", "token_env"},
+        "performance_cache",
+    )
+    defaults = PerformanceCacheConfig()
+    retention = data.get("retention_s", defaults.retention_s)
+    if (
+        type(retention) not in (int, float)
+        or not math.isfinite(retention)
+        or not 1 <= retention <= 86400
+    ):
+        raise ValueError("performance_cache.retention_s must be between 1 and 86400")
+    for key, default, upper in (
+        ("max_records", defaults.max_records, 100000),
+        ("max_bytes", defaults.max_bytes, 128 * _MIB),
+    ):
+        value = data.get(key, default)
+        if type(value) is not int or not 1 <= value <= upper:
+            raise ValueError(f"performance_cache.{key} is out of range")
+    token_env = data.get("token_env", "DINGO_VIDEO_PERFORMANCE_TOKEN")
+    if not isinstance(token_env, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", token_env
+    ):
+        raise ValueError(
+            "performance_cache.token_env must be an environment variable name"
+        )
+    return PerformanceCacheConfig(
+        enabled=_boolean(data, "enabled", True),
+        retention_s=float(retention),
+        max_records=data.get("max_records", defaults.max_records),
+        max_bytes=data.get("max_bytes", defaults.max_bytes),
+        token_env=token_env,
+    )
+
+
+def _runtime_config(raw: Any) -> RuntimeConfig:
+    data = _mapping(raw or {}, "runtime")
+    _only(
+        data,
+        {
+            "discovery_backend",
+            "request_plane",
+            "event_plane",
+            "discovery_watchdog",
+        },
+        "runtime",
+    )
+    watchdog_data = _mapping(
+        data.get("discovery_watchdog") or {}, "runtime.discovery_watchdog"
+    )
+    _only(
+        watchdog_data,
+        {"enabled", "interval_s", "mismatch_grace_s"},
+        "runtime.discovery_watchdog",
+    )
+    watchdog_enabled = _boolean(watchdog_data, "enabled", False)
+    watchdog_interval_s = float(watchdog_data.get("interval_s", 2.0))
+    watchdog_mismatch_grace_s = float(watchdog_data.get("mismatch_grace_s", 6.0))
+    if watchdog_interval_s <= 0:
+        raise ValueError("runtime.discovery_watchdog.interval_s must be positive")
+    if watchdog_mismatch_grace_s < watchdog_interval_s:
+        raise ValueError(
+            "runtime.discovery_watchdog.mismatch_grace_s must be at least interval_s"
+        )
+    event_plane = data.get("event_plane", "zmq")
+    if event_plane is not None and not isinstance(event_plane, str):
+        raise ValueError("runtime.event_plane must be a string or null")
+    config = RuntimeConfig(
+        discovery_backend=str(data.get("discovery_backend", "etcd")),
+        request_plane=str(data.get("request_plane", "tcp")),
+        event_plane=event_plane,
+        discovery_watchdog=DiscoveryWatchdogConfig(
+            enabled=watchdog_enabled,
+            interval_s=watchdog_interval_s,
+            mismatch_grace_s=watchdog_mismatch_grace_s,
+        ),
+    )
+    if config.discovery_backend not in {"etcd", "kubernetes", "file", "mem"}:
+        raise ValueError("runtime.discovery_backend is not supported")
+    if config.request_plane not in {"tcp", "nats"}:
+        raise ValueError("runtime.request_plane is not supported")
+    if config.event_plane not in {None, "zmq", "nats"}:
+        raise ValueError("runtime.event_plane is not supported")
+    return config
+
+
+def _http_config(raw: Any) -> HttpConfig:
+    data = _mapping(raw or {}, "http")
+    _only(
+        data,
+        {
+            "host",
+            "port",
+            "upstream_url",
+            "max_body_bytes",
+            "sync_timeout_s",
+            "default_model",
+            "async_submit_status_code",
+        },
+        "http",
+    )
+    port = int(data.get("port", 8000))
+    max_body_bytes = int(data.get("max_body_bytes", 256 * 1024 * 1024))
+    sync_timeout_s = float(data.get("sync_timeout_s", 1800.0))
+    async_submit_status_code = int(data.get("async_submit_status_code", 202))
+    if not 1 <= port <= 65535:
+        raise ValueError("http.port must be between 1 and 65535")
+    if max_body_bytes <= 0:
+        raise ValueError("http.max_body_bytes must be positive")
+    if max_body_bytes > _MAX_BODY_HARD_CAP:
+        raise ValueError(
+            f"http.max_body_bytes exceeds the hard cap of {_MAX_BODY_HARD_CAP}"
+        )
+    if sync_timeout_s <= 0:
+        raise ValueError("http.sync_timeout_s must be positive")
+    if async_submit_status_code not in {200, 202}:
+        raise ValueError("http.async_submit_status_code must be 200 or 202")
+    default_model = data.get("default_model")
+    if default_model is not None:
+        if not isinstance(default_model, str) or not default_model.strip():
+            raise ValueError("http.default_model must be a non-empty string or null")
+        default_model = default_model.strip()
+    upstream = data.get("upstream_url")
+    if upstream is not None:
+        if not isinstance(upstream, str) or not upstream.startswith(
+            ("http://", "https://")
+        ):
+            raise ValueError("http.upstream_url must be an HTTP(S) URL or null")
+        upstream = upstream.rstrip("/")
+    host = str(data.get("host", "0.0.0.0")).strip()
+    if not host:
+        raise ValueError("http.host must be non-empty")
+    return HttpConfig(
+        host=host,
+        port=port,
+        upstream_url=upstream,
+        max_body_bytes=max_body_bytes,
+        sync_timeout_s=sync_timeout_s,
+        default_model=default_model,
+        async_submit_status_code=async_submit_status_code,
+    )
+
+
+def _media_config(raw: Any, http: HttpConfig) -> MediaConfig:
+    data = _mapping(raw or {}, "media")
+    allowed = set(_MEDIA_HARD_CAPS) | {
+        "task_memory_overhead_bytes",
+        "inflight_memory_budget_bytes",
+    }
+    _only(data, allowed, "media")
+    defaults = MediaConfig()
+    values: dict[str, int] = {}
+    for name in allowed:
+        value = data.get(name, getattr(defaults, name))
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"media.{name} must be an integer")
+        values[name] = value
+    for name, value in values.items():
+        if value <= 0:
+            raise ValueError(f"media.{name} must be positive")
+    for name, hard_cap in _MEDIA_HARD_CAPS.items():
+        if values[name] > hard_cap:
+            raise ValueError(
+                f"media.{name} exceeds the protocol hard cap of {hard_cap}"
+            )
+    config = MediaConfig(**values)
+    if config.max_single_file_bytes > config.max_total_file_bytes:
+        raise ValueError(
+            "media.max_single_file_bytes must not exceed max_total_file_bytes"
+        )
+    if config.max_total_file_bytes > http.max_body_bytes:
+        raise ValueError(
+            "media.max_total_file_bytes must not exceed http.max_body_bytes"
+        )
+    if config.inflight_memory_budget_bytes < config.max_task_memory_bytes:
+        raise ValueError(
+            "media.inflight_memory_budget_bytes must fit one maximum-size task"
+        )
+    return config
+
+
+def _task_store_config(raw: Any) -> TaskStoreConfig:
+    data = _mapping(raw or {}, "task_store")
+    _only(
+        data,
+        {
+            "kind",
+            "url",
+            "endpoints",
+            "prefix",
+            "request_timeout_s",
+            "watch_response_timeout_s",
+        },
+        "task_store",
+    )
+    kind = str(data.get("kind", "etcd_http"))
+    if kind not in {"etcd_http", "memory"}:
+        raise ValueError("task_store.kind must be 'etcd_http' or 'memory'")
+    url = data.get("url")
+    endpoints_raw = data.get("endpoints")
+    if url is not None and endpoints_raw is not None:
+        raise ValueError(
+            "task_store.url and task_store.endpoints are mutually exclusive"
+        )
+    if url is not None and (not isinstance(url, str) or not url.strip()):
+        raise ValueError("task_store.url must be a non-empty string")
+    if endpoints_raw is not None:
+        if (
+            not isinstance(endpoints_raw, list)
+            or not endpoints_raw
+            or any(
+                not isinstance(item, str) or not item.strip() for item in endpoints_raw
+            )
+        ):
+            raise ValueError(
+                "task_store.endpoints must be a non-empty list of URL strings"
+            )
+        endpoints = tuple(item.strip().rstrip("/") for item in endpoints_raw)
+        if len(set(endpoints)) != len(endpoints):
+            raise ValueError("task_store.endpoints must not contain duplicates")
+    else:
+        endpoints = (url.strip().rstrip("/"),) if isinstance(url, str) else ()
+    if kind == "etcd_http" and not endpoints:
+        raise ValueError(
+            "task_store.url or task_store.endpoints is required for etcd_http"
+        )
+    if any(not endpoint.startswith(("http://", "https://")) for endpoint in endpoints):
+        raise ValueError("task_store endpoints must use HTTP or HTTPS URLs")
+    prefix = str(data.get("prefix", "/dingo/video-gateway/v1"))
+    if prefix == "/" or not prefix.startswith("/") or ".." in prefix:
+        raise ValueError("task_store.prefix must be an absolute safe key prefix")
+    timeout = float(data.get("request_timeout_s", 5.0))
+    if timeout <= 0:
+        raise ValueError("task_store.request_timeout_s must be positive")
+    watch_timeout_raw = data.get("watch_response_timeout_s")
+    watch_timeout = None if watch_timeout_raw is None else float(watch_timeout_raw)
+    if watch_timeout is not None and watch_timeout <= 0:
+        raise ValueError("task_store.watch_response_timeout_s must be positive")
+    return TaskStoreConfig(
+        kind=kind,
+        url=url.strip().rstrip("/") if isinstance(url, str) else None,
+        endpoints=endpoints,
+        prefix=prefix.rstrip("/"),
+        request_timeout_s=timeout,
+        watch_response_timeout_s=watch_timeout,
+    )
+
+
+def _artifact_store_config(raw: Any) -> ArtifactStoreConfig:
+    data = _mapping(raw or {}, "artifact_store")
+    _only(
+        data,
+        {"kind", "root", "hard_min_free_bytes", "soft_min_free_bytes"},
+        "artifact_store",
+    )
+    kind = str(data.get("kind", "filesystem"))
+    if kind != "filesystem":
+        raise ValueError("artifact_store.kind must be 'filesystem' in version 1")
+    root = Path(_required_string(data, "root", "artifact_store")).expanduser()
+    if not root.is_absolute():
+        raise ValueError("artifact_store.root must be an absolute path")
+    hard_min_free_bytes = int(data.get("hard_min_free_bytes", 0))
+    soft_min_free_bytes = int(data.get("soft_min_free_bytes", 0))
+    if hard_min_free_bytes < 0 or soft_min_free_bytes < 0:
+        raise ValueError("artifact_store free-space watermarks must not be negative")
+    if soft_min_free_bytes and soft_min_free_bytes < hard_min_free_bytes:
+        raise ValueError(
+            "artifact_store.soft_min_free_bytes must be at least hard_min_free_bytes"
+        )
+    return ArtifactStoreConfig(
+        kind=kind,
+        root=root,
+        hard_min_free_bytes=hard_min_free_bytes,
+        soft_min_free_bytes=soft_min_free_bytes,
+    )
+
+
+def _lifecycle_config(raw: Any) -> LifecycleConfig:
+    data = _mapping(raw or {}, "lifecycle")
+    defaults = LifecycleConfig()
+    duration_fields = {
+        "queue_ttl_s",
+        "completed_ttl_s",
+        "failed_ttl_s",
+        "cancelled_ttl_s",
+        "tombstone_ttl_s",
+        "sweeper_interval_s",
+        "upload_grace_s",
+        "orphan_grace_s",
+        "orphan_scan_interval_s",
+        "trash_grace_s",
+    }
+    allowed = duration_fields | {"sweeper_batch_size", "orphan_cleanup_dry_run"}
+    _only(data, allowed, "lifecycle")
+    durations = {
+        name: float(data.get(name, getattr(defaults, name))) for name in duration_fields
+    }
+    if any(value <= 0 for value in durations.values()):
+        raise ValueError("lifecycle TTL, grace and interval values must be positive")
+    batch_size = int(data.get("sweeper_batch_size", defaults.sweeper_batch_size))
+    if not 1 <= batch_size <= 10_000:
+        raise ValueError("lifecycle.sweeper_batch_size must be between 1 and 10000")
+    return LifecycleConfig(
+        **durations,
+        sweeper_batch_size=batch_size,
+        orphan_cleanup_dry_run=_boolean(
+            data, "orphan_cleanup_dry_run", defaults.orphan_cleanup_dry_run
+        ),
+    )
+
+
+def _scheduling_config(raw: Any, pool_name: str) -> SchedulingConfig:
+    data = _mapping(raw or {}, f"pools[{pool_name}].scheduling")
+    _only(
+        data,
+        {
+            "worker_capacity",
+            "worker_prefetch_capacity",
+            "early_release_slot",
+            "finalization_timeout_s",
+            "finalization_max_retries",
+            "finalization_retry_delay_s",
+            "finalization_concurrency",
+            "finalization_pending_limit",
+            "queue_limit",
+            "accept_without_workers",
+            "execution_timeout_s",
+            "abort_grace_s",
+            "discovery_interval_s",
+            "dispatch_interval_s",
+        },
+        f"pools[{pool_name}].scheduling",
+    )
+    for key in (
+        "worker_capacity",
+        "worker_prefetch_capacity",
+        "finalization_max_retries",
+        "finalization_concurrency",
+        "finalization_pending_limit",
+    ):
+        if key in data and type(data[key]) is not int:
+            raise ValueError(f"scheduling.{key} must be an integer")
+    config = SchedulingConfig(
+        worker_capacity=int(data.get("worker_capacity", 1)),
+        worker_prefetch_capacity=int(data.get("worker_prefetch_capacity", 0)),
+        early_release_slot=_boolean(data, "early_release_slot", False),
+        finalization_timeout_s=float(data.get("finalization_timeout_s", 60)),
+        finalization_max_retries=int(data.get("finalization_max_retries", 2)),
+        finalization_retry_delay_s=float(data.get("finalization_retry_delay_s", 0.1)),
+        finalization_concurrency=int(data.get("finalization_concurrency", 4)),
+        finalization_pending_limit=int(data.get("finalization_pending_limit", 64)),
+        queue_limit=int(data.get("queue_limit", 32)),
+        accept_without_workers=_boolean(data, "accept_without_workers", False),
+        execution_timeout_s=float(data.get("execution_timeout_s", 1800.0)),
+        abort_grace_s=float(data.get("abort_grace_s", 15.0)),
+        discovery_interval_s=float(data.get("discovery_interval_s", 1.0)),
+        dispatch_interval_s=float(data.get("dispatch_interval_s", 0.25)),
+    )
+    if config.worker_capacity < 1:
+        raise ValueError("scheduling.worker_capacity must be positive")
+    if config.worker_prefetch_capacity not in {0, 1}:
+        raise ValueError("scheduling.worker_prefetch_capacity must be 0 or 1")
+    if config.worker_prefetch_capacity and not config.early_release_slot:
+        raise ValueError("Worker prefetch requires early_release_slot")
+    if (
+        not 0 <= config.finalization_max_retries <= 16
+        or config.finalization_concurrency < 1
+        or config.finalization_pending_limit < config.finalization_concurrency
+        or not 0 < config.finalization_timeout_s <= 86400
+        or not 0 < config.finalization_retry_delay_s <= 60
+    ):
+        raise ValueError("invalid scheduling finalization limits")
+    if config.queue_limit < 1:
+        raise ValueError("scheduling.queue_limit must be positive")
+    if (
+        min(
+            config.execution_timeout_s,
+            config.abort_grace_s,
+            config.discovery_interval_s,
+            config.dispatch_interval_s,
+        )
+        <= 0
+    ):
+        raise ValueError("scheduling timeout and interval values must be positive")
+    return config
+
+
+def _pool_config(raw: Any, index: int) -> PoolConfig:
+    name = f"pools[{index}]"
+    data = _mapping(raw, name)
+    _only(
+        data,
+        {
+            "pool_id",
+            "served_models",
+            "backend_model",
+            "backend_target",
+            "execution_mode",
+            "adapter",
+            "scheduling",
+        },
+        name,
+    )
+    pool_id = _safe_identifier(
+        _required_string(data, "pool_id", name), f"{name}.pool_id"
+    )
+    served = data.get("served_models")
+    if not isinstance(served, list) or not served:
+        raise ValueError(f"{name}.served_models must be a non-empty list")
+    if any(not isinstance(value, str) or not value.strip() for value in served):
+        raise ValueError(f"{name}.served_models must contain only non-empty strings")
+    served_models = tuple(value.strip() for value in served)
+    if len(set(served_models)) != len(served_models):
+        raise ValueError(f"{name}.served_models must contain unique non-empty strings")
+    backend_model = _required_string(data, "backend_model", name)
+    backend_target = canonical_backend_target(
+        _required_string(data, "backend_target", name)
+    )
+    execution_mode = str(data.get("execution_mode", "stream"))
+    if execution_mode not in {"stream", "detached"}:
+        raise ValueError(f"{name}.execution_mode must be stream or detached")
+
+    adapter_data = _mapping(data.get("adapter"), f"{name}.adapter")
+    required_adapter = {"name", "workflow"}
+    missing = sorted(required_adapter - set(adapter_data))
+    if missing:
+        raise ValueError(f"{name}.adapter missing keys: {', '.join(missing)}")
+    adapter_name = _required_string(adapter_data, "name", f"{name}.adapter")
+    if adapter_name not in _KNOWN_ADAPTERS:
+        raise ValueError(f"unknown video adapter: {adapter_name}")
+    protocol_revision = _ADAPTER_PROTOCOL_REVISIONS[adapter_name]
+    legacy_compatibility = adapter_data.get("compatibility_version")
+    if legacy_compatibility is not None:
+        if (
+            not isinstance(legacy_compatibility, str)
+            or not legacy_compatibility.strip()
+        ):
+            raise ValueError(
+                f"{name}.adapter.compatibility_version must be a non-empty string"
+            )
+        if legacy_compatibility.strip() != protocol_revision:
+            raise ValueError(
+                f"{name}.adapter.compatibility_version is obsolete and must equal "
+                f"the built-in protocol revision {protocol_revision!r}"
+            )
+        _LOGGER.warning(
+            "%s.adapter.compatibility_version is deprecated and may be removed; "
+            "the MiniMax-H3 protocol revision is supplied by the adapter code",
+            name,
+        )
+    adapter = AdapterConfig(
+        name=adapter_name,
+        workflow=_required_string(adapter_data, "workflow", f"{name}.adapter"),
+        compatibility_version=protocol_revision,
+        options={
+            key: value
+            for key, value in adapter_data.items()
+            if key not in required_adapter | {"compatibility_version"}
+        },
+    )
+    scheduling = _scheduling_config(data.get("scheduling"), pool_id)
+    if scheduling.early_release_slot and execution_mode != "detached":
+        raise ValueError("early slot release requires detached execution_mode")
+    if scheduling.worker_capacity > 1 and execution_mode != "detached":
+        raise ValueError("multiple Worker slots require detached execution_mode")
+    revision_payload = {
+        "pool_id": pool_id,
+        "served_models": served_models,
+        "backend_model": backend_model,
+        "backend_target": backend_target,
+        "execution_mode": execution_mode,
+        "adapter": {
+            "name": adapter.name,
+            "workflow": adapter.workflow,
+            "compatibility_version": adapter.compatibility_version,
+            "options": adapter.options,
+        },
+        "scheduling": {
+            "worker_capacity": scheduling.worker_capacity,
+            "execution_timeout_s": scheduling.execution_timeout_s,
+        },
+    }
+    revision = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                revision_payload, sort_keys=True, separators=(",", ":"), default=str
+            ).encode()
+        ).hexdigest()
+    )
+    return PoolConfig(
+        pool_id=pool_id,
+        served_models=served_models,
+        backend_model=backend_model,
+        backend_target=backend_target,
+        execution_mode=execution_mode,
+        adapter=adapter,
+        scheduling=scheduling,
+        configuration_revision=revision,
+    )
+
+
+def parse_config(raw: Any) -> GatewayConfig:
+    data = _mapping(raw, "config")
+    _only(
+        data,
+        {
+            "schema_version",
+            "deployment_id",
+            "runtime",
+            "http",
+            "media",
+            "task_store",
+            "artifact_store",
+            "lifecycle",
+            "pools",
+            "performance_cache",
+        },
+        "config",
+    )
+    schema_version = int(data.get("schema_version", 0))
+    if schema_version != 1:
+        raise ValueError("schema_version must be 1")
+    deployment_id = _safe_identifier(
+        _required_string(data, "deployment_id", "config"), "deployment_id"
+    )
+    raw_pools = data.get("pools")
+    if not isinstance(raw_pools, list) or not raw_pools:
+        raise ValueError("pools must be a non-empty list")
+    pools = tuple(_pool_config(value, index) for index, value in enumerate(raw_pools))
+    by_id: dict[str, PoolConfig] = {}
+    by_model: dict[str, PoolConfig] = {}
+    for pool in pools:
+        if pool.pool_id in by_id:
+            raise ValueError(f"duplicate pool_id: {pool.pool_id}")
+        by_id[pool.pool_id] = pool
+        for model in pool.served_models:
+            if model in by_model:
+                raise ValueError(f"served model {model!r} maps to multiple pools")
+            by_model[model] = pool
+
+    http = _http_config(data.get("http"))
+    media = _media_config(data.get("media"), http)
+    if http.default_model is not None and http.default_model not in by_model:
+        raise ValueError(
+            f"http.default_model {http.default_model!r} is not a configured served model"
+        )
+
+    runtime = _runtime_config(data.get("runtime"))
+    task_store = _task_store_config(data.get("task_store"))
+    if runtime.discovery_watchdog.enabled and (
+        runtime.discovery_backend != "etcd" or task_store.kind != "etcd_http"
+    ):
+        raise ValueError(
+            "runtime.discovery_watchdog requires etcd Runtime discovery and "
+            "an etcd_http task_store"
+        )
+
+    return GatewayConfig(
+        schema_version=schema_version,
+        deployment_id=deployment_id,
+        runtime=runtime,
+        http=http,
+        media=media,
+        task_store=task_store,
+        artifact_store=_artifact_store_config(data.get("artifact_store")),
+        lifecycle=_lifecycle_config(data.get("lifecycle")),
+        pools=pools,
+        pools_by_model=by_model,
+        pools_by_id=by_id,
+        performance_cache=_performance_cache_config(data.get("performance_cache")),
+    )
+
+
+def load_config(path: str | Path) -> GatewayConfig:
+    config_path = Path(path)
+    text = config_path.read_text(encoding="utf-8")
+    if config_path.suffix.lower() == ".json":
+        raw = json.loads(text)
+    else:
+        try:
+            import yaml
+        except ImportError as exc:  # pragma: no cover - packaging guard
+            raise RuntimeError(
+                "YAML configuration requires the ai-dingo[video-gateway] extra"
+            ) from exc
+        raw = yaml.safe_load(text)
+    return parse_config(raw)

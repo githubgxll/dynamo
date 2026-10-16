@@ -21,7 +21,7 @@ from tests.fault_tolerance.etcd_ha.utils import (
 )
 from tests.utils.constants import FAULT_TOLERANCE_MODEL_NAME
 from tests.utils.engine_process import FRONTEND_PORT
-from tests.utils.managed_process import ManagedProcess, check_health_ready
+from tests.utils.managed_process import ManagedProcess
 from tests.utils.payloads import check_health_generate, check_models_api
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class DynamoWorkerProcess(ManagedProcess):
         command = [
             "python3",
             "-m",
-            "dynamo.sglang",
+            "dingo.sglang",
             "--model-path",
             FAULT_TOLERANCE_MODEL_NAME,
             "--served-model-name",
@@ -86,14 +86,10 @@ class DynamoWorkerProcess(ManagedProcess):
         # Set port based on worker type
         if mode == "prefill":
             port = "8082"
-            health_check_urls = [
-                (f"http://localhost:{port}/health", check_health_ready)
-            ]
+            health_check_urls = [(f"http://localhost:{port}/health", self.is_ready)]
         elif mode == "decode":
             port = "8081"
-            health_check_urls = [
-                (f"http://localhost:{port}/health", check_health_ready)
-            ]
+            health_check_urls = [(f"http://localhost:{port}/health", self.is_ready)]
         else:  # agg (aggregated mode)
             port = "8081"
 
@@ -133,12 +129,28 @@ class DynamoWorkerProcess(ManagedProcess):
                 "SGLANG:EngineCore",
             ],
             straggler_commands=[
-                "-m dynamo.sglang",
+                "-m dingo.sglang",
             ],
             log_dir=log_dir,
         )
 
         self.mode = mode
+
+    def is_ready(self, response) -> bool:
+        """Check the health of the worker process"""
+        try:
+            data = response.json()
+            if data.get("status") == "ready":
+                logger.info(f"{self.mode.capitalize()} worker status is ready")
+                return True
+            logger.warning(
+                f"{self.mode.capitalize()} worker status is not ready: {data.get('status')}"
+            )
+        except ValueError:
+            logger.warning(
+                f"{self.mode.capitalize()} worker health response is not valid JSON"
+            )
+        return False
 
 
 @pytest.mark.gpu_1

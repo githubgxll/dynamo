@@ -46,11 +46,11 @@ echo "    -d '{\"model\": \"${LORA_NAME}\", \"messages\": [{\"role\": \"user\", 
 echo "=========================================="
 
 # Frontend
-python3 -m dynamo.frontend &
+python3 -m dingo.frontend &
 
 # Worker
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${SYSTEM_PORT} \
-python3 -m dynamo.sglang \
+python3 -m dingo.sglang \
   --model-path "$MODEL" \
   --served-model-name "$MODEL" \
   --page-size 16 \

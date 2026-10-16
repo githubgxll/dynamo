@@ -33,10 +33,10 @@
 //!
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock},
 };
 
-use super::{AsyncEngine, AsyncEngineContextProvider};
+use super::AsyncEngine;
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 
@@ -67,15 +67,6 @@ pub trait Source<T: PipelineIO>: Data {
         self.set_edge(edge, private::Token)?;
         Ok(sink)
     }
-
-    /// Close a pipeline response path without creating an ownership cycle.
-    ///
-    /// The returned sink is the pipeline's ownership root and must be retained by the caller.
-    fn link_terminal<S: Sink<T> + 'static>(&self, sink: Arc<S>) -> Result<Arc<S>, PipelineError> {
-        let edge = Edge::new_weak(sink.clone());
-        self.set_edge(edge, private::Token)?;
-        Ok(sink)
-    }
 }
 
 /// A [`Sink`] trait defines how data is received from a source and processed.
@@ -86,39 +77,16 @@ pub trait Sink<T: PipelineIO>: Data {
 
 /// An [`Edge`] is a connection between a [`Source`] and a [`Sink`].
 pub struct Edge<T: PipelineIO> {
-    downstream: EdgeTarget<T>,
-}
-
-enum EdgeTarget<T: PipelineIO> {
-    Strong(Arc<dyn Sink<T>>),
-    Weak(Weak<dyn Sink<T>>),
+    downstream: Arc<dyn Sink<T>>,
 }
 
 impl<T: PipelineIO> Edge<T> {
     fn new(downstream: Arc<dyn Sink<T>>) -> Self {
-        Edge {
-            downstream: EdgeTarget::Strong(downstream),
-        }
-    }
-
-    fn new_weak<S: Sink<T> + 'static>(downstream: Arc<S>) -> Self {
-        let downstream: Arc<dyn Sink<T>> = downstream;
-        Edge {
-            downstream: EdgeTarget::Weak(Arc::downgrade(&downstream)),
-        }
+        Edge { downstream }
     }
 
     async fn write(&self, data: T) -> Result<(), Error> {
-        match &self.downstream {
-            EdgeTarget::Strong(downstream) => downstream.on_data(data, private::Token).await,
-            EdgeTarget::Weak(downstream) => {
-                let Some(downstream) = downstream.upgrade() else {
-                    data.context().stop_generating();
-                    return Err(PipelineError::DetachedStreamReceiver.into());
-                };
-                downstream.on_data(data, private::Token).await
-            }
-        }
+        self.downstream.on_data(data, private::Token).await
     }
 }
 
@@ -178,7 +146,7 @@ pub struct PipelineOperatorBackwardEdge<
     DownIn: PipelineIO,
     DownOut: PipelineIO,
 > {
-    parent: Weak<PipelineOperator<UpIn, UpOut, DownIn, DownOut>>,
+    parent: Arc<PipelineOperator<UpIn, UpOut, DownIn, DownOut>>,
 }
 
 /// A [`PipelineOperator`] is a node that can transform both the forward and backward paths using the logic defined
@@ -231,7 +199,7 @@ where
         self: &Arc<Self>,
     ) -> Arc<PipelineOperatorBackwardEdge<UpIn, UpOut, DownIn, DownOut>> {
         Arc::new(PipelineOperatorBackwardEdge {
-            parent: Arc::downgrade(self),
+            parent: self.clone(),
         })
     }
 }
@@ -294,11 +262,7 @@ where
     UpOut: PipelineIO,
 {
     async fn on_data(&self, data: DownOut, token: private::Token) -> Result<(), Error> {
-        let Some(parent) = self.parent.upgrade() else {
-            data.context().stop_generating();
-            return Err(PipelineError::DetachedStreamReceiver.into());
-        };
-        parent.downstream.on_data(data, token).await
+        self.parent.downstream.on_data(data, token).await
     }
 }
 
@@ -312,19 +276,11 @@ where
     UpOut: PipelineIO,
 {
     async fn on_next(&self, data: UpOut, token: private::Token) -> Result<(), Error> {
-        let Some(parent) = self.parent.upgrade() else {
-            data.context().stop_generating();
-            return Err(PipelineError::DetachedStreamReceiver.into());
-        };
-        parent.upstream.on_next(data, token).await
+        self.parent.upstream.on_next(data, token).await
     }
 
     fn set_edge(&self, edge: Edge<UpOut>, token: private::Token) -> Result<(), PipelineError> {
-        self.parent
-            .upgrade()
-            .ok_or(PipelineError::DetachedStreamReceiver)?
-            .upstream
-            .set_edge(edge, token)
+        self.parent.upstream.set_edge(edge, token)
     }
 }
 

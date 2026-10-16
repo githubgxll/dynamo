@@ -28,7 +28,7 @@ After granting capabilities, bpftrace runs **without sudo**.
 
 ```bash
 # Get the frontend PID from a running capture
-FRONTEND_PID=$(pgrep -f "dynamo.frontend" | head -1)
+FRONTEND_PID=$(pgrep -f "dingo.frontend" | head -1)
 
 # Run a single script
 ./run.sh --pid $FRONTEND_PID offcputime

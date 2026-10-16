@@ -16,10 +16,7 @@
 from collections import Counter
 
 import numpy as np
-import pytest
 from prefix_data_generator.sampler import EmpiricalSampler
-
-pytestmark = [pytest.mark.post_merge, pytest.mark.gpu_0, pytest.mark.unit]
 
 
 def test_empirical_sampler_distribution():
@@ -27,7 +24,7 @@ def test_empirical_sampler_distribution():
     test_data = np.array([1, 2, 3, 1, 2, 3, 1, 2, 3])
 
     # Create the sampler
-    sampler = EmpiricalSampler(test_data, rng=np.random.default_rng(0))
+    sampler = EmpiricalSampler(test_data)
 
     # Sample 1000 times
     samples = [sampler.sample() for _ in range(1000)]

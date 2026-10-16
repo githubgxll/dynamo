@@ -38,7 +38,7 @@ This is a minimum runtime container for interacting with Dynamo via our CLI
 tools.
 
 Try the following to begin interacting with a model:
-> python -m dynamo.frontend [--http-port 8000]
+> python -m dingo.frontend [--http-port 8000]
 > python -m dynamo.{vllm,sglang,trtllm} --model Qwen/Qwen2.5-3B-Instruct
 
 To run more complete deployment examples, instances of etcd and nats need to be

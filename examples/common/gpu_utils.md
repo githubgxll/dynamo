@@ -95,11 +95,11 @@ source "$SCRIPT_DIR/../../../common/gpu_utils.sh"
 
 # vLLM
 GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
-python -m dynamo.vllm --model "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.vllm --model "$MODEL" $GPU_MEM_ARGS &
 
 # SGLang
 GPU_MEM_ARGS=$(build_sglang_gpu_mem_args)
-python -m dynamo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
 
 # TRT-LLM (JSON merging, separate function)
 OVERRIDE_JSON=$(build_trtllm_override_args_with_mem)

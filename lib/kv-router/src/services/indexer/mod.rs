@@ -6,14 +6,8 @@
 //! Hosts an Axum HTTP server with `/register`, `/unregister`, `/query`,
 //! `/query_by_hash`, and peer-discovery routes that workers / gateways can
 //! call to drive cache-aware routing decisions. Each registered worker spawns
-//! a ZMQ listener that ingests its KV events into a per-(model, routing group)
+//! a ZMQ listener that ingests its KV events into a per-(model, tenant)
 //! [`backend::Indexer`].
-//!
-//! [`RoutingPartitionId`](crate::identity::RoutingPartitionId) remains this service's sole registry
-//! authority for `(model_name, routing_group)`.
-//! Resolving it to `IndexerDomainId` is intentionally deferred until registration can carry
-//! authoritative explicit identity material; hashing local defaults here would create a second
-//! authority without enabling safe cross-service identity.
 //!
 //! ## Multi-tier responses
 //!
@@ -24,7 +18,7 @@
 //!   `disk`, per-`dp_rank` device counts, and `longest_matched`.
 //!
 //! The `instances` shape is intended to align with Mooncake's
-//! "\[RFC\]: KV-Store Indexer API Standardization"
+//! "[RFC]: KV-Store Indexer API Standardization"
 //! (<https://github.com/kvcache-ai/Mooncake/issues/1403>).
 //! Tier counts are CUMULATIVE through each tier's walk — see the doc on the
 //! response struct in [`server`] for the exact semantics.
@@ -32,14 +26,10 @@
 pub mod backend;
 pub mod listener;
 pub mod logging;
-pub mod lookup;
 pub mod metrics;
-pub mod recording;
 pub mod recovery;
 pub mod registry;
 pub mod server;
-#[doc(hidden)]
-pub mod session_updates;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,7 +51,7 @@ pub struct IndexerConfig {
     pub threads: usize,
     pub workers: Option<String>,
     pub model_name: String,
-    pub routing_group: String,
+    pub tenant_id: String,
     pub peers: Option<String>,
     pub access_log: Option<PathBuf>,
     pub trace_id_header: HeaderName,
@@ -140,7 +130,7 @@ pub async fn run_server(config: IndexerConfig) -> anyhow::Result<()> {
         port = config.port,
         threads = config.threads,
         model_name = %config.model_name,
-        routing_group = %config.routing_group,
+        tenant_id = %config.tenant_id,
         num_peers = peers.len(),
         "Starting standalone KV cache indexer (HTTP-only mode)"
     );
@@ -208,7 +198,7 @@ async fn run_common(
                     endpoint,
                     dp_rank,
                     config.model_name.clone(),
-                    config.routing_group.clone(),
+                    config.tenant_id.clone(),
                     block_size,
                     None,
                 )

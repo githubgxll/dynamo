@@ -50,7 +50,7 @@ func getPvcName(crd metav1.Object, defaultName *string) string {
 	return crd.GetName()
 }
 
-type DockerSecretRetriever interface {
+type dockerSecretRetriever interface {
 	// returns a list of secret names associated with the docker registry
 	GetSecrets(namespace, registry string) ([]string, error)
 }

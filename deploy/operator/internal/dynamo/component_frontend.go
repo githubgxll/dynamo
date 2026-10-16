@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	commonconsts "github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
-	runtimefeatures "github.com/ai-dynamo/dynamo/deploy/operator/internal/features/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -29,7 +28,7 @@ func (f *FrontendDefaults) GetBaseContainer(context ComponentContext) (corev1.Co
 
 	// Set default command and args
 	container.Command = []string{"python3"}
-	container.Args = []string{"-m", "dynamo.frontend"}
+	container.Args = []string{"-m", "dingo.frontend"}
 
 	// Add HTTP port
 	container.Ports = []corev1.ContainerPort{
@@ -82,13 +81,6 @@ func (f *FrontendDefaults) GetBaseContainer(context ComponentContext) (corev1.Co
 			Value: context.DynamoNamespace,
 		},
 	}...)
-
-	if runtimefeatures.StrictNamespacePrefix.Enabled(context.RuntimeVersion) {
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  commonconsts.DynamoNamespacePrefixStrictEnvVar,
-			Value: "true",
-		})
-	}
 
 	return container, nil
 }

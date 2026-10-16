@@ -212,27 +212,24 @@ def parse_process_log(log_dir, process_name):
 
     Args:
         log_dir: Directory containing process log files
-        process_name: Name of process to look for (Frontend, decode, etc.)
+        process_name: Name of process to look for (Frontend, VllmDecodeWorker, etc.)
 
     Returns:
         Dictionary mapping replica names to list of (timestamp, message, relative_time) tuples
     """
-    vllm_ready_pattern = (
-        r"(?:VllmWorker|worker) for " r"(?P<model_name>.*?) has been initialized"
-    )
     process_ready_pattern = {
         "Frontend": re.compile(r"added model"),
-        "worker": re.compile(vllm_ready_pattern),
-        "VllmWorker": re.compile(vllm_ready_pattern),
-        "VllmDecodeWorker": re.compile(vllm_ready_pattern),
-        "VllmPrefillWorker": re.compile(vllm_ready_pattern),
+        "VllmDecodeWorker": re.compile(
+            r"VllmWorker for (?P<model_name>.*?) has been initialized"
+        ),
+        "VllmPrefillWorker": re.compile(
+            r"VllmWorker for (?P<model_name>.*?) has been initialized"
+        ),
         "decode": re.compile(
-            vllm_ready_pattern
-            + r"|Model registration succeeded|Decode worker handler initialized|Worker handler initialized"
+            r"Model registration succeeded|Decode worker handler initialized|Worker handler initialized"
         ),
         "prefill": re.compile(
-            vllm_ready_pattern
-            + r"|Model registration succeeded|Prefill worker handler initialized|Worker handler initialized"
+            r"Model registration succeeded|Prefill worker handler initialized|Worker handler initialized"
         ),
         "TRTLLMWorker": re.compile(
             r"TrtllmWorker for (?P<model_name>.*?) has been initialized|Model registration succeeded"
@@ -325,12 +322,10 @@ def calculate_recovery_time(test_dir, failure_type, fault_time):
 
     processes = [
         "Frontend",
-        "worker",
-        "decode",
-        "prefill",
-        "VllmWorker",
         "VllmDecodeWorker",
         "VllmPrefillWorker",
+        "decode",
+        "prefill",
         "TRTLLMWorker",
     ]
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# H3 experimental overlay over the pinned main runtime; construction runs on Linux.
+# H3 experimental overlay over the pinned gateway runtime; construction runs on Linux.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INFO="${H3_BUILD_INFO:-/opt/dynamo/build-info}"
@@ -16,20 +16,19 @@ python3 "${SCRIPT_DIR}/runtime_dependencies.py" before \
     --directory "${INFO}" --protected-packages "${SCRIPT_DIR}/protected_packages.txt" \
     --omni-version 0.31.0rc1
 
-# The inherited file is validated before generating this exact two-pin override.
+# The inherited file is validated before generating this exact single NCCL override.
 # A constraints file alone cannot express an upstream intentional metadata override.
 export UV_OVERRIDE="${INFO}/h3-reviewed-overrides.txt"
 export UV_LINK_MODE=copy
-OMNI_REQUIREMENT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["omni_wheel"])' "${SCRIPT_DIR}/main-dependency-policy.json")"
+OMNI_REQUIREMENT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["omni_wheel"])' "${SCRIPT_DIR}/gateway-dependency-policy.json")"
 uv pip install --system --prerelease=allow \
     --constraints "${INFO}/protected-before-omni.txt" \
     --constraints "${INFO}/h3-shared-constraints.txt" \
     --requirements "${INFO}/dynamo-vllm-default-requirements.txt" \
     --requirements "${INFO}/h3-backend-helpers.txt" \
-    --requirements "${SCRIPT_DIR}/reference-main-requirements.vllm.txt" \
     --reinstall-package vllm-omni \
     "${OMNI_REQUIREMENT}" \
-    av==18.0.0 soxr==1.1.0 torchcodec==0.14.0 \
+    av==16.1.0 soxr==1.1.0 torchcodec==0.14.0 \
     opencv-python==4.13.0.92 opencv-python-headless==4.13.0.92
 
 # Two upstream default requirement graphs request different distribution names
@@ -40,5 +39,6 @@ uv pip install --system --no-deps --reinstall-package opencv-python-headless \
 python3 "${SCRIPT_DIR}/runtime_dependencies.py" after --directory "${INFO}"
 python3 "${SCRIPT_DIR}/audit_environment.py"
 python3 "${SCRIPT_DIR}/media_smoke.py"
+python3 "${SCRIPT_DIR}/service_smoke.py"
 # Final non-root audit after assets/patches uses fresh evidence in a writable path.
 chmod -R a+rX "${INFO}"

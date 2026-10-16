@@ -27,32 +27,23 @@ def write_json(path, data):
 
 
 def read_policy():
-    return json.loads((HERE / "main-dependency-policy.json").read_text(encoding="utf-8"))
+    return json.loads((HERE / "gateway-dependency-policy.json").read_text(encoding="utf-8"))
 
 
-def reference_evidence(policy, *, main_sha, protected_text):
+def reference_evidence(policy, *, gateway_sha):
     errors = []
-    if main_sha != policy["main_sha"]:
-        errors.append("DYNAMO_MAIN_SOURCE_SHA does not match the reviewed main commit")
+    if gateway_sha != policy["gateway_sha"]:
+        errors.append("DYNAMO_GATEWAY_SOURCE_SHA does not match the reviewed gateway commit")
     hashes = {}
-    for name, expected in policy["main_reference_sha256"].items():
+    for name, expected in policy["gateway_reference_sha256"].items():
         path = HERE / name
         actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
         hashes[name] = actual
         if actual != expected:
-            errors.append(f"Pinned main reference differs: {name}")
-    expected_pin = "pynvvideocodec==2.2.3"
-    pins = []
-    for raw in protected_text.splitlines():
-        if raw.strip() and not raw.lstrip().startswith("#"):
-            req = Requirement(raw)
-            if canonicalize_name(req.name) == "pynvvideocodec":
-                pins.append(str(req).lower())
-    if pins != [expected_pin]:
-        errors.append("Pre-overlay snapshot must contain exactly PyNvVideoCodec==2.2.3")
-    return {"verified": not errors, "main_sha": main_sha,
+            errors.append(f"Pinned gateway reference differs: {name}")
+    return {"verified": not errors, "gateway_sha": gateway_sha,
             "reference_sha256": hashes, "errors": errors,
-            "scope": "One source-reviewed PyNvVideoCodec metadata override; GPU NVDEC is not qualified"}
+            "scope": "Pinned colleague service source and requirement evidence; no GPU or service E2E claim"}
 
 
 def check_override_file(text):
@@ -68,9 +59,8 @@ def check_override_file(text):
 def prepare(policy, directory):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("This environment installer targets Linux x86_64 only")
-    # Core identities must already be furnished by the pinned main runtime.
-    names = ("ai-dynamo", "ai-dynamo-runtime", "aisimulate", "gpu-memory-service",
-             "vllm", "vllm-omni", "pynvvideocodec")
+    # Core identities must already be furnished by the pinned gateway runtime.
+    names = ("ai-dingo", "ai-dingo-runtime", "gpu-memory-service", "vllm", "pynvvideocodec")
     versions = {name: md.version(name) for name in names}
     for name, actual in versions.items():
         if actual != policy["required_versions"][name]:
@@ -80,18 +70,17 @@ def prepare(policy, directory):
     evidence = audit.upstream_nccl_evidence(
         os.environ.get("DYNAMO_VLLM_BASE_IMAGE", ""), overrides,
         f"torch=={md.version('torch')}\nnvidia-nccl-cu13=={md.version('nvidia-nccl-cu13')}\n")
-    main = reference_evidence(policy, main_sha=os.environ.get("DYNAMO_MAIN_SOURCE_SHA", ""),
-                              protected_text=f"pynvvideocodec=={versions['pynvvideocodec']}\n")
-    if not evidence["verified"] or not main["verified"]:
-        raise RuntimeError(json.dumps({"nccl": evidence, "main": main}, indent=2))
+    gateway = reference_evidence(policy, gateway_sha=os.environ.get("DYNAMO_GATEWAY_SOURCE_SHA", ""))
+    if not evidence["verified"] or not gateway["verified"]:
+        raise RuntimeError(json.dumps({"nccl": evidence, "gateway": gateway}, indent=2))
     (directory / "h3-reviewed-overrides.txt").write_text(
-        "nvidia-nccl-cu13==2.30.7\nPyNvVideoCodec==2.2.3\n", encoding="utf-8")
+        "nvidia-nccl-cu13==2.30.7\n", encoding="utf-8")
     (directory / "h3-shared-constraints.txt").write_text(
         "\n".join(policy["solver_constraints"]) + "\n", encoding="utf-8")
     (directory / "h3-backend-helpers.txt").write_text(
         "\n".join(policy["additional_backend_requirements"]) + "\n", encoding="utf-8")
     write_json(directory / "environment-input-policy.json", policy)
-    write_json(directory / "environment-input-evidence.json", {"main": main, "nccl": evidence})
+    write_json(directory / "environment-input-evidence.json", {"gateway": gateway, "nccl": evidence})
 
 
 def cv2_provider_evidence(policy):
@@ -164,7 +153,7 @@ def check_backend_helpers(report, policy):
         requirement = Requirement(text)
         version = packages.get(canonicalize_name(requirement.name))
         if version is None or not requirement.specifier.contains(version, prereleases=True):
-            report["errors"].append(f"Main backend helper requirement is unsatisfied: {text}, installed {version}")
+            report["errors"].append(f"Gateway backend helper requirement is unsatisfied: {text}, installed {version}")
     audit.finalize_status(report)
 
 
@@ -190,8 +179,8 @@ def write_license_inventory(directory, inputs, inventory):
                             or "copying" in str(path).lower()]
     write_json(directory / "dependency-license-inventory.json", {
         "status": "METADATA_INVENTORY_ONLY_NOT_LEGAL_CLEARANCE", "packages": records,
-        "python_dependency_delta_from_main_runtime": delta, "media_bundled_files": bundled,
-        "scope": "Declared Python licenses and package delta only; does not establish bundled codec or OS license compliance. The media overlay is not main's royalty-free image."})
+        "python_dependency_delta_from_inherited_vllm_plus_dingo": delta, "media_bundled_files": bundled,
+        "scope": "Declared Python licenses and package delta only; does not establish bundled codec or OS license compliance. Framework policy validation is a separate build gate."})
     result = subprocess.run(["dpkg-query", "-W", "-f=${Package}\t${Version}\n"],
                             capture_output=True, text=True, check=True)
     (directory / "dpkg-packages.txt").write_text(result.stdout, encoding="utf-8")
@@ -204,11 +193,10 @@ def run_audit(policy, directory, inputs):
     protected_text = (inputs / "protected-before-omni.txt").read_text(encoding="utf-8")
     nccl = audit.upstream_nccl_evidence(os.environ.get("DYNAMO_VLLM_BASE_IMAGE", ""),
         Path("/etc/uv-overrides.txt").read_text(encoding="utf-8"), protected_text)
-    pynv = reference_evidence(policy, main_sha=os.environ.get("DYNAMO_MAIN_SOURCE_SHA", ""),
-                              protected_text=protected_text)
-    report = audit.audit_dependencies(nccl_evidence=nccl, pynv_evidence=pynv)
-    if not nccl["verified"] or not pynv["verified"]:
-        report["errors"].extend(nccl["errors"] + pynv["errors"])
+    gateway = reference_evidence(policy, gateway_sha=os.environ.get("DYNAMO_GATEWAY_SOURCE_SHA", ""))
+    report = audit.audit_dependencies(nccl_evidence=nccl, root_extras=policy["enabled_root_extras"])
+    if not nccl["verified"] or not gateway["verified"]:
+        report["errors"].extend(nccl["errors"] + gateway["errors"])
     audit.require_framework_versions(report)
     check_versions(report, policy)
     check_backend_helpers(report, policy)
@@ -236,7 +224,7 @@ def run_audit(policy, directory, inputs):
         audit.finalize_status(report)
         write_json(directory / "dependency-audit.json", report)
     status = "FAIL" if report["errors"] else "PASS_EXPERIMENTAL_ENVIRONMENT_CPU_ONLY"
-    summary = {"status": status, "main_sha": policy["main_sha"],
+    summary = {"status": status, "gateway_sha": policy["gateway_sha"],
         "required_versions": policy["required_versions"],
         "dependency_scope": policy["dependency_scope"],
         "additional_backend_requirements": policy["additional_backend_requirements"],

@@ -1,0 +1,36 @@
+{
+  "minimax_h3.v1": {
+    "encode_prompt": {
+      "description": "Prompt/condition encoder, including visual inputs when used.",
+      "parent": null
+    },
+    "diffuse": {
+      "description": "Diffusion denoising stage.",
+      "parent": null
+    },
+    "decode": {
+      "description": "Combined output video/audio decoding.",
+      "parent": null
+    },
+    "video_decode": {
+      "description": "Video VAE latent decoding.",
+      "parent": "decode"
+    },
+    "audio_decode": {
+      "description": "Audio VAE latent decoding.",
+      "parent": "decode"
+    },
+    "reference_video_prepare": {
+      "description": "Reference-video preparation method: probe, validation and transcoding when performed here. Rank 0 does this work; other ranks may report an empty invocation.",
+      "parent": null
+    },
+    "reference_visual_encode": {
+      "description": "Combined reference-image and reference-video VAE condition encoding.",
+      "parent": null
+    },
+    "reference_audio_encode": {
+      "description": "Combined embedded-video and standalone-audio condition encoding.",
+      "parent": null
+    }
+  }
+}

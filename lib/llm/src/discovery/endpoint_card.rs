@@ -47,22 +47,11 @@ pub async fn wait_for_endpoint_model_card(
         while let Some(event) = stream.next().await {
             match event {
                 Ok(DiscoveryEvent::Added(instance)) => {
-                    let card = match instance.deserialize_model::<ModelDeploymentCard>() {
-                        Ok(card) => card,
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                discovery_instance = ?instance.id(),
-                                "Failed to deserialize model card while waiting for endpoint registration; continuing"
-                            );
-                            continue;
-                        }
-                    };
-                    return Some(card);
+                    if let Ok(card) = instance.deserialize_model::<ModelDeploymentCard>() {
+                        return Some(card);
+                    }
                 }
-                Ok(DiscoveryEvent::ModelTaintsUpdated(_)) => {}
                 Ok(DiscoveryEvent::Removed(_)) => {}
-                Ok(DiscoveryEvent::Resync(_)) => {}
                 Err(e) => {
                     tracing::debug!(
                         error = %e,

@@ -21,10 +21,8 @@ from typing import TYPE_CHECKING, Optional
 import boto3
 import pytest
 import requests
-from boto3.exceptions import S3UploadFailedError
-from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError
 from huggingface_hub import snapshot_download
 
 if TYPE_CHECKING:
@@ -54,9 +52,6 @@ MINIO_SECRET_KEY = "minioadmin"
 MINIO_BUCKET = "my-loras"
 DEFAULT_LORA_REPO = "codelion/Qwen3-0.6B-accuracy-recovery-lora"
 DEFAULT_LORA_NAME = "codelion/Qwen3-0.6B-accuracy-recovery-lora"
-
-# The CRT transfer client can ignore the configured MinIO endpoint.
-MINIO_TRANSFER_CONFIG = TransferConfig(preferred_transfer_client="classic")
 
 
 @dataclass
@@ -296,17 +291,9 @@ class MinioService:
             s3_key = f"{self.config.lora_name}/{relative_path}"
 
             try:
-                s3_client.upload_file(
-                    str(file_path),
-                    self.config.bucket,
-                    s3_key,
-                    Config=MINIO_TRANSFER_CONFIG,
-                )
-            except (ClientError, S3UploadFailedError, BotoCoreError) as e:
-                raise RuntimeError(
-                    f"Failed to upload {file_path} to "
-                    f"{self.config.endpoint}/{self.config.bucket}/{s3_key}: {e}"
-                ) from e
+                s3_client.upload_file(str(file_path), self.config.bucket, s3_key)
+            except ClientError as e:
+                raise RuntimeError(f"Failed to upload {file_path}: {e}") from e
 
         self._logger.info("LoRA upload completed")
 

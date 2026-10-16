@@ -23,19 +23,20 @@ class Distribution:
 
 def inventory(*extra):
     return snapshot([
-        Distribution("ai-dynamo", "1.6.0", [
-            "ai-dynamo-runtime==1.6.0", "kubernetes>=32.0.1,<33.0.0",
+        Distribution("ai-dingo", "1.3.0", [
+            "ai-dingo-runtime==1.3.0", "kubernetes>=32.0.1,<33.0.0",
             "zstandard>=0.23.0,<1.0", "transformers>=4.56.0",
             'nixl[cu13]==1.3.1; extra == "vllm"',
+            'av>=14,<17; extra == "video-gateway"',
+            'PyYAML>=6,<7; extra == "video-gateway"',
         ]),
-        Distribution("ai-dynamo-runtime", "1.6.0", ["pydantic>=2.10.6,<=2.13"]),
+        Distribution("ai-dingo-runtime", "1.3.0", ["pydantic>=2.10.6,<=2.13"]),
         Distribution("vllm", "0.30.0", [
             "torch==2.13.0", "transformers>=5.12.0",
             'win32-only; platform_system == "Windows"',
             'nixl[cu13]>=1.4.0; platform_system == "Linux"',
         ]),
         Distribution("torch", "2.13.0+cu130"),
-        Distribution("aisimulate", "0.13.0.dev202610060000000067", ["numpy>=1.23"]),
         Distribution("gpu-memory-service", "0.9.0", ["uvloop>=0.21.0"]),
         *extra,
     ], phase="before")
@@ -51,6 +52,9 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.assertIn("transformers>=4.56.0", active)
         self.assertIn("transformers>=5.12.0", active)
         self.assertIn("torch==2.13.0", active)
+        self.assertIn("av<17,>=14", active)
+        self.assertIn("PyYAML<7,>=6", active)
+        self.assertFalse(any("extra ==" in line for line in active))
 
     def test_backend_extra_is_not_activated_but_default_edge_extras_survive(self):
         lines = runtime_requirements(inventory(), environment={"platform_system": "Linux"})
@@ -59,7 +63,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
 
     def test_missing_installed_root_fails_instead_of_silently_skipping(self):
         data = snapshot([Distribution("vllm")], phase="before")
-        with self.assertRaisesRegex(ValueError, "missing: ai-dynamo"):
+        with self.assertRaisesRegex(ValueError, "missing: ai-dingo"):
             runtime_requirements(data)
 
     def test_conflicting_root_metadata_is_not_hidden(self):

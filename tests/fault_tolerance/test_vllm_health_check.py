@@ -3,6 +3,7 @@
 
 import logging
 import os
+import shutil
 import time
 
 import pytest
@@ -10,10 +11,9 @@ import requests
 
 from tests.utils.constants import FAULT_TOLERANCE_MODEL_NAME
 from tests.utils.device import get_default_vllm_block_size
-from tests.utils.http_checks import check_health_ready, check_models_api
+from tests.utils.engine_process import FRONTEND_PORT
 from tests.utils.managed_process import DynamoFrontendProcess, ManagedProcess
-from tests.utils.payloads import completions_response_handler
-from tests.utils.port_utils import ServicePorts
+from tests.utils.payloads import check_models_api, completions_response_handler
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +26,13 @@ pytestmark = [
 class DynamoWorkerProcess(ManagedProcess):
     """Process manager for Dynamo worker with vLLM backend"""
 
-    def __init__(
-        self,
-        request,
-        worker_id: str,
-        *,
-        frontend_port: int,
-        system_port: int,
-    ):
+    def __init__(self, request, worker_id: str):
         self.worker_id = worker_id
 
         command = [
             "python3",
             "-m",
-            "dynamo.vllm",
+            "dingo.vllm",
             "--model",
             FAULT_TOLERANCE_MODEL_NAME,
             "--enforce-eager",
@@ -53,24 +46,33 @@ class DynamoWorkerProcess(ManagedProcess):
         env = os.environ.copy()
         env["DYN_LOG"] = "debug"
         env["DYN_SYSTEM_USE_ENDPOINT_HEALTH_STATUS"] = '["generate"]'
-        env["DYN_SYSTEM_PORT"] = str(system_port)
+        # TODO: Replace hardcoded port with allocate_ports() for xdist-safe parallel execution
+        env["DYN_SYSTEM_PORT"] = "9345"
 
         # TODO: Have the managed process take a command name explicitly to distinguish
         #       between processes started with the same command.
         log_dir = f"{request.node.name}_{worker_id}"
 
+        # Clean up any existing log directory from previous runs
+        try:
+            shutil.rmtree(log_dir)
+            logger.info(f"Cleaned up existing log directory: {log_dir}")
+        except FileNotFoundError:
+            # Directory doesn't exist, which is fine
+            pass
+
         super().__init__(
             command=command,
             env=env,
             health_check_urls=[
-                (f"http://localhost:{frontend_port}/v1/models", check_models_api),
-                (f"http://localhost:{system_port}/health", check_health_ready),
+                (f"http://localhost:{FRONTEND_PORT}/v1/models", check_models_api),
+                ("http://localhost:9345/health", self.is_ready),
             ],
             timeout=300,
             display_output=True,
             terminate_all_matching_process_names=False,
             stragglers=["VLLM::EngineCore"],
-            straggler_commands=["-m dynamo.vllm"],
+            straggler_commands=["-m dingo.vllm"],
             log_dir=log_dir,
         )
 
@@ -78,9 +80,27 @@ class DynamoWorkerProcess(ManagedProcess):
         """Get the PID of the worker process"""
         return self.proc.pid if hasattr(self, "proc") and self.proc else None
 
+    def is_ready(self, response) -> bool:
+        """Check the health of the worker process"""
+        try:
+            data = response.json()
+            if data.get("status") == "ready":
+                logger.info(
+                    f"{self.__class__.__name__} {{ name: {self.worker_id} }} status is ready"
+                )
+                return True
+            logger.warning(
+                f"{self.__class__.__name__} {{ name: {self.worker_id} }} status is not ready: {data.get('status')}"
+            )
+        except ValueError:
+            logger.warning(
+                f"{self.__class__.__name__} {{ name: {self.worker_id} }} health response is not valid JSON"
+            )
+        return False
+
 
 def send_completion_request(
-    prompt: str, max_tokens: int, *, frontend_port: int, timeout: int = 120
+    prompt: str, max_tokens: int, timeout: int = 120
 ) -> requests.Response:
     """Send a completion request to the frontend"""
     payload = {
@@ -97,7 +117,7 @@ def send_completion_request(
 
     try:
         response = requests.post(
-            f"http://localhost:{frontend_port}/v1/completions",
+            "http://localhost:8000/v1/completions",
             headers=headers,
             json=payload,
             timeout=timeout,
@@ -119,11 +139,7 @@ def send_completion_request(
 @pytest.mark.nightly
 @pytest.mark.timeout(160)  # 3x average (~50s)
 @pytest.mark.skip(reason="Flaky, temporarily disabled")
-def test_vllm_health_check_active(
-    request,
-    runtime_services_dynamic_ports,
-    dynamo_dynamic_ports: ServicePorts,
-):
+def test_vllm_health_check_active(request, runtime_services_dynamic_ports):
     """
     End-to-end test for worker fault tolerance with migration support.
 
@@ -134,27 +150,18 @@ def test_vllm_health_check_active(
 
     # Step 1: Start the frontend
     logger.info("Starting frontend...")
-    frontend_port = dynamo_dynamic_ports.frontend_port
-    system_port = dynamo_dynamic_ports.system_ports[0]
-    with DynamoFrontendProcess(request, frontend_port=frontend_port):
+    with DynamoFrontendProcess(request):
         logger.info("Frontend started.")
 
         # Step 2: Start a worker
         logger.info("Starting worker...")
-        with DynamoWorkerProcess(
-            request,
-            "decode",
-            frontend_port=frontend_port,
-            system_port=system_port,
-        ) as worker:
+        with DynamoWorkerProcess(request, "decode") as worker:
             logger.info(f"Worker PID: {worker.get_pid()}")
 
             time.sleep(12)  # Give the model some time to get started.
 
             # Step 3: Send a test request to prove the worker is live.
-            test_response = send_completion_request(
-                "Who are you?", 100, frontend_port=frontend_port, timeout=60
-            )
+            test_response = send_completion_request("Who are you?", 100, timeout=60)
             completions_response_handler(test_response)
             logger.info("Test request completed successfully")
 
@@ -173,9 +180,7 @@ def test_vllm_health_check_active(
             time.sleep(2)  # Give some time for the worker to stabilize
 
             # Step 5: Send a request triggering the handler to shutdown everything.
-            test_response = send_completion_request(
-                "How old are you?", 100, frontend_port=frontend_port, timeout=60
-            )
+            test_response = send_completion_request("How old are you?", 100, timeout=60)
             logger.error(f"Test request failed: {test_response}")
 
             # Step 6: Ensure the worker process has been stopped as a result of the EngineDeadError condition.
@@ -192,10 +197,7 @@ def test_vllm_health_check_active(
 @pytest.mark.nightly
 @pytest.mark.timeout(160)  # 3x average (~50s)
 def test_vllm_health_check_passive(
-    request,
-    runtime_services_dynamic_ports,
-    dynamo_dynamic_ports: ServicePorts,
-    predownload_models,
+    request, runtime_services_dynamic_ports, predownload_models
 ):
     """
     End-to-end test for worker fault tolerance with migration support.
@@ -207,27 +209,18 @@ def test_vllm_health_check_passive(
 
     # Step 1: Start the frontend
     logger.info("Starting frontend...")
-    frontend_port = dynamo_dynamic_ports.frontend_port
-    system_port = dynamo_dynamic_ports.system_ports[0]
-    with DynamoFrontendProcess(request, frontend_port=frontend_port):
+    with DynamoFrontendProcess(request):
         logger.info("Frontend started.")
 
         # Step 2: Start a worker
         logger.info("Starting worker...")
-        with DynamoWorkerProcess(
-            request,
-            "decode",
-            frontend_port=frontend_port,
-            system_port=system_port,
-        ) as worker:
+        with DynamoWorkerProcess(request, "decode") as worker:
             logger.info(f"Worker PID: {worker.get_pid()}")
 
             time.sleep(12)  # Give the model some time to get started.
 
             # Step 3: Send a test request to prove the worker is live.
-            test_response = send_completion_request(
-                "Who are you?", 100, frontend_port=frontend_port, timeout=60
-            )
+            test_response = send_completion_request("Who are you?", 100, timeout=60)
             completions_response_handler(test_response)
             logger.info("Test request completed successfully")
 

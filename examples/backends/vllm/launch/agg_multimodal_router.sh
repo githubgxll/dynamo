@@ -51,7 +51,7 @@ VLLM_SYSTEM_PORT_BASE="${VLLM_SYSTEM_PORT_BASE:-18081}"
 KV_EVENTS_PORT_BASE="${KV_EVENTS_PORT_BASE:-5557}"
 DYN_LOG_VAL="${DYN_LOG:-info,mm_routing=debug,dynamo_kv_router::scheduling=debug,dynamo_llm::kv_router=debug}"
 
-# Pass-through extra args for `python -m dynamo.vllm`.
+# Pass-through extra args for `python -m dingo.vllm`.
 VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:-}"
 
 PASSTHRU_ARGS=()
@@ -135,8 +135,8 @@ GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 # Under SINGLE_GPU=true, requires the KV-bytes cap (CI sets it via the
 # requested_vllm_kv_cache_bytes marker) — otherwise vLLM's 0.9 default races.
 for i in $(seq 1 "${NUM_WORKERS}"); do
-    WORKER_PORT=$(dyn_port DYN_SYSTEM_PORT "$i" $((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2)))
-    KV_EVENTS_PORT=$(dyn_port DYN_VLLM_KV_EVENT_PORT "$i" $((KV_EVENTS_PORT_BASE + (i - 1))))
+    WORKER_PORT=$((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2))
+    KV_EVENTS_PORT=$((KV_EVENTS_PORT_BASE + (i - 1)))
     if [[ "${SINGLE_GPU}" == "true" ]]; then GPU_ID=0; else GPU_ID=$((i - 1)); fi
 
     KV_EVENTS_CONFIG="{\"enable_kv_cache_events\":true,\"publisher\":\"zmq\",\"topic\":\"kv-events\",\"endpoint\":\"tcp://*:${KV_EVENTS_PORT}\"}"
@@ -145,7 +145,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_SYSTEM_PORT=${WORKER_PORT}" \
         "CUDA_VISIBLE_DEVICES=${GPU_ID}" \
-    python -m dynamo.vllm \
+    python -m dingo.vllm \
         --model "${MODEL}" \
         --enable-multimodal \
         --block-size "${BLOCK_SIZE}" \
@@ -157,15 +157,14 @@ done
 
 # Phase 2: wait for all workers to be ready.
 for i in $(seq 1 "${NUM_WORKERS}"); do
-    WORKER_PORT=$(dyn_port DYN_SYSTEM_PORT "$i" $((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2)))
+    WORKER_PORT=$((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2))
     wait_ready "http://127.0.0.1:${WORKER_PORT}/health" "vLLM backend $i"
 done
 
 echo "=== Starting frontend (KV router, MM-aware exact routing) ==="
-env -u DYN_SYSTEM_PORT -u DYN_SYSTEM_PORT1 -u DYN_SYSTEM_PORT2 -u DYN_SYSTEM_PORT3 \
-    "${COMMON_ENV[@]}" \
+env "${COMMON_ENV[@]}" \
     "DYN_LOG=${DYN_LOG_VAL}" \
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "${HTTP_PORT}" \
     --router-mode kv \
     --kv-cache-block-size "${BLOCK_SIZE}" &
@@ -186,10 +185,8 @@ echo
 echo "=== All services are ready ==="
 echo "Frontend:        http://127.0.0.1:${HTTP_PORT}"
 for i in $(seq 1 "${NUM_WORKERS}"); do
-    WORKER_PORT=$(dyn_port DYN_SYSTEM_PORT "$i" $((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2)))
-    KV_EVENTS_PORT=$(dyn_port DYN_VLLM_KV_EVENT_PORT "$i" $((KV_EVENTS_PORT_BASE + (i - 1))))
-    echo "Worker $i health: http://127.0.0.1:${WORKER_PORT}/health"
-    echo "Worker $i kv-events: tcp://*:${KV_EVENTS_PORT}"
+    echo "Worker $i health: http://127.0.0.1:$((VLLM_SYSTEM_PORT_BASE + (i - 1) * 2))/health"
+    echo "Worker $i kv-events: tcp://*:$((KV_EVENTS_PORT_BASE + (i - 1)))"
 done
 echo
 echo "Architecture: Rust frontend (MM-aware KV router) -> ${NUM_WORKERS}x vLLM workers"

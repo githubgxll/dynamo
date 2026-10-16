@@ -35,7 +35,6 @@ fn create_test_request() -> NvCreateChatCompletionRequest {
         thinking: None,
         media_io_kwargs: None,
         return_tokens_as_token_ids: None,
-        thinking_token_budget: None,
         unsupported_fields: Default::default(),
     }
 }
@@ -57,7 +56,6 @@ fn build_backend_output_with_finish(text: &str, finish: common::FinishReason) ->
         worker_trace_link: None,
         engine_data: None,
         routing_data: None,
-        jailed_text: None,
     }
 }
 
@@ -65,15 +63,13 @@ async fn apply_jail_transformation(
     raw_response: dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionStreamResponse,
     tool_choice: Option<ChatCompletionToolChoiceOption>,
 ) -> dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionStreamResponse {
-    use dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionStreamResponse;
-    use dynamo_parsers::tool_calling::jail::{Annotated as JailAnnotated, JailedStream};
+    use dynamo_llm::protocols::openai::chat_completions::jail::JailedStream;
+    use dynamo_runtime::protocols::annotated::Annotated;
     use futures::StreamExt;
     use futures::stream;
 
-    // The jail moved to dynamo-parsers and operates on the shared
-    // CreateChatCompletionStreamResponse; adapt Nv <-> jail Annotated here.
-    let input_stream = stream::iter(vec![JailAnnotated {
-        data: Some(raw_response.inner),
+    let input_stream = stream::iter(vec![Annotated {
+        data: Some(raw_response),
         id: None,
         event: None,
         comment: None,
@@ -96,14 +92,7 @@ async fn apply_jail_transformation(
     let output_stream = jail.apply_with_finish_reason(input_stream);
 
     tokio::pin!(output_stream);
-    let out = output_stream.next().await.unwrap();
-    NvCreateChatCompletionStreamResponse {
-        inner: out.data.unwrap(),
-        nvext: None,
-        prompt_logprobs: None,
-        llm_metrics: None,
-        tool_call_completion: Vec::new(),
-    }
+    output_stream.next().await.unwrap().data.unwrap()
 }
 
 #[tokio::test]

@@ -29,9 +29,8 @@ nixl-cu12
 nixl-cu13
 
 pynvvideocodec
-ai-dynamo
-ai-dynamo-runtime
-aisimulate
+ai-dingo
+ai-dingo-runtime
 gpu-memory-service
 apache-tvm-ffi
 tilelang

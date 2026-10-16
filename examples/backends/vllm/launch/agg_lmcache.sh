@@ -25,10 +25,10 @@ GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated Serving + LMCache (1 GPU)" "$MODEL" "$HTTP_PORT"
 
-python -m dynamo.frontend &
+python -m dingo.frontend &
 
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-  python -m dynamo.vllm --model "$MODEL" --enforce-eager \
+  python -m dingo.vllm --model "$MODEL" --enforce-eager \
   --max-model-len "$MAX_MODEL_LEN" \
   --max-num-seqs "$MAX_CONCURRENT_SEQS" \
   $GPU_MEM_ARGS \

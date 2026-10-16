@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-name: Dingo H3 experimental Omni 0.31
+name: Dingo H3 gateway experimental Omni 0.31
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 360
     env:
-      # Optional BuildKit index secrets preserve main's index injection contract.
+      # Public Python indexes follow the maintained gateway build; credentials remain secrets.
       # No host or Pod proxy is embedded here.
       PIP_INDEX_URL: https://pypi.org/simple
       UV_DEFAULT_INDEX: https://pypi.org/simple
@@ -57,7 +57,7 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '')
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - name: Check the main-input reusable native builder
+      - name: Check the gateway-input reusable native builder
         id: builder
         shell: bash
         env:
@@ -69,14 +69,14 @@ jobs:
             echo "Reusing ${BUILDER_IMAGE}"
           elif grep -Eiq 'manifest unknown|no such manifest|not found' .h3-experimental-evidence/ci/builder-inspect.txt; then
             echo "exists=false" >> "${GITHUB_OUTPUT}"
-            echo "Current main native inputs require a new reusable builder: ${BUILDER_IMAGE}"
+            echo "Current gateway native inputs require a new reusable builder: ${BUILDER_IMAGE}"
           else
             cat .h3-experimental-evidence/ci/builder-inspect.txt
             echo 'Builder inspection failed for connectivity or authorization; not treating that as a missing image.' >&2
             exit 1
           fi
 
-      - name: Render the first-build Dockerfile from current main templates
+      - name: Render the first-build Dockerfile from reviewed gateway templates
         if: steps.builder.outputs.exists != 'true'
         run: python3 container/render.py --framework vllm --target runtime --cuda-version 13.0 --platform linux/amd64
 
@@ -91,6 +91,8 @@ jobs:
           push: true
           tags: ${{ steps.profile.outputs.builder_image }}
           build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
+            UV_DEFAULT_INDEX=https://pypi.org/simple
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
             SCCACHE_GHA_VERSION=${{ steps.profile.outputs.sccache_cache_version }}
@@ -102,14 +104,14 @@ jobs:
           provenance: false
           sbom: false
 
-      - name: Render main runtime using the reusable native builder
+      - name: Render gateway runtime using the reusable native builder
         env:
           BUILDER_IMAGE: ${{ steps.profile.outputs.builder_image }}
         run: |
           python3 container/render.py --framework vllm --target runtime \
             --cuda-version 13.0 --platform linux/amd64 --builder-image "${BUILDER_IMAGE}"
 
-      - name: Build and publish the main framework runtime
+      - name: Build and publish the gateway framework runtime
         id: framework
         uses: docker/build-push-action@v7
         with:
@@ -121,6 +123,8 @@ jobs:
           push: true
           tags: ${{ steps.profile.outputs.framework_image }}
           build-args: |
+            PIP_INDEX_URL=https://pypi.org/simple
+            UV_DEFAULT_INDEX=https://pypi.org/simple
             DYNAMO_COMMIT_SHA=${{ github.sha }}
             USE_SCCACHE=true
             SCCACHE_GHA_ENABLED=on
@@ -130,7 +134,7 @@ jobs:
             actions-runtime-token=ACTIONS_RUNTIME_TOKEN
             pip-index-url=PIP_INDEX_URL
             uv-default-index=UV_DEFAULT_INDEX
-          # Retain main's in-image compliance, avoid huge intermediate registry cache exports.
+          # Retain gateway's in-image compliance, avoid huge intermediate registry cache exports.
           provenance: false
           sbom: false
 

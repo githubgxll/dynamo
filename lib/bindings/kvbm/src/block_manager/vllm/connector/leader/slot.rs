@@ -1723,7 +1723,7 @@ where
     let block_pairs: Vec<(usize, usize)> = offload_req
         .block_ids
         .into_iter()
-        .zip(allocated_block_ids)
+        .zip(allocated_block_ids.into_iter())
         .collect();
 
     tracing::debug!(
@@ -1737,8 +1737,10 @@ where
     let mut blocks_to_register = Vec::new();
     let priorities = offload_req.priorities;
 
-    for ((mut mutable_block, token_block), priority) in
-        blocks.into_iter().zip(token_blocks).zip(priorities)
+    for ((mut mutable_block, token_block), priority) in blocks
+        .into_iter()
+        .zip(token_blocks.into_iter())
+        .zip(priorities.into_iter())
     {
         mutable_block
             .apply_token_block(token_block.clone())

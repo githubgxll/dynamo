@@ -9,7 +9,6 @@ use dynamo_runtime::{
 use futures::{Stream, StreamExt, stream};
 use std::sync::Arc;
 
-use crate::grpc::service::dispatch_error_status;
 use crate::http::service::metadata::extract_metadata_from_grpc;
 use crate::protocols::openai::ParsingOptions;
 use crate::protocols::openai::completions::{
@@ -38,7 +37,7 @@ pub const ANNOTATION_REQUEST_ID: &str = "request_id";
 /// OpenAI Completions Request Handler
 ///
 /// This method will handle the incoming request for the `/v1/completions endpoint`. The endpoint is a "source"
-/// for an `OpenAICompletionsStreamingEngine` and will return a stream of
+/// for an [`super::OpenAICompletionsStreamingEngine`] and will return a stream of
 /// responses which will be forward to the client.
 ///
 /// Note: For all requests, streaming or non-streaming, we always call the engine with streaming enabled. For
@@ -113,15 +112,6 @@ pub async fn completion_response_stream(
 
     // issue the generate call on the engine
     let stream = engine.generate(request).await.map_err(|e| {
-        // Deadline is checked before overload so a chain carrying both markers
-        // keeps the deadline outcome. RESOURCE_EXHAUSTED mirrors the HTTP
-        // surfaces' 429: the deadline elapsed waiting for capacity, so it is
-        // backpressure rather than a gateway timeout. No rejection accounting.
-        if crate::http::service::metrics::request_deadline_exceeded(e.as_ref()) {
-            return Status::resource_exhausted(
-                crate::http::service::metrics::REQUEST_DEADLINE_EXCEEDED_MESSAGE,
-            );
-        }
         if crate::http::service::metrics::request_was_rejected(e.as_ref()) {
             state.metrics_clone().inc_rejection(
                 &model_name,
@@ -129,7 +119,7 @@ pub async fn completion_response_stream(
             );
             return Status::resource_exhausted(e.to_string());
         }
-        dispatch_error_status(e.as_ref(), "Failed to generate completions")
+        Status::internal(format!("Failed to generate completions: {}", e))
     })?;
 
     // capture the context to cancel the stream if the client disconnects
@@ -344,7 +334,6 @@ impl TryFrom<inference::ModelInferRequest> for NvCreateCompletionRequest {
         };
 
         Ok(NvCreateCompletionRequest {
-            no_stop_trim: None,
             inner: CreateCompletionRequest {
                 model: request.model_name,
                 prompt: Prompt::String(text_input),

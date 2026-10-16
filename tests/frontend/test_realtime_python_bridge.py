@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-End-to-end realtime WebSocket test through a launched ``dynamo.frontend`` and
+End-to-end realtime WebSocket test through a launched ``dingo.frontend`` and
 a separately launched Python bidirectional worker.
 
 The frontend discovers the worker's ``ModelType.Realtime`` MDC and installs a

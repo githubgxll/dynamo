@@ -1,0 +1,392 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from prometheus_client import REGISTRY
+
+from dingo.vllm.omni.detached_tasks import (
+    DetachedOmniTaskManager,
+    detached_attempt_root,
+    detached_envelope,
+)
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+
+
+class _Handler:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def generate(self, request: dict[str, Any], context: Any):
+        self.calls += 1
+        self.started.set()
+        yield {"phase": "start", "request": request, "id": context.id()}
+        await self.release.wait()
+        if not context.is_stopped():
+            yield {"phase": "complete"}
+
+
+class _LeakyAbortWaitHandler(_Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiter: asyncio.Task[bool] | None = None
+
+    async def generate(self, request: dict[str, Any], context: Any):
+        self.calls += 1
+        self.waiter = context.async_killed_or_stopped()
+        yield {"phase": "complete", "request": request, "id": context.id()}
+
+
+class _StubbornCancelHandler(_Handler):
+    async def generate(self, request: dict[str, Any], context: Any):
+        self.calls += 1
+        self.started.set()
+        yield {"phase": "start", "request": request, "id": context.id()}
+        await asyncio.Event().wait()
+
+
+class _Context:
+    def id(self) -> str:
+        return "outer-request"
+
+    def is_stopped(self) -> bool:
+        return False
+
+
+def _request(
+    *,
+    op: str = "submit",
+    payload: dict[str, Any] | None = None,
+    task_id: str = "01TASK",
+):
+    return detached_envelope(
+        op=op,
+        deployment_id="deployment-a",
+        pool_id="fl-pool",
+        task_id=task_id,
+        attempt=1,
+        execution_token="a" * 32,
+        payload=payload,
+    )
+
+
+async def _one(manager: DetachedOmniTaskManager, request: dict[str, Any]):
+    return [item async for item in manager.generate(request, _Context())]
+
+
+async def _terminal_status(manager: DetachedOmniTaskManager) -> dict[str, Any]:
+    for _ in range(200):
+        status = (await _one(manager, _request(op="status")))[0]
+        if status["state"] in {"completed", "failed", "cancelled"}:
+            return status
+        await asyncio.sleep(0.005)
+    raise AssertionError("detached task did not become terminal")
+
+
+def _write_manifest(root: Path, task_id: str = "01TASK") -> None:
+    task_root = root / "deployment-a" / "v1" / "pools" / "fl-pool" / "tasks" / task_id
+    task_root.mkdir(parents=True)
+    (task_root / "_artifact.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "deployment_id": "deployment-a",
+                "pool_id": "fl-pool",
+                "task_id": task_id,
+            }
+        )
+    )
+
+
+def _metric_value(name: str, **labels: str) -> float:
+    for family in REGISTRY.collect():
+        for sample in family.samples:
+            if sample.name == name and all(
+                sample.labels.get(key) == value for key, value in labels.items()
+            ):
+                return float(sample.value)
+    raise AssertionError(f"metric sample not found: {name} {labels}")
+
+
+async def test_capabilities_are_explicit_and_do_not_create_task_files(tmp_path):
+    from dingo.common.video_task_protocol import (
+        ENVELOPE_KEY,
+        EXECUTION_CAPACITY_CAPABILITY,
+    )
+
+    manager = DetachedOmniTaskManager(_Handler(), tmp_path, execution_capacity=2)
+    value = (
+        await _one(manager, {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities"}})
+    )[0]
+    assert value["execution_capacity"] == 2 and value["accepting"]
+    assert EXECUTION_CAPACITY_CAPABILITY in value["capabilities"]
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="capabilities"):
+        await _one(
+            manager,
+            {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities", "payload": {}}},
+        )
+    await manager.shutdown()
+
+
+async def test_detached_metrics_track_execution_prefetch_and_terminal(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler,
+        tmp_path,
+        execution_capacity=1,
+        prefetch_capacity=1,
+        drain_timeout_s=1,
+        binary_results=False,
+        inline_results=False,
+    )
+    for task_id in ("metrics-1", "metrics-2"):
+        _write_manifest(tmp_path, task_id)
+    completed_before = _metric_value(
+        "dingo_video_worker_detached_tasks_total", outcome="completed"
+    )
+    queue_count_before = _metric_value(
+        "dingo_video_worker_detached_queue_wait_seconds_count"
+    )
+    execution_count_before = _metric_value(
+        "dingo_video_worker_detached_execution_seconds_count"
+    )
+
+    await _one(manager, _request(task_id="metrics-1", payload={}))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+    await _one(manager, _request(task_id="metrics-2", payload={}))
+    await asyncio.sleep(0)
+
+    assert _metric_value("dingo_video_worker_detached_execution_capacity") == 1
+    assert _metric_value("dingo_video_worker_detached_prefetch_capacity") == 1
+    assert _metric_value("dingo_video_worker_detached_execution_active") == 1
+    assert _metric_value("dingo_video_worker_detached_prefetch_waiting") == 1
+
+    handler.release.set()
+    await asyncio.gather(*(item.execution for item in manager._running.values()))
+    await asyncio.sleep(0)
+
+    assert _metric_value("dingo_video_worker_detached_execution_active") == 0
+    assert _metric_value("dingo_video_worker_detached_prefetch_waiting") == 0
+    assert (
+        _metric_value(
+            "dingo_video_worker_detached_tasks_total", outcome="completed"
+        )
+        == completed_before + 2
+    )
+    assert (
+        _metric_value("dingo_video_worker_detached_queue_wait_seconds_count")
+        == queue_count_before + 2
+    )
+    assert (
+        _metric_value("dingo_video_worker_detached_execution_seconds_count")
+        == execution_count_before + 2
+    )
+    await manager.shutdown()
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.5])
+async def test_invalid_execution_capacity(tmp_path, capacity):
+    with pytest.raises(ValueError, match="capacity"):
+        DetachedOmniTaskManager(_Handler(), tmp_path, execution_capacity=capacity)
+
+
+async def test_two_slots_reject_overflow_without_persisting_execution(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, execution_capacity=2, drain_timeout_s=1
+    )
+    ids = [f"task-{i}" for i in range(10)]
+    for task_id in ids:
+        _write_manifest(tmp_path, task_id)
+    try:
+        rows = await asyncio.gather(
+            *[_one(manager, _request(task_id=i, payload={})) for i in ids]
+        )
+        accepted = [i for i, row in zip(ids, rows) if row[0]["accepted"]]
+        rejected = [i for i, row in zip(ids, rows) if row[0]["state"] == "busy"]
+        assert len(accepted) == 2 and len(rejected) == 8
+        assert len(manager._running) == 2
+        duplicate = (await _one(manager, _request(task_id=accepted[0], payload={})))[0]
+        assert duplicate["state"] == "running" and not duplicate["accepted"]
+        for task_id in rejected:
+            attempt = detached_attempt_root(
+                tmp_path, "deployment-a", "fl-pool", task_id, 1, "a" * 32
+            )
+            assert not attempt.exists()
+        handler.release.set()
+        await asyncio.gather(
+            *(item.execution for item in list(manager._running.values()))
+        )
+        await asyncio.sleep(0)
+        assert not manager._running
+        assert (await _one(manager, _request(task_id=rejected[0], payload={})))[0][
+            "accepted"
+        ]
+    finally:
+        handler.release.set()
+        await manager.shutdown()
+
+
+async def test_direct_requests_share_detached_execution_budget(tmp_path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, execution_capacity=1, drain_timeout_s=1
+    )
+    _write_manifest(tmp_path)
+    direct = asyncio.create_task(_one(manager, {"prompt": "direct"}))
+    try:
+        await asyncio.wait_for(handler.started.wait(), 1)
+        assert (await _one(manager, _request(payload={})))[0]["state"] == "busy"
+        with pytest.raises(RuntimeError, match="capacity"):
+            await _one(manager, {"prompt": "another direct"})
+        handler.release.set()
+        await direct
+        assert manager._direct_running == 0
+        assert (await _one(manager, _request(payload={})))[0]["accepted"]
+    finally:
+        handler.release.set()
+        await direct
+        await manager.shutdown()
+
+
+async def test_submit_ack_is_independent_and_duplicate_is_idempotent(tmp_path: Path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(handler, tmp_path, drain_timeout_s=1)
+    _write_manifest(tmp_path)
+
+    first = await _one(manager, _request(payload={"prompt": "hello"}))
+    assert first[0]["accepted"] is True
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+
+    duplicate = await _one(manager, _request(payload={"prompt": "hello"}))
+    assert duplicate[0]["accepted"] is False
+    assert handler.calls == 1
+
+    handler.release.set()
+    status = await _terminal_status(manager)
+    assert status["state"] == "completed"
+    response_path = Path(status["response_path"])
+    lines = [json.loads(line) for line in response_path.read_text().splitlines()]
+    assert [line["phase"] for line in lines] == ["start", "complete"]
+    assert status["response_bytes"] == response_path.stat().st_size
+    await manager.shutdown()
+
+
+async def test_cancel_marker_stops_background_request(tmp_path: Path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, drain_timeout_s=1, cancel_poll_interval_s=0.005
+    )
+    _write_manifest(tmp_path)
+    await _one(manager, _request(payload={"prompt": "hello"}))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+
+    cancelled = await _one(manager, _request(op="cancel"))
+    assert cancelled[0]["state"] == "cancel_requested"
+    handler.release.set()
+    status = await _terminal_status(manager)
+    assert status["state"] == "cancelled"
+    await manager.shutdown()
+
+
+async def test_cancel_forcibly_closes_a_stuck_omni_stream(tmp_path: Path):
+    handler = _StubbornCancelHandler()
+    manager = DetachedOmniTaskManager(
+        handler,
+        tmp_path,
+        drain_timeout_s=1,
+        cancel_poll_interval_s=0.005,
+        cancel_grace_s=0.01,
+    )
+    _write_manifest(tmp_path)
+    await _one(manager, _request(payload={"prompt": "hello"}))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+
+    await _one(manager, _request(op="cancel"))
+    status = await _terminal_status(manager)
+
+    assert status["state"] == "cancelled"
+    attempt_root = detached_attempt_root(
+        tmp_path, "deployment-a", "fl-pool", "01TASK", 1, "a" * 32
+    )
+    assert list(attempt_root.glob("*.part-*")) == []
+    await manager.shutdown()
+
+
+async def test_shutdown_drains_an_accepted_task_before_returning(tmp_path: Path):
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(handler, tmp_path, drain_timeout_s=1)
+    _write_manifest(tmp_path)
+    await _one(manager, _request(payload={"prompt": "hello"}))
+    await asyncio.wait_for(handler.started.wait(), timeout=1)
+
+    draining = asyncio.create_task(manager.shutdown())
+    await asyncio.sleep(0.02)
+    assert not draining.done()
+    with pytest.raises(RuntimeError, match="draining"):
+        await _one(
+            manager,
+            detached_envelope(
+                op="submit",
+                deployment_id="deployment-a",
+                pool_id="fl-pool",
+                task_id="01TASK",
+                attempt=2,
+                execution_token="b" * 32,
+                payload={"prompt": "new"},
+            ),
+        )
+    handler.release.set()
+    await asyncio.wait_for(draining, timeout=1)
+    status = await _terminal_status(manager)
+    assert status["state"] == "completed"
+
+
+async def test_normal_request_keeps_existing_handler_path(tmp_path: Path):
+    handler = _Handler()
+    handler.release.set()
+    manager = DetachedOmniTaskManager(handler, tmp_path, drain_timeout_s=1)
+    response = await _one(manager, {"prompt": "normal"})
+    assert [item["phase"] for item in response] == ["start", "complete"]
+    assert handler.calls == 1
+
+
+async def test_completed_detached_task_resolves_context_abort_waiter(tmp_path: Path):
+    handler = _LeakyAbortWaitHandler()
+    manager = DetachedOmniTaskManager(handler, tmp_path, drain_timeout_s=1)
+    _write_manifest(tmp_path)
+
+    await _one(manager, _request(payload={"prompt": "hello"}))
+    status = await _terminal_status(manager)
+
+    assert status["state"] == "completed"
+    assert handler.waiter is not None
+    assert await asyncio.wait_for(handler.waiter, timeout=1) is True
+    await manager.shutdown()
+
+
+async def test_path_validation_rejects_escape_components(tmp_path: Path):
+    with pytest.raises(ValueError, match="deployment_id"):
+        detached_attempt_root(tmp_path, "../escape", "pool", "task", 1, "a" * 32)
+    with pytest.raises(ValueError, match="execution_token"):
+        detached_attempt_root(tmp_path, "deployment", "pool", "task", 1, "token")
+
+
+async def test_existing_symlink_component_is_rejected(tmp_path: Path):
+    outside = tmp_path.parent / "outside-detached"
+    outside.mkdir(exist_ok=True)
+    (tmp_path / "deployment-a").symlink_to(outside, target_is_directory=True)
+    handler = _Handler()
+    manager = DetachedOmniTaskManager(handler, tmp_path, drain_timeout_s=1)
+    with pytest.raises(RuntimeError, match="symlink"):
+        await _one(manager, _request(payload={"prompt": "hello"}))

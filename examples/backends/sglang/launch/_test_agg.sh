@@ -8,6 +8,7 @@
 #
 # Same shape as agg_router.sh (2 workers, KV routing, KV events) but with:
 #   - --enable-hierarchical-cache              -> HiCache row populates
+#   - session-aware radix ownership             -> session-tagged radix KV
 #   - --enable-metrics-for-all-schedulers      -> per-scheduler metrics
 #   - --enable-mfu-metrics                     -> model FLOPs utilization
 #   - --mem-fraction-static 0.92               -> larger KV pool per worker
@@ -97,12 +98,13 @@ print_launch_banner "Launching Test-Aggregated + KV Router (2 GPUs, full observa
 cat <<EOF
 
 Topology:
-  - 2 SGLang workers (1 GPU each, tp=1) behind dynamo.frontend KV router
+  - 2 SGLang workers (1 GPU each, tp=1) behind dingo.frontend KV router
   - frontend: --router-mode kv$([ "$APPROX_MODE" = true ] && echo " --no-kv-events" || echo "  (KV events ON)")
   - worker metrics: \$DYN_SYSTEM_PORT_WORKER1=\${DYN_SYSTEM_PORT_WORKER1:-8081}, \$DYN_SYSTEM_PORT_WORKER2=\${DYN_SYSTEM_PORT_WORKER2:-8082}
 
 Features enabled for full Grafana coverage:
   - hierarchical KV cache (host RAM tier)        -> HiCache row
+  - session radix cache                          -> session-tagged evictable KV
   - per-scheduler metrics + MFU metrics
   - mem-fraction-static=$MEM_FRACTION, max-running-requests=$MAX_RUNNING
   - page-size=$PAGE_SIZE, chunked-prefill-size=$CHUNKED_PREFILL
@@ -118,7 +120,7 @@ if [ "$APPROX_MODE" = true ]; then
     FRONTEND_ARGS+=(--no-kv-events)
 fi
 OTEL_SERVICE_NAME=dynamo-frontend \
-python3 -m dynamo.frontend "${FRONTEND_ARGS[@]}" &
+python3 -m dingo.frontend "${FRONTEND_ARGS[@]}" &
 
 # Per-worker KV events config (only when not in approx mode)
 KV_EVENTS_ARGS_1=()
@@ -150,7 +152,7 @@ WORKER_COMMON_ARGS=(
 
 # Worker 1 on GPU 0
 OTEL_SERVICE_NAME=dynamo-worker-1 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER1:-8081} \
-CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=0 python3 -m dingo.sglang \
   "${WORKER_COMMON_ARGS[@]}" \
   "${KV_EVENTS_ARGS_1[@]}" \
   $GPU_MEM_ARGS \
@@ -159,7 +161,7 @@ CUDA_VISIBLE_DEVICES=0 python3 -m dynamo.sglang \
 
 # Worker 2 on GPU 1
 OTEL_SERVICE_NAME=dynamo-worker-2 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT_WORKER2:-8082} \
-CUDA_VISIBLE_DEVICES=1 python3 -m dynamo.sglang \
+CUDA_VISIBLE_DEVICES=1 python3 -m dingo.sglang \
   "${WORKER_COMMON_ARGS[@]}" \
   "${KV_EVENTS_ARGS_2[@]}" \
   $GPU_MEM_ARGS \

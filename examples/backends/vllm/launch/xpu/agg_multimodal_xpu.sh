@@ -58,8 +58,8 @@ print_launch_banner --multimodal "Launching Aggregated Multimodal Serving" "$MOD
 export DYN_REQUEST_PLANE=tcp
 
 # Start frontend with Rust OpenAIPreprocessor
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # ---- Per-model defaults ----
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
@@ -81,9 +81,10 @@ GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
 # Extra args from command line come last to allow overrides
 ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK:-0} \
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-    python -m dynamo.vllm --enable-multimodal --model $MODEL_NAME \
+    python -m dingo.vllm --enable-multimodal --model $MODEL_NAME \
     --max-model-len "$MAX_MODEL_LEN" \
     --max-num-seqs "$MAX_CONCURRENT_SEQS" \
+    --block-size "${BLOCK_SIZE:-64}" \
     ${GPU_MEM_ARGS:---gpu-memory-utilization 0.75} $MODEL_EXTRA_ARGS "${EXTRA_ARGS[@]}" &
 
 # Exit on first worker failure; kill 0 in the EXIT trap tears down the rest

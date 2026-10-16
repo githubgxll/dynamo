@@ -1,56 +1,51 @@
 {
-  "schema": "h3-main-overlay-seal/1",
-  "main_commit": "049eece3f32f8d38dc1d8c52d4b793cb30e394bb",
-  "remote_baseline": "36db79a59362bdac8e4fefcdceff994b46e49a62",
+  "schema": "h3-gateway-overlay-seal/1",
+  "service_base_commit": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "remote_baseline": "6bada3e91b143da8551178103da15c88d356fb30",
   "delta": {
     ".dockerignore": {
       "mode": "100644",
-      "blob": "ab0065dea7c110975fb9f02aa1bb9dda6cc5f498",
+      "blob": "d08eb89eba2879c186d80378901f4f70f2aed885",
       "status": "M"
     },
     ".gitattributes": {
       "mode": "100644",
-      "blob": "8b69a020313eeec45ec64d76042d374ff4226f5a",
+      "blob": "1c640d6e503293fd3681909123b5e7cd3db25256",
       "status": "M"
     },
     ".github/dingo-images.json": {
       "mode": "100644",
       "blob": "233714f78314782c792fe3142b7bca824551773e",
-      "status": "A"
+      "status": "M"
     },
     ".github/scripts/h3_experimental_ci.py": {
       "mode": "100644",
-      "blob": "a88a677a5d492dffdf551755e7c43515e3fcfb76",
-      "status": "A"
-    },
-    ".github/scripts/prepare_dingo_image_matrix.py": {
-      "mode": "100644",
-      "blob": "5609d318eb5cab62c8443c5ff161c02963256bc3",
+      "blob": "e02f4cdcd238ffcabc34ae6811f912a2504a29ac",
       "status": "A"
     },
     ".github/scripts/test_h3_experimental_ci.py": {
       "mode": "100644",
-      "blob": "69e8437564dcfe21a815ea45beb5700f2863abaf",
+      "blob": "8b6c6199355906efa64f0bb567474ecdd4bea9ce",
       "status": "A"
     },
     ".github/workflows/dingo-router-ci.yml": {
       "mode": "100644",
-      "blob": "69f39bcfadff5951dfc8058c31ed3e811da03219",
-      "status": "A"
-    },
-    ".github/workflows/request-nvskills-ci.yml": {
-      "mode": "100644",
-      "blob": "0d035af6812d44801d9fbfd0603da285e949d2ab",
+      "blob": "f394ecf334916967ed6eab1d2e69cc076a154a33",
       "status": "M"
     },
     ".gitignore": {
       "mode": "100644",
-      "blob": "99e22e28fac0fe00d249b28a631c1c4365dae9a9",
+      "blob": "482596f234e096a3eac56adabf467606b85c6a1c",
+      "status": "M"
+    },
+    "container/compliance/policy/licenses.toml": {
+      "mode": "100644",
+      "blob": "372e91e907f132ccbba7e80a3fe5eb86f8dced69",
       "status": "M"
     },
     "container/context.yaml": {
       "mode": "100644",
-      "blob": "e61061ea071243119af70ff3d2815b9c5660e97d",
+      "blob": "3a2f1fb4bd6ad5da4314229dbea5f9422ee6c64b",
       "status": "M"
     },
     "container/h3-experimental/.dockerignore": {
@@ -60,7 +55,7 @@
     },
     "container/h3-experimental/Dockerfile": {
       "mode": "100644",
-      "blob": "bb1dc6a0ff10a78e6958e5be6b052a4ddf0f0a46",
+      "blob": "d880c3bf39222e16fc1120d0e4071e87c91cb6c9",
       "status": "A"
     },
     "container/h3-experimental/assets/assets.lock.json": {
@@ -125,52 +120,62 @@
     },
     "container/h3-experimental/environment/README.md": {
       "mode": "100644",
-      "blob": "6ef973b2c890f9856a192cd4f3fb8cf7d86c790e",
+      "blob": "70d3cc9ab39b8920b1526c9a3eb6ef03408645d8",
       "status": "A"
     },
     "container/h3-experimental/environment/audit_environment.py": {
       "mode": "100644",
-      "blob": "0489799eba8bfab0006f4c5d291f7cf19f165e2c",
+      "blob": "aaf2f997a43c3c336eca4551055a1be80583ea41",
       "status": "A"
     },
     "container/h3-experimental/environment/dependency_audit.py": {
       "mode": "100644",
-      "blob": "947024d9c802305cdad09f6b7d31e8c5bb13bc89",
+      "blob": "86bc8e52871886872300bce49a75006588122899",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/gateway-dependency-policy.json": {
+      "mode": "100644",
+      "blob": "ca8f3415ca73359b89bef169a3cd4311e6812348",
       "status": "A"
     },
     "container/h3-experimental/environment/install_environment.sh": {
       "mode": "100644",
-      "blob": "6ff371dc2fb4007f26a4946b9dc57df487bb98f7",
-      "status": "A"
-    },
-    "container/h3-experimental/environment/main-dependency-policy.json": {
-      "mode": "100644",
-      "blob": "a3db5a131e0bf091657b8bc87ede5375878897e8",
+      "blob": "052dd09e952821175257e8c4528cd81a4818a38e",
       "status": "A"
     },
     "container/h3-experimental/environment/media_smoke.py": {
       "mode": "100644",
-      "blob": "4a7439cf9dda178f624d702cb1ccd3aedf19fc8f",
+      "blob": "179fc5efceff04476be0f8b17c697188b321577f",
       "status": "A"
     },
     "container/h3-experimental/environment/protected_packages.txt": {
       "mode": "100644",
-      "blob": "bae206d3c755e54f41c7b6dfbfa920795182fad2",
+      "blob": "a9035338577e6aee335ce7751daf866835e2971b",
       "status": "A"
     },
-    "container/h3-experimental/environment/reference-main-requirements.vllm.txt": {
+    "container/h3-experimental/environment/reference-gateway-pyproject.toml": {
       "mode": "100644",
-      "blob": "e6f6738e9f94cb36da323d77e1ffe3e0329fac89",
+      "blob": "ba51e060ffee0d9cde5b85811366c1dff50f35ba",
       "status": "A"
     },
-    "container/h3-experimental/environment/reference-main-vllm-runtime.Dockerfile": {
+    "container/h3-experimental/environment/reference-gateway-runtime-pyproject.toml": {
       "mode": "100644",
-      "blob": "1264205eb85a2f18f5314525052b1e0f8f948e9f",
+      "blob": "1e4109cfbf9f5602ff979cb84aa40beb8de37e20",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/reference-gateway-vllm-runtime.Dockerfile": {
+      "mode": "100644",
+      "blob": "c9f248a5ca5a1ca33dedbf5d3cbe281b84a48d93",
       "status": "A"
     },
     "container/h3-experimental/environment/runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "f0277e607133f04c3269c781ce6706fbda22b318",
+      "blob": "9c81f801b025443a1c5192e4ecc71f6d04ff7715",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/service_smoke.py": {
+      "mode": "100644",
+      "blob": "dbd22f3718d99d312a9b071dc9faa25d204fe2f1",
       "status": "A"
     },
     "container/h3-experimental/environment/test_dependency_audit.py": {
@@ -178,14 +183,14 @@
       "blob": "2a90d71a63ac03abfb8cbaa53fd2fd3be7e265c3",
       "status": "A"
     },
-    "container/h3-experimental/environment/test_main_overlay.py": {
+    "container/h3-experimental/environment/test_gateway_overlay.py": {
       "mode": "100644",
-      "blob": "182d2c17c4817c7099a39f867064cbe93a98f731",
+      "blob": "8d9da2028eb8eb82e04169872b44ab2c638bbb50",
       "status": "A"
     },
     "container/h3-experimental/environment/test_runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "e47147417febfc746442155cdad29ef3d483e007",
+      "blob": "f963dac32c989df3acd7d29fdc966a17ab654085",
       "status": "A"
     },
     "container/h3-experimental/profiles/README.md": {
@@ -200,7 +205,7 @@
     },
     "container/h3-experimental/profiles/check_profiles.py": {
       "mode": "100644",
-      "blob": "5ac1853c617bbf8c93c98c47d45162b48218d707",
+      "blob": "e911d274c6701047fb4d2fc2f0bdf20ea87fbdea",
       "status": "A"
     },
     "container/h3-experimental/profiles/fasth3_base_lock.json": {
@@ -323,24 +328,14 @@
       "blob": "ce77b1d024853c06fe4b6d677d51a1a6a76ef1d0",
       "status": "A"
     },
-    "container/render.py": {
-      "mode": "100755",
-      "blob": "c70fc7410a3fd378ad8bd7d0ae7882b20a1494d1",
-      "status": "M"
-    },
     "container/templates/args.Dockerfile": {
       "mode": "100644",
-      "blob": "ee6d90654794fe076c5796b16947d6373f32f66a",
+      "blob": "72611341762337b41a8d2323899ecb353559c3eb",
       "status": "M"
     },
-    "container/templates/wheel_builder.Dockerfile": {
+    "container/templates/vllm_runtime.Dockerfile": {
       "mode": "100644",
-      "blob": "29da727e6f12de53894e1301669c69d3ac2c9489",
-      "status": "M"
-    },
-    "container/use-sccache.sh": {
-      "mode": "100755",
-      "blob": "14085293cad64ce2184df620e1583fd72fffc6d8",
+      "blob": "7e8f78da8fa483c4de267a0f82c87453e295b3b7",
       "status": "M"
     },
     "delivery/h3-experimental/01-check.cmd": {
@@ -350,7 +345,7 @@
     },
     "delivery/h3-experimental/02-submit-build.cmd": {
       "mode": "100644",
-      "blob": "4ec261c1b86dbe952d0e9907138801fca35e5419",
+      "blob": "422f414872130012f24a25022498292f18dfff77",
       "status": "A"
     },
     "delivery/h3-experimental/03-import-image-evidence.cmd": {
@@ -358,14 +353,19 @@
       "blob": "f56ec6efdbda93a7cca7beea2a1a05557b5a9580",
       "status": "A"
     },
+    "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
+      "mode": "100644",
+      "blob": "462af5d1bb4db84b48f0fdd5863e62c1d7648d15",
+      "status": "A"
+    },
     "delivery/h3-experimental/README.md": {
       "mode": "100644",
-      "blob": "20c88b3a416796a4421eb36d916b79b5e67b85c1",
+      "blob": "6c2720138c638205c14cd4f4ccf6120e1e89794a",
       "status": "A"
     },
     "delivery/h3-experimental/check_local.py": {
       "mode": "100644",
-      "blob": "7017bc76c5c6fe250d74080a585352a30ea6eaba",
+      "blob": "451e2c3e0005be5dab0c8ce20d9368aad8b2a096",
       "status": "A"
     },
     "delivery/h3-experimental/env.cmd": {
@@ -375,24 +375,69 @@
     },
     "delivery/h3-experimental/ops.py": {
       "mode": "100644",
-      "blob": "feac3e735cbbe94e8c896d4696e09840b93165aa",
+      "blob": "2f81dbb9c70b902122d85abaae807dfc3230147f",
+      "status": "A"
+    },
+    "delivery/h3-experimental/service-source-review.json": {
+      "mode": "100644",
+      "blob": "6195d7facc6a67d86a77bf71baee96999e39fd1e",
       "status": "A"
     },
     "delivery/h3-experimental/source-lock.json": {
       "mode": "100644",
-      "blob": "1dd8f20d5ef320408035ca7bbf21f6720bd5721f",
+      "blob": "60476f86e98af0e8c793d0e6f66f0557723382ca",
+      "status": "A"
+    },
+    "delivery/h3-experimental/tests/test_gateway_compat.py": {
+      "mode": "100644",
+      "blob": "babfcdfb9c36f5a7654923eb3dc952458c3ce36f",
       "status": "A"
     },
     "delivery/h3-experimental/tests/test_ops.py": {
       "mode": "100644",
-      "blob": "f729407571b9daffe08bf19e3ccb672fea916ec7",
+      "blob": "558dcdd8310e95105a564d3e8a11a9a2c69f7434",
       "status": "A"
     },
     "delivery/h3-experimental/tests/test_staging.py": {
       "mode": "100644",
       "blob": "03dee6efec809b921ec143f330b6afbb95938d78",
       "status": "A"
+    },
+    "dingo/vllm/omni/base_handler.py": {
+      "mode": "100644",
+      "blob": "0020a6d6077892ce2ca7c864ee7e09e641182522",
+      "status": "M"
+    },
+    "dingo/vllm/omni/omni_handler.py": {
+      "mode": "100644",
+      "blob": "cd651e72e7b2de3315dbe2ce1e9554d810de47c5",
+      "status": "M"
+    },
+    "dingo/vllm/omni/output_formatter.py": {
+      "mode": "100644",
+      "blob": "63ecb0a047ba6da1d083dffeff564e833341b682",
+      "status": "M"
+    },
+    "dingo/vllm/omni/stage_config_compat.py": {
+      "mode": "100644",
+      "blob": "1f44cacecd05f1b7fc6288ef7133c8af71c4be6e",
+      "status": "A"
+    },
+    "dingo/vllm/omni/stage_router.py": {
+      "mode": "100644",
+      "blob": "5d9e70e0ce4f1128cfc79a19ffbdd906bc67180d",
+      "status": "M"
+    },
+    "dingo/vllm/omni/stage_worker.py": {
+      "mode": "100644",
+      "blob": "51936e7f788e77db2f3138d43763d049411239ce",
+      "status": "M"
+    },
+    "pyproject.toml": {
+      "mode": "100644",
+      "blob": "997e35c2abce54082db5ffad113437dc854e7f4e",
+      "status": "M"
     }
   },
-  "scope": "Exact Git blobs and deletions relative to the reviewed main snapshot; seal excludes itself"
+  "scope": "Exact Git blobs and deletions relative to the reviewed gateway snapshot; seal excludes itself"
 }

@@ -146,16 +146,9 @@ pub struct BackendOutput {
 
     /// Router-computed data handed back to the frontend (e.g. per-request timing from
     /// a standalone router) so it joins this request's trace/metrics. Dynamo-internal,
-    /// consumed by the frontend and not surfaced to clients. See [`RoutingData`](crate::protocols::common::timing::RoutingData).
+    /// consumed by the frontend and not surfaced to clients. See [`RoutingData`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_data: Option<crate::protocols::common::timing::RoutingData>,
-
-    /// Text the `Backend` decoder is currently withholding as a possible (but
-    /// unresolved) prefix of a hidden stop sequence, as of this chunk. Frontend-only
-    /// (Dynamo-internal): consumed by the migration `RetryManager` so a retry's fresh
-    /// decoder can resume with the same pending text instead of silently dropping it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jailed_text: Option<String>,
 }
 
 /// The LLM engine and backnd with manage it's own state, specifically translating how a
@@ -239,17 +232,9 @@ pub struct LLMEngineOutput {
     pub engine_data: Option<serde_json::Value>,
 
     /// Router-computed data handed back to the frontend (e.g. standalone-router timing).
-    /// Dynamo-internal; consumed by the frontend. See [`RoutingData`](crate::protocols::common::timing::RoutingData).
+    /// Dynamo-internal; consumed by the frontend. See [`RoutingData`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_data: Option<crate::protocols::common::timing::RoutingData>,
-
-    /// Text the `Backend` decoder is currently withholding as a possible (but
-    /// unresolved) prefix of a hidden stop sequence, as of this chunk. Engines never
-    /// set this; the frontend's `Backend` stage populates it locally (it is never
-    /// sent by a worker) so the migration `RetryManager` can seed a retry's fresh
-    /// decoder with it instead of silently dropping the withheld text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jailed_text: Option<String>,
 }
 
 impl LLMEngineOutput {
@@ -273,7 +258,6 @@ impl LLMEngineOutput {
             completion_usage: None,
             engine_data: None,
             routing_data: None,
-            jailed_text: None,
         }
     }
 
@@ -297,7 +281,6 @@ impl LLMEngineOutput {
             completion_usage: None,
             engine_data: None,
             routing_data: None,
-            jailed_text: None,
         }
     }
 
@@ -321,7 +304,6 @@ impl LLMEngineOutput {
             completion_usage: None,
             engine_data: None,
             routing_data: None,
-            jailed_text: None,
         }
     }
 
@@ -345,7 +327,6 @@ impl LLMEngineOutput {
             completion_usage: None,
             engine_data: None,
             routing_data: None,
-            jailed_text: None,
         }
     }
 
@@ -383,20 +364,16 @@ impl LLMEngineOutput {
             completion_usage: None,
             engine_data: None,
             routing_data: None,
-            jailed_text: None,
         }
     }
 }
 
 pub(crate) fn prompt_logprobs_from_engine_data(
     engine_data: Option<&serde_json::Value>,
-) -> anyhow::Result<Option<PromptLogprobs>> {
-    let Some(value) = engine_data.and_then(|data| data.get("prompt_logprobs")) else {
-        return Ok(None);
-    };
-    serde_json::from_value(value.clone())
-        .map(Some)
-        .map_err(|error| anyhow::anyhow!("invalid prompt_logprobs payload: {error}"))
+) -> Option<PromptLogprobs> {
+    engine_data?
+        .get("prompt_logprobs")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
 impl MaybeError for LLMEngineOutput {
@@ -413,11 +390,11 @@ impl MaybeError for LLMEngineOutput {
     }
 }
 
-/// Raw output from embedding engines containing base64-encoded float32 vectors.
+/// Raw output from embedding engines containing embedding vectors
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EmbeddingsEngineOutput {
-    /// One standard-base64 string per input embedding.
-    pub embeddings: Vec<String>,
+    /// Generated embedding vectors (one per input text)
+    pub embeddings: Vec<Vec<f64>>,
 
     /// Token usage information
     pub prompt_tokens: u32,

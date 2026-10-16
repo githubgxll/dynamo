@@ -474,12 +474,12 @@ def run_parallel(
     # ignores Docker --cpus -- so num_slots can be many times the real CPU budget
     # (e.g. 32 under --cpus=4). Combined with the zero-VRAM filler backfill that
     # would oversubscribe the CPU and slow every concurrent test. Cap at the
-    # container's true CPU budget.
+    # container's true CPU budget; raise NUM_CPUS (or --cpus) to allow more.
     cpu_budget = effective_cpu_budget()
     if num_slots > cpu_budget:
         _print(
             f"Capping concurrency: {num_slots} -> {cpu_budget} slots "
-            "(detected CPU budget or NUM_CPUS ceiling)"
+            f"(CPU budget; raise NUM_CPUS to allow more)"
         )
         num_slots = cpu_budget
     num_slots = max(1, num_slots)
@@ -577,10 +577,6 @@ def run_parallel(
         test.w_id = idx
 
     os.makedirs(_JUNIT_DIR, exist_ok=True)
-    # Children mkdir their nested --basetemp non-recursively, so the root
-    # has to exist first.
-    if parent_basetemp:
-        os.makedirs(parent_basetemp, exist_ok=True)
 
     # --- Plan header ---
     n_run = len(tests)

@@ -30,7 +30,7 @@ if [[ "$CAPACITY_GB" != "0" ]]; then
     EC_ARGS=(--ec-transfer-config "{
         \"ec_role\": \"ec_both\",
         \"ec_connector\": \"DynamoMultimodalEmbeddingCacheConnector\",
-        \"ec_connector_module_path\": \"dynamo.vllm.multimodal_utils.multimodal_embedding_cache_connector\",
+        \"ec_connector_module_path\": \"dingo.vllm.multimodal_utils.multimodal_embedding_cache_connector\",
         \"ec_connector_extra_config\": {\"multimodal_embedding_cache_capacity_gb\": $CAPACITY_GB}
     }")
 fi

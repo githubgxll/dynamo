@@ -14,12 +14,17 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::identity::RoutingPartitionId;
 use crate::indexer::KvIndexerMetrics;
 use crate::protocols::WorkerId;
 
-use super::backend::{Indexer, IndexerPolicy, create_indexer_with_policy};
+use super::backend::{Indexer, create_indexer_with_metrics};
 use super::listener::spawn_zmq_listener;
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct IndexerKey {
+    pub model_name: String,
+    pub tenant_id: String,
+}
 
 pub struct IndexerEntry {
     pub indexer: Indexer,
@@ -105,7 +110,7 @@ pub struct WorkerInfo {
     source: WorkerSource,
     status: ListenerStatus,
     model_name: String,
-    routing_group: String,
+    tenant_id: String,
     block_size: u32,
     endpoints: HashMap<u32, String>,
     listeners: HashMap<u32, ListenerInfo>,
@@ -304,26 +309,20 @@ impl ListenerRecord {
 }
 
 pub struct WorkerEntry {
-    key: RoutingPartitionId,
+    key: IndexerKey,
     listeners: HashMap<u32, Arc<ListenerRecord>>,
 }
 
 pub struct WorkerRegistry {
     workers: DashMap<WorkerId, WorkerEntry>,
-    indexers: DashMap<RoutingPartitionId, IndexerEntry>,
-    // Serialize indexer claims through worker publication with empty-indexer removal.
-    indexer_lifecycle: tokio::sync::Mutex<()>,
+    indexers: DashMap<IndexerKey, IndexerEntry>,
     peers: DashMap<String, ()>,
     watermarks: DashMap<(WorkerId, u32), Arc<AtomicU64>>,
     num_threads: usize,
     indexer_metrics: Arc<KvIndexerMetrics>,
-    /// Shape of every indexer this registry creates. Set before the first
-    /// partition is created; later changes affect only new partitions.
-    indexer_policy: Mutex<IndexerPolicy>,
     ready_tx: watch::Sender<bool>,
     ready_rx: watch::Receiver<bool>,
     root_cancel_token: CancellationToken,
-    retain_empty_indexers: bool,
 }
 
 impl WorkerRegistry {
@@ -346,7 +345,6 @@ impl WorkerRegistry {
         Self::new_inner(num_threads, indexer_metrics, CancellationToken::new())
     }
 
-    #[cfg(feature = "metrics")]
     pub(super) fn new_with_indexer_metrics_and_cancel_token(
         num_threads: usize,
         indexer_metrics: Arc<KvIndexerMetrics>,
@@ -364,29 +362,14 @@ impl WorkerRegistry {
         Self {
             workers: DashMap::new(),
             indexers: DashMap::new(),
-            indexer_lifecycle: tokio::sync::Mutex::new(()),
             peers: DashMap::new(),
             watermarks: DashMap::new(),
             num_threads,
             indexer_metrics,
-            indexer_policy: Mutex::new(IndexerPolicy::event_driven()),
             ready_tx,
             ready_rx,
             root_cancel_token,
-            retain_empty_indexers: false,
         }
-    }
-
-    /// Set the shape used for indexers created from now on.
-    pub fn set_indexer_policy(&self, policy: IndexerPolicy) {
-        *self.indexer_policy.lock() = policy;
-    }
-
-    #[cfg(feature = "standalone-selection")]
-    pub(crate) fn with_retained_indexers(mut self) -> Self {
-        // Selection entries and their schedulers retain these indexers across worker updates.
-        self.retain_empty_indexers = true;
-        self
     }
 
     pub fn signal_ready(&self) {
@@ -431,19 +414,21 @@ impl WorkerRegistry {
         endpoint: String,
         dp_rank: u32,
         model_name: String,
-        routing_group: String,
+        tenant_id: String,
         block_size: u32,
         replay_endpoint: Option<String>,
     ) -> Result<()> {
-        let key = RoutingPartitionId::new(model_name, routing_group);
-        let registration = self.indexer_lifecycle.lock().await;
+        let key = IndexerKey {
+            model_name,
+            tenant_id,
+        };
 
         if let Some(entry) = self.workers.get(&instance_id) {
             if entry.key != key {
                 bail!(
-                    "instance {instance_id} is already registered for model={} routing_group={}",
+                    "instance {instance_id} is already registered for model={} tenant={}",
                     entry.key.model_name,
-                    entry.key.routing_group
+                    entry.key.tenant_id
                 );
             }
 
@@ -452,20 +437,18 @@ impl WorkerRegistry {
             }
         }
 
-        let indexer_policy = self.indexer_policy.lock().clone();
         let indexer_entry = self.indexers.entry(key.clone()).or_insert_with(|| {
             tracing::info!(
                 model_name = %key.model_name,
-                routing_group = %key.routing_group,
+                tenant_id = %key.tenant_id,
                 block_size,
                 "Creating new indexer"
             );
             IndexerEntry {
-                indexer: create_indexer_with_policy(
+                indexer: create_indexer_with_metrics(
                     block_size,
                     self.num_threads,
                     self.indexer_metrics.clone(),
-                    &indexer_policy,
                 ),
                 block_size,
             }
@@ -473,9 +456,9 @@ impl WorkerRegistry {
 
         if indexer_entry.block_size != block_size {
             bail!(
-                "block_size mismatch for model={} routing_group={}: existing={}, requested={}",
+                "block_size mismatch for model={} tenant={}: existing={}, requested={}",
                 key.model_name,
-                key.routing_group,
+                key.tenant_id,
                 indexer_entry.block_size,
                 block_size
             );
@@ -511,7 +494,6 @@ impl WorkerRegistry {
             entry.listeners.insert(dp_rank, record.clone());
         }
 
-        drop(registration);
         self.spawn_listener(instance_id, dp_rank, attempt, record);
         Ok(())
     }
@@ -520,16 +502,19 @@ impl WorkerRegistry {
         &self,
         instance_id: WorkerId,
         model_name: &str,
-        routing_group: &str,
+        tenant_id: &str,
     ) -> Result<()> {
-        let key = RoutingPartitionId::new(model_name, routing_group);
+        let key = IndexerKey {
+            model_name: model_name.to_string(),
+            tenant_id: tenant_id.to_string(),
+        };
 
         if let Some(entry) = self.workers.get(&instance_id) {
             if entry.key != key {
                 bail!(
-                    "instance {instance_id} is registered for model={} routing_group={}",
+                    "instance {instance_id} is registered for model={} tenant={}",
                     entry.key.model_name,
-                    entry.key.routing_group
+                    entry.key.tenant_id
                 );
             }
         } else {
@@ -547,12 +532,10 @@ impl WorkerRegistry {
             }
         }
 
-        // Registration needs this map's write lock while removal can wait on indexer queues.
-        let indexer = self.indexers.get(&key).map(|entry| entry.indexer.clone());
-        if let Some(indexer) = indexer {
-            indexer.remove_worker(instance_id).await;
+        if let Some(ie) = self.indexers.get(&key) {
+            ie.indexer.remove_worker(instance_id).await;
         }
-        self.maybe_remove_indexer(&key).await;
+        self.maybe_remove_indexer(&key);
         Ok(())
     }
 
@@ -561,9 +544,12 @@ impl WorkerRegistry {
         instance_id: WorkerId,
         dp_rank: u32,
         model_name: &str,
-        routing_group: &str,
+        tenant_id: &str,
     ) -> Result<()> {
-        let key = RoutingPartitionId::new(model_name, routing_group);
+        let key = IndexerKey {
+            model_name: model_name.to_string(),
+            tenant_id: tenant_id.to_string(),
+        };
 
         let (record, remove_worker) = {
             let mut entry = self
@@ -573,9 +559,9 @@ impl WorkerRegistry {
 
             if entry.key != key {
                 bail!(
-                    "instance {instance_id} is registered for model={} routing_group={}",
+                    "instance {instance_id} is registered for model={} tenant={}",
                     entry.key.model_name,
-                    entry.key.routing_group
+                    entry.key.tenant_id
                 );
             }
 
@@ -597,23 +583,19 @@ impl WorkerRegistry {
                 .remove_if(&instance_id, |_, entry| entry.listeners.is_empty())
                 .is_some();
             if actually_removed {
-                let indexer = self.indexers.get(&key).map(|entry| entry.indexer.clone());
-                if let Some(indexer) = indexer {
-                    indexer.remove_worker(instance_id).await;
+                if let Some(ie) = self.indexers.get(&key) {
+                    ie.indexer.remove_worker(instance_id).await;
                 }
-                self.maybe_remove_indexer(&key).await;
+                self.maybe_remove_indexer(&key);
             }
-        } else {
-            let indexer = self.indexers.get(&key).map(|entry| entry.indexer.clone());
-            if let Some(indexer) = indexer {
-                indexer.remove_worker_dp_rank(instance_id, dp_rank).await;
-            }
+        } else if let Some(ie) = self.indexers.get(&key) {
+            ie.indexer.remove_worker_dp_rank(instance_id, dp_rank).await;
         }
 
         Ok(())
     }
 
-    pub async fn deregister_all_routing_groups(
+    pub async fn deregister_all_tenants(
         &self,
         instance_id: WorkerId,
         model_name: &str,
@@ -621,9 +603,9 @@ impl WorkerRegistry {
         let key = if let Some(entry) = self.workers.get(&instance_id) {
             if entry.key.model_name != model_name {
                 bail!(
-                    "instance {instance_id} is registered for model={} routing_group={}",
+                    "instance {instance_id} is registered for model={} tenant={}",
                     entry.key.model_name,
-                    entry.key.routing_group
+                    entry.key.tenant_id
                 );
             }
             entry.key.clone()
@@ -642,11 +624,10 @@ impl WorkerRegistry {
             }
         }
 
-        let indexer = self.indexers.get(&key).map(|entry| entry.indexer.clone());
-        if let Some(indexer) = indexer {
-            indexer.remove_worker(instance_id).await;
+        if let Some(ie) = self.indexers.get(&key) {
+            ie.indexer.remove_worker(instance_id).await;
         }
-        self.maybe_remove_indexer(&key).await;
+        self.maybe_remove_indexer(&key);
         Ok(())
     }
 
@@ -694,38 +675,12 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    /// Whether `worker_id` has listeners registered here.
-    pub fn has_worker(&self, worker_id: WorkerId) -> bool {
-        self.workers.contains_key(&worker_id)
-    }
-
-    pub fn has_listener(&self, worker_id: WorkerId, dp_rank: u32) -> bool {
-        self.workers
-            .get(&worker_id)
-            .is_some_and(|entry| entry.listeners.contains_key(&dp_rank))
-    }
-
-    /// Drop what a rank's listener fed into the index after the listener itself
-    /// is gone (its deregistration was cancelled before reaching this step).
-    pub async fn remove_dp_rank_blocks(
-        &self,
-        worker_id: WorkerId,
-        dp_rank: u32,
-        key: &RoutingPartitionId,
-    ) {
-        // Clone the handle so the shard guard drops before the await.
-        let indexer = self.indexers.get(key).map(|ie| ie.indexer.clone());
-        if let Some(indexer) = indexer {
-            indexer.remove_worker_dp_rank(worker_id, dp_rank).await;
-        }
-    }
-
     pub fn list(&self) -> Vec<WorkerInfo> {
         self.list_filtered(None, None)
     }
 
     /// Return registered workers, optionally filtered by `model_name` and/or
-    /// `routing_group`.  Pass `None` for a field to skip that filter.
+    /// `tenant_id`.  Pass `None` for a field to skip that filter.
     ///
     /// Workers that are mid-deregistration (listener map temporarily empty
     /// before the worker entry is removed) are silently omitted to avoid
@@ -733,7 +688,7 @@ impl WorkerRegistry {
     pub fn list_filtered(
         &self,
         model_name: Option<&str>,
-        routing_group: Option<&str>,
+        tenant_id: Option<&str>,
     ) -> Vec<WorkerInfo> {
         self.workers
             .iter()
@@ -743,7 +698,7 @@ impl WorkerRegistry {
 
                 // Apply caller-supplied filters.
                 if model_name.is_some_and(|m| key.model_name != m)
-                    || routing_group.is_some_and(|t| key.routing_group != t)
+                    || tenant_id.is_some_and(|t| key.tenant_id != t)
                 {
                     return None;
                 }
@@ -777,7 +732,7 @@ impl WorkerRegistry {
                     source: WorkerSource::Zmq,
                     status,
                     model_name: key.model_name.clone(),
-                    routing_group: key.routing_group.clone(),
+                    tenant_id: key.tenant_id.clone(),
                     block_size,
                     endpoints,
                     listeners,
@@ -786,28 +741,23 @@ impl WorkerRegistry {
             .collect()
     }
 
-    pub fn get_indexer(
-        &self,
-        key: &RoutingPartitionId,
-    ) -> Option<Ref<'_, RoutingPartitionId, IndexerEntry>> {
+    pub fn get_indexer(&self, key: &IndexerKey) -> Option<Ref<'_, IndexerKey, IndexerEntry>> {
         self.indexers.get(key)
     }
 
-    pub fn get_or_create_indexer(&self, key: RoutingPartitionId, block_size: u32) -> Indexer {
-        let indexer_policy = self.indexer_policy.lock().clone();
+    pub fn get_or_create_indexer(&self, key: IndexerKey, block_size: u32) -> Indexer {
         let entry = self.indexers.entry(key.clone()).or_insert_with(|| {
             tracing::info!(
                 model_name = %key.model_name,
-                routing_group = %key.routing_group,
+                tenant_id = %key.tenant_id,
                 block_size,
                 "Creating indexer from recovery dump"
             );
             IndexerEntry {
-                indexer: create_indexer_with_policy(
+                indexer: create_indexer_with_metrics(
                     block_size,
                     self.num_threads,
                     self.indexer_metrics.clone(),
-                    &indexer_policy,
                 ),
                 block_size,
             }
@@ -815,7 +765,7 @@ impl WorkerRegistry {
         if entry.block_size != block_size {
             tracing::warn!(
                 model_name = %key.model_name,
-                routing_group = %key.routing_group,
+                tenant_id = %key.tenant_id,
                 existing_block_size = entry.block_size,
                 requested_block_size = block_size,
                 "Block size mismatch for existing indexer"
@@ -824,7 +774,7 @@ impl WorkerRegistry {
         entry.indexer.clone()
     }
 
-    pub fn all_indexers_with_block_size(&self) -> Vec<(RoutingPartitionId, Indexer, u32)> {
+    pub fn all_indexers_with_block_size(&self) -> Vec<(IndexerKey, Indexer, u32)> {
         self.indexers
             .iter()
             .map(|entry| {
@@ -835,15 +785,6 @@ impl WorkerRegistry {
                 )
             })
             .collect()
-    }
-
-    /// The state a `deregister_dp_rank` cancelled after removing the listener
-    /// leaves behind: no listener, index entries untouched.
-    #[cfg(all(test, feature = "standalone-selection"))]
-    pub(crate) fn forget_listener(&self, instance_id: WorkerId, dp_rank: u32) {
-        if let Some(mut entry) = self.workers.get_mut(&instance_id) {
-            entry.listeners.remove(&dp_rank);
-        }
     }
 
     #[cfg(test)]
@@ -877,12 +818,7 @@ impl WorkerRegistry {
         );
     }
 
-    async fn maybe_remove_indexer(&self, key: &RoutingPartitionId) {
-        if self.retain_empty_indexers {
-            return;
-        }
-
-        let _lifecycle = self.indexer_lifecycle.lock().await;
+    fn maybe_remove_indexer(&self, key: &IndexerKey) {
         if self.workers.iter().any(|entry| entry.value().key == *key) {
             return;
         }
@@ -894,184 +830,41 @@ impl WorkerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocols::{LocalBlockHash, StorageTier, WorkerWithDpRank};
-    use crate::services::indexer::backend::test_util::store_event;
-    use std::future::Future;
     use std::sync::atomic::Ordering;
-    use std::task::{Context, Poll, Waker};
-    use std::time::Duration;
 
     fn test_registry() -> WorkerRegistry {
         WorkerRegistry::new(1)
     }
 
-    #[rstest::rstest]
-    #[case("worker")]
-    #[case("all_groups")]
-    #[case("last_rank")]
     #[tokio::test]
-    async fn registration_progresses_while_removal_is_backpressured(#[case] removal: &str) {
+    async fn deregister_removes_watermark() {
         let registry = test_registry();
-        let key = RoutingPartitionId::new("test-model", "default");
-        registry
-            .register(
-                1,
-                "tcp://127.0.0.1:15557".into(),
-                0,
-                "test-model".into(),
-                "default".into(),
-                1,
-                None,
-            )
-            .await
-            .unwrap();
-        let indexer = registry.indexers.get(&key).unwrap().indexer.clone();
-        let Indexer::Single { primary, .. } = indexer else {
-            unreachable!();
-        };
-        let sender = primary.remove_worker_sender();
-        // Reserve the entire queue so removal must yield without blocking the executor.
-        let permits = sender.reserve_many(sender.max_capacity()).await.unwrap();
-        let removal = async {
-            match removal {
-                "worker" => registry.deregister(1, "test-model", "default").await,
-                "all_groups" => {
-                    registry
-                        .deregister_all_routing_groups(1, "test-model")
-                        .await
-                }
-                "last_rank" => {
-                    registry
-                        .deregister_dp_rank(1, 0, "test-model", "default")
-                        .await
-                }
-                _ => unreachable!(),
-            }
-        };
-        tokio::pin!(removal);
-        assert!(matches!(
-            removal
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
-        // A nonblocking probe makes the regression fail instead of deadlocking the test.
-        assert!(matches!(
-            registry.indexers.try_get_mut(&key),
-            dashmap::try_result::TryResult::Present(_)
-        ));
-        registry
-            .register(
-                2,
-                "tcp://127.0.0.1:15558".into(),
-                0,
-                "test-model".into(),
-                "default".into(),
-                1,
-                None,
-            )
-            .await
-            .unwrap();
-        drop(permits);
-        tokio::time::timeout(Duration::from_secs(5), removal)
-            .await
-            .expect("removal should finish after queue capacity is released")
-            .unwrap();
-        assert!(registry.workers.contains_key(&2));
-        assert!(registry.indexers.contains_key(&key));
-        registry.root_cancel_token.cancel();
-    }
+        registry.signal_ready();
 
-    #[rstest::rstest]
-    #[case("worker")]
-    #[case("all_groups")]
-    #[case("last_rank")]
-    #[tokio::test]
-    async fn empty_indexer_removal_waits_for_registration(#[case] removal: &str) {
-        let registry = test_registry();
-        let key = RoutingPartitionId::new("test-model", "default");
         registry
             .register(
                 1,
-                "tcp://127.0.0.1:15557".into(),
+                "tcp://127.0.0.1:15557".to_string(),
                 0,
-                "test-model".into(),
-                "default".into(),
+                "test-model".to_string(),
+                "default".to_string(),
                 1,
                 None,
             )
             .await
             .unwrap();
 
-        // Queue registration ahead of pruning, without timing or thread scheduling assumptions.
-        let lifecycle = registry.indexer_lifecycle.lock().await;
-        let registration = registry.register(
-            2,
-            "tcp://127.0.0.1:15558".into(),
-            0,
-            "test-model".into(),
-            "default".into(),
-            1,
-            None,
+        assert!(registry.watermarks.contains_key(&(1, 0)));
+
+        registry
+            .deregister(1, "test-model", "default")
+            .await
+            .unwrap();
+
+        assert!(
+            !registry.watermarks.contains_key(&(1, 0)),
+            "watermark should be removed after deregister"
         );
-        tokio::pin!(registration);
-        assert!(matches!(
-            registration
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
-
-        let removal = async {
-            match removal {
-                "worker" => registry.deregister(1, "test-model", "default").await,
-                "all_groups" => {
-                    registry
-                        .deregister_all_routing_groups(1, "test-model")
-                        .await
-                }
-                "last_rank" => {
-                    registry
-                        .deregister_dp_rank(1, 0, "test-model", "default")
-                        .await
-                }
-                _ => unreachable!(),
-            }
-        };
-        tokio::pin!(removal);
-        assert!(matches!(
-            removal
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
-        assert!(registry.workers.is_empty());
-        assert!(!registry.watermarks.contains_key(&(1, 0)));
-        assert!(registry.get_indexer(&key).is_some());
-        drop(lifecycle);
-        registration.await.unwrap();
-        removal.await.unwrap();
-
-        // Events written by the new listener must remain visible through the query registry.
-        let listener_indexer = registry.workers.get(&2).unwrap().listeners[&0]
-            .indexer
-            .clone();
-        listener_indexer
-            .apply_event_routed(store_event(2, 0, 0, &[], &[11], StorageTier::Device))
-            .await
-            .unwrap();
-        listener_indexer.dump_events().await.unwrap();
-        let query_indexer = registry
-            .get_indexer(&key)
-            .expect("registered indexer")
-            .indexer
-            .clone();
-        let scores = query_indexer
-            .find_matches(vec![LocalBlockHash(11)])
-            .await
-            .unwrap();
-        assert_eq!(scores.scores.get(&WorkerWithDpRank::new(2, 0)), Some(&1));
-        registry.root_cancel_token.cancel();
     }
 
     #[tokio::test]
@@ -1187,22 +980,14 @@ mod tests {
             .unwrap();
 
         // Simulate that the listener advanced the watermark.
-        registry
-            .watermarks
-            .get(&(1, 0))
-            .unwrap()
-            .store(42, Ordering::Release);
+        if let Some(wm) = registry.watermarks.get(&(1, 0)) {
+            wm.store(42, Ordering::Release);
+        }
 
         registry
             .deregister(1, "test-model", "default")
             .await
             .unwrap();
-
-        assert!(
-            registry
-                .get_indexer(&RoutingPartitionId::new("test-model", "default"))
-                .is_none()
-        );
 
         registry
             .register(
@@ -1225,6 +1010,37 @@ mod tests {
             wm.load(Ordering::Acquire),
             u64::MAX,
             "re-registered watermark should be fresh (u64::MAX)"
+        );
+    }
+
+    #[tokio::test]
+    async fn deregister_all_tenants_removes_watermarks() {
+        let registry = test_registry();
+        registry.signal_ready();
+
+        registry
+            .register(
+                1,
+                "tcp://127.0.0.1:15562".to_string(),
+                0,
+                "test-model".to_string(),
+                "default".to_string(),
+                1,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(registry.watermarks.contains_key(&(1, 0)));
+
+        registry
+            .deregister_all_tenants(1, "test-model")
+            .await
+            .unwrap();
+
+        assert!(
+            !registry.watermarks.contains_key(&(1, 0)),
+            "watermark should be removed after deregister_all_tenants"
         );
     }
 
@@ -1254,7 +1070,7 @@ mod tests {
                 "tcp://127.0.0.1:15571".to_string(),
                 0,
                 "mistral".to_string(),
-                "other-group".to_string(),
+                "other-tenant".to_string(),
                 8,
                 None,
             )
@@ -1266,11 +1082,11 @@ mod tests {
 
         let llama = workers.iter().find(|w| w.model_name == "llama3").unwrap();
         assert_eq!(llama.block_size, 4);
-        assert_eq!(llama.routing_group, "acme");
+        assert_eq!(llama.tenant_id, "acme");
 
         let mistral = workers.iter().find(|w| w.model_name == "mistral").unwrap();
         assert_eq!(mistral.block_size, 8);
-        assert_eq!(mistral.routing_group, "other-group");
+        assert_eq!(mistral.tenant_id, "other-tenant");
 
         let filtered = registry.list_filtered(Some("llama3"), None);
         assert_eq!(filtered.len(), 1);
@@ -1278,15 +1094,15 @@ mod tests {
 
         let acme = registry.list_filtered(None, Some("acme"));
         assert_eq!(acme.len(), 1);
-        assert_eq!(acme[0].routing_group, "acme");
+        assert_eq!(acme[0].tenant_id, "acme");
 
-        let other = registry.list_filtered(None, Some("other-group"));
+        let other = registry.list_filtered(None, Some("other-tenant"));
         assert_eq!(other.len(), 1);
-        assert_eq!(other[0].routing_group, "other-group");
+        assert_eq!(other[0].tenant_id, "other-tenant");
 
         assert!(
             registry
-                .list_filtered(Some("llama3"), Some("other-group"))
+                .list_filtered(Some("llama3"), Some("other-tenant"))
                 .is_empty()
         );
         assert!(registry.list_filtered(Some("nonexistent"), None).is_empty());
@@ -1307,7 +1123,10 @@ mod tests {
         // trivially without exercising the filter.
         let registry = test_registry();
 
-        let key = RoutingPartitionId::new("llama3", "acme");
+        let key = IndexerKey {
+            model_name: "llama3".to_string(),
+            tenant_id: "acme".to_string(),
+        };
 
         // Inject the empty-listener WorkerEntry directly.
         registry.workers.insert(

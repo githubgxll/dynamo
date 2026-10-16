@@ -37,7 +37,6 @@ import (
 func ExtractCandidates(endpointSlices *discoveryv1.EndpointSliceList, port int32) ([]Candidate, map[string]bool) {
 	var candidates []Candidate
 	serviceNames := make(map[string]bool)
-	candidateIndexes := make(map[string]int)
 
 	for _, slice := range endpointSlices.Items {
 		serviceName := slice.Labels[discoveryv1.LabelServiceName]
@@ -55,27 +54,13 @@ func ExtractCandidates(endpointSlices *discoveryv1.EndpointSliceList, port int32
 				continue
 			}
 			podName := ep.TargetRef.Name
-			candidateKey := string(ep.TargetRef.UID)
-			if candidateKey == "" {
-				candidateKey = podName
-			}
-			if index, exists := candidateIndexes[candidateKey]; exists {
-				candidate := &candidates[index]
-				if ep.Conditions.Ready != nil && *ep.Conditions.Ready {
-					candidate.KubernetesReady = true
-				}
-				continue
-			}
 
 			for _, addr := range ep.Addresses {
 				address := "http://" + net.JoinHostPort(addr, strconv.Itoa(int(port)))
-				candidateIndexes[candidateKey] = len(candidates)
 				candidates = append(candidates, Candidate{
-					Address:         address,
-					PodName:         podName,
-					KubernetesReady: ep.Conditions.Ready != nil && *ep.Conditions.Ready,
+					Address: address,
+					PodName: podName,
 				})
-				break
 			}
 		}
 	}

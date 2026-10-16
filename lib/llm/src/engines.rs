@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::env;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -9,7 +10,6 @@ use async_stream::stream;
 use async_trait::async_trait;
 
 use dynamo_runtime::engine::{AsyncEngine, AsyncEngineContextProvider, ResponseStream};
-use dynamo_runtime::error::{DynamoError, ErrorType};
 #[cfg(test)]
 use dynamo_runtime::pipeline::RequestStream;
 use dynamo_runtime::pipeline::{Error, ManyIn, ManyOut, SingleIn};
@@ -23,8 +23,8 @@ use crate::protocols::openai::{
 use crate::types::openai::embeddings::NvCreateEmbeddingRequest;
 use crate::types::openai::embeddings::NvCreateEmbeddingResponse;
 use dynamo_protocols::types::realtime::{
-    DynamoRealtimeClientEvent, EventType, MaxOutputTokens, RealtimeAPIError, RealtimeClientEvent,
-    RealtimeResponse, RealtimeResponseStatus, RealtimeServerEvent, RealtimeServerEventError,
+    EventType, MaxOutputTokens, RealtimeAPIError, RealtimeClientEvent, RealtimeResponse,
+    RealtimeResponseStatus, RealtimeServerEvent, RealtimeServerEventError,
     RealtimeServerEventResponseAudioDelta, RealtimeServerEventResponseAudioDone,
     RealtimeServerEventResponseCreated, RealtimeServerEventResponseDone,
     RealtimeServerEventSessionUpdated,
@@ -58,15 +58,18 @@ impl Default for MultiNodeConfig {
 // Example echo engines
 //
 
-const DEFAULT_TOKEN_ECHO_DELAY_MS: u64 = 10;
-
 /// How long to sleep between echoed tokens.
-/// The default is 10ms, which gives us 100 tok/s.
+/// Default is 10ms which gives us 100 tok/s.
+/// Can be configured via the DYN_TOKEN_ECHO_DELAY_MS environment variable.
 pub static TOKEN_ECHO_DELAY: LazyLock<Duration> = LazyLock::new(|| {
-    Duration::from_millis(dynamo_runtime::config::env_config::parse_or_default(
-        dynamo_runtime::config::environment_names::llm::DYN_TOKEN_ECHO_DELAY_MS,
-        DEFAULT_TOKEN_ECHO_DELAY_MS,
-    ))
+    const DEFAULT_DELAY_MS: u64 = 10;
+
+    let delay_ms = env::var("DYN_TOKEN_ECHO_DELAY_MS")
+        .ok()
+        .and_then(|val| val.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DELAY_MS);
+
+    Duration::from_millis(delay_ms)
 });
 
 /// Engine that accepts un-preprocessed requests and echos the prompt back as the response
@@ -143,12 +146,12 @@ const ECHO_AUDIO_DELTA_CHUNK_LEN: usize = 64;
 pub struct EchoBidirectionalEngine;
 
 #[async_trait]
-impl AsyncEngine<ManyIn<DynamoRealtimeClientEvent>, ManyOut<Annotated<RealtimeServerEvent>>, Error>
+impl AsyncEngine<ManyIn<RealtimeClientEvent>, ManyOut<Annotated<RealtimeServerEvent>>, Error>
     for EchoBidirectionalEngine
 {
     async fn generate(
         &self,
-        incoming: ManyIn<DynamoRealtimeClientEvent>,
+        incoming: ManyIn<RealtimeClientEvent>,
     ) -> Result<ManyOut<Annotated<RealtimeServerEvent>>, Error> {
         let ctx = incoming.context();
         let session_id = ctx.id().to_string();
@@ -168,9 +171,7 @@ impl AsyncEngine<ManyIn<DynamoRealtimeClientEvent>, ManyOut<Annotated<RealtimeSe
                 }
 
                 match client_event {
-                    DynamoRealtimeClientEvent::OpenAI(
-                        RealtimeClientEvent::SessionUpdate(req),
-                    ) => {
+                    RealtimeClientEvent::SessionUpdate(req) => {
                         frame += 1;
                         yield annotated_event(
                             frame,
@@ -182,9 +183,7 @@ impl AsyncEngine<ManyIn<DynamoRealtimeClientEvent>, ManyOut<Annotated<RealtimeSe
                             ),
                         );
                     }
-                    DynamoRealtimeClientEvent::OpenAI(
-                        RealtimeClientEvent::InputAudioBufferAppend(req),
-                    ) => {
+                    RealtimeClientEvent::InputAudioBufferAppend(req) => {
                         let response_id = format!("resp_{session_id}_{frame}");
                         let item_id = format!("item_{session_id}_{frame}");
 
@@ -434,11 +433,7 @@ where
 
         // Validate the request first
         if let Err(validation_error) = request.validate() {
-            return Err(DynamoError::builder()
-                .error_type(ErrorType::InvalidArgument)
-                .message(format!("Validation failed: {validation_error}"))
-                .build()
-                .into());
+            return Err(anyhow::anyhow!("Validation failed: {}", validation_error));
         }
 
         // Forward to inner engine if validation passes
@@ -565,35 +560,14 @@ impl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dynamo_runtime::error::{ErrorType, match_error_chain};
     use dynamo_runtime::pipeline::Context;
     use futures::stream;
 
-    struct RejectingRequest;
-
-    impl ValidateRequest for RejectingRequest {
-        fn validate(&self) -> Result<(), anyhow::Error> {
-            anyhow::bail!("bad request")
-        }
-    }
-
-    struct NeverCalledEngine;
-
-    #[async_trait]
-    impl AsyncEngine<SingleIn<RejectingRequest>, ManyOut<Annotated<()>>, Error> for NeverCalledEngine {
-        async fn generate(
-            &self,
-            _request: SingleIn<RejectingRequest>,
-        ) -> Result<ManyOut<Annotated<()>>, Error> {
-            panic!("invalid requests must not reach the inner engine")
-        }
-    }
-
-    fn make_input(events: Vec<DynamoRealtimeClientEvent>) -> ManyIn<DynamoRealtimeClientEvent> {
+    fn make_input(events: Vec<RealtimeClientEvent>) -> ManyIn<RealtimeClientEvent> {
         Context::new(RequestStream::new(Box::pin(stream::iter(events))))
     }
 
-    fn parse_client_event(json: serde_json::Value) -> DynamoRealtimeClientEvent {
+    fn parse_client_event(json: serde_json::Value) -> RealtimeClientEvent {
         serde_json::from_value(json).expect("valid realtime client event")
     }
 
@@ -623,19 +597,5 @@ mod tests {
             }
             other => panic!("expected error, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn validate_engine_classifies_request_errors_as_invalid_argument() {
-        let error = ValidateEngine::new(NeverCalledEngine)
-            .generate(Context::new(RejectingRequest))
-            .await
-            .expect_err("invalid request must fail validation");
-
-        assert!(match_error_chain(
-            error.as_ref(),
-            &[ErrorType::InvalidArgument],
-            &[]
-        ));
     }
 }

@@ -38,7 +38,7 @@ class DynamoFrontendProcess(BaseDynamoFrontendProcess):
             "ETCD_ENDPOINTS": ",".join(etcd_endpoints),
         }
         # terminate_all_matching_process_names=False is required here: the frontend
-        # is launched as `python -m dynamo.frontend`, so its _command_name is the
+        # is launched as `python -m dingo.frontend`, so its _command_name is the
         # generic "python". With True, ManagedProcess.__enter__ would SIGTERM/SIGKILL
         # every "python" process on the host on startup — including this test's own
         # etcd cluster and vLLM worker (and sibling framework jobs). That orphans
@@ -155,7 +155,6 @@ class EtcdCluster:
         # Reserve contiguous ports for the full cluster to avoid collisions with
         # other tests that may also run local etcd instances.
         reserved_ports = allocate_contiguous_ports(1, num_replicas * 2, base_port)
-        request.addfinalizer(lambda ports=reserved_ports: deallocate_ports(ports))
         self._reserved_ports = reserved_ports
         self.base_port = reserved_ports[0]
         self.replicas: List[Optional[EtcdReplicaServer]] = []

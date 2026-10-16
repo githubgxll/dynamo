@@ -22,8 +22,7 @@ DLLM_ALGORITHM_CONFIG="${DLLM_ALGORITHM_CONFIG:-}"  # Optional: path to YAML con
 NAMESPACE="${NAMESPACE:-dynamo}"
 COMPONENT="${COMPONENT:-backend}"
 ENDPOINT="${ENDPOINT:-generate}"
-# Manual HTTP_PORT override, else the harness-assigned DYN_HTTP_PORT, else the default.
-HTTP_PORT="${HTTP_PORT:-${DYN_HTTP_PORT:-8001}}"
+HTTP_PORT="${HTTP_PORT:-8001}"
 TP_SIZE="${TP_SIZE:-1}"
 
 print_launch_banner --no-curl "Launching Diffusion LM Worker (LLaDA2.0)" "$MODEL_PATH" "$HTTP_PORT" \
@@ -46,7 +45,7 @@ CURL
 
 # Launch frontend (OpenAI-compatible API server)
 echo "Starting Dynamo Frontend on port $HTTP_PORT..."
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "$HTTP_PORT" &
 
 # Wait for frontend to start
@@ -57,8 +56,7 @@ echo "Starting Diffusion LM Worker..."
 
 # Build the command with required arguments
 export CUDA_VISIBLE_DEVICES=0
-export DYN_SYSTEM_PORT="${DYN_SYSTEM_PORT:-8081}"
-CMD="python -m dynamo.sglang \
+CMD="python -m dingo.sglang \
     --model-path $MODEL_PATH \
     --tp-size $TP_SIZE \
     --skip-tokenizer-init \
@@ -76,7 +74,7 @@ if [ -n "$DLLM_ALGORITHM_CONFIG" ]; then
 fi
 
 # Execute the command
-eval $CMD "$@" &
+eval $CMD &
 
 # Exit on first worker failure; kill 0 in the EXIT trap tears down the rest
 wait_any_exit

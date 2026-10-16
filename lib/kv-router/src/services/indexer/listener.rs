@@ -185,7 +185,7 @@ impl ListenerLoop {
         cursor_from_watermark(self.watermark.load(Ordering::Acquire))
     }
 
-    async fn replay_gap(&mut self, start_seq: u64, end_seq: u64) -> Result<u64, String> {
+    async fn replay_gap(&mut self, start_seq: u64, end_seq: u64) -> u64 {
         tracing::info!(
             self.worker_id,
             self.dp_rank,
@@ -201,7 +201,7 @@ impl ListenerLoop {
                 gap_size = end_seq.saturating_sub(start_seq),
                 "No replay endpoint configured; batches lost"
             );
-            return Ok(0);
+            return 0;
         };
 
         let worker_id = self.worker_id;
@@ -212,7 +212,7 @@ impl ListenerLoop {
         let req_frames = vec![Vec::new(), start_seq.to_be_bytes().to_vec()];
         if let Err(error) = send_multipart(replay_socket, req_frames).await {
             tracing::error!(worker_id, dp_rank, error = %error, "Failed to send replay request");
-            return Ok(0);
+            return 0;
         }
 
         let mut replay_progress = ReplayRecoveryProgress::new(start_seq, end_seq);
@@ -229,24 +229,22 @@ impl ListenerLoop {
                     }
                 }
             };
-            // DEALER strips the ROUTER identity. vLLM includes the PUB topic;
-            // SGLang sends only the delimiter, sequence number, and payload.
-            let (seq_bytes, payload) = match msg.as_slice() {
-                [_, seq, payload] | [_, _, seq, payload] => (seq, payload),
-                _ => {
-                    tracing::warn!(
-                        worker_id,
-                        dp_rank,
-                        "Unexpected replay frame count: {}",
-                        msg.len()
-                    );
-                    break;
-                }
-            };
+            if msg.len() < 3 {
+                tracing::warn!(
+                    worker_id,
+                    dp_rank,
+                    "Unexpected replay frame count: {}",
+                    msg.len()
+                );
+                break;
+            }
+
+            let payload = msg.get(2).expect("frame count checked above");
             if payload.is_empty() {
                 break;
             }
 
+            let seq_bytes = msg.get(1).expect("frame count checked above");
             if seq_bytes.len() != 8 {
                 tracing::warn!(
                     worker_id,
@@ -277,14 +275,7 @@ impl ListenerLoop {
                 let router_event = placement_event
                     .into_router_event()
                     .expect("local worker placement must convert to router event");
-                indexer
-                    .apply_event_routed(router_event)
-                    .await
-                    .map_err(|error| {
-                        format!(
-                            "failed to apply replayed event for worker {worker_id} dp_rank {dp_rank}: {error}"
-                        )
-                    })?;
+                indexer.apply_event_routed(router_event).await;
             }
             watermark.store(seq, Ordering::Release);
             replay_progress.record_batch(seq);
@@ -294,10 +285,10 @@ impl ListenerLoop {
 
         let replayed = replay_progress.replayed();
         tracing::info!(worker_id, dp_rank, replayed, "Replay complete");
-        Ok(replayed)
+        replayed
     }
 
-    async fn handle_gap(&mut self, seq: u64) -> Result<(), String> {
+    async fn handle_gap(&mut self, seq: u64) {
         match self.cursor().observe(seq) {
             CursorObservation::Initial { got } if got > 0 => {
                 tracing::warn!(
@@ -307,7 +298,7 @@ impl ListenerLoop {
                     got,
                     "Gap detected: expected seq 0, got {got}"
                 );
-                self.replay_gap(0, got).await?;
+                self.replay_gap(0, got).await;
             }
             CursorObservation::Gap { expected, got } => {
                 tracing::warn!(
@@ -317,16 +308,16 @@ impl ListenerLoop {
                     got,
                     "Gap detected: expected seq {expected}, got {got}"
                 );
-                self.replay_gap(expected, got).await?;
+                self.replay_gap(expected, got).await;
             }
             CursorObservation::Initial { .. }
             | CursorObservation::Contiguous { .. }
-            | CursorObservation::Stale { .. } => {}
+            | CursorObservation::Stale { .. }
+            | CursorObservation::FreshAfterBarrier { .. } => {}
         }
-        Ok(())
     }
 
-    async fn apply_live_batch(&mut self, seq: u64, payload: &[u8]) -> Result<(), String> {
+    async fn apply_live_batch(&mut self, seq: u64, payload: &[u8]) {
         let batch = match decode_event_batch(payload) {
             Ok(batch) => batch,
             Err(error) => {
@@ -335,7 +326,7 @@ impl ListenerLoop {
                     self.dp_rank,
                     "Failed to decode KvEventBatch: {error}"
                 );
-                return Ok(());
+                return;
             }
         };
 
@@ -353,22 +344,13 @@ impl ListenerLoop {
             let router_event = placement_event
                 .into_router_event()
                 .expect("local worker placement must convert to router event");
-            self.indexer
-                .apply_event_routed(router_event)
-                .await
-                .map_err(|error| {
-                    format!(
-                        "failed to apply live event for worker {} dp_rank {}: {error}",
-                        self.worker_id, self.dp_rank
-                    )
-                })?;
+            self.indexer.apply_event_routed(router_event).await;
             self.messages_processed += 1;
         }
         self.watermark.store(seq, Ordering::Release);
-        Ok(())
     }
 
-    async fn handle_message(&mut self, msg: MultipartMessage) -> Result<(), String> {
+    async fn handle_message(&mut self, msg: MultipartMessage) {
         if msg.len() != 3 {
             tracing::warn!(
                 self.worker_id,
@@ -376,7 +358,7 @@ impl ListenerLoop {
                 "Unexpected ZMQ frame count: {}",
                 msg.len()
             );
-            return Ok(());
+            return;
         }
 
         let seq_bytes = msg.get(1).expect("frame count checked above");
@@ -387,18 +369,18 @@ impl ListenerLoop {
                 "Invalid sequence number length: {}",
                 seq_bytes.len()
             );
-            return Ok(());
+            return;
         }
 
         let seq = u64::from_be_bytes(seq_bytes[..8].try_into().expect("length checked above"));
-        self.handle_gap(seq).await?;
+        self.handle_gap(seq).await;
 
         if matches!(self.cursor().observe(seq), CursorObservation::Stale { .. }) {
-            return Ok(());
+            return;
         }
 
         let payload = msg.get(2).expect("frame count checked above");
-        self.apply_live_batch(seq, payload).await
+        self.apply_live_batch(seq, payload).await;
     }
 
     async fn run(mut self) -> Result<(), String> {
@@ -430,7 +412,7 @@ impl ListenerLoop {
                 }
             };
 
-            self.handle_message(msg).await?;
+            self.handle_message(msg).await;
         }
     }
 }
@@ -552,89 +534,5 @@ async fn connect_replay_socket(
             );
             None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::protocols::compute_block_hash_for_seq;
-    use crate::services::indexer::backend::create_indexer;
-    use std::time::Duration;
-
-    #[rstest::rstest]
-    #[case::sglang(false)]
-    #[case::vllm(true)]
-    #[tokio::test]
-    async fn replay_accepts_engine_framing(#[case] include_topic: bool) {
-        let context = zmq::Context::new();
-        let router = context.socket(zmq::ROUTER).unwrap();
-        router.set_linger(0).unwrap();
-        router.set_rcvtimeo(5000).unwrap();
-        router.set_sndtimeo(5000).unwrap();
-        router.bind("tcp://127.0.0.1:*").unwrap();
-        let endpoint = router.get_last_endpoint().unwrap().unwrap();
-        let replay_socket = connect_dealer_socket(&endpoint).unwrap();
-        let publisher = context.socket(zmq::PUB).unwrap();
-        publisher.bind("tcp://127.0.0.1:*").unwrap();
-        let live_socket =
-            connect_sub_socket(&publisher.get_last_endpoint().unwrap().unwrap()).unwrap();
-
-        let server = tokio::task::spawn_blocking(move || {
-            let request = router.recv_multipart(0).unwrap();
-            assert_eq!(&request[1..], &[vec![], 0_u64.to_be_bytes().to_vec()]);
-            for seq in 0_u64..=2 {
-                let mut frames = vec![request[0].clone(), vec![]];
-                if include_topic {
-                    frames.push(b"kv-events".to_vec());
-                }
-                if seq == 2 {
-                    frames.extend([u64::MAX.to_be_bytes().to_vec(), vec![]]);
-                } else {
-                    let event = (
-                        "BlockStored",
-                        vec![seq + 100],
-                        if seq == 0 { None } else { Some(100_u64) },
-                        vec![1_u32 + seq as u32; 4],
-                        4_usize,
-                        Option::<u64>::None,
-                        "GPU",
-                    );
-                    let payload = rmp_serde::to_vec(&(0.0_f64, vec![event], Some(0_i32))).unwrap();
-                    frames.extend([seq.to_be_bytes().to_vec(), payload]);
-                }
-                router.send_multipart(frames, 0).unwrap();
-            }
-            // Keep the socket open until the client consumes the queued replies.
-            assert_eq!(router.recv_multipart(0).unwrap()[1], b"done");
-        });
-        let indexer = create_indexer(4, 1);
-        let watermark = Arc::new(AtomicU64::new(WATERMARK_UNSET));
-        let cancel = CancellationToken::new();
-        let mut listener = ListenerLoop::new(
-            1,
-            0,
-            4,
-            indexer.clone(),
-            cancel.clone(),
-            live_socket,
-            Some(replay_socket.clone()),
-            watermark.clone(),
-        );
-        let replayed = tokio::time::timeout(Duration::from_secs(5), listener.replay_gap(0, 2))
-            .await
-            .expect("replay completion marker")
-            .unwrap();
-        send_multipart(&replay_socket, vec![b"done".to_vec()])
-            .await
-            .unwrap();
-        server.await.unwrap();
-        assert_eq!(replayed, 2);
-        assert_eq!(watermark.load(Ordering::Acquire), 1);
-        indexer.dump_events().await.expect("flush indexer");
-        let hashes = compute_block_hash_for_seq(&[1, 1, 1, 1, 2, 2, 2, 2], 4, Default::default());
-        let matches = indexer.find_matches(hashes).await.unwrap();
-        assert_eq!(matches.scores.get(&WorkerWithDpRank::new(1, 0)), Some(&2));
-        cancel.cancel();
     }
 }

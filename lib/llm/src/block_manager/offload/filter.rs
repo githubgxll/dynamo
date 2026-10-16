@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::tokens::SequenceHash;
@@ -49,8 +49,7 @@ impl FrequencyFilter {
 
         CriticalTaskExecutionHandle::new_with_runtime(
             move |cancel_token| async move {
-                let mut interval =
-                    tokio::time::interval_at(Instant::now() + flush_interval, flush_interval);
+                let mut interval = tokio::time::interval(flush_interval);
                 loop {
                     tokio::select! {
                         // Observe cancellation and exit the loop.
@@ -199,15 +198,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // The count should have decayed from 4 to 3.
-        {
-            let frequency_map = filter.frequency_map.lock().unwrap();
-            assert_eq!(*frequency_map.get(&hash(0)).unwrap(), 3);
-        }
-
-        tokio::time::sleep(Duration::from_millis(250)).await;
-
-        // The count should have decayed from 3 to 2.
+        // The count should have decayed from 4 to 2.
         {
             let frequency_map = filter.frequency_map.lock().unwrap();
             assert_eq!(*frequency_map.get(&hash(0)).unwrap(), 2);
@@ -215,7 +206,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        // The count should have decayed from 2 to 1.
+        // The count should have decayed from 2 to 1, and should be pruned.
         {
             let frequency_map = filter.frequency_map.lock().unwrap();
             assert_eq!(*frequency_map.get(&hash(0)).unwrap(), 1);
@@ -223,7 +214,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(250)).await;
 
-        // The count should have decayed from 1 to 0 and been pruned.
+        // The count should have decayed from 1 to 0, and should be pruned.
         {
             let frequency_map = filter.frequency_map.lock().unwrap();
             assert!(frequency_map.get(&hash(0)).is_none());

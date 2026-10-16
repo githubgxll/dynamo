@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "official_vllm_base": "vllm/vllm-openai:v0.31.0-ubuntu2404@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+  "omni_wheel": "https://files.pythonhosted.org/packages/1c/66/ab0d158d85df141f8f74e9736aeefc30c615f3544d2fb35682740349ef69/vllm_omni-0.31.0rc1-py3-none-any.whl#sha256=93ff995e7fcde7a7132d460eb21102e727f68068ebd58744526ee3178149350c",
+  "required_versions": {
+    "gpu-memory-service": "0.9.0",
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "transformers": "5.14.1",
+    "tokenizers": "0.22.2",
+    "av": "16.1.0",
+    "soxr": "1.1.0",
+    "torchcodec": "0.14.0",
+    "opencv-python": "4.13.0.92",
+    "opencv-python-headless": "4.13.0.92",
+    "pynvvideocodec": "2.0.4",
+    "ai-dingo": "1.3.0",
+    "ai-dingo-runtime": "1.3.0"
+  },
+  "solver_constraints": [
+    "transformers==5.14.1",
+    "tokenizers==0.22.2",
+    "av==16.1.0",
+    "soxr==1.1.0",
+    "torchcodec==0.14.0",
+    "opencv-python==4.13.0.92",
+    "opencv-python-headless==4.13.0.92"
+  ],
+  "metadata_overrides": [
+    {
+      "owner": "torch==2.13.0+cu130",
+      "declared": "nvidia-nccl-cu13==2.29.7; platform_system == 'Linux'",
+      "installed": "nvidia-nccl-cu13==2.30.7",
+      "reason": "Reviewed official vLLM base deliberately overrides this exact NCCL metadata pin; actual /etc/uv-overrides.txt and before-install inventory must agree."
+    }
+  ],
+  "opencv_shared_namespace": {
+    "required_by": {
+      "opencv-python-headless": "vllm==0.31.0 default requirement >=4.13.0",
+      "opencv-python": "vllm-omni==0.31.0rc1 -> cosmos-guardrail>=0.3.1 default requirement >=4.10.0.84"
+    },
+    "provider": "opencv-python-headless==4.13.0.92",
+    "strategy": "Keep both same-version metadata to satisfy both default requirement graphs; reinstall headless last without dependencies, and verify every hashed cv2 file from its RECORD plus actual import origin. Do not uninstall either distribution in a running Pod."
+  },
+  "disabled_optional_components": [
+    "kvbm",
+    "modelexpress"
+  ],
+  "additional_backend_requirements": [
+    "uvloop",
+    "blake3>=1.0.0,<2.0.0",
+    "soundfile>=0.13.1",
+    "librosa>=0.10.0",
+    "ray>=2.55.0"
+  ],
+  "dependency_scope": "Installed ai-dingo[video-gateway], ai-dingo-runtime, gpu-memory-service, vllm and vllm-omni default requirements plus recursively requested extras and named backend helpers. The complete ai-dingo[vllm] extra is not activated because its NIXL pin does not describe the inherited official vLLM 0.31 native stack.",
+  "validation_scope": "Gateway framework dependency solve and synthetic CPU media checks precede framework license policy validation. Final adapter/source overlay is audited again offline. None establish H100/model/media E2E acceptance.",
+  "gateway_sha": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "enabled_root_extras": {
+    "ai-dingo": [
+      "video-gateway"
+    ]
+  },
+  "gateway_reference_sha256": {
+    "reference-gateway-pyproject.toml": "712c8759b5dde8e1042de85ffe16848bfd9ca57d77467633bfe443f57d803e9b",
+    "reference-gateway-runtime-pyproject.toml": "6ec034d984b0370011e4590ade3086995e8d641e19081ed5998e1adc23b85203",
+    "reference-gateway-vllm-runtime.Dockerfile": "33b8b80f3eaa80911d6e2a0107821c149c381f256be6c473bd66420ec11a5542"
+  }
+}

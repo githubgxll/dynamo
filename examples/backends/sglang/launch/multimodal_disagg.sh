@@ -16,7 +16,6 @@ source "$SCRIPT_DIR/../../../common/launch_utils.sh" # print_launch_banner, wait
 MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct"
 CHAT_TEMPLATE="qwen2-vl"
 PROVIDED_CHAT_TEMPLATE=""
-FRONTEND_DECODING=false
 
 # --single-gpu: Packs all workers (encode, prefill, decode) onto a single GPU.
 # This is intended for functional testing with small models (e.g. 2B) where CI
@@ -43,10 +42,6 @@ while [[ $# -gt 0 ]]; do
             SINGLE_GPU=true
             shift
             ;;
-        --frontend-decoding)
-            FRONTEND_DECODING=true
-            shift
-            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
@@ -54,7 +49,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --served-model-name <served_model_name> Specify the served model name to use (default: empty)"
             echo "  --chat-template <template> Specify the SGLang chat template to use (default: $CHAT_TEMPLATE)"
             echo "  --single-gpu         Pack all workers on 1 GPU (for small models, e.g. 2B)"
-            echo "  --frontend-decoding  Decode images in the Rust frontend and transfer pixels to the encode worker"
             echo "  -h, --help           Show this help message"
             exit 0
             ;;
@@ -120,10 +114,6 @@ if [[ "$SINGLE_GPU" == "true" ]]; then
     DECODE_EXTRA_ARGS="--mem-fraction-static ${DYN_DECODE_GPU_MEM} --delete-ckpt-after-loading --max-running-requests 2 --context-length 2048 --max-total-tokens 1024 $GPU_MEM_ARGS"
 fi
 
-if [[ "$FRONTEND_DECODING" == "true" ]]; then
-    ENCODE_EXTRA_ARGS="$ENCODE_EXTRA_ARGS --frontend-decoding"
-fi
-
 # Prevent port collisions: the test framework exports DYN_SYSTEM_PORT which all
 # child processes would inherit. Unset it so only workers that need it set their own.
 unset DYN_SYSTEM_PORT
@@ -134,13 +124,13 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner --multimodal "Launching Disaggregated Multimodal E/P/D" "$MODEL_NAME" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python3 -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python3 -m dingo.frontend &
 
 # run SGLang multimodal encode worker (frontend-facing: encodes images, routes to worker)
 echo "Starting encode worker on GPU $DYN_ENCODE_WORKER_GPU (GPU mem: $DYN_ENCODE_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT1:-8081} \
-env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_ENCODE_CUDA_PIN:+"$_ENCODE_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --disaggregation-mode encode \
   --model-path "$MODEL_NAME" \
@@ -164,7 +154,7 @@ fi
 # See https://github.com/sgl-project/sglang/pull/11203.
 echo "Starting prefill worker on GPU $DYN_PREFILL_WORKER_GPU (GPU mem: $DYN_PREFILL_GPU_MEM)..."
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT2:-8082} \
-env ${_PREFILL_CUDA_PIN:+"$_PREFILL_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_PREFILL_CUDA_PIN:+"$_PREFILL_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --model-path "$MODEL_NAME" \
@@ -188,7 +178,7 @@ fi
 
 # run SGLang multimodal decode worker
 echo "Starting decode worker on GPU $DYN_DECODE_WORKER_GPU (GPU mem: $DYN_DECODE_GPU_MEM)..."
-env ${_DECODE_CUDA_PIN:+"$_DECODE_CUDA_PIN"} python3 -m dynamo.sglang \
+env ${_DECODE_CUDA_PIN:+"$_DECODE_CUDA_PIN"} python3 -m dingo.sglang \
   --enable-multimodal \
   --dedicated-mm-encoder \
   --model-path "$MODEL_NAME" \

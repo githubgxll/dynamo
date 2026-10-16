@@ -25,7 +25,7 @@ func TestGenerateInferencePoolSelectsWorkerClass(t *testing.T) {
 		},
 	}
 
-	pool, err := GenerateInferencePool(dgd, "epp", "graph-epp")
+	pool, err := GenerateInferencePool(dgd, "epp", "graph-epp", nil)
 	if err != nil {
 		t.Fatalf("GenerateInferencePool() error = %v", err)
 	}

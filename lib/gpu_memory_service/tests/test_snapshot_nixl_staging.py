@@ -23,8 +23,6 @@ except ModuleNotFoundError:
         allow_module_level=True,
     )
 
-from _fake_vmm import FakeVMM
-
 pytestmark = [
     pytest.mark.pre_merge,
     pytest.mark.unit,
@@ -112,10 +110,13 @@ def test_staging_prep_starts_before_restore(monkeypatch):
         assert allow_finish.wait(timeout=1.0)
         return FakeApi()
 
-    fake_vmm = FakeVMM()
-    monkeypatch.setattr(nixl_staging, "get_vmm", lambda: fake_vmm)
+    monkeypatch.setattr(
+        nixl_staging.cuda_utils,
+        "cuda_runtime_set_device",
+        lambda _device: None,
+    )
     monkeypatch.setattr(nixl_staging, "load_nixl_api", fake_load_nixl_api)
-    monkeypatch.setattr(nixl_staging, "make_pinned_copy_slots", lambda _vmm, _count: [])
+    monkeypatch.setattr(nixl_staging, "make_pinned_copy_slots", lambda _count: [])
 
     session = _NixlPosixStagingTransferSession(
         backend_name="test-backend",

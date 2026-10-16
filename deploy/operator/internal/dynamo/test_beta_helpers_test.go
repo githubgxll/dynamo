@@ -8,11 +8,8 @@ import (
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1alpha1"
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
 	commonconsts "github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
+	corev1 "k8s.io/api/core/v1"
 )
-
-func staticContainerGPUCount(count int64) ContainerGPUCount {
-	return func() (int64, error) { return count, nil }
-}
 
 func betaComponent(t testing.TB, src *v1alpha1.DynamoComponentDeploymentSharedSpec) *v1beta1.DynamoComponentDeploymentSharedSpec {
 	t.Helper()
@@ -129,13 +126,14 @@ func betaRestartStatus(src *v1alpha1.RestartStatus) *v1beta1.RestartStatus {
 	}
 }
 
-func resolveTestContainerGPUs(t testing.TB, component *v1beta1.DynamoComponentDeploymentSharedSpec) int64 {
+func betaResourceRequirements(t testing.TB, src *v1alpha1.Resources) *corev1.ResourceRequirements {
 	t.Helper()
-	containerGPUs, err := ResolveContainerGPUs(t.Context(), nil, "", component)
-	if err != nil {
-		t.Fatalf("resolve test container GPUs: %v", err)
+	if src == nil {
+		return nil
 	}
-	return containerGPUs
+	component := betaComponent(t, &v1alpha1.DynamoComponentDeploymentSharedSpec{Resources: src})
+	resources := GetMainContainerResources(component)
+	return &resources
 }
 
 func applyAlphaMetadataToBetaComponent(component *v1beta1.DynamoComponentDeploymentSharedSpec, annotations, labels map[string]string) {

@@ -13,7 +13,7 @@ All tests run inside containers. See the [Container Development Guide](../contai
 Each area can have one or more of the following types of tests:
 
 1. **Unit** -- Exercises a single function, class, or module in isolation. No external services, no GPU. Each test typically runs in milliseconds; all unit tests combined may take <5 minutes.
-2. **Integration** -- Wires multiple components together using **mock engines** (`dynamo.mocker`) and **real infrastructure** (ETCD for service discovery, NATS for messaging, if enabled). Validates that the router, planner, frontend gRPC, and similar subsystems work together without launching a real inference engine. No GPU required. Each test typically runs in seconds; all integration tests combined may take <30 minutes.
+2. **Integration** -- Wires multiple components together using **mock engines** (`dingo.mocker`) and **real infrastructure** (ETCD for service discovery, NATS for messaging, if enabled). Validates that the router, planner, frontend gRPC, and similar subsystems work together without launching a real inference engine. No GPU required. Each test typically runs in seconds; all integration tests combined may take <30 minutes.
 3. **End-to-End (E2E)** -- Starts a **real inference engine** (vLLM, SGLang, or TRT-LLM), sends requests through the frontend, and validates responses. Requires GPU. Each test typically runs in minutes; the full E2E suite may take several hours.
 
 It is absolutely important to be mindful of how long a test you write takes. Slow tests have a compounding cost: they burn GPU-hours in CI (GPUs are expensive and shared), they discourage engineers from running suites locally (so bugs slip through to CI), and they slow down the entire team's development velocity. A test suite that takes too long becomes a test suite that nobody runs. When adding or modifying tests, include a per-test time estimate in your PR description -- CI GPU resources are limited and these estimates help the team schedule tests across pre-merge, nightly, and weekly pipelines.
@@ -92,10 +92,10 @@ dynamo/
 | KVBM Integration   | KV block manager integration          | `tests/kvbm_integration/`                     |
 | GPU Memory Service | GPU Memory Service E2E                | `tests/gpu_memory_service/`                   |
 | Router             | Router E2E with backends              | `tests/router/`                               |
-| Planner            | Planner unit + integration tests      | `components/src/dynamo/planner/tests/`        |
+| Planner            | Planner unit + integration tests      | `dingo/planner/tests/`        |
 | Frontend           | Frontend HTTP/gRPC tests              | `tests/frontend/`                             |
-| Profiler           | Profiler unit + integration tests     | `components/src/dynamo/profiler/tests/`       |
-| Global Planner     | Global planner unit tests             | `components/src/dynamo/global_planner/tests/` |
+| Profiler           | Profiler unit + integration tests     | `dingo/profiler/tests/`       |
+| Global Planner     | Global planner unit tests             | `dingo/global_planner/tests/` |
 | Fault Tolerance    | Chaos, migration, cancellation        | `tests/fault_tolerance/`                      |
 | Deployment         | Deployment validation                 | `tests/deploy/`                               |
 | Benchmark          | Performance/load                      | `benchmarks/`                                 |
@@ -103,19 +103,6 @@ dynamo/
 ### Test Oracles
 
 Prefer API responses, structured response fields, metrics, or direct test helper APIs for functional and semantic assertions. If a router-internal fact is only exposed as a structured tracing event, keep parsing in a shared helper rather than duplicating ad hoc log scraping in tests.
-
-### AISimulate dependency regression coverage
-
-- `tests/dependencies/test_aisimulate_consistency.py` checks exact, matching
-  AISimulate pins in Python manifests, container requirements, and Cargo files.
-  Missing declarations and unbounded requirements fail these checks. Current
-  containers stage AISimulate through `requirements.aisimulate.txt`; the former
-  AIC cap in the `mocker` extra and planner requirements is obsolete.
-- `components/src/dynamo/profiler/tests/unit/test_replay_bench_imports.py` executes
-  the replay benchmark module with AISimulate imports blocked. It checks that
-  importing the module succeeds and that an AIC comparison requires AISimulate
-  only when called. Sibling replay modules are stubbed, so this unit test needs
-  neither native Dynamo bindings nor an installed AISimulate package.
 
 ---
 
@@ -560,8 +547,8 @@ Tests must be deterministic. A flaky test -- one that sometimes passes and somet
    **Other in-repo retry sites** (in case you need to roll your own for a different layer):
    - `tests/frontend/test_frontend_api_surface_compliance.py:_retry_network_op` -- sync, network-only exception list.
    - `tests/router/helper.py:send_request_with_retry` -- async, status-code-driven (aiohttp).
-   - `tests/deploy/dgd_utils.py` -- sync connect retry with 1.5x backoff.
-   - `components/src/dynamo/planner/connectors/remote_client.py` -- sync exponential backoff (`2**attempt`).
+   - `tests/utils/managed_deployment.py` -- sync connect retry with 1.5x backoff.
+   - `dingo/planner/connectors/remote_client.py` -- sync exponential backoff (`2**attempt`).
 3. **If retry is not enough either**, quarantine the test to prevent it from blocking other developers:
    - `@pytest.mark.skip(reason="Flaky: <ticket link>")` -- disables the test entirely. Use when the test provides no signal in its current state.
    - `@pytest.mark.xfail(reason="Flaky: <ticket link>", strict=False)` -- runs the test but does not fail the suite. Use when you still want visibility into pass/fail rates while you investigate.
@@ -673,7 +660,7 @@ The profiler automatically detects the engine type and uses the appropriate bina
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 ```
 
-Then pass the variable to each worker: `CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 -m dynamo.vllm ...`. For multi-GPU scripts that assign distinct GPUs per worker, use named env vars with defaults (e.g. `PREFILL_CUDA_VISIBLE_DEVICES="${PREFILL_CUDA_VISIBLE_DEVICES:-0}"`).
+Then pass the variable to each worker: `CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python3 -m dingo.vllm ...`. For multi-GPU scripts that assign distinct GPUs per worker, use named env vars with defaults (e.g. `PREFILL_CUDA_VISIBLE_DEVICES="${PREFILL_CUDA_VISIBLE_DEVICES:-0}"`).
 
 ### Engine-specific mapping
 
@@ -682,11 +669,11 @@ Launch scripts call engine-specific functions from `examples/common/gpu_utils.sh
 ```bash
 # vLLM
 GPU_MEM_ARGS=$(build_vllm_gpu_mem_args)
-python -m dynamo.vllm --model "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.vllm --model "$MODEL" $GPU_MEM_ARGS &
 
 # SGLang
 GPU_MEM_ARGS=$(build_sglang_gpu_mem_args)
-python -m dynamo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
+python -m dingo.sglang --model-path "$MODEL" $GPU_MEM_ARGS &
 
 # TRT-LLM (requires JSON merging, separate function)
 OVERRIDE_JSON=$(build_trtllm_override_args_with_mem)

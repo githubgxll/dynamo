@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/../../../common/launch_utils.sh" # print_launch_banner, wait
 
 # Default model
 MODEL="Qwen/Qwen3-0.6B"
+USE_UNIFIED=false
 
 # Parse command line arguments
 EXTRA_ARGS=()
@@ -22,13 +23,18 @@ while [[ $# -gt 0 ]]; do
             MODEL="$2"
             shift 2
             ;;
+        --unified)
+            USE_UNIFIED=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
             echo "  --model <name>       Specify model (default: $MODEL)"
+            echo "  --unified            Use unified_main entry point (Worker)"
             echo "  -h, --help           Show this help message"
             echo ""
-            echo "Any additional options are passed through to dynamo.vllm."
+            echo "Any additional options are passed through to dingo.vllm."
             exit 0
             ;;
         *)
@@ -51,12 +57,15 @@ HTTP_PORT="${DYN_HTTP_PORT:-8000}"
 print_launch_banner "Launching Aggregated Serving (1 GPU)" "$MODEL" "$HTTP_PORT"
 
 # run ingress
-# dynamo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
-python -m dynamo.frontend &
+# dingo.frontend accepts either --http-port flag or DYN_HTTP_PORT env var (defaults to 8000)
+python -m dingo.frontend &
 
 # run worker
 # --enforce-eager is added for quick deployment. for production use, need to remove this flag
-WORKER_MODULE="dynamo.vllm"
+WORKER_MODULE="dingo.vllm"
+if [ "$USE_UNIFIED" = true ]; then
+    WORKER_MODULE="dingo.vllm.unified_main"
+fi
 DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
     python -m "$WORKER_MODULE" --model "$MODEL" --enforce-eager \
     --max-model-len "$MAX_MODEL_LEN" \

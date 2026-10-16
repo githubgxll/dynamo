@@ -12,33 +12,15 @@ use dynamo_llm::protocols::{
         NvCreateChatCompletionRequest, NvCreateChatCompletionStreamResponse,
     },
 };
-use dynamo_runtime::error::DynamoError;
 use dynamo_runtime::pipeline::{
-    AsyncEngine, AsyncEngineContext, AsyncEngineContextProvider, ManyOut, ResponseStream, SingleIn,
-    async_trait,
+    AsyncEngine, AsyncEngineContextProvider, ManyOut, ResponseStream, SingleIn, async_trait,
 };
 use tokio::sync::{Mutex, Semaphore};
 
-pub type Script = Vec<Annotated<NvCreateChatCompletionStreamResponse>>;
+pub type Script = Vec<NvCreateChatCompletionStreamResponse>;
 
 enum QueuedScript {
     Immediate(Script),
-    Failure(Error),
-    #[allow(dead_code)]
-    Interrupted {
-        chunks: Script,
-        split_at: usize,
-        kill_after_stop: bool,
-    },
-    #[allow(dead_code)]
-    BackendError {
-        chunks: Script,
-        error: DynamoError,
-    },
-    /// `generate()` itself fails before any stream exists, the shape of a
-    /// router-side rejection (overload, deadline) rather than a backend fault.
-    #[allow(dead_code)]
-    GenerateError(DynamoError),
     Gated {
         chunks: Script,
         split_at: usize,
@@ -60,37 +42,13 @@ impl ScriptGate {
 pub struct ScriptedChatEngine {
     scripts: Mutex<VecDeque<QueuedScript>>,
     requests: Mutex<Vec<NvCreateChatCompletionRequest>>,
-    contexts: Mutex<Vec<std::sync::Arc<dyn AsyncEngineContext>>>,
 }
 
 impl ScriptedChatEngine {
-    #[allow(dead_code)]
-    pub fn with_interrupted_tail(chunks: Script, split_at: usize, kill_after_stop: bool) -> Self {
-        assert!(split_at < chunks.len());
+    pub fn new(scripts: impl IntoIterator<Item = Script>) -> Self {
         Self {
-            scripts: Mutex::new(VecDeque::from([QueuedScript::Interrupted {
-                chunks,
-                split_at,
-                kill_after_stop,
-            }])),
+            scripts: Mutex::new(scripts.into_iter().map(QueuedScript::Immediate).collect()),
             requests: Mutex::new(Vec::new()),
-            contexts: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn new(scripts: impl IntoIterator<Item = Result<Script, Error>>) -> Self {
-        Self {
-            scripts: Mutex::new(
-                scripts
-                    .into_iter()
-                    .map(|script| match script {
-                        Ok(script) => QueuedScript::Immediate(script),
-                        Err(error) => QueuedScript::Failure(error),
-                    })
-                    .collect(),
-            ),
-            requests: Mutex::new(Vec::new()),
-            contexts: Mutex::new(Vec::new()),
         }
     }
 
@@ -108,40 +66,14 @@ impl ScriptedChatEngine {
                     release: release.clone(),
                 }])),
                 requests: Mutex::new(Vec::new()),
-                contexts: Mutex::new(Vec::new()),
             },
             ScriptGate { release },
         )
     }
 
-    #[allow(dead_code)]
-    pub fn with_backend_error(chunks: Script, error: DynamoError) -> Self {
-        Self {
-            scripts: Mutex::new(VecDeque::from([QueuedScript::BackendError {
-                chunks,
-                error,
-            }])),
-            requests: Mutex::new(Vec::new()),
-            contexts: Mutex::new(Vec::new()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_generate_error(error: DynamoError) -> Self {
-        Self {
-            scripts: Mutex::new(VecDeque::from([QueuedScript::GenerateError(error)])),
-            ..Self::new([])
-        }
-    }
-
     /// Remove and return all requests observed so far, in arrival order.
     pub async fn take_requests(&self) -> Vec<NvCreateChatCompletionRequest> {
         std::mem::take(&mut *self.requests.lock().await)
-    }
-
-    #[allow(dead_code)]
-    pub async fn take_contexts(&self) -> Vec<std::sync::Arc<dyn AsyncEngineContext>> {
-        std::mem::take(&mut *self.contexts.lock().await)
     }
 
     pub async fn remaining_scripts(&self) -> usize {
@@ -165,60 +97,19 @@ impl
         let ctx = context.context();
 
         self.requests.lock().await.push(request);
-        self.contexts.lock().await.push(ctx.clone());
         let script = self
             .scripts
             .lock()
             .await
             .pop_front()
             .ok_or_else(|| anyhow!("ScriptedChatEngine received an unexpected request"))?;
-        let script = match script {
-            QueuedScript::Failure(error) => return Err(error),
-            script => script,
-        };
 
-        if let QueuedScript::GenerateError(error) = script {
-            return Err(error.into());
-        }
-
-        let producer_ctx = ctx.clone();
         let output = async_stream::stream! {
             match script {
-                QueuedScript::Interrupted { chunks, split_at, kill_after_stop } => {
-                    let mut chunks = chunks.into_iter();
-                    for chunk in chunks.by_ref().take(split_at) {
-                        yield chunk;
-                    }
-                    producer_ctx.stop_generating();
-                    if kill_after_stop {
-                        producer_ctx.kill();
-                        // A killed backend need not produce another item or EOF.
-                        std::future::pending::<()>().await;
-                    }
-                    // Force Pending after stopping: ready chunks would win the
-                    // adapter's biased select and hide premature cancellation.
-                    tokio::task::yield_now().await;
-                    for chunk in chunks {
-                        yield chunk;
-                    }
-                }
                 QueuedScript::Immediate(chunks) => {
                     for chunk in chunks {
-                        yield chunk;
+                        yield Annotated::from_data(chunk);
                     }
-                }
-                QueuedScript::Failure(_) => unreachable!("failure scripts return before streaming"),
-                QueuedScript::BackendError { chunks, error } => {
-                    for chunk in chunks {
-                        yield chunk;
-                    }
-                    yield Annotated {
-                        data: None,
-                        id: None,
-                        event: Some("error".to_string()),
-                        comment: None,
-                        error: Some(error),
-                    };
                 }
                 QueuedScript::Gated {
                     chunks,
@@ -227,7 +118,7 @@ impl
                 } => {
                     let mut chunks = chunks.into_iter();
                     for chunk in chunks.by_ref().take(split_at) {
-                        yield chunk;
+                        yield Annotated::from_data(chunk);
                     }
                     let permit = release
                         .acquire()
@@ -235,11 +126,8 @@ impl
                         .expect("script gate semaphore was closed");
                     permit.forget();
                     for chunk in chunks {
-                        yield chunk;
+                        yield Annotated::from_data(chunk);
                     }
-                }
-                QueuedScript::GenerateError(_) => {
-                    unreachable!("GenerateError returns before the stream is built")
                 }
             }
         };

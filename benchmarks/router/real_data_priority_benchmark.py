@@ -22,7 +22,6 @@ from common import (
     prepare_trace_dataset,
     resolve_tokenizer,
     setup_logger,
-    tag_requests_with_priority,
 )
 
 logger = setup_logger(__name__)
@@ -73,6 +72,27 @@ def offset_hash_ids(tier_requests):
     return shifted
 
 
+def tag_requests_with_priority(requests, priority):
+    """Return request copies with nvext.agent_hints.priority merged in."""
+    tagged_requests = []
+    for request in requests:
+        tagged_request = copy.deepcopy(request)
+
+        nvext = tagged_request.get("nvext")
+        if not isinstance(nvext, dict):
+            nvext = {}
+            tagged_request["nvext"] = nvext
+
+        agent_hints = nvext.get("agent_hints")
+        if not isinstance(agent_hints, dict):
+            agent_hints = {}
+            nvext["agent_hints"] = agent_hints
+
+        agent_hints["priority"] = priority
+        tagged_requests.append(tagged_request)
+    return tagged_requests
+
+
 def write_trace_file(requests, path):
     """Write a list of request dicts to a JSONL file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -87,7 +107,7 @@ def run_concurrent_streams(
     """Launch concurrent aiperf subprocesses for each tier.
 
     Args:
-        tag_priority: If True, inject extra.nvext.agent_hints.priority per tier.
+        tag_priority: If True, inject nvext.agent_hints.priority per tier.
     """
     processes = []
     log_files = []

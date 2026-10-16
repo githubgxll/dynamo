@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use dashmap::DashMap;
-use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
 use crate::{PositionalHash, PositionalSequenceHash};
@@ -13,9 +12,7 @@ pub struct PositionalRadixTree<V, K = PositionalSequenceHash>
 where
     K: PositionalHash + Hash + Eq + Clone,
 {
-    // Access to a position's inner map is serialized by the outer DashMap's
-    // RefMut guard, so sharding the inner map adds memory without concurrency.
-    map: DashMap<u64, FxHashMap<K, V>>,
+    map: DashMap<u64, DashMap<K, V>>,
 }
 
 impl<V, K> PositionalRadixTree<V, K>
@@ -30,7 +27,7 @@ where
     }
 
     /// Provides the entry for the key at the given position.
-    pub fn prefix(&self, key: &K) -> dashmap::mapref::one::RefMut<'_, u64, FxHashMap<K, V>> {
+    pub fn prefix(&self, key: &K) -> dashmap::mapref::one::RefMut<'_, u64, DashMap<K, V>> {
         let position = key.position();
         self.map.entry(position).or_default()
     }
@@ -39,7 +36,7 @@ where
     pub fn position(
         &self,
         position: u64,
-    ) -> Option<dashmap::mapref::one::RefMut<'_, u64, FxHashMap<K, V>>> {
+    ) -> Option<dashmap::mapref::one::RefMut<'_, u64, DashMap<K, V>>> {
         self.map.get_mut(&position)
     }
 

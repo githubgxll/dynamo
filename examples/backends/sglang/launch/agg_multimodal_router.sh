@@ -34,7 +34,7 @@ KV_EVENTS_PORT_BASE="${KV_EVENTS_PORT_BASE:-29090}"
 
 DYN_LOG_VAL="${DYN_LOG:-info,mm_routing=debug,dynamo_kv_router::scheduling=debug,dynamo_llm::kv_router=debug}"
 
-# Pass-through extra args for `python -m dynamo.sglang`.
+# Pass-through extra args for `python -m dingo.sglang`.
 SGLANG_EXTRA_ARGS="${SGLANG_EXTRA_ARGS:-}"
 
 PASSTHRU_ARGS=()
@@ -61,6 +61,14 @@ EOF
         *) PASSTHRU_ARGS+=("$1"); shift ;;
     esac
 done
+
+# Hybrid GDN families (Qwen3.5/Qwen3.6) need extra_buffer scheduling for
+# MambaRadixCache to engage; default no_buffer silently disables prefix
+# cache. Evaluated after CLI parsing so --model overrides take effect.
+MAMBA_ARGS=()
+case "${MODEL}" in
+    *Qwen3.5*|*Qwen3.6*) MAMBA_ARGS=(--mamba-scheduler-strategy extra_buffer) ;;
+esac
 
 print_launch_banner --multimodal --no-curl \
     "MM Exact Routing (SGLang)" "${MODEL}" "${HTTP_PORT}" \
@@ -94,8 +102,11 @@ COMMON_ENV=(
 
 GPU_MEM_ARGS=$(build_sglang_gpu_mem_args)
 
-# Per-worker DYN_SYSTEM_PORT{i} and DYN_VLLM_KV_EVENT_PORT{i} come from the test
-# harness for parallel runs; standalone runs fall back to the script's port bases.
+# Per-worker DYN_SYSTEM_PORT{i} is set by xdist for parallel test runs; fall
+# back to script defaults otherwise. KV-event ports always come from the
+# script's own KV_EVENTS_PORT_BASE block (29090+) — xdist only reserves one
+# DYN_VLLM_KV_EVENT_PORT so deriving `base + (i-1)` from it would collide
+# with adjacent test slots.
 WORKER_PORTS=()
 KV_EVENTS_PORTS=()
 for i in $(seq 1 "${NUM_WORKERS}"); do
@@ -103,7 +114,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     HARNESS_VAR="DYN_SYSTEM_PORT${i}"
     WORKER_PORT="${!HARNESS_VAR:-${DEFAULT_WORKER_PORT}}"
     WORKER_PORTS+=("${WORKER_PORT}")
-    KV_EVENTS_PORT=$(dyn_port DYN_VLLM_KV_EVENT_PORT "$i" $((KV_EVENTS_PORT_BASE + (i - 1))))
+    KV_EVENTS_PORT=$((KV_EVENTS_PORT_BASE + (i - 1)))
     KV_EVENTS_PORTS+=("${KV_EVENTS_PORT}")
     if [[ "${SINGLE_GPU}" == "true" ]]; then GPU_ID=0; else GPU_ID=$((i - 1)); fi
 
@@ -113,10 +124,9 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
     env "${COMMON_ENV[@]}" \
         "DYN_SYSTEM_PORT=${WORKER_PORT}" \
         "CUDA_VISIBLE_DEVICES=${GPU_ID}" \
-    python -m dynamo.sglang \
+    python -m dingo.sglang \
         --model-path "${MODEL}" \
         --served-model-name "${MODEL}" \
-        --frontend-decoding \
         --page-size "${BLOCK_SIZE}" \
         --context-length "${MAX_MODEL_LEN}" \
         --tp 1 \
@@ -124,6 +134,7 @@ for i in $(seq 1 "${NUM_WORKERS}"); do
         --kv-events-config "${KV_EVENTS_CONFIG}" \
         --enable-metrics \
         --disable-piecewise-cuda-graph \
+        "${MAMBA_ARGS[@]}" \
         ${GPU_MEM_ARGS} ${SGLANG_EXTRA_ARGS} "${PASSTHRU_ARGS[@]}" &
 done
 
@@ -134,7 +145,7 @@ done
 echo "=== Starting frontend (KV router, MM-aware routing) ==="
 env "${COMMON_ENV[@]}" \
     "DYN_LOG=${DYN_LOG_VAL}" \
-python -m dynamo.frontend \
+python -m dingo.frontend \
     --http-port "${HTTP_PORT}" \
     --router-mode kv \
     --kv-cache-block-size "${BLOCK_SIZE}" &
@@ -161,7 +172,7 @@ echo "=== All services are ready ==="
 echo "Frontend:        http://127.0.0.1:${HTTP_PORT}"
 for i in $(seq 1 "${NUM_WORKERS}"); do
     # Use the actual port values from the launch loop above so the
-    # summary reflects DYN_SYSTEM_PORT{i} / DYN_VLLM_KV_EVENT_PORT{i} overrides
+    # summary reflects DYN_SYSTEM_PORT{i} / KV_EVENTS_PORT_BASE overrides
     # the harness may have applied (instead of the default formula).
     echo "Worker $i health: http://127.0.0.1:${WORKER_PORTS[i-1]}/health"
     echo "Worker $i kv-events: tcp://*:${KV_EVENTS_PORTS[i-1]}"
@@ -169,7 +180,7 @@ done
 echo
 echo "Architecture: Rust frontend (MM-aware KV router) -> ${NUM_WORKERS}x SGLang workers"
 echo "  - mm_hashes forwarded to SGLang GenerateReqInput.mm_hashes -> matching pad_value"
-echo "  - Images and videos decoded once in the frontend and transferred over NIXL"
+echo "  - Image dims via header-only HTTP fetch (Range: bytes=0-65535)"
 echo "  - No PyO3, no GIL, no Python deps in the routing path"
 echo
 echo "Press Ctrl+C to stop all services"

@@ -21,13 +21,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
-	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1alpha1"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/workerpool"
 )
 
 const (
@@ -49,9 +48,6 @@ func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: RequestTimeout,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
 		},
 	}
 }
@@ -65,7 +61,7 @@ func (c *Client) LoadLoRA(
 ) ([]v1alpha1.EndpointInfo, error) {
 	logs := log.FromContext(ctx)
 
-	// Skip lifecycle calls while preserving discovered endpoints for non-LoRA models.
+	// Skip loading for non-LoRA models
 	if !model.IsLoRA() {
 		logs.V(1).Info("Skipping LoRA load for non-LoRA model", "modelType", model.Spec.ModelType)
 		endpoints := make([]v1alpha1.EndpointInfo, len(candidates))
@@ -79,7 +75,7 @@ func (c *Client) LoadLoRA(
 		return endpoints, nil
 	}
 
-	// Resolve the adapter source required by the load lifecycle API.
+	// Get source URI for LoRA loading
 	sourceURI := ""
 	if model.Spec.Source != nil {
 		sourceURI = model.Spec.Source.URI
@@ -89,73 +85,44 @@ func (c *Client) LoadLoRA(
 		return nil, fmt.Errorf("source URI is required for LoRA models")
 	}
 
-	// Pre-populate endpoint identities so partial results stay complete on failure.
-	endpoints := make([]v1alpha1.EndpointInfo, len(candidates))
-	for index, candidate := range candidates {
-		endpoints[index] = v1alpha1.EndpointInfo{
-			Address: candidate.Address,
-			PodName: candidate.PodName,
+	// Build tasks for the worker pool
+	tasks := make([]workerpool.Task[v1alpha1.EndpointInfo], len(candidates))
+	for i, candidate := range candidates {
+		tasks[i] = workerpool.Task[v1alpha1.EndpointInfo]{
+			Index: i,
+			Work: func(ctx context.Context) (v1alpha1.EndpointInfo, error) {
+				// Load the LoRA on this endpoint (idempotent operation)
+				err := c.loadLoRA(ctx, candidate.Address, model.Spec.ModelName, sourceURI)
+				ready := err == nil
+
+				return v1alpha1.EndpointInfo{
+					Address: candidate.Address,
+					PodName: candidate.PodName,
+					Ready:   ready,
+				}, err
+			},
 		}
 	}
 
-	// Bound the complete load batch by the total operation timeout.
-	loadCtx, cancel := context.WithTimeout(ctx, TotalTimeout)
-	defer cancel()
+	// Execute all load operations in parallel with bounded concurrency
+	results, err := workerpool.Execute(ctx, MaxConcurrentOperations, TotalTimeout, tasks)
 
-	// Legacy prefill coverage depends on another capable worker in the same topology.
-	var fallbackMu sync.Mutex
-	capableVLLMPrefillGroups := make(map[string]struct{})
-	unavailableFallbackIndices := make(map[int]struct{})
-
-	// Load one candidate and record the state needed for final fallback resolution.
-	loadCandidate := func(index int) {
-		candidate := candidates[index]
-		// Always call the lifecycle API first so capable vLLM prefill workers
-		// register and publish the adapter. Only explicitly unsupported legacy
-		// prefill workers may use the rolling-upgrade fallback below.
-		err := c.loadLoRA(loadCtx, candidate.Address, model.Spec.ModelName, sourceURI)
-		if err != nil && candidate.AllowLoRAManagementUnavailable && isLoRAManagementUnavailable(err) {
-			fallbackMu.Lock()
-			unavailableFallbackIndices[index] = struct{}{}
-			fallbackMu.Unlock()
-			return
-		}
-		if err != nil {
-			logs.Info("Endpoint load operation failed",
-				"address", candidate.Address,
-				"podName", candidate.PodName,
-				"error", err)
-			return
-		}
-
-		endpoints[index].Ready = true
-		if candidate.AllowLoRAManagementUnavailable && candidate.LoRAFallbackGroup != "" {
-			fallbackMu.Lock()
-			capableVLLMPrefillGroups[candidate.LoRAFallbackGroup] = struct{}{}
-			fallbackMu.Unlock()
-		}
-	}
-
-	workqueue.ParallelizeUntil(loadCtx, MaxConcurrentOperations, len(candidates), loadCandidate)
-
-	// Resolve fallback coverage only after every scheduled worker has reported capability.
+	// Extract endpoint info from results and collect failures
+	endpoints := make([]v1alpha1.EndpointInfo, len(results))
 	readyCount := 0
-	failureCount := 0
 	var notReadyEndpoints []string
-	for index, candidate := range candidates {
-		endpoint := &endpoints[index]
-		if _, usedUnavailableFallback := unavailableFallbackIndices[index]; usedUnavailableFallback {
-			// A legacy prefill can be non-serving only when another capable
-			// vLLM prefill in the same runtime topology published the adapter card.
-			_, covered := capableVLLMPrefillGroups[candidate.LoRAFallbackGroup]
-			endpoint.LoRAFallbackCovered = candidate.LoRAFallbackGroup != "" && covered && candidate.KubernetesReady
-		}
-
-		if endpoint.Ready || endpoint.LoRAFallbackCovered {
+	for _, result := range results {
+		endpoints[result.Index] = result.Value
+		if result.Value.Ready {
 			readyCount++
 		} else {
-			failureCount++
-			notReadyEndpoints = append(notReadyEndpoints, candidate.Address)
+			notReadyEndpoints = append(notReadyEndpoints, result.Value.Address)
+			if result.Err != nil {
+				logs.Info("Endpoint load operation failed",
+					"address", result.Value.Address,
+					"podName", result.Value.PodName,
+					"error", result.Err)
+			}
 		}
 	}
 
@@ -163,14 +130,9 @@ func (c *Client) LoadLoRA(
 		"total", len(endpoints),
 		"ready", readyCount,
 		"notReady", len(notReadyEndpoints),
-		"loraManagementUnavailableFallbackUsed", len(unavailableFallbackIndices),
-		"capableVLLMPrefillGroups", len(capableVLLMPrefillGroups),
 		"notReadyEndpoints", notReadyEndpoints)
 
-	if failureCount > 0 {
-		return endpoints, fmt.Errorf("%d task(s) failed", failureCount)
-	}
-	return endpoints, nil
+	return endpoints, err
 }
 
 // UnloadLoRA unloads a LoRA model from all endpoints in parallel
@@ -184,58 +146,47 @@ func (c *Client) UnloadLoRA(ctx context.Context, candidates []Candidate, modelNa
 
 	logs.Info("Starting parallel LoRA unload", "endpointCount", len(candidates), "modelName", modelName)
 
-	// Count endpoints eligible for legacy lifecycle compatibility.
-	fallbackEligibleCount := 0
-	for _, candidate := range candidates {
-		if candidate.AllowLoRAManagementUnavailable {
-			fallbackEligibleCount++
+	// Build tasks for the worker pool
+	tasks := make([]workerpool.Task[bool], len(candidates))
+	for i, candidate := range candidates {
+		tasks[i] = workerpool.Task[bool]{
+			Index: i,
+			Work: func(ctx context.Context) (bool, error) {
+				// Unload the LoRA from this endpoint (calls method in lora.go)
+				err := c.unloadLoRA(ctx, candidate.Address, modelName)
+				if err != nil {
+					return false, err
+				}
+				return true, nil
+			},
 		}
 	}
 
-	// Bound the complete unload batch by the total operation timeout.
-	unloadCtx, cancel := context.WithTimeout(ctx, TotalTimeout)
-	defer cancel()
+	// Execute all unload operations in parallel with bounded concurrency
+	results, err := workerpool.Execute(ctx, MaxConcurrentOperations, TotalTimeout, tasks)
 
-	succeeded := make([]bool, len(candidates))
-
-	// Unload one candidate and count successful or compatible outcomes.
-	unloadCandidate := func(index int) {
-		candidate := candidates[index]
-		err := c.unloadLoRA(unloadCtx, candidate.Address, modelName)
-		if err == nil || candidate.AllowLoRAManagementUnavailable && isLoRAManagementUnavailable(err) {
-			succeeded[index] = true
-			return
-		}
-
-		logs.Info("Failed to unload LoRA from endpoint",
-			"address", candidate.Address,
-			"podName", candidate.PodName,
-			"error", err)
-	}
-
-	workqueue.ParallelizeUntil(unloadCtx, MaxConcurrentOperations, len(candidates), unloadCandidate)
-
-	// Treat work not started due to cancellation as failed, matching the batch contract,
-	// and retain their identities for cleanup diagnostics.
+	// Collect successes and failures with details
 	successCount := 0
-	failedEndpoints := make([]string, 0)
-	for index, candidate := range candidates {
-		if succeeded[index] {
+	var failedEndpoints []string
+	for _, result := range results {
+		if result.Value {
 			successCount++
 		} else {
-			failedEndpoints = append(failedEndpoints, candidate.Address)
+			// Log failed endpoint with error details
+			endpoint := candidates[result.Index].Address
+			failedEndpoints = append(failedEndpoints, endpoint)
+			logs.Info("Failed to unload LoRA from endpoint",
+				"address", endpoint,
+				"podName", candidates[result.Index].PodName,
+				"error", result.Err)
 		}
 	}
 
 	logs.Info("Completed parallel LoRA unload",
 		"total", len(candidates),
 		"successful", successCount,
-		"loraManagementUnavailableFallbackEligible", fallbackEligibleCount,
 		"failed", len(failedEndpoints),
 		"failedEndpoints", failedEndpoints)
 
-	if len(failedEndpoints) > 0 {
-		return fmt.Errorf("%d task(s) failed", len(failedEndpoints))
-	}
-	return nil
+	return err
 }

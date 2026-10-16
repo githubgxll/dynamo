@@ -181,7 +181,6 @@ func (lm *LeaseManager) createOrUpdateLease(ctx context.Context) error {
 			HolderIdentity:       &lm.holderIdentity,
 			LeaseDurationSeconds: &leaseDurationSeconds,
 			AcquireTime:          &now,
-			RenewTime:            &now,
 		},
 	}
 

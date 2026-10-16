@@ -41,8 +41,9 @@ class EvidenceTests(unittest.TestCase):
         write(self.root / ci.PROFILE / "assets/assets.lock.json", {"test": "assetlock"})
         write(self.root / ci.PROFILE / "profiles/profiles.json", {"test": "profiles"})
         (self.root / ci.PROFILE / "Dockerfile").write_text("ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n")
-        write(self.root / ci.SOURCE_LOCK, {"main_commit": ci.MAIN_SHA})
+        write(self.root / ci.SOURCE_LOCK, {"service_base_commit": ci.SERVICE_BASE_SHA})
         for path, status in {
+            "experimental/service-smoke.json": "PASS_SERVICE_IMPORTS_AND_HELP_ONLY",
             "experimental/assets-report.json": "PASS_ASSETS_ONLY",
             "experimental/profiles-check.json": "PASS_INSTALLED_PROFILES_CPU_ONLY",
             "framework/ref8-patch.json": "PASS_PATCH_APPLIED_CPU_ONLY",
@@ -60,7 +61,7 @@ class EvidenceTests(unittest.TestCase):
             write(self.out/name, {"fixture": "not a real compliance result"})
         write(self.out/"experimental/dependency-license-inventory.json", {
             "status":"METADATA_INVENTORY_ONLY_NOT_LEGAL_CLEARANCE", "packages":[{"name":"fixture"}],
-            "python_dependency_delta_from_main_runtime":[], "media_bundled_files":{},
+            "python_dependency_delta_from_inherited_vllm_plus_dingo":[], "media_bundled_files":{},
         })
         (self.out/"experimental/dpkg-packages.txt").write_text("fixture\n")
         self.preparer = patch.object(ci, "prepare", return_value=self.values)
@@ -127,8 +128,8 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError): ci.validate_evidence(self.root,self.env,self.out,self.base)
 
 
-class MainTemplateTests(unittest.TestCase):
-    def test_only_h3_workflow_matches_experimental_push_and_nvskills_reference_is_valid(self):
+class GatewayTemplateTests(unittest.TestCase):
+    def test_only_h3_workflow_matches_experimental_push(self):
         matched = []
         for path in sorted((ROOT/".github/workflows").glob("*.y*ml")):
             workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -150,12 +151,6 @@ class MainTemplateTests(unittest.TestCase):
             if accepted and not rejected:
                 matched.append(path.name)
         self.assertEqual(matched, ["dingo-router-ci.yml"])
-        request = yaml.load((ROOT/".github/workflows/request-nvskills-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-        reference = request["jobs"]["team-request"]["uses"]
-        self.assertEqual(reference, "./.github/workflows/nvskills-team-request.yml")
-        target = ROOT/reference[2:]
-        self.assertTrue(target.is_file())
-        self.assertIn("workflow_call", yaml.load(target.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)["on"])
 
     def test_workflow_routes_only_dedicated_branch_and_keeps_two_phase_digest(self):
         workflow = yaml.load((ROOT/".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -171,7 +166,7 @@ class MainTemplateTests(unittest.TestCase):
             self.assertIn("BASE_IMAGE=${{ steps.framework_record.outputs.framework_ref }}", build["with"]["build-args"])
         self.assertNotIn("http.proxy", (ROOT/".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"))
 
-    def test_main_renderer_both_native_paths_and_secret_mounts(self):
+    def test_gateway_renderer_both_native_paths_and_dependency_order(self):
         spec = importlib.util.spec_from_file_location("render", ROOT/"container/render.py")
         render = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(render)
@@ -181,24 +176,28 @@ class MainTemplateTests(unittest.TestCase):
         env = render._make_jinja_env(ROOT/"container")
         def rendered():
             raw = env.get_template("Dockerfile.template").render(context=context, **render._render_context(args, context))
-            return render._inject_python_index_mounts(raw)
+            return raw
         first = rendered()
         self.assertIn("ARG RUNTIME_IMAGE_TAG=v0.31.0-ubuntu2404@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460", first)
         self.assertIn("ARG ENABLE_KVBM=false", first)
         self.assertIn("FROM wheel_builder_base AS reusable_builder_base", first)
-        self.assertIn("git remote add origin https://github.com/ai-dynamo/nixl.git", first)
+        self.assertIn('git clone "https://github.com/ai-dynamo/nixl.git"', first)
         reusable = first.split("FROM wheel_builder_base AS reusable_builder_base",1)[1].split("FROM reusable_builder_base AS wheel_builder",1)[0]
         self.assertNotIn("COPY lib/", reusable)
         self.assertIn("--mount=type=secret,id=actions-runtime-token,env=ACTIONS_RUNTIME_TOKEN", reusable)
-        self.assertIn("--mount=type=secret,id=pip-index-url,env=PIP_INDEX_URL", first)
+        self.assertIn("repo.huaweicloud.com", first)
+        self.assertIn("manylinux_2_28_x86_64:2026.09.05-1@sha256:", first)
+        self.assertIn("--mount=type=secret,id=pip-index-url", first)
+        self.assertLess(first.index("install_environment.sh"), first.index(" AS licenses"))
         args.builder_image = ci.REPOSITORY+":builder-test"
         reused = rendered()
         self.assertIn("FROM "+args.builder_image+" AS wheel_builder_base", reused)
-        self.assertNotIn("git remote add origin https://github.com/ai-dynamo/nixl.git", reused)
+        self.assertNotIn('git clone "https://github.com/ai-dynamo/nixl.git"', reused)
         self.assertNotIn("dnf install", reused)
-        self.assertIn("COPY components/ /opt/dynamo/components/", reused)
-        self.assertIn("--mount=type=secret,id=pip-index-url,env=PIP_INDEX_URL", reused)
-        self.assertNotIn("ln -s /opt/sccache/sccache", first)
+        self.assertIn("COPY dingo/", reused)
+        self.assertIn("--mount=type=secret,id=pip-index-url", reused)
+        self.assertIn("validate_media_probe.py", reused)
+        self.assertIn("validate_torch_compile_smoke.py", reused)
         args.builder_image = "bad ref\nRUN echo bad"
         with self.assertRaises(ValueError): render.validate_args(args)
 
@@ -216,7 +215,7 @@ class PreparationTests(unittest.TestCase):
             destination = self.root/name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT/name, destination)
-        write(self.root/ci.SOURCE_LOCK, {"main_commit": ci.MAIN_SHA})
+        write(self.root/ci.SOURCE_LOCK, {"service_base_commit": ci.SERVICE_BASE_SHA})
         write(self.root/ci.PROFILE/"assets/assets.lock.json", {"assets": [
             {"id":"turbo-fl8"}, {"id":"turbo-fl4"}, {"id":"fasth3-dense4"},
             {"id":"turbo-ref8", "steps":8, "video_shift":12, "audio_shift":3},
@@ -237,9 +236,9 @@ class PreparationTests(unittest.TestCase):
         self.assertNotEqual(first["builder_image"],ci.prepare(self.root,self.env)["builder_image"])
 
     def test_prepare_rejects_wrong_main_or_missing_adapters(self):
-        write(self.root/ci.SOURCE_LOCK, {"main_commit":"0"*40})
+        write(self.root/ci.SOURCE_LOCK, {"service_base_commit":"0"*40})
         with self.assertRaises(ValueError): ci.prepare(self.root,self.env)
-        write(self.root/ci.SOURCE_LOCK, {"main_commit":ci.MAIN_SHA})
+        write(self.root/ci.SOURCE_LOCK, {"service_base_commit":ci.SERVICE_BASE_SHA})
         write(self.root/ci.PROFILE/"assets/assets.lock.json", {"assets":[]})
         with self.assertRaises(ValueError): ci.prepare(self.root,self.env)
 

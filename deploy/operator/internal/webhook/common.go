@@ -19,11 +19,9 @@ package webhook
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
-	"github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,8 +38,8 @@ type ExcludedNamespacesChecker interface {
 	Contains(namespace string) bool
 }
 
-// webhookExcludedNamespaces holds the excluded namespaces checker (usually leaseWatcher).
-// This is set by main.go and shared across admission handlers.
+// webhookExcludedNamespaces holds the excluded namespaces checker (usually leaseWatcher)
+// This is set by main.go and shared across all webhook validators
 var webhookExcludedNamespaces ExcludedNamespacesChecker
 
 // SetExcludedNamespaces sets the excluded namespaces checker for all webhooks.
@@ -55,94 +53,56 @@ func GetExcludedNamespaces() ExcludedNamespacesChecker {
 	return webhookExcludedNamespaces
 }
 
-// LeaseAwareValidator wraps a Validator and adds lease-based namespace exclusion logic.
+// LeaseAwareValidator wraps a CustomValidator and adds lease-based namespace exclusion logic.
 // It checks if a namespace-restricted operator is managing the namespace (via active lease)
 // before delegating validation to the underlying validator.
 //
 // This implements the Decorator pattern to transparently add coordination logic without
 // modifying the actual validation implementations.
-type LeaseAwareValidator[T client.Object] struct {
-	validator          admission.Validator[T]
+type LeaseAwareValidator struct {
+	validator          admission.CustomValidator
 	excludedNamespaces ExcludedNamespacesChecker
-}
-
-// LeaseAwareDefaulter skips defaulting in namespaces owned by namespace-restricted operators.
-type LeaseAwareDefaulter struct {
-	defaulter          admission.Defaulter[runtime.Object]
-	excludedNamespaces ExcludedNamespacesChecker
-}
-
-// WithGate makes gate available through the admission request context and fails if it is missing.
-func WithGate(webhook *admission.Webhook, gate features.Gate) *admission.Webhook {
-	handler := webhook.Handler
-	webhook.Handler = admission.HandlerFunc(func(ctx context.Context, req admission.Request) admission.Response {
-		features.MustGateFrom(ctx)
-		return handler.Handle(ctx, req)
-	})
-	webhook.WithContextFunc = func(ctx context.Context, _ *http.Request) context.Context {
-		return features.WithGate(ctx, gate)
-	}
-	return webhook
 }
 
 // NewLeaseAwareValidator creates a new LeaseAwareValidator that wraps the given validator.
 // If excludedNamespaces is nil, the wrapper acts as a pass-through (no filtering).
-func NewLeaseAwareValidator[T client.Object](validator admission.Validator[T], excludedNamespaces ExcludedNamespacesChecker) admission.Validator[T] {
+func NewLeaseAwareValidator(validator admission.CustomValidator, excludedNamespaces ExcludedNamespacesChecker) admission.CustomValidator {
 	if excludedNamespaces == nil {
 		// No exclusion logic needed, return validator as-is
 		return validator
 	}
-	return &LeaseAwareValidator[T]{
+	return &LeaseAwareValidator{
 		validator:          validator,
 		excludedNamespaces: excludedNamespaces,
 	}
 }
 
-// NewLeaseAwareDefaulter creates a defaulter that skips namespaces claimed by a Lease.
-// If excludedNamespaces is nil, the defaulter is returned unchanged.
-func NewLeaseAwareDefaulter(defaulter admission.Defaulter[runtime.Object], excludedNamespaces ExcludedNamespacesChecker) admission.Defaulter[runtime.Object] {
-	if excludedNamespaces == nil {
-		return defaulter
-	}
-	return &LeaseAwareDefaulter{
-		defaulter:          defaulter,
-		excludedNamespaces: excludedNamespaces,
-	}
-}
-
-// ValidateCreate implements admission.Validator.
-func (v *LeaseAwareValidator[T]) ValidateCreate(ctx context.Context, obj T) (admission.Warnings, error) {
-	if shouldSkipAdmission(obj, v.excludedNamespaces) {
+// ValidateCreate implements admission.CustomValidator
+func (v *LeaseAwareValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	if v.shouldSkipValidation(obj) {
 		return nil, nil
 	}
 	return v.validator.ValidateCreate(ctx, obj)
 }
 
-// ValidateUpdate implements admission.Validator.
-func (v *LeaseAwareValidator[T]) ValidateUpdate(ctx context.Context, oldObj, newObj T) (admission.Warnings, error) {
-	if shouldSkipAdmission(newObj, v.excludedNamespaces) {
+// ValidateUpdate implements admission.CustomValidator
+func (v *LeaseAwareValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	if v.shouldSkipValidation(newObj) {
 		return nil, nil
 	}
 	return v.validator.ValidateUpdate(ctx, oldObj, newObj)
 }
 
-// ValidateDelete implements admission.Validator.
-func (v *LeaseAwareValidator[T]) ValidateDelete(ctx context.Context, obj T) (admission.Warnings, error) {
-	if shouldSkipAdmission(obj, v.excludedNamespaces) {
+// ValidateDelete implements admission.CustomValidator
+func (v *LeaseAwareValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	if v.shouldSkipValidation(obj) {
 		return nil, nil
 	}
 	return v.validator.ValidateDelete(ctx, obj)
 }
 
-// Default implements admission.CustomDefaulter.
-func (d *LeaseAwareDefaulter) Default(ctx context.Context, obj runtime.Object) error {
-	if shouldSkipAdmission(obj, d.excludedNamespaces) {
-		return nil
-	}
-	return d.defaulter.Default(ctx, obj)
-}
-
-func shouldSkipAdmission(obj runtime.Object, excludedNamespaces ExcludedNamespacesChecker) bool {
+// shouldSkipValidation checks if validation should be skipped for the given object
+func (v *LeaseAwareValidator) shouldSkipValidation(obj runtime.Object) bool {
 	// Try to extract namespace from object using client.Object interface
 	clientObj, ok := obj.(client.Object)
 	if !ok {
@@ -151,8 +111,8 @@ func shouldSkipAdmission(obj runtime.Object, excludedNamespaces ExcludedNamespac
 	}
 
 	namespace := clientObj.GetNamespace()
-	if excludedNamespaces.Contains(namespace) {
-		webhookCommonLog.Info("skipping admission - namespace has namespace-restricted operator",
+	if v.excludedNamespaces.Contains(namespace) {
+		webhookCommonLog.Info("skipping validation - namespace has namespace-restricted operator",
 			"name", clientObj.GetName(),
 			"namespace", namespace,
 			"kind", obj.GetObjectKind().GroupVersionKind().Kind)

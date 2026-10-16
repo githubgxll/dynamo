@@ -1,0 +1,317 @@
+{
+  "service_base_commit": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "scope": "Exact service-source comparison, not installed image/GPU validation",
+  "unchanged": 45,
+  "changed": [
+    "dingo/vllm/omni/base_handler.py",
+    "dingo/vllm/omni/omni_handler.py",
+    "dingo/vllm/omni/output_formatter.py",
+    "dingo/vllm/omni/stage_router.py",
+    "dingo/vllm/omni/stage_worker.py"
+  ],
+  "new_files": [
+    "dingo/vllm/omni/stage_config_compat.py"
+  ],
+  "files": [
+    {
+      "path": "dingo/video_gateway/CONTINUOUS_EXECUTION.md",
+      "service_base_sha256": "c8ba95213ba9dcdc7e53a3a20e168c52b3f81fece3ee98c2913cc982a2506b18",
+      "candidate_sha256": "c8ba95213ba9dcdc7e53a3a20e168c52b3f81fece3ee98c2913cc982a2506b18",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/GATEWAY_CONFIGURATION_CONSISTENCY.md",
+      "service_base_sha256": "feba4f601a025465a7c4c2b497c0049fd6928ef27be8d48280e392eb2633f919",
+      "candidate_sha256": "feba4f601a025465a7c4c2b497c0049fd6928ef27be8d48280e392eb2633f919",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/LEASE_TIMING_INVARIANTS.md",
+      "service_base_sha256": "ccb5d46aa9eeb297b7a7d19c2287e744195d936bfda50a08c1e600c49df29925",
+      "candidate_sha256": "ccb5d46aa9eeb297b7a7d19c2287e744195d936bfda50a08c1e600c49df29925",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/METRICS.md",
+      "service_base_sha256": "9441782c179d71fba19503cb96cc5998e6ab139193b904e399038aa4a539da30",
+      "candidate_sha256": "9441782c179d71fba19503cb96cc5998e6ab139193b904e399038aa4a539da30",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/RECOVERY_AND_UPLOAD_CLEANUP.md",
+      "service_base_sha256": "16234363420a344dd70824049a767e1dcfa8327216cf330ea9494b0e375ece58",
+      "candidate_sha256": "16234363420a344dd70824049a767e1dcfa8327216cf330ea9494b0e375ece58",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/__init__.py",
+      "service_base_sha256": "570f72ddafa4ed9b401fa9f6e7d2a06728a261b898b5c0b7f19b702de5bd2af5",
+      "candidate_sha256": "570f72ddafa4ed9b401fa9f6e7d2a06728a261b898b5c0b7f19b702de5bd2af5",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/__main__.py",
+      "service_base_sha256": "91c40cc7f77cc9878530f2421934f8d1c93051200f5147c2dffd502507e9c6b7",
+      "candidate_sha256": "91c40cc7f77cc9878530f2421934f8d1c93051200f5147c2dffd502507e9c6b7",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/adapters/__init__.py",
+      "service_base_sha256": "556f650b24f622f4441487b2358c00c36fb60af87b37bc0064adfa821af5952e",
+      "candidate_sha256": "556f650b24f622f4441487b2358c00c36fb60af87b37bc0064adfa821af5952e",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/adapters/base.py",
+      "service_base_sha256": "66951d468874055b584f0ace98e254e6d0375ba0ba93e7b3ee4f5258f2e0e500",
+      "candidate_sha256": "66951d468874055b584f0ace98e254e6d0375ba0ba93e7b3ee4f5258f2e0e500",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/adapters/h3_shape.py",
+      "service_base_sha256": "8fe5a991abb3d6679d46d6d781dc3348e70364dbbf02071a9a0b118911f687d2",
+      "candidate_sha256": "8fe5a991abb3d6679d46d6d781dc3348e70364dbbf02071a9a0b118911f687d2",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/adapters/minimax_h3.py",
+      "service_base_sha256": "d82bef2bb004858b96ff0f06c1d384892bc44753c60233266ae4100ea27b4d31",
+      "candidate_sha256": "d82bef2bb004858b96ff0f06c1d384892bc44753c60233266ae4100ea27b4d31",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/api.py",
+      "service_base_sha256": "b527c8fa261933c3c86801184189804ac27c98fab9f4c160839eb111bdbb8ac2",
+      "candidate_sha256": "b527c8fa261933c3c86801184189804ac27c98fab9f4c160839eb111bdbb8ac2",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/app.py",
+      "service_base_sha256": "661a17700c282b5795babd233ccc4bb8b75b6e1001fdff8c28e1cac63a954ade",
+      "candidate_sha256": "661a17700c282b5795babd233ccc4bb8b75b6e1001fdff8c28e1cac63a954ade",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/artifact_store.py",
+      "service_base_sha256": "d67cd44500204674a6b4137d117db5d407ab033c2e1a4065fb5011f69ad9dd75",
+      "candidate_sha256": "d67cd44500204674a6b4137d117db5d407ab033c2e1a4065fb5011f69ad9dd75",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/config.py",
+      "service_base_sha256": "109839eaeb7d58ccc117264a65b90902c5bb16069411e5bbffd7a9e25c6bcc1e",
+      "candidate_sha256": "109839eaeb7d58ccc117264a65b90902c5bb16069411e5bbffd7a9e25c6bcc1e",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/dingo_adapter.py",
+      "service_base_sha256": "a2e7a705cbe9ab3a932042a77c62733ebd02baf740bf872015c3878bacd95d51",
+      "candidate_sha256": "a2e7a705cbe9ab3a932042a77c62733ebd02baf740bf872015c3878bacd95d51",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/dispatcher.py",
+      "service_base_sha256": "70015030dab19fdd4398111533adb6b28b093dd842bc223626e1ebf8a60e43d2",
+      "candidate_sha256": "70015030dab19fdd4398111533adb6b28b093dd842bc223626e1ebf8a60e43d2",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/errors.py",
+      "service_base_sha256": "43b1c9bbcb3d6507556e7187c8d57afc8a12588eae0da4a8997e6cd5529c6166",
+      "candidate_sha256": "43b1c9bbcb3d6507556e7187c8d57afc8a12588eae0da4a8997e6cd5529c6166",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/etcd_http.py",
+      "service_base_sha256": "d425466d3c42643c2e992499380c857ed87f60a947dcfae80295e56c21e8415e",
+      "candidate_sha256": "d425466d3c42643c2e992499380c857ed87f60a947dcfae80295e56c21e8415e",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/file_io.py",
+      "service_base_sha256": "0c89fd4644dc5a3b0d333771e234844da488cdd1c8ffe5128e5f6fd051a58e55",
+      "candidate_sha256": "0c89fd4644dc5a3b0d333771e234844da488cdd1c8ffe5128e5f6fd051a58e55",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/finalization.py",
+      "service_base_sha256": "c91ad5155fd947467a3587a1f30d5649ce6ce7458ff60b7d285afee9f6cb55b3",
+      "candidate_sha256": "c91ad5155fd947467a3587a1f30d5649ce6ce7458ff60b7d285afee9f6cb55b3",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/form_parser.py",
+      "service_base_sha256": "f709ffafe708439cfde94602d6183add65fded160792e44dea6dee46b89ed34b",
+      "candidate_sha256": "f709ffafe708439cfde94602d6183add65fded160792e44dea6dee46b89ed34b",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/ids.py",
+      "service_base_sha256": "f3498627bd385369e50f3f1e132fc2ed4d5433df42afd87131fdedae6b4e2d33",
+      "candidate_sha256": "f3498627bd385369e50f3f1e132fc2ed4d5433df42afd87131fdedae6b4e2d33",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/memory_budget.py",
+      "service_base_sha256": "5f90fffb30dc5841d1ac7f479276b39479978b3b7d424f541da72080d7efa7d4",
+      "candidate_sha256": "5f90fffb30dc5841d1ac7f479276b39479978b3b7d424f541da72080d7efa7d4",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/models.py",
+      "service_base_sha256": "ca8d8d4f5c33710b42003826f5e33590641262d1ed6c4bf3d03679a66c14609f",
+      "candidate_sha256": "ca8d8d4f5c33710b42003826f5e33590641262d1ed6c4bf3d03679a66c14609f",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/performance.py",
+      "service_base_sha256": "206ebe1c4943ce484e9de518ebaf11b282ed38859abdf24e254b2f5654ad2f36",
+      "candidate_sha256": "206ebe1c4943ce484e9de518ebaf11b282ed38859abdf24e254b2f5654ad2f36",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/performance_cache.py",
+      "service_base_sha256": "2372d0fc841d566845f5910884386cada27e622afbef3d25fc0e70b4bb4ef2a7",
+      "candidate_sha256": "2372d0fc841d566845f5910884386cada27e622afbef3d25fc0e70b4bb4ef2a7",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/result_handoff.py",
+      "service_base_sha256": "1bc87674029bb0fb2a596e59d49a37d9e431bbbafbeee3bad39aa19984419049",
+      "candidate_sha256": "1bc87674029bb0fb2a596e59d49a37d9e431bbbafbeee3bad39aa19984419049",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/service.py",
+      "service_base_sha256": "99bbaa20a3e3f92dff505f8110f3596f08149af0eeb29296d67b647fead687ce",
+      "candidate_sha256": "99bbaa20a3e3f92dff505f8110f3596f08149af0eeb29296d67b647fead687ce",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/task_store.py",
+      "service_base_sha256": "46f64ec3b8d0f0e71a04054a9eda3c3e02edd52f28e9f56273810ea129de96fb",
+      "candidate_sha256": "46f64ec3b8d0f0e71a04054a9eda3c3e02edd52f28e9f56273810ea129de96fb",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/video_gateway/telemetry.py",
+      "service_base_sha256": "903758b6bb0619babab7c8031724f4f1cf613928516c97938a65d25ccc281e2f",
+      "candidate_sha256": "903758b6bb0619babab7c8031724f4f1cf613928516c97938a65d25ccc281e2f",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/__init__.py",
+      "service_base_sha256": "8261b09de5c7738289b7e8e4be64afa0b7992845c7362e1a5a1071423896337a",
+      "candidate_sha256": "8261b09de5c7738289b7e8e4be64afa0b7992845c7362e1a5a1071423896337a",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/__main__.py",
+      "service_base_sha256": "d45027065583b13850fd29bbb6b1c9f4302d373780289b9ae36f5690e329a0fc",
+      "candidate_sha256": "d45027065583b13850fd29bbb6b1c9f4302d373780289b9ae36f5690e329a0fc",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/args.py",
+      "service_base_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
+      "candidate_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/audio_handler.py",
+      "service_base_sha256": "cc3309a0785080e5c1df54b2b0f49c370735d810c9a03c039b10764a45f5625c",
+      "candidate_sha256": "cc3309a0785080e5c1df54b2b0f49c370735d810c9a03c039b10764a45f5625c",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/base_handler.py",
+      "service_base_sha256": "712c70248938ed6264039300d96e7a6ee83a5f76992c105da4985796cee12c45",
+      "candidate_sha256": "11f0c1804e6d9f2b88f8f3644dc82ef7abe02e9309b3db79cde435cb1ed19261",
+      "unchanged": false
+    },
+    {
+      "path": "dingo/vllm/omni/detached_tasks.py",
+      "service_base_sha256": "c2af72a7c4460373f98d7727966323cc1d19ebea0db9a493fe0487982d5ad21f",
+      "candidate_sha256": "c2af72a7c4460373f98d7727966323cc1d19ebea0db9a493fe0487982d5ad21f",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/engine_monitor.py",
+      "service_base_sha256": "340701da65c48781e4adb86a921c9549490e0744557823677a847e4b9e01121f",
+      "candidate_sha256": "340701da65c48781e4adb86a921c9549490e0744557823677a847e4b9e01121f",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/main.py",
+      "service_base_sha256": "54d1a015648a46c5569f09fbcf6665753e91d6842819dfd72d38a4327d33f99b",
+      "candidate_sha256": "54d1a015648a46c5569f09fbcf6665753e91d6842819dfd72d38a4327d33f99b",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/minimax_h3_timings.py",
+      "service_base_sha256": "41026fe87e37968eb93ec5e6cc2082d9153c23ac10433a07c319ea31a8c93f92",
+      "candidate_sha256": "41026fe87e37968eb93ec5e6cc2082d9153c23ac10433a07c319ea31a8c93f92",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/omni_handler.py",
+      "service_base_sha256": "cab25dd91cebf7d163f8ef87a1539b6fa5d9ddd466702a7bcbc4cdea624bad83",
+      "candidate_sha256": "48ae037ec0d75f7e0d6977a435cee3551e0841de19e1202723f2481d1fd5bcc8",
+      "unchanged": false
+    },
+    {
+      "path": "dingo/vllm/omni/output_formatter.py",
+      "service_base_sha256": "95318a19bc707e9dc70ce6f34a3b35a8599371748c622d423187b80137bc2fcb",
+      "candidate_sha256": "9fafcb12a52f7403aa1fbad9ed65e214ddc015763d0f06be4907ddb140c576fb",
+      "unchanged": false
+    },
+    {
+      "path": "dingo/vllm/omni/realtime_handler.py",
+      "service_base_sha256": "514c85743456c67e5fc3db36097cdd082ac433a1e994fea67420adf0e4137706",
+      "candidate_sha256": "514c85743456c67e5fc3db36097cdd082ac433a1e994fea67420adf0e4137706",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/realtime_utils.py",
+      "service_base_sha256": "2cc37e7ece554fd596d02650478170cf67dbab5130e66188a3591548ff88742c",
+      "candidate_sha256": "2cc37e7ece554fd596d02650478170cf67dbab5130e66188a3591548ff88742c",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/request_adapters/__init__.py",
+      "service_base_sha256": "8182eebd03f75d133811d9e729f86fa887da5417e943e35853ec4f3d77cb9ca1",
+      "candidate_sha256": "8182eebd03f75d133811d9e729f86fa887da5417e943e35853ec4f3d77cb9ca1",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/request_adapters/minimax_h3.py",
+      "service_base_sha256": "63b617be6f7c378dbe773ab718ef8ce153eb36a8e79e955ec62f37297604a7ac",
+      "candidate_sha256": "63b617be6f7c378dbe773ab718ef8ce153eb36a8e79e955ec62f37297604a7ac",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/stage_router.py",
+      "service_base_sha256": "dc47ab3023905d946d5b0de34eb6d0db6c4d33537bf64d0c250f3b3c01fc45eb",
+      "candidate_sha256": "1ee0626c1b8fae4aa43c9c9b68c1fc14070d796e29abf337bbb091ba1e337462",
+      "unchanged": false
+    },
+    {
+      "path": "dingo/vllm/omni/stage_worker.py",
+      "service_base_sha256": "9e5fafb0c488eb6d6eea5fc4d7d7c229d232027425abf63b6f817c685cbdea09",
+      "candidate_sha256": "463b67536164b00b2bb5f19c54d04de31ec4b82316b2751d1af2d12ada73fd5e",
+      "unchanged": false
+    },
+    {
+      "path": "dingo/vllm/omni/types.py",
+      "service_base_sha256": "883eeb15bd1f6a918fdd9d6f31d993d66fd32f7138f916b4364609f12cc7abff",
+      "candidate_sha256": "883eeb15bd1f6a918fdd9d6f31d993d66fd32f7138f916b4364609f12cc7abff",
+      "unchanged": true
+    },
+    {
+      "path": "dingo/vllm/omni/utils.py",
+      "service_base_sha256": "243a4ff221afdec4f49da13181e57b8f7d4a0593ff993e5957ffd7227984f52e",
+      "candidate_sha256": "243a4ff221afdec4f49da13181e57b8f7d4a0593ff993e5957ffd7227984f52e",
+      "unchanged": true
+    }
+  ]
+}

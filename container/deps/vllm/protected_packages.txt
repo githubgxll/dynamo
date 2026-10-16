@@ -10,7 +10,8 @@ triton
 vllm
 transformers
 tokenizers
-# Omni may require a newer safetensors than the upstream image; leave it unfrozen.
+# vLLM-Omni (v0.27.0rc1) may require a newer safetensors than the upstream
+# vLLM 0.27.1 image ships, so safetensors is intentionally left unfrozen here.
 # safetensors
 msgspec
 flashinfer-python

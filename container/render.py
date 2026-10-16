@@ -4,7 +4,6 @@
 
 import argparse
 import re
-import sys
 from pathlib import Path
 
 import yaml
@@ -12,26 +11,6 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 _VALID_ARCHS = {"amd64", "arm64"}
 _BUILDER_IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
-
-_PYTHON_PACKAGE_DOWNLOAD_RE = re.compile(
-    r"\buv\s+(?:build|lock|sync|pip\s+(?:compile|install|sync))\b"
-    r"|(?:^|[\s;&|])(?:\S*/)?pip3?\s+(?:install|wheel)\b"
-    r"|(?:^|[\s;&|])(?:\S*/)?python3?(?:\.\d+)?\s+-m\s+pip\s+(?:install|wheel)\b"
-    # vLLM Omni installs packages inside this mounted script.
-    r"|(?:^|[\s;&|])bash\s+/tmp/install_vllm_omni\.sh\b"
-    # NIXL's Meson build resolves Python build dependencies through uv.
-    r"|github\.com/ai-dynamo/nixl\.git",
-    re.MULTILINE,
-)
-
-_PYPI_RUN_PREFIX = (
-    "RUN --mount=type=secret,id=pip-index-url,env=PIP_INDEX_URL \\\n"
-    "    --mount=type=secret,id=uv-default-index,env=UV_DEFAULT_INDEX \\\n"
-    "    --mount=type=secret,id=pypi-netrc,target=/run/secrets/pypi-netrc,mode=0444 \\\n"
-    "    "
-)
-
-_PYPI_ENV = "export NETRC=/run/secrets/pypi-netrc && \\\n    "
 
 
 def parse_platform(platform_str: str) -> str:
@@ -66,7 +45,7 @@ def parse_args():
         "--framework",
         type=str,
         default="vllm",
-        choices=["dynamo", "vllm", "sglang", "trtllm", "triton"],
+        choices=["dynamo", "vllm", "sglang"],
         help="Dockerfile framework to use",
     )
 
@@ -102,11 +81,7 @@ def parse_args():
         type=str,
         default="13.0",
         choices=["13.0", "13.1"],
-        help=(
-            "CUDA version to use. [13.0 for vllm and sglang, 13.1 for trtllm].\n"
-            "Not required for non-cuda devices.\n"
-            "Not supported by Triton - CUDA version is predefined by its release image."
-        ),
+        help="CUDA version to use. [13.0 for vllm and sglang, 13.1 for trtllm].  Not required for non-cuda devices.",
     )
     parser.add_argument("--make-efa", action="store_true", help="Enable AWS EFA")
     parser.add_argument(
@@ -120,19 +95,26 @@ def parse_args():
         help="Prints the rendered Dockerfile to stdout.",
     )
     parser.add_argument(
-        "--builder-image", default="",
-        help="Reuse the input-fingerprinted group reusable_builder_base image",
+        "--builder-image",
+        type=str,
+        default="",
+        help=(
+            "Reuse a previously published reusable_builder_base image instead "
+            "of rebuilding the native toolchain and dependencies."
+        ),
     )
     args = parser.parse_args()
     return args
 
 
 def validate_args(args):
-    builder_image = getattr(args, "builder_image", "")
-    if builder_image and not _BUILDER_IMAGE_PATTERN.fullmatch(builder_image):
-        raise ValueError("--builder-image must be a container reference without whitespace")
-    if builder_image and (args.framework != "vllm" or args.device != "cuda" or args.platform != "amd64"):
-        raise ValueError("The group reusable builder is qualified only for CUDA vLLM linux/amd64")
+    if args.builder_image and not _BUILDER_IMAGE_PATTERN.fullmatch(
+        args.builder_image
+    ):
+        raise ValueError(
+            "--builder-image must be a container image reference without whitespace"
+        )
+
     valid_inputs = {
         "vllm": {
             "device": ["cuda", "xpu", "cpu"],
@@ -145,17 +127,6 @@ def validate_args(args):
             ],
             "cuda_version": ["13.0"],
         },
-        "trtllm": {
-            "device": ["cuda"],
-            "target": [
-                "runtime",
-                "dev",
-                "local-dev",
-                "wheel_builder",
-                "base",
-            ],
-            "cuda_version": ["13.1"],
-        },
         "sglang": {
             "device": ["cuda", "xpu"],
             "target": [
@@ -167,16 +138,6 @@ def validate_args(args):
             ],
             "cuda_version": ["13.0"],
         },
-        "triton": {
-            "device": ["cuda"],
-            # Triton is runtime-only: Dynamo is installed from prebuilt PyPI wheels
-            # on top of the upstream Triton release image, so the from-source targets
-            # (dev/local-dev/wheel_builder/base) do not apply.
-            "target": [
-                "runtime",
-            ],
-            "cuda_version": ["13.4"],
-        },
         "dynamo": {
             "device": ["cuda"],
             "target": [
@@ -185,25 +146,13 @@ def validate_args(args):
                 "local-dev",
                 "frontend",
                 "planner",
+                "router",
                 "wheel_builder",
                 "base",
             ],
             "cuda_version": ["13.0"],
         },
     }
-
-    # Triton's CUDA family is fixed by its release image, so it cannot be chosen
-    # by the user: reject an explicitly-passed --cuda-version (detected from argv
-    # since the arg has a default) and pin it to Triton's single valid value.
-    if args.framework == "triton":
-        if any(
-            a == "--cuda-version" or a.startswith("--cuda-version=") for a in sys.argv
-        ):
-            raise ValueError(
-                "--cuda-version cannot be specified for triton: its CUDA family is "
-                "fixed by the Triton release image."
-            )
-        args.cuda_version = valid_inputs["triton"]["cuda_version"][0]
 
     if args.framework in valid_inputs:
         cuda_version_valid = (
@@ -241,27 +190,6 @@ def _make_jinja_env(script_dir):
     )
 
 
-def _inject_python_index_mounts(dockerfile: str) -> str:
-    """Mount optional PyPI configuration in every Python package install layer."""
-    instructions = re.split(r"(?=^[A-Z]+\b)", dockerfile, flags=re.MULTILINE)
-    for index, instruction in enumerate(instructions):
-        # BuildKit strips full-line comments before parsing RUN flags; ignore them here too.
-        code = re.sub(r"(?m)^[ \t]*#[^\n]*$", "", instruction)
-        if not instruction.startswith("RUN ") or not _PYTHON_PACKAGE_DOWNLOAD_RE.search(
-            code
-        ):
-            continue
-
-        instructions[index] = re.sub(
-            r"^RUN (?P<mounts>(?:(?:--mount=[^\n]*\\|#[^\n]*)\n[ \t]+)*)",
-            lambda match: _PYPI_RUN_PREFIX + match.group("mounts") + _PYPI_ENV,
-            instruction,
-            count=1,
-        )
-
-    return "".join(instructions)
-
-
 def _render_context(args, context=None):
     # device_key is the lookup key into context.yaml's per-device dict
     # (e.g. "cuda12.9", "xpu"). Computed here so it's available to every
@@ -274,12 +202,9 @@ def _render_context(args, context=None):
     # Compliance Jinja vars consumed by templates/compliance.Dockerfile.
     # Computed here (not in the template) so the per-target lookup
     # against context.yaml stays in Python and the template stays declarative.
-    (
-        compliance_base_stage,
-        compliance_baseline_sbom,
-        compliance_ecosystems,
-        compliance_source_ecosystem_flags,
-    ) = _resolve_compliance_inputs(args.framework, args.target, device_key, context)
+    compliance_base_stage, compliance_baseline_sbom = _resolve_compliance_inputs(
+        args.framework, args.target, device_key, context
+    )
     return dict(
         framework=args.framework,
         device=args.device,
@@ -288,56 +213,26 @@ def _render_context(args, context=None):
         platform=args.platform,
         cuda_version=args.cuda_version,
         make_efa=args.make_efa,
-        builder_image=getattr(args, "builder_image", ""),
+        builder_image=args.builder_image,
         compliance_base_stage=compliance_base_stage,
         compliance_baseline_sbom=compliance_baseline_sbom,
-        compliance_ecosystems=compliance_ecosystems,
-        compliance_source_ecosystem_flags=compliance_source_ecosystem_flags,
     )
 
 
 def _resolve_compliance_inputs(framework, target, device_key, context):
-    """Return (base_stage, baseline_sbom, ecosystems, source_ecosystem_flags).
+    """Return (base_stage, baseline_sbom_filename) for templates/compliance.Dockerfile.
 
     The shared compliance template needs to know:
-      - which earlier stage to FROM (pre_runtime / planner_builder)
+      - which earlier stage to FROM (pre_runtime)
       - which baseline SBOM file to subtract (may be empty if not captured)
-      - which ecosystems to scan. planner is distroless-python: it ships the
-        venv (python), the runtime wheel's crates (rust) and a few native
-        binaries, but none of planner_builder's Debian packages — so it drops
-        dpkg to avoid attributing builder-only packages. dash is carried via
-        native and libgomp via the base SBOM instead.
-    All depend on `target` + `framework` + `device_key`, so the lookup lives
-    here rather than being repeated as Jinja expressions per template.
+    Both depend on `framework` + `device_key`, so the lookup lives here
+    rather than being repeated as Jinja expressions per template.
     """
-    full_ecosystems = "python,rust,dpkg,native"
-    full_source_flags = "--ecosystem dpkg --ecosystem rust --ecosystem native"
     if context is None:
-        return "pre_runtime", "", full_ecosystems, full_source_flags
-    if target == "planner":
-        # planner is framework=dynamo, but its distroless-python base differs
-        # from dynamo-runtime's, so it carries its own baseline stem.
-        return (
-            "planner_builder",
-            context.get("dynamo", {}).get("planner_baseline_sbom", ""),
-            "python,rust,native",
-            "--ecosystem rust --ecosystem native",
-        )
-    if target == "frontend":
-        # frontend is framework-agnostic (its ubuntu base is shared across
-        # frameworks), so it carries its own baseline stem under `dynamo`.
-        return (
-            "pre_frontend",
-            context.get("dynamo", {}).get("frontend_baseline_sbom", ""),
-            full_ecosystems,
-            full_source_flags,
-        )
+        return "pre_runtime", ""
     # runtime / dev / local-dev / wheel_builder / base / framework
-    return (
-        "pre_runtime",
-        context.get(framework, {}).get(device_key, {}).get("baseline_sbom", ""),
-        full_ecosystems,
-        full_source_flags,
+    return "pre_runtime", (
+        context.get(framework, {}).get(device_key, {}).get("baseline_sbom", "")
     )
 
 
@@ -347,7 +242,6 @@ def render(args, context, script_dir):
     rendered = template.render(context=context, **_render_context(args, context))
     # Replace all instances of 3+ newlines with 2 newlines
     cleaned = re.sub(r"\n{3,}", "\n\n", rendered)
-    cleaned = _inject_python_index_mounts(cleaned)
 
     if args.output_short_filename:
         filename = "rendered.Dockerfile"

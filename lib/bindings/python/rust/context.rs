@@ -5,12 +5,11 @@
 // trace identity, and span access for engine observability.
 //
 // Engine code reaches the observability surface through the
-// `dynamo.common.backend.telemetry` facade, which is itself a thin wrapper
+// `dingo.common.backend.telemetry` facade, which is itself a thin wrapper
 // over [`Context::current_span`] / [`Context::start_span`]. Both return a
 // unified [`SpanProxy`] handle whose `set_attribute` / `add_event` /
 // `set_status` operations mirror the OTel `Span` API.
 
-use dynamo_backend_common::FirstTokenNotifier;
 use dynamo_runtime::logging::DistributedTraceContext;
 pub use dynamo_runtime::pipeline::AsyncEngineContext;
 use dynamo_runtime::pipeline::context::Controller;
@@ -21,11 +20,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use tokio::sync::watch;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Process-wide guard: once-per-process WARN when telemetry calls hit a
 /// parent `engine.generate` span that has no OTel context (i.e., the
-/// `tracing-opentelemetry` layer isn't installed).
+/// `tracing-opentelemetry` layer isn't installed — non-JSONL deployments).
 /// One log line is enough to surface the configuration issue; rate-limiting
 /// to once avoids flooding logs in high-QPS workers.
 ///
@@ -40,8 +40,7 @@ fn warn_bridge_missing_once(method: &str) {
         tracing::warn!(
             method,
             "telemetry call is a no-op: OTel bridge layer not installed \
-             (enable OTEL_EXPORT_ENABLED=1, DYN_LOGGING_CONSOLE_FORMAT=jsonl, \
-             or the legacy DYN_LOGGING_JSONL=1 switch). \
+             (needs DYN_LOGGING_JSONL=1 + OTEL_EXPORT_ENABLED=1). \
              Engine telemetry attributes / events / child spans are NOT \
              being recorded. Further no-ops in this process are silent."
         );
@@ -54,14 +53,16 @@ fn warn_bridge_missing_once(method: &str) {
 ///
 /// The span is private — engine code reaches it via [`Context::current_span`]
 /// (the auto-span proxy) or [`Context::start_span`] (a child span). The
-/// facade in `dynamo.common.backend.telemetry` is a one-line wrapper around
+/// facade in `dingo.common.backend.telemetry` is a one-line wrapper around
 /// those methods.
 #[derive(Clone)]
 #[pyclass]
 pub struct Context {
     inner: Arc<dyn AsyncEngineContext>,
     trace_context: Option<DistributedTraceContext>,
-    first_token: Option<FirstTokenNotifier>,
+    /// First-token signal for decode-mode disagg. `None` on aggregated /
+    /// prefill requests.
+    first_token: Option<watch::Sender<bool>>,
     metadata: Arc<Mutex<BTreeMap<String, String>>>,
     /// Captured `engine.generate` span. `None` for Python-instantiated test
     /// contexts (where no parent span was plumbed in) — `current_span` /
@@ -174,7 +175,7 @@ impl Context {
     pub fn new(
         inner: Arc<dyn AsyncEngineContext>,
         trace_context: Option<DistributedTraceContext>,
-        first_token: Option<FirstTokenNotifier>,
+        first_token: Option<watch::Sender<bool>>,
         metadata: BTreeMap<String, String>,
     ) -> Self {
         Self {
@@ -207,22 +208,6 @@ impl Context {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-    }
-
-    pub(crate) fn bind_first_token_source(
-        &mut self,
-        source: &dynamo_llm::first_token::FirstTokenSource,
-        dp_rank: Option<u32>,
-    ) {
-        let Some(dp_rank) = dp_rank else {
-            return;
-        };
-        if let Some(notifier) = &self.first_token {
-            let _ = notifier.attach_completion(source, self.inner.id(), dp_rank);
-            return;
-        }
-        self.first_token =
-            FirstTokenNotifier::for_request(None, Some(source), self.inner.id(), Some(dp_rank));
     }
 
     /// Build the `traceparent` header value. Prefers the engine.generate
@@ -312,7 +297,7 @@ impl Context {
     fn async_killed_or_stopped<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
         let inner = self.inner.clone();
 
-        crate::future_into_py(py, async move {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
             tokio::select! {
                 _ = inner.killed() => {
                     Ok(true)
@@ -324,12 +309,13 @@ impl Context {
         })
     }
 
-    /// Fire the shared first-token notifier. This releases deferred decode abort and publishes
-    /// worker-side prefill completion when configured. The framework normally auto-fires it on
-    /// the first non-empty response chunk.
+    /// Fire the first-token signal so the framework can release any
+    /// deferred `engine.abort()`. Idempotent; no-op on non-decode
+    /// requests. Engines normally don't need this — the framework
+    /// auto-fires on the first non-empty chunk in the response stream.
     fn notify_first_token(&self) {
-        if let Some(notifier) = &self.first_token {
-            notifier.notify();
+        if let Some(tx) = &self.first_token {
+            let _ = tx.send(true);
         }
     }
 
@@ -370,7 +356,7 @@ impl Context {
     /// `SpanProxy`; when no parent was plumbed in (test contexts) or the
     /// OTel bridge isn't installed, the proxy is a silent no-op.
     ///
-    /// Prefer the `dynamo.common.backend.telemetry.current_span(context)`
+    /// Prefer the `dingo.common.backend.telemetry.current_span(context)`
     /// facade in engine code — it's the documented surface.
     fn current_span(&self) -> SpanProxy {
         match &self.span {
@@ -396,7 +382,7 @@ impl Context {
     ///
     /// Returns a no-op proxy when no parent was plumbed in or the bridge
     /// isn't installed. Prefer the
-    /// `dynamo.common.backend.telemetry.start_span(context, name)` facade
+    /// `dingo.common.backend.telemetry.start_span(context, name)` facade
     /// in engine code.
     #[pyo3(signature = (name, attrs=None))]
     fn start_span(&self, name: &str, attrs: Option<&Bound<'_, PyDict>>) -> PyResult<SpanProxy> {
@@ -439,8 +425,8 @@ impl Context {
     /// bridge is installed, so downstream engine internals (vLLM scheduler,
     /// TRT-LLM forward, SGLang KV transfer) nest UNDER `engine.generate`.
     /// Falls back to the inbound `DistributedTraceContext` for legacy
-    /// callers, Python-instantiated test contexts, and deployments without
-    /// the bridge.
+    /// callers, Python-instantiated test contexts, and non-JSONL deployments
+    /// without the bridge.
     ///
     /// Always emits `traceparent`. Also emits `tracestate`, `x-request-id`,
     /// and `request-id` when the upstream propagated them.
@@ -600,7 +586,7 @@ fn py_to_otel_value(v: &Bound<'_, PyAny>) -> PyResult<opentelemetry::Value> {
         Ok(Value::F64(f.extract::<f64>()?))
     } else if let Ok(s) = v.downcast::<PyString>() {
         // `to_cow` (not `to_str`) for abi3 compatibility: enabling the
-        // `ais-forward-pass` pulls in AISimulate's consolidated perf-model core, which sets
+        // `aic-forward-pass` feature pulls in aiconfigurator-core, which sets
         // pyo3 `abi3-py39`; under the <3.10 limited API `PyString::to_str` is
         // compiled out, while `to_cow` is always available. Same conversion.
         Ok(Value::String(s.to_cow()?.into_owned().into()))

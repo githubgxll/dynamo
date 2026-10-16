@@ -17,14 +17,15 @@ class EvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.lock = {"main_commit": "a" * 40, "harbor_repository": "registry.example:8443/openclaw/ai-dingo-vllm"}
+        self.lock = {"service_base_commit": "a" * 40, "harbor_repository": "registry.example:8443/openclaw/ai-dingo-vllm"}
         self.parent = self.lock["harbor_repository"] + "@sha256:" + "1" * 64
-        self.record = {"schema": "h3-experimental-publication/1", "main_commit": "a" * 40,
+        self.record = {"schema": "h3-experimental-publication/1", "service_base_commit": "a" * 40,
                        "source_commit": "b" * 40, "digest": "sha256:" + "2" * 64,
-                       "image": self.lock["harbor_repository"] + ":omni031rc1-distilled-ref8shift12-" + "b" * 12,
+                       "image": self.lock["harbor_repository"] + ":omni031rc1-gateway-distilled-ref8shift12-" + "b" * 12,
                        "deployment_image": self.lock["harbor_repository"] + "@sha256:" + "2" * 64,
                        "framework_image": self.parent, "evidence_sha256": {}}
         reports = {
+            "experimental/service-smoke.json": "PASS_SERVICE_IMPORTS_AND_HELP_ONLY",
             "experimental/assets-report.json": "PASS_ASSETS_ONLY",
             "experimental/profiles-check.json": "PASS_INSTALLED_PROFILES_CPU_ONLY",
             "experimental/environment-check.json": "PASS_EXPERIMENTAL_ENVIRONMENT_CPU_ONLY",
@@ -86,7 +87,7 @@ class EvidenceTests(unittest.TestCase):
             self.verify()
 
     def test_framework_tag_cannot_be_used_as_final(self):
-        self.record['image'] = self.lock['harbor_repository'] + ':omni031rc1-main-framework-' + 'b' * 12
+        self.record['image'] = self.lock['harbor_repository'] + ':omni031rc1-gateway-framework-' + 'b' * 12
         with self.assertRaisesRegex(ValueError, 'final distilled image tag'):
             self.verify()
 
@@ -123,7 +124,7 @@ class EvidenceTests(unittest.TestCase):
 
 class BranchSubmissionTests(unittest.TestCase):
     def setUp(self):
-        self.lock = {"remote_branch": ops.EXPERIMENT_BRANCH, "main_commit": "a" * 40,
+        self.lock = {"remote_branch": ops.EXPERIMENT_BRANCH, "service_base_commit": "a" * 40,
                      "remote_baseline": "d" * 40, "allow_remote_branch_creation": True}
         self.calls = []
         self.remote = None
@@ -134,8 +135,8 @@ class BranchSubmissionTests(unittest.TestCase):
         self.calls.append((args, kwargs))
         if args[0] == "ls-remote":
             return "" if self.remote is None else self.remote + "\trefs/heads/" + ops.EXPERIMENT_BRANCH
-        if args == ("rev-parse", "refs/remotes/origin/main"):
-            return self.lock["main_commit"]
+        if args == ("rev-parse", "refs/remotes/origin/DingoRouter-video-gateway"):
+            return self.lock["service_base_commit"]
         if args == ("rev-parse", "refs/remotes/origin/" + ops.EXPERIMENT_BRANCH):
             return self.remote
         if args == ("rev-parse", "HEAD"):
@@ -150,7 +151,7 @@ class BranchSubmissionTests(unittest.TestCase):
         with patch.object(ops, "git", side_effect=self.fake_git):
             self.assertIsNone(ops.prepare_remote(self.lock))
         fetches = [args for args, _ in self.calls if args[0] == "fetch"]
-        self.assertEqual(len(fetches), 1)  # Only main: do not fetch an absent ref.
+        self.assertEqual(len(fetches), 1)  # Only service base: do not fetch an absent ref.
         self.assertFalse(any(args[0] == "merge-base" for args, _ in self.calls))
 
     def test_auth_or_network_failure_is_not_absent_branch(self):

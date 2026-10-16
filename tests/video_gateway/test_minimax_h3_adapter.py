@@ -1,0 +1,973 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from fractions import Fraction
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from PIL import Image
+
+import dingo.video_gateway.adapters.minimax_h3 as h3_module
+from dingo.video_gateway.adapters.base import UploadedArtifact
+from dingo.video_gateway.adapters.h3_shape import align_frame_count
+from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter
+from dingo.video_gateway.errors import GatewayError
+from dingo.vllm.omni.request_adapters.minimax_h3 import (
+    MiniMaxH3RequestAdapter as MiniMaxH3WorkerRequestAdapter,
+)
+
+
+def _adapter(make_gateway_config, workflow="fl2va"):
+    config = make_gateway_config()
+    pool = config.pools[0]
+    if workflow == "fl2va":
+        return MiniMaxH3VideoAdapter(pool)
+    raw_pool = {
+        "pool_id": "ref-pool",
+        "served_models": ["public-ref"],
+        "backend_model": "worker-ref",
+        "backend_target": "dyn://ref-scope.backend.generate",
+        "adapter": {
+            "name": "minimax_h3",
+            "workflow": "ref2va",
+            "validate_media": False,
+        },
+        "scheduling": {"worker_capacity": 1},
+    }
+    return MiniMaxH3VideoAdapter(make_gateway_config(pools=[raw_pool]).pools[0])
+
+
+def _base_fields(model="public-fl"):
+    return {
+        "model": [model],
+        "prompt": ["a cinematic validation scene"],
+        "seconds": ["5.0"],
+        "size": ["1344x768"],
+        "fps": ["24"],
+        "num_inference_steps": ["50"],
+        "seed": ["1101"],
+    }
+
+
+def _png_upload(tmp_path: Path, *, field="input_references", ordinal=0):
+    path = tmp_path / f"image-{ordinal}.png"
+    Image.new("RGB", (1600, 900), "red").save(path)
+    payload = path.read_bytes()
+    return UploadedArtifact(
+        field_name=field,
+        ordinal=ordinal,
+        filename=path.name,
+        content_type="image/png",
+        path=path,
+        size=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def _data_url(content_type: str, payload: bytes) -> str:
+    return f"data:{content_type};base64," + base64.b64encode(payload).decode()
+
+
+def test_t2va_normalizes_fractional_duration_and_persists_seed(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    fields["seconds"] = ["5.125"]
+
+    normalized = adapter.normalize_request(fields, [], "public-fl")
+
+    assert normalized["task"] == "t2va"
+    assert normalized["num_frames"] == round(5.125 * 24)
+    assert normalized["aspect_ratio"] == "16:9"
+    assert normalized["flow_shift"] == 12.0
+    assert normalized["audio_flow_shift"] == 3.0
+    assert normalized["seed"] == 1101
+    assert normalized["seed_generated"] is False
+
+
+def test_pinned_h3_frame_alignment_matches_worker_version():
+    assert align_frame_count(120) == 124
+    assert align_frame_count(96) == 107
+    assert align_frame_count(360) == 362
+
+
+@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
+@pytest.mark.parametrize("seed", [None, 0, 1101, 2**32 - 1])
+def test_seed_is_only_persisted_and_forwarded_when_supplied(
+    make_gateway_config, tmp_path, workflow, seed
+):
+    adapter = _adapter(make_gateway_config, workflow)
+    model = "public-fl" if workflow == "fl2va" else "public-ref"
+    fields = _base_fields(model)
+    if seed is None:
+        fields.pop("seed")
+    else:
+        fields["seed"] = [str(seed)]
+    uploads = [] if workflow == "fl2va" else [_png_upload(tmp_path)]
+
+    normalized = adapter.normalize_request(fields, uploads, model)
+    manifest = [upload.manifest_entry(relative_to=tmp_path) for upload in uploads]
+    payload = adapter.build_worker_payload(normalized, manifest, tmp_path)
+
+    if seed is None:
+        assert "seed" not in normalized and "seed_generated" not in normalized
+        assert "seed" not in payload and "seed" not in payload["nvext"]
+    else:
+        assert normalized["seed"] == seed and normalized["seed_generated"] is False
+        assert payload["nvext"]["seed"] == seed
+
+
+@pytest.mark.parametrize(
+    "seed,code",
+    [
+        ("-1", "invalid_seed"),
+        (str(2**32), "invalid_seed"),
+        ("1.5", "invalid_integer"),
+        ("", "invalid_integer"),
+    ],
+)
+def test_invalid_explicit_seed_is_not_replaced(make_gateway_config, seed, code):
+    fields = {**_base_fields(), "seed": [seed]}
+    with pytest.raises(GatewayError) as error:
+        _adapter(make_gateway_config).normalize_request(fields, [], "public-fl")
+    assert error.value.code == code and error.value.param == "seed"
+
+
+def test_legacy_persisted_seed_is_still_forwarded(make_gateway_config, tmp_path):
+    adapter = _adapter(make_gateway_config)
+    normalized = adapter.normalize_request(_base_fields(), [], "public-fl")
+    normalized["seed_generated"] = True
+    payload = adapter.build_worker_payload(normalized, [], tmp_path)
+    assert payload["nvext"]["seed"] == 1101
+
+
+def test_duration_must_have_exactly_one_source(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    fields["num_frames"] = ["120"]
+
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(fields, [], "public-fl")
+
+    assert error.value.code == "conflicting_duration"
+
+
+def test_extra_duration_and_task_are_supported(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    del fields["seconds"]
+    fields["extra_params"] = [
+        json.dumps({"duration": 5.0, "task": "t2va", "audio_flow_shift": 3.0})
+    ]
+
+    normalized = adapter.normalize_request(fields, [], "public-fl")
+
+    assert normalized["num_frames"] == 120
+    assert normalized["task"] == "t2va"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("fps", "25", "invalid_fps"),
+        ("size", "1000x700", "invalid_size"),
+        ("aspect_ratio", "1:1", "invalid_aspect_ratio"),
+        ("guidance_scale", "21", "invalid_guidance_scale"),
+        ("num_inference_steps", "1", "invalid_num_inference_steps"),
+        ("num_inference_steps", "201", "invalid_num_inference_steps"),
+    ],
+)
+def test_invalid_h3_parameters_have_specific_errors(
+    make_gateway_config, field, value, expected_code
+):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    fields[field] = [value]
+
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(fields, [], "public-fl")
+
+    assert error.value.code == expected_code
+
+
+def test_fl2va_first_image_builds_plain_data_url(tmp_path, make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    upload = _png_upload(tmp_path)
+    normalized = adapter.normalize_request(_base_fields(), [upload], "public-fl")
+    task_root = tmp_path / "task"
+    (task_root / "inputs").mkdir(parents=True)
+    target = task_root / "inputs" / "000.bin"
+    target.write_bytes(upload.path.read_bytes())
+    manifest = [
+        {
+            "ordinal": 0,
+            "path": "inputs/000.bin",
+            "bytes": target.stat().st_size,
+            "content_type": "image/png",
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        }
+    ]
+
+    payload = adapter.build_worker_payload(normalized, manifest, task_root)
+
+    assert payload["model"] == "worker-fl"
+    assert payload["response_format"] == "b64_json"
+    assert payload["output_format"] == "mp4"
+    assert payload["input_reference"].startswith("data:image/png;base64,")
+    assert payload["nvext"] == {
+        "fps": 24,
+        "num_frames": 120,
+        "num_inference_steps": 50,
+        "seed": 1101,
+    }
+
+
+def test_worker_adapter_releases_encoded_inputs_after_materialization(tmp_path):
+    adapter = MiniMaxH3WorkerRequestAdapter(
+        "ref2va", str(tmp_path / "media"), 1024 * 1024
+    )
+    request = {
+        "model": "minimax-h3",
+        "prompt": "keep me",
+        "input_reference": "data:video/mp4;base64," + "A" * 4096,
+        "input_references": ["data:image/png;base64," + "B" * 4096],
+    }
+
+    adapter.release_input_payload(request)
+
+    assert request == {"model": "minimax-h3", "prompt": "keep me"}
+
+
+def test_worker_stream_consumer_does_not_retain_terminal_result(
+    make_gateway_config,
+):
+    consumer = _adapter(make_gateway_config).create_worker_stream_consumer()
+    consumer.consume(
+        {
+            "status": "completed",
+            "data": [{"output_format": "mp4", "b64_json": "AAAA"}],
+        }
+    )
+
+    assert consumer.finish().b64_json == "AAAA"
+    with pytest.raises(RuntimeError, match="without a terminal response"):
+        consumer.finish()
+
+
+def test_fl2va_tail_image_uses_versioned_envelope(tmp_path, make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    upload = _png_upload(tmp_path)
+    fields = _base_fields()
+    fields["frame_indices"] = ["[-1]"]
+    normalized = adapter.normalize_request(fields, [upload], "public-fl")
+    task_root = tmp_path / "task"
+    (task_root / "inputs").mkdir(parents=True)
+    target = task_root / "inputs" / "000.bin"
+    target.write_bytes(upload.path.read_bytes())
+
+    payload = adapter.build_worker_payload(
+        normalized,
+        [
+            {
+                "ordinal": 0,
+                "path": "inputs/000.bin",
+                "bytes": target.stat().st_size,
+                "content_type": "image/png",
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }
+        ],
+        task_root,
+    )
+    envelope = json.loads(payload["input_reference"])
+
+    assert envelope["type"] == "fl2va_keyframes_v1"
+    assert envelope["frame_indices"] == [-1]
+    assert len(envelope["images"]) == 1
+
+
+def test_ref2va_mixed_payload_preserves_typed_order(
+    tmp_path, make_gateway_config, monkeypatch
+):
+    adapter = _adapter(make_gateway_config, "ref2va")
+    probes = {
+        0: h3_module._MediaProbe("image", width=512, height=512),
+        1: h3_module._MediaProbe(
+            "video", width=512, height=512, fps=24.0, duration_s=3.0
+        ),
+        2: h3_module._MediaProbe("audio", duration_s=3.0),
+    }
+    monkeypatch.setattr(
+        h3_module,
+        "_probe_upload",
+        lambda upload, _limits: probes[upload.ordinal],
+    )
+    uploads = []
+    content_types = ["image/png", "video/mp4", "audio/wav"]
+    for ordinal, content_type in enumerate(content_types):
+        path = tmp_path / f"source-{ordinal}.bin"
+        path.write_bytes(f"payload-{ordinal}".encode())
+        uploads.append(
+            UploadedArtifact(
+                "input_references",
+                ordinal,
+                path.name,
+                content_type,
+                path,
+                path.stat().st_size,
+                str(ordinal) * 64,
+            )
+        )
+    fields = _base_fields("public-ref")
+    fields["task"] = ["ref2va"]
+    normalized = adapter.normalize_request(fields, uploads, "public-ref")
+    task_root = tmp_path / "task"
+    (task_root / "inputs").mkdir(parents=True)
+    manifest = []
+    for upload in uploads:
+        target = task_root / "inputs" / f"{upload.ordinal:03d}.bin"
+        target.write_bytes(upload.path.read_bytes())
+        manifest.append(
+            {
+                "ordinal": upload.ordinal,
+                "path": f"inputs/{upload.ordinal:03d}.bin",
+                "bytes": target.stat().st_size,
+                "content_type": upload.content_type,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }
+        )
+
+    payload = adapter.build_worker_payload(normalized, manifest, task_root)
+    envelope = json.loads(payload["input_reference"])
+
+    assert envelope["type"] == "ref2va_mixed_v1"
+    assert len(envelope["images"]) == 1
+    assert len(envelope["videos"]) == 1
+    assert len(envelope["audios"]) == 1
+
+
+def test_worker_terminal_requires_one_b64_mp4(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    expected = base64.b64encode(b"\x00\x00\x00\x18ftypisompayload").decode()
+
+    result = adapter.consume_worker_stream(
+        [
+            {"status": "in_progress", "progress": 0},
+            {
+                "status": "completed",
+                "data": [{"output_format": "mp4", "b64_json": expected}],
+                "inference_time_s": 1.25,
+                "stage_durations": {"diffuse": 1.1, "decode": 0.15},
+            },
+        ]
+    )
+
+    assert result.b64_json == expected
+    assert result.output_format == "mp4"
+    assert result.inference_time_s == 1.25
+    assert result.stage_durations == {"diffuse": 1.1, "decode": 0.15}
+
+
+def test_worker_stream_consumer_discards_progress_and_rejects_two_terminals(
+    make_gateway_config,
+):
+    adapter = _adapter(make_gateway_config)
+    consumer = adapter.create_worker_stream_consumer()
+    for index in range(10_000):
+        consumer.consume({"status": "in_progress", "progress": index})
+    consumer.consume(
+        {
+            "status": "completed",
+            "data": [{"output_format": "mp4", "b64_json": "AAAA"}],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="multiple terminal"):
+        consumer.consume(
+            {
+                "status": "completed",
+                "data": [{"output_format": "mp4", "b64_json": "BBBB"}],
+            }
+        )
+
+    assert consumer.finish().b64_json == "AAAA"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), ("false", False), ("1", True), ("0", False)],
+)
+def test_generate_sound_matches_vllm_omni_form_boolean(
+    raw, expected, make_gateway_config
+):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    fields["generate_sound"] = [raw]
+
+    normalized = adapter.normalize_request(fields, [], "public-fl")
+
+    assert normalized["generate_sound"] is expected
+
+
+def test_generate_sound_rejects_ambiguous_boolean(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    fields = _base_fields()
+    fields["generate_sound"] = ["yes"]
+
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(fields, [], "public-fl")
+
+    assert error.value.code == "invalid_boolean"
+
+
+def test_mime_spoofing_is_rejected(tmp_path, make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    upload = _png_upload(tmp_path)
+    spoofed = UploadedArtifact(
+        upload.field_name,
+        upload.ordinal,
+        upload.filename,
+        "image/jpeg",
+        upload.path,
+        upload.size,
+        upload.sha256,
+    )
+
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(_base_fields(), [spoofed], "public-fl")
+
+    assert error.value.code == "media_type_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("declared", "header", "expected"),
+    [
+        ("video/quicktime", b"\0\0\0\x18ftypqt  \0\0\0\0qt  ", "video/quicktime"),
+        ("video/mp4", b"\0\0\0\x18ftypisom\0\0\0\0mp42", "video/mp4"),
+        ("application/octet-stream", b"RIFF\0\0\0\0WAVE", "audio/wav"),
+    ],
+)
+def test_media_type_is_normalized_from_mime_and_signature(
+    tmp_path, declared, header, expected
+):
+    path = tmp_path / "reference.bin"
+    path.write_bytes(header)
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        declared,
+        path,
+        len(header),
+        hashlib.sha256(header).hexdigest(),
+    )
+
+    assert h3_module._canonical_content_type(upload, header) == expected
+
+
+@pytest.mark.parametrize(
+    ("declared", "payload"),
+    [
+        ("image/heic", b"\0\0\0\x18ftypheic\0\0\0\0mif1"),
+        ("image/heif", b"\0\0\0\x18ftypmif1\0\0\0\0msf1"),
+        ("audio/mpeg", b"ID3\x04\0\0\0\0\0\0"),
+    ],
+)
+def test_media_not_supported_by_current_worker_is_rejected(tmp_path, declared, payload):
+    path = tmp_path / "reference.bin"
+    path.write_bytes(payload)
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        declared,
+        path,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+    )
+
+    with pytest.raises(GatewayError) as error:
+        h3_module._canonical_content_type(upload, payload)
+
+    assert error.value.status == 415
+    assert error.value.code == "unsupported_media_format"
+
+
+def test_octet_stream_unknown_media_is_rejected(tmp_path):
+    payload = b"not-a-media-file"
+    path = tmp_path / "reference.bin"
+    path.write_bytes(payload)
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        "application/octet-stream",
+        path,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+    )
+
+    with pytest.raises(GatewayError) as error:
+        h3_module._canonical_content_type(upload, payload)
+
+    assert error.value.status == 415
+    assert error.value.code == "unsupported_media_format"
+
+
+@pytest.mark.parametrize("codec", ["pcm_s16le", "pcm_s24le", "pcm_f32le"])
+def test_reference_wav_accepts_pcm_codec(tmp_path, codec):
+    path = tmp_path / "reference.wav"
+    path.write_bytes(b"RIFF\0\0\0\0WAVE")
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        "audio/wav",
+        path,
+        path.stat().st_size,
+        hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+    h3_module._validate_reference_audio_codec(codec, upload)
+
+
+@pytest.mark.parametrize("codec", [None, "aac", "mp3", "mp3float"])
+def test_reference_wav_rejects_non_pcm_codec(tmp_path, codec):
+    path = tmp_path / "reference.wav"
+    path.write_bytes(b"RIFF\0\0\0\0WAVE")
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        "audio/wav",
+        path,
+        path.stat().st_size,
+        hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(GatewayError) as error:
+        h3_module._validate_reference_audio_codec(codec, upload)
+
+    assert error.value.status == 415
+    assert error.value.code == "unsupported_media_format"
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(255, 512), (512, 5761), (256, 1024), (1024, 256)],
+)
+def test_reference_image_shape_is_rejected_before_worker(tmp_path, width, height):
+    path = tmp_path / "reference.png"
+    path.write_bytes(b"unused")
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        "image/png",
+        path,
+        path.stat().st_size,
+        hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+    with pytest.raises(GatewayError) as error:
+        h3_module._validate_image_dimensions(width, height, upload)
+
+    assert error.value.status == 400
+    assert error.value.code == "invalid_reference_image"
+
+
+def test_reference_video_ratio_is_rejected_before_worker(tmp_path, monkeypatch):
+    payload = b"\0\0\0\x18ftypisom\0\0\0\0mp42"
+    path = tmp_path / "reference.mp4"
+    path.write_bytes(payload)
+    upload = UploadedArtifact(
+        "input_reference",
+        0,
+        path.name,
+        "video/mp4",
+        path,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+    )
+    monkeypatch.setattr(
+        h3_module,
+        "_probe_av",
+        lambda *_args: h3_module._MediaProbe(
+            "video",
+            width=1280,
+            height=256,
+            fps=24.0,
+            duration_s=3.0,
+            content_type="video/mp4",
+        ),
+    )
+
+    with pytest.raises(GatewayError) as error:
+        h3_module._probe_upload(upload, h3_module._MiniMaxH3Limits())
+
+    assert error.value.status == 400
+    assert error.value.code == "invalid_reference_video"
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [
+        ["image", "image"],
+        ["video", "video"],
+        ["image", "video"],
+        ["image", "audio"],
+        ["video", "audio"],
+        ["image", "video", "audio"],
+    ],
+)
+def test_ref2va_gateway_accepts_documented_reference_subsets(
+    make_gateway_config, kinds
+):
+    adapter = _adapter(make_gateway_config, "ref2va")
+    probes = [
+        h3_module._MediaProbe(
+            kind,
+            width=512 if kind != "audio" else None,
+            height=512 if kind != "audio" else None,
+            fps=24.0 if kind == "video" else None,
+            duration_s=3.0 if kind in {"video", "audio"} else None,
+        )
+        for kind in kinds
+    ]
+
+    adapter._validate_references(kinds, probes, None, 768, 768)
+
+
+def test_ref2va_gateway_rejects_audio_only_before_dispatch(make_gateway_config):
+    adapter = _adapter(make_gateway_config, "ref2va")
+
+    with pytest.raises(GatewayError) as error:
+        adapter._validate_references(
+            ["audio"],
+            [h3_module._MediaProbe("audio", duration_s=3.0)],
+            None,
+            768,
+            768,
+        )
+
+    assert error.value.status == 400
+    assert error.value.code == "unsupported_reference_combination"
+
+
+def test_pool_limits_can_only_tighten_adapter_capability(make_gateway_config):
+    pool = {
+        "pool_id": "limited",
+        "served_models": ["public-fl"],
+        "backend_model": "worker-fl",
+        "backend_target": "dyn://scope.backend.generate",
+        "adapter": {
+            "name": "minimax_h3",
+            "workflow": "fl2va",
+            "limits": {"max_prompt_bytes": 8},
+            "validate_media": False,
+        },
+    }
+    adapter = MiniMaxH3VideoAdapter(make_gateway_config(pools=[pool]).pools[0])
+    fields = _base_fields()
+    fields["prompt"] = ["123456789"]
+
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(fields, [], "public-fl")
+
+    assert error.value.code == "prompt_too_long"
+
+    pool["adapter"]["limits"]["max_prompt_bytes"] = 32 * 1024 + 1
+    with pytest.raises(ValueError, match="may not exceed adapter capability"):
+        MiniMaxH3VideoAdapter(make_gateway_config(pools=[pool]).pools[0])
+
+
+def test_media_validation_is_opt_in(make_gateway_config):
+    pool = {
+        "pool_id": "default-media-policy",
+        "served_models": ["public-fl"],
+        "backend_model": "worker-fl",
+        "backend_target": "dyn://scope.backend.generate",
+        "adapter": {
+            "name": "minimax_h3",
+            "workflow": "fl2va",
+        },
+    }
+
+    adapter = MiniMaxH3VideoAdapter(make_gateway_config(pools=[pool]).pools[0])
+
+    assert adapter.options["validate_media"] is False
+
+
+def test_ref2va_capabilities_only_advertise_verified_media(make_gateway_config):
+    capabilities = _adapter(make_gateway_config, "ref2va").capabilities(
+        max_result_bytes=128 * 1024 * 1024
+    )
+
+    assert capabilities["image_formats"] == ["jpeg", "png", "webp"]
+    assert capabilities["video_formats"] == ["mp4", "mov"]
+    assert capabilities["audio_formats"] == ["wav"]
+    assert capabilities["max_video_bytes"] == 50 * 1024 * 1024
+    assert capabilities["max_audio_bytes"] == 15 * 1024 * 1024
+
+
+async def test_worker_bridge_materializes_mov_wav_and_subset_envelope(tmp_path):
+    adapter = MiniMaxH3WorkerRequestAdapter(
+        "ref2va", str(tmp_path / "media"), 1024 * 1024
+    )
+
+    class Loader:
+        async def load_image(self, value):
+            return f"decoded:{value}"
+
+    envelope = json.dumps(
+        {
+            "type": "ref2va_mixed_v1",
+            "videos": [_data_url("video/quicktime", b"\0\0\0\x18ftypqt  \0\0\0\0qt  ")],
+            "audios": [_data_url("audio/wav", b"RIFF\0\0\0\0WAVEpayload")],
+        }
+    )
+
+    async with adapter.request_scope("request-1") as scope:
+        reference = await adapter._decode_mixed_envelope(envelope, Loader(), scope)
+        assert [Path(item.path).suffix for item in reference.videos] == [".mov"]
+        assert [Path(item.path).suffix for item in reference.audios] == [".wav"]
+        inputs = adapter.build_engine_inputs(
+            SimpleNamespace(),
+            reference,
+            lambda _req, image: SimpleNamespace(
+                prompt={}, sampling_params_list=[], image=image
+            ),
+        )
+        assert set(inputs.prompt["multi_modal_data"]) == {"video", "audio"}
+
+    assert not adapter.requests_root.exists() or not any(
+        adapter.requests_root.iterdir()
+    )
+
+
+async def test_worker_bridge_rejects_audio_only_before_persisting(tmp_path):
+    adapter = MiniMaxH3WorkerRequestAdapter(
+        "ref2va", str(tmp_path / "media"), 1024 * 1024
+    )
+
+    class Loader:
+        async def load_image(self, value):
+            return value
+
+    async with adapter.request_scope("audio-only") as scope:
+        with pytest.raises(ValueError, match="requires an image or video"):
+            await adapter._load_ref2va_reference(
+                _data_url("audio/wav", b"RIFF\0\0\0\0WAVEpayload"),
+                Loader(),
+                scope,
+            )
+
+    assert not adapter.requests_root.exists() or not any(
+        adapter.requests_root.iterdir()
+    )
+
+
+def _write_h264_aac_mp4(path: Path, *, frames: int, width: int, height: int) -> None:
+    import av
+
+    with av.open(str(path), "w") as container:
+        video = container.add_stream("libx264", rate=24)
+        video.width = width
+        video.height = height
+        video.pix_fmt = "yuv420p"
+        audio = container.add_stream("aac", rate=48_000)
+        audio.layout = "mono"
+
+        for index in range(frames):
+            frame = av.VideoFrame(width, height, "yuv420p")
+            for plane, value in zip(frame.planes, (16, 128, 128)):
+                plane.update(bytes([value]) * plane.buffer_size)
+            frame.pts = index
+            frame.time_base = Fraction(1, 24)
+            for packet in video.encode(frame):
+                container.mux(packet)
+        for packet in video.encode():
+            container.mux(packet)
+
+        samples = round(frames * 48_000 / 24)
+        offset = 0
+        while offset < samples:
+            sample_count = min(1024, samples - offset)
+            frame = av.AudioFrame(format="fltp", layout="mono", samples=sample_count)
+            frame.sample_rate = 48_000
+            frame.pts = offset
+            frame.time_base = Fraction(1, 48_000)
+            for plane in frame.planes:
+                plane.update(b"\0" * plane.buffer_size)
+            for packet in audio.encode(frame):
+                container.mux(packet)
+            offset += sample_count
+        for packet in audio.encode():
+            container.mux(packet)
+
+
+def test_media_gate_accepts_h3_aligned_h264_aac_result(tmp_path, make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+
+    media = adapter.validate_artifact(
+        result,
+        {"width": 256, "height": 256, "num_frames": 120},
+    )
+
+    assert media["video_codec"] == "h264"
+    assert media["audio_codec"] == "aac"
+    assert media["frames"] == 124
+    assert media["duration_s"] >= max(
+        media["video_duration_s"], media["audio_duration_s"]
+    )
+    assert media["duration_s"] == pytest.approx(124 / 24, abs=0.1)
+
+
+def test_generate_sound_false_remuxes_without_reencoding_video(
+    tmp_path, make_gateway_config
+):
+    import av
+
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+
+    normalized = {
+        "width": 256,
+        "height": 256,
+        "num_frames": 120,
+        "generate_sound": False,
+    }
+    adapter.prepare_artifact(result, normalized)
+    media = adapter.validate_artifact(result, normalized)
+
+    with av.open(str(result)) as container:
+        assert len(container.streams.video) == 1
+        assert len(container.streams.audio) == 0
+    assert media["video_codec"] == "h264"
+    assert media["audio_codec"] is None
+
+
+def test_video_only_mp4_is_not_rewritten(tmp_path, make_gateway_config, monkeypatch):
+    import av
+
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    normalized = {
+        "width": 256,
+        "height": 256,
+        "num_frames": 120,
+        "generate_sound": False,
+    }
+    # First strip real AAC audio, then exercise the already-video-only path.
+    adapter.prepare_artifact(result, normalized)
+    before = result.read_bytes()
+    before_stat = result.stat()
+    original_open = av.open
+
+    def read_only_open(*args, **kwargs):
+        assert kwargs.get("mode", "r") == "r", "unexpected MP4 rewrite"
+        return original_open(*args, **kwargs)
+
+    def no_write(*_args, **_kwargs):
+        pytest.fail("already-video-only MP4 must not be replaced or fsynced")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(av, "open", read_only_open)
+        patch.setattr(h3_module.os, "replace", no_write)
+        patch.setattr(h3_module.os, "fsync", no_write)
+        adapter.prepare_artifact(result, normalized)
+        media = adapter.validate_artifact(result, normalized)
+    assert result.read_bytes() == before
+    assert result.stat().st_ino == before_stat.st_ino
+    assert result.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert media["frames"] == 124 and media["audio_codec"] is None
+    assert not result.with_name("result.mp4.video-only.mp4").exists()
+
+
+@pytest.mark.parametrize("normalized", [{"generate_sound": True}, {}])
+def test_preserve_audio_does_not_enter_remux_path(
+    tmp_path, make_gateway_config, monkeypatch, normalized
+):
+    import av
+
+    adapter = _adapter(make_gateway_config)
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    before = result.read_bytes()
+
+    def unexpected_open(*_args, **_kwargs):
+        pytest.fail("audio-preserving requests must not enter remux processing")
+
+    monkeypatch.setattr(av, "open", unexpected_open)
+    adapter.prepare_artifact(result, normalized)
+    assert result.read_bytes() == before
+
+
+async def test_video_only_fast_path_still_validates_before_publication(
+    tmp_path, make_gateway_config
+):
+    from dingo.video_gateway.artifact_store import FileArtifactStore
+
+    adapter = _adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    result = tmp_path / "result.mp4"
+    _write_h264_aac_mp4(result, frames=124, width=256, height=256)
+    adapter.prepare_artifact(result, {"generate_sound": False})
+    store = FileArtifactStore(tmp_path / "artifacts")
+    task_root = store.task_root("deployment", "pool", "task")
+    with pytest.raises(RuntimeError, match="dimensions"):
+        await store.finalize_b64_mp4(
+            task_root,
+            base64.b64encode(result.read_bytes()).decode(),
+            {"width": 128, "height": 256, "num_frames": 120, "generate_sound": False},
+            adapter.validate_artifact,
+            adapter.prepare_artifact,
+        )
+    assert not list((task_root / "result").iterdir())
+    assert not list((task_root / "tmp").iterdir())
+
+
+@pytest.mark.parametrize(
+    "stream_count,header", [(2, b"\0\0\0\x18ftypisom"), (1, b"not-an-mp4!!")]
+)
+def test_fast_path_preserves_other_stream_and_container_handling(
+    tmp_path, make_gateway_config, monkeypatch, stream_count, header
+):
+    from contextlib import nullcontext
+
+    import av
+
+    class Streams:
+        video = [object()]
+
+        def __len__(self):
+            return stream_count
+
+    result = tmp_path / "result.mp4"
+    result.write_bytes(header)
+    writes = []
+
+    def fake_open(path, **kwargs):
+        if kwargs.get("mode") == "w":
+            writes.append(path)
+            raise RuntimeError("remux attempted")
+        return nullcontext(SimpleNamespace(streams=Streams()))
+
+    monkeypatch.setattr(av, "open", fake_open)
+    with pytest.raises(RuntimeError, match="remux attempted"):
+        _adapter(make_gateway_config).prepare_artifact(
+            result, {"generate_sound": False}
+        )
+    assert len(writes) == 1
+    assert result.read_bytes() == header

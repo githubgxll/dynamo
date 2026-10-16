@@ -19,8 +19,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 BRANCH = "Dingorouter-H3-vllm-omni-jirx"
 REPOSITORY = "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm"
-MAIN_SHA = "049eece3f32f8d38dc1d8c52d4b793cb30e394bb"
-TAG_PREFIX = "omni031rc1-distilled-ref8shift12"
+SERVICE_BASE_SHA = "e8c9195672f761ec09344a641730844c9e6c9e99"
+TAG_PREFIX = "omni031rc1-gateway-distilled-ref8shift12"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PROFILE = Path("container/h3-experimental")
@@ -81,16 +81,16 @@ def prepare(root, environ, output=None, evidence=None):
     spec.loader.exec_module(module)
     entries = module.build_matrix(config, commit, "configured")
     if len(entries) != 1 or entries[0]["framework"] != "vllm" or entries[0]["docker_target"] != "runtime":
-        raise ValueError("Only the main vLLM runtime is allowed")
+        raise ValueError("Only the gateway vLLM runtime is allowed")
     entry = entries[0]
     if entry["image"].rsplit(":", 1)[0] != REPOSITORY:
         raise ValueError("Unexpected Harbor destination")
     if entry["platform"] != "linux/amd64" or entry["cuda_version"] != "13.0":
         raise ValueError("Unsupported platform")
-    # The source lock is retained verbatim; main is pinned independently here.
+    # The source lock is retained verbatim; the service base is pinned independently here.
     lock = read(root / SOURCE_LOCK)
-    if lock.get("main_commit") != MAIN_SHA:
-        raise ValueError("Source lock does not record the reviewed main commit")
+    if lock.get("service_base_commit") != SERVICE_BASE_SHA:
+        raise ValueError("Source lock does not record the reviewed service base commit")
     assets = read(root / PROFILE / "assets/assets.lock.json")
     ids = {item["id"] for item in assets.get("assets", [])}
     if ids != {"turbo-fl8", "turbo-ref8", "turbo-fl4", "fasth3-dense4"}:
@@ -102,15 +102,15 @@ def prepare(root, environ, output=None, evidence=None):
         "registry": entry["registry"], "platform": entry["platform"],
         "cuda_version": entry["cuda_version"], "dockerfile": entry["dockerfile"],
         "builder_image": entry["builder_image"],
-        "sccache_cache_version": entry["sccache_cache_version"] + "-main-" + MAIN_SHA[:12],
-        "framework_image": REPOSITORY + ":omni031rc1-main-framework-" + commit[:12],
+        "sccache_cache_version": entry["sccache_cache_version"] + "-gateway-" + SERVICE_BASE_SHA[:12],
+        "framework_image": REPOSITORY + ":omni031rc1-gateway-framework-" + commit[:12],
         "final_image": REPOSITORY + ":" + TAG_PREFIX + "-" + commit[:12],
     }
     write_outputs(output, values)
     if evidence:
         dump(evidence / "inputs.json", {
             "schema": "h3-experimental-ci-inputs/1", "source_commit": commit,
-            "main_commit": MAIN_SHA, "branch": BRANCH, **values,
+            "service_base_commit": SERVICE_BASE_SHA, "branch": BRANCH, **values,
             "source_lock_sha256": sha256(root / SOURCE_LOCK),
             "assets_lock_sha256": sha256(root / PROFILE / "assets/assets.lock.json"),
             "validation_scope": "Configuration only; build and GPU not yet accepted",
@@ -124,7 +124,7 @@ def record_framework(root, environ, digest, directory, output=None):
         raise ValueError("Missing/invalid actual framework digest")
     ref = REPOSITORY + "@" + digest
     record = {"schema": "h3-experimental-framework/1", "source_commit": identity(environ),
-              "main_commit": MAIN_SHA, "image": values["framework_image"], "digest": digest,
+              "service_base_commit": SERVICE_BASE_SHA, "image": values["framework_image"], "digest": digest,
               "deployment_image": ref, "builder_image": values["builder_image"],
               "run_id": environ.get("GITHUB_RUN_ID"), "run_attempt": environ.get("GITHUB_RUN_ATTEMPT")}
     dump(directory / "framework-image.json", record)
@@ -138,6 +138,7 @@ def validate_evidence(root, environ, directory, framework_ref):
     if not framework_ref.startswith(REPOSITORY + "@") or not DIGEST.fullmatch(framework_ref.split("@", 1)[-1]):
         raise ValueError("Final parent must be the actual immutable framework digest")
     reports = {
+        "experimental/service-smoke.json": "PASS_SERVICE_IMPORTS_AND_HELP_ONLY",
         "experimental/assets-report.json": "PASS_ASSETS_ONLY",
         "experimental/profiles-check.json": "PASS_INSTALLED_PROFILES_CPU_ONLY",
         "framework/ref8-patch.json": "PASS_PATCH_APPLIED_CPU_ONLY",
@@ -171,15 +172,15 @@ def validate_evidence(root, environ, directory, framework_ref):
         raise ValueError("Missing explicitly scoped overlay dependency/license inventory")
     if not isinstance(licenses.get("packages"), list) or not licenses["packages"]:
         raise ValueError("Overlay package inventory is empty")
-    if not isinstance(licenses.get("python_dependency_delta_from_main_runtime"), list):
-        raise ValueError("Missing delta from the main framework's dependency inventory")
+    if not isinstance(licenses.get("python_dependency_delta_from_inherited_vllm_plus_dingo"), list):
+        raise ValueError("Missing delta from the gateway framework's dependency inventory")
     if not isinstance(licenses.get("media_bundled_files"), dict):
         raise ValueError("Missing media bundled-library inventory")
     if not (directory / "experimental/dpkg-packages.txt").is_file():
         raise ValueError("Missing final system package inventory")
     for name in ("legal/osrb-deps.csv", "legal/osrb.cdx.json"):
         if not (directory / name).is_file() or (directory / name).stat().st_size == 0:
-            raise ValueError("Missing inherited main compliance report: " + name)
+            raise ValueError("Missing inherited gateway compliance report: " + name)
     for name, relative in (("assets.lock.json", "assets/assets.lock.json"),
                            ("profiles.json", "profiles/profiles.json"), ("Dockerfile", "Dockerfile")):
         target = directory / "inputs" / name
@@ -204,13 +205,13 @@ def record_final(root, environ, digest, directory, framework_ref):
         if file.is_file() and file.name not in {"image.json", "deployment-image.txt"}:
             files[file.relative_to(directory).as_posix()] = sha256(file)
     record = {"schema": "h3-experimental-publication/1", "source_commit": identity(environ),
-              "main_commit": MAIN_SHA, "framework_image": framework_ref,
+              "service_base_commit": SERVICE_BASE_SHA, "framework_image": framework_ref,
               "image": values["final_image"], "digest": digest,
               "deployment_image": REPOSITORY + "@" + digest,
               "run_id": environ.get("GITHUB_RUN_ID"), "run_attempt": environ.get("GITHUB_RUN_ATTEMPT"),
               "evidence_sha256": files,
               "validation_scope": "Image published and CPU gates passed; H100, Base mounts and media E2E still required",
-              "license_scope": "Inherited main compliance plus overlay metadata/library inventory; not a final complete legal or native codec clearance"}
+              "license_scope": "Inherited gateway compliance plus overlay metadata/library inventory; not a final complete legal or native codec clearance"}
     dump(directory / "image.json", record)
     (directory / "deployment-image.txt").write_text(record["deployment_image"] + "\n", encoding="utf-8")
     return record
