@@ -636,6 +636,20 @@ async def parse_args(args: list[str]) -> Config:
         "tool-call-parser",
     )
 
+    # GLM tool grammars expect the engine to consume the thinking prefix before
+    # applying the tool constraint. Dynamo's response parser alone cannot enable
+    # that gate. Set this before ServerArgs resolution freezes the configuration;
+    # an explicit native parser (including "auto") always takes precedence.
+    if (
+        dynamo_config.dyn_reasoning_parser == "glm45"
+        and parsed_args.reasoning_parser is None
+    ):
+        parsed_args.reasoning_parser = "glm45"
+        logging.info(
+            "Defaulting SGLang --reasoning-parser to glm45 from "
+            "--dyn-reasoning-parser glm45"
+        )
+
     if dynamo_config.custom_jinja_template and dynamo_config.use_sglang_tokenizer:
         logging.error(
             "Cannot use --custom-jinja-template and --use-sglang-tokenizer together. "

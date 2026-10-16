@@ -1159,6 +1159,37 @@ async def test_reasoning_parser_both_flags_are_allowed(mock_sglang_cli):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parser_flags, expected",
+    [
+        (["--dyn-reasoning-parser", "glm45"], "glm45"),
+        (
+            ["--dyn-reasoning-parser", "glm45", "--reasoning-parser", "glm45"],
+            "glm45",
+        ),
+        (
+            ["--dyn-reasoning-parser", "glm45", "--reasoning-parser", "qwen3"],
+            "qwen3",
+        ),
+        (
+            ["--dyn-reasoning-parser", "glm45", "--reasoning-parser", "auto"],
+            "auto",
+        ),
+        (["--dyn-reasoning-parser", "qwen3"], None),
+        ([], None),
+    ],
+)
+async def test_glm_reasoning_parser_defaults_native_gate(
+    mock_sglang_cli, parser_flags, expected
+):
+    mock_sglang_cli("--model", "Qwen/Qwen3-0.6B", *parser_flags)
+
+    config = await parse_args(sys.argv[1:])
+
+    assert config.server_args.reasoning_parser == expected
+
+
+@pytest.mark.asyncio
 async def test_namespace_flag_drives_default_endpoint_namespace(mock_sglang_cli):
     """CLI namespace should be used for auto-derived endpoint."""
     mock_sglang_cli(

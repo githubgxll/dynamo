@@ -40,6 +40,23 @@ Detection uses the discovered model's `config.json`, so serving aliases do not
 affect it. Explicit parser settings take precedence. Unknown model types with
 thinking templates produce a warning requesting explicit parser configuration.
 
+For GLM-5.3 workers using SGLang tool constraints, configure
+`--dyn-reasoning-parser glm45` on `python -m dingo.sglang`. When the native
+reasoning parser is unset, this also defaults SGLang's `--reasoning-parser` to
+`glm45`. An explicitly configured native parser, including `auto`, is preserved.
+Other Dynamo reasoning parsers are not automatically mapped.
+The Dynamo flag selects response reasoning parsing;
+the SGLang flag enables the engine's reasoning gate before applying the tool
+grammar. Frontend reasoning detection does not configure that engine gate.
+Without the engine flag, a tool grammar that excludes `</think>` can prevent
+the model from ending its thinking block and cause repeated reasoning after a
+tool result. The router's reasoning parser alone does not resolve this.
+
+When validating requests without an explicit output limit, leave room for the
+8192-token default completion in the configured engine context window. An
+8192-token context plus a nonempty prompt can otherwise fail SGLang's length
+validation before generation starts.
+
 ## GLM-5.3 malformed historical tool arguments
 
 For a GLM-5.3 deployment using `--dyn-chat-processor sglang`, opt in with
