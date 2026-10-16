@@ -7,6 +7,7 @@
 # mypy: ignore-errors
 
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -36,7 +37,7 @@ if HAS_VLLM:
     from vllm.tool_parsers.hermes_tool_parser import Hermes2ProToolParser
     from vllm.tool_parsers.qwen3_engine_tool_parser import Qwen3EngineToolParser
 
-    from dingo.frontend.prepost import StreamingPostProcessor
+    from dingo.frontend.prepost import DeltaMessage, StreamingPostProcessor
 else:
     # Fake some types so that `pre-commit` passes
     class CompletionOutput:
@@ -1405,6 +1406,227 @@ def _collect_results(processor, outputs):
         if result is not None:
             results.append(result)
     return results
+
+
+def _reasoning_output(text, token_ids=(), finish_reason=None):
+    return CompletionOutput(
+        index=0,
+        text=text,
+        token_ids=list(token_ids),
+        cumulative_logprob=None,
+        logprobs=None,
+        finish_reason=finish_reason,
+    )
+
+
+def test_engine_reasoning_waits_for_consumed_end(processor):
+    parser = Mock(
+        spec=[
+            "engine_based_streaming",
+            "extract_reasoning_streaming",
+            "has_engine_confirmed_reasoning_end",
+            "is_reasoning_end_streaming",
+            "finish_streaming",
+        ]
+    )
+    parser.engine_based_streaming = True
+    parser.extract_reasoning_streaming.side_effect = [
+        DeltaMessage(reasoning="分析"),
+        DeltaMessage(content="苹果、香蕉、"),
+    ]
+    parser.has_engine_confirmed_reasoning_end.side_effect = [False, True]
+    parser.is_reasoning_end_streaming.return_value = True
+    parser.finish_streaming.return_value = None
+    processor.reasoning_parser = parser
+    processor.tool_parser = None
+    first = processor.process_output(
+        _reasoning_output("<think>分析</think", [154841, 154842])
+    )
+    assert not processor.reasoning_is_done
+    assert processor.previous_token_ids == [154841, 154842]
+    parser.finish_streaming.assert_not_called()
+    second = processor.process_output(_reasoning_output(">苹果、香蕉、", [], "stop"))
+    assert _collect_reasoning([first, second]) == "分析"
+    assert second["delta"]["content"] == "苹果、香蕉、"
+    assert second["finish_reason"] == "stop"
+    parser.is_reasoning_end_streaming.assert_not_called()
+    parser.finish_streaming.assert_called_once_with()
+
+
+@pytest.mark.parametrize("engine_flag", [False, True, "true"])
+def test_reasoning_legacy_token_fallback(processor, engine_flag):
+    # Even an engine flag needs a callable confirmation API; truthy non-bools
+    # must not opt a legacy parser into the new lifecycle either.
+    parser = SimpleNamespace(
+        engine_based_streaming=engine_flag,
+        extract_reasoning_streaming=Mock(return_value=DeltaMessage(content=">answer")),
+        is_reasoning_end_streaming=Mock(return_value=True),
+    )
+    if engine_flag is not True:
+        parser.has_engine_confirmed_reasoning_end = Mock(return_value=False)
+    processor.reasoning_parser = parser
+    processor.tool_parser = None
+    result = processor.process_output(_reasoning_output("</think>>answer", [154842]))
+    assert processor.reasoning_is_done
+    assert result["delta"]["content"] == ">answer"
+    parser.is_reasoning_end_streaming.assert_called_once_with([154842], [154842])
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_reasoning_finish_merges_once_on_empty_terminal(processor, confirmed):
+    parser = SimpleNamespace(
+        engine_based_streaming=True,
+        extract_reasoning_streaming=Mock(
+            side_effect=[
+                DeltaMessage(reasoning="first"),
+                DeltaMessage(reasoning="second", content=">"),
+            ]
+        ),
+        has_engine_confirmed_reasoning_end=Mock(side_effect=[False, confirmed]),
+        finish_streaming=Mock(return_value=DeltaMessage(reasoning="last", content=" <")),
+    )
+    processor.reasoning_parser = parser
+    processor.tool_parser = None
+    results = _collect_results(
+        processor,
+        [
+            _reasoning_output("first", [1]),
+            _reasoning_output("", [], "length"),
+        ],
+    )
+    assert _collect_reasoning(results) == "firstsecondlast"
+    assert results[-1]["delta"]["content"] == "> <"
+    assert results[-1]["finish_reason"] == "length"
+    parser.finish_streaming.assert_called_once_with()
+    processor.process_output(_reasoning_output("", [], "stop"))
+    parser.finish_streaming.assert_called_once_with()
+
+
+@pytest.mark.parametrize("prefix", ["<", "<tool"])
+@pytest.mark.parametrize("ordinary_suffix", [None, "", " ordinary >"])
+def test_reasoning_flush_preserves_tool_prefix(processor, prefix, ordinary_suffix):
+    first = (
+        '<tool_call>{"name":"search_gutenberg_books",'
+        '"arguments":{"search_terms":["one"]}}</tool_call>'
+    )
+    second = (
+        '<tool_call>{"name":"search_gutenberg_books",'
+        '"arguments":{"search_terms":["two"]}}</tool_call>'
+    )
+    text = prefix + ordinary_suffix if ordinary_suffix is not None else first + second
+    parser = SimpleNamespace(
+        engine_based_streaming=True,
+        extract_reasoning_streaming=Mock(return_value=DeltaMessage(reasoning="plan")),
+        has_engine_confirmed_reasoning_end=Mock(return_value=True),
+        finish_streaming=Mock(return_value=DeltaMessage(content=prefix)),
+    )
+    processor.reasoning_parser = parser
+    batch = Mock(wraps=processor.tool_parser.extract_tool_calls)
+    processor.tool_parser.extract_tool_calls = batch
+    results = _collect_results(
+        processor,
+        [
+            _reasoning_output("</think>" + prefix, [154842]),
+            _reasoning_output(text[len(prefix) :], [1]),
+        ],
+    )
+    batch.assert_not_called()
+    results += _collect_results(processor, [_reasoning_output("", [], "stop")])
+    batch.assert_called_once_with(text, processor.request_for_sampling)
+    parser.finish_streaming.assert_called_once_with()
+    assert _collect_reasoning(results) == "plan"
+    if ordinary_suffix is not None:
+        assert "".join(r["delta"].get("content", "") for r in results) == text
+    else:
+        assert len(_collect_tool_calls(results)) == 2
+        assert results[-1]["finish_reason"] == "tool_calls"
+        assert not any(r["delta"].get("content") for r in results)
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_engine_implicit_tool_handoff(processor, terminal):
+    text = (
+        '<tool_call>{"name":"search_gutenberg_books",'
+        '"arguments":{"search_terms":["one"]}}</tool_call>'
+    )
+    processor.reasoning_parser = SimpleNamespace(
+        engine_based_streaming=True,
+        extract_reasoning_streaming=Mock(
+            side_effect=[DeltaMessage(content=text), None]
+        ),
+        has_engine_confirmed_reasoning_end=Mock(return_value=False),
+        finish_streaming=Mock(return_value=None),
+    )
+    results = _collect_results(
+        processor, [_reasoning_output(text, [1], "stop" if terminal else None)]
+    )
+    if not terminal:
+        results += _collect_results(processor, [_reasoning_output("", [], "stop")])
+    assert len(_collect_tool_calls(results)) == 1
+    assert results[-1]["finish_reason"] == "tool_calls"
+    assert not _collect_reasoning(results)
+
+
+@pytest.mark.parametrize("stop", [[], ["橘子"], ["STOP-LONG"]])
+@pytest.mark.parametrize("terminal_end", [False, True])
+def test_glm_actual_detokenizer_stop_holdback(processor, stop, terminal_end):
+    """Real vLLM stop trimming + engine scanner + processor; no model weights.
+
+    Only the token-to-text decoder is replaced, so update/get_next_output_text
+    exercise the production stop holdback rather than a hand-written imitation.
+    """
+    from vllm.reasoning.glm47_moe_reasoning_parser import Glm47MoeParserReasoningAdapter
+    from vllm.v1.engine.detokenizer import BaseIncrementalDetokenizer
+
+    pieces = {
+        154841: "<think>",
+        1: "分析水果",
+        154842: "</think>",
+        2: ">苹果、香蕉、",
+        3: stop[0] if stop else "",
+    }
+
+    class Detokenizer(BaseIncrementalDetokenizer):
+        def decode_next(self, token_id):
+            return pieces[token_id]
+
+    tokenizer = MockQwen3Tokenizer()
+    tokenizer._vocab.update({text: token_id for token_id, text in pieces.items() if text})
+    tokenizer._id_to_token = {v: k for k, v in tokenizer._vocab.items()}
+    tokenizer._id_to_token.update(pieces)
+    processor.reasoning_parser = Glm47MoeParserReasoningAdapter(tokenizer)
+    processor.tool_parser = None
+    detokenizer = Detokenizer(
+        SimpleNamespace(sampling_params=SamplingParams(stop=stop))
+    )
+    results = []
+    batches = [[154841, 1], [154842]]
+    if not terminal_end:
+        batches += [[2], [3]]
+    for ids in batches:
+        matched = detokenizer.update(ids, stop_terminated=False)
+        text = detokenizer.get_next_output_text(finished=bool(matched), delta=True)
+        result = processor.process_output(
+            _reasoning_output(text, ids, "stop" if matched else None)
+        )
+        if result is not None:
+            results.append(result)
+        if ids == [154842] and stop:
+            assert not processor.reasoning_is_done
+    # A final event can carry held-back text with no new token IDs.
+    results += _collect_results(
+        processor,
+        [
+            _reasoning_output(
+                detokenizer.get_next_output_text(finished=True, delta=True), [], "stop"
+            )
+        ],
+    )
+    assert _collect_reasoning(results) == "分析水果"
+    assert "".join(r["delta"].get("content", "") for r in results) == (
+        "" if terminal_end else ">苹果、香蕉、"
+    )
+    assert results[-1]["finish_reason"] == "stop"
 
 
 def _collect_reasoning(results):

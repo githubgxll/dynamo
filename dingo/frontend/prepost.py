@@ -500,6 +500,7 @@ class StreamingPostProcessor:
         self.previous_text = ""
         self.previous_token_ids: list[int] = []
         self.reasoning_is_done = False
+        self._reasoning_parser_finished = False
         self.in_progress_tool_calls: dict[int, DeltaToolCall] = {}
         # Per-choice tracking (https://github.com/ai-dynamo/dynamo/issues/8636) of whether a tool_call delta was
         # emitted on that choice, keyed by `output.index`. Required because
@@ -511,6 +512,41 @@ class StreamingPostProcessor:
         # this correctly, so we accumulate text here and fall back to the
         # non-streaming extract_tool_calls() once generation finishes.
         self._tool_text_buffer: str | None = None
+
+    def _reasoning_end_confirmed(
+        self, current_token_ids: list[int], delta_token_ids: list[int]
+    ) -> bool:
+        parser = self.reasoning_parser
+        assert parser is not None
+        confirmed = getattr(parser, "has_engine_confirmed_reasoning_end", None)
+        if getattr(parser, "engine_based_streaming", False) is True and callable(
+            confirmed
+        ):
+            # A stop-string holdback can expose the end token before the scanner
+            # has consumed the complete closing tag. False must not fall back.
+            return confirmed()
+        return parser.is_reasoning_end_streaming(current_token_ids, delta_token_ids)
+
+    def _finish_reasoning_streaming(
+        self, delta_message: DeltaMessage | None
+    ) -> DeltaMessage | None:
+        parser = self.reasoning_parser
+        finish = getattr(parser, "finish_streaming", None)
+        if (
+            not self._reasoning_parser_finished
+            and getattr(parser, "engine_based_streaming", False) is True
+            and callable(finish)
+        ):
+            self._reasoning_parser_finished = True
+            flushed = finish()
+            if flushed is not None:
+                delta_message = self._compose_delta_message(
+                    ((delta_message.reasoning if delta_message else None) or "")
+                    + (flushed.reasoning or ""),
+                    ((delta_message.content if delta_message else None) or "")
+                    + (flushed.content or ""),
+                )
+        return delta_message
 
     def _should_buffer_for_non_streaming_tool_parse(self) -> bool:
         return (
@@ -801,9 +837,18 @@ class StreamingPostProcessor:
             # buffer it for non-streaming extraction rather than feeding it
             # to the streaming tool parser which cannot handle the combined
             # reasoning-end + tool-start in a single chunk.
-            if self.reasoning_parser.is_reasoning_end_streaming(
+            reasoning_ended = self._reasoning_end_confirmed(
                 current_token_ids, delta_token_ids
+            )
+            if reasoning_ended or (
+                output.finish_reason
+                and getattr(self.reasoning_parser, "engine_based_streaming", False)
+                is True
+                and callable(getattr(self.reasoning_parser, "finish_streaming", None))
             ):
+                # Flush before abandoning the scanner, including on truncated
+                # generations. It may still hold reasoning or a tool prefix.
+                delta_message = self._finish_reasoning_streaming(delta_message)
                 self.reasoning_is_done = True
                 saved_reasoning = delta_message.reasoning if delta_message else None
                 post_content = (delta_message.content if delta_message else None) or ""
@@ -814,9 +859,17 @@ class StreamingPostProcessor:
                 current_token_ids = []
 
                 tool_start_markers = self._tool_start_markers()
-                if post_content and any(
-                    marker in post_content for marker in tool_start_markers
+                if self._should_parse_tools() and post_content and any(
+                    marker in post_content
+                    or any(
+                        post_content.endswith(marker[:length])
+                        for length in range(1, len(marker))
+                    )
+                    for marker in tool_start_markers
                 ):
+                    # A flush may expose only a prefix (even just '<'). Keep
+                    # it verbatim with later text; the final batch parser also
+                    # preserves it if it turns out to be ordinary content.
                     # Tool call markup present — buffer for non-streaming
                     # extraction (streaming parser can't handle the combined
                     # reasoning-end + tool-start in a single chunk).
