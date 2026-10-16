@@ -1759,6 +1759,18 @@ class SglangStreamingPostProcessor:
             else None
         )
         self._pending_guided_reasoning_token_count = 0
+        self._glm_token_reasoning = None
+        if (
+            self._reasoning_parser_name == "glm45"
+            and reasoning_parser is not None
+            and self._pending_guided_reasoning_prefix is None
+        ):
+            from .glm_reasoning import GlmTokenReasoningSplitter
+
+            self._glm_token_reasoning = GlmTokenReasoningSplitter.from_tokenizer(
+                tokenizer,
+                force_reasoning=bool(reasoning_parser.detector._in_reasoning),
+            )
         self._bypass_reasoning_for_bare_json = False
         self._eos_token_ids = set(eos_token_ids or [])
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
@@ -2363,9 +2375,16 @@ class SglangStreamingPostProcessor:
             if top_logprobs is not None and len(top_logprobs) == raw_token_count:
                 top_logprobs = top_logprobs[:retained_token_count]
 
+        glm_reasoning = None
+        if self._glm_token_reasoning is not None:
+            glm_reasoning = self._glm_token_reasoning.split(
+                token_ids,
+                self._incremental_decode,
+                finished=finish_reason is not None,
+            )
         delta_text = (
             self._incremental_decode(token_ids, flush=finish_reason is not None)
-            if token_ids or finish_reason is not None
+            if glm_reasoning is None and (token_ids or finish_reason is not None)
             else ""
         )
         openai_logprobs = None
@@ -2406,7 +2425,10 @@ class SglangStreamingPostProcessor:
         # -- Reasoning parsing --
         reasoning_text = None
         normal_text = delta_text
-        if self.reasoning_parser and (delta_text or finish_reason):
+        if glm_reasoning is not None:
+            reasoning_text, normal_text, reasoning_tokens = glm_reasoning
+            self._reasoning_token_count += reasoning_tokens
+        elif self.reasoning_parser and (delta_text or finish_reason):
             reasoning_text, normal_text, reasoning_tokens = self._parse_reasoning_delta(
                 delta_text,
                 finish_reason,
@@ -2507,6 +2529,7 @@ class SglangStreamingPostProcessor:
             if known_names:
                 for idx in list(self._tool_call_names):
                     if self._tool_call_names[idx] not in known_names:
+                        self._suppressed_tool_indices.add(idx)
                         del self._tool_call_names[idx]
                         self._tool_call_ids.pop(idx, None)
                         self._tool_call_args.pop(idx, None)
@@ -2597,6 +2620,11 @@ class SglangStreamingPostProcessor:
                     _, final_calls = self.tool_call_parser.parse_non_stream(full_text)
                 # Filter to known tool names (reuse set from above).
                 if known_names:
+                    self._suppressed_tool_indices.update(
+                        tc.tool_index
+                        for tc in final_calls
+                        if tc.name not in known_names
+                    )
                     final_calls = [tc for tc in final_calls if tc.name in known_names]
                 # Re-index sequentially so repeated calls to the same
                 # tool get distinct indices (parse_non_stream may assign
@@ -2738,6 +2766,21 @@ class SglangStreamingPostProcessor:
                 # _emitted_* tracks constructed deltas, not yet-yielded bytes.
                 delta.setdefault("tool_calls", []).extend(tool_calls_out)
                 has_content = True
+
+        # An undeclared model-generated call is not a successful empty answer.
+        # Keep withholding unknown tools, but surface the failure so callers
+        # can retry instead of accepting an empty assistant turn. The processor
+        # maps this exception to the standard generation error (also for SSE).
+        if (
+            finish_reason
+            and self._suppressed_tool_indices
+            and not self._tool_call_names
+            and not self._saw_normal_output
+        ):
+            raise ValueError(
+                "Model generated a tool call not declared in request.tools; "
+                "no valid tool call or answer could be returned"
+            )
 
         # Rewrite finish_reason "stop" → "tool_calls" when tool calls were
         # detected, matching the OpenAI API spec and official SGLang behaviour.

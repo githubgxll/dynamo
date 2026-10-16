@@ -64,5 +64,9 @@ RUN --mount=from=wheel_builder,source=/usr/local/libfabric,target=/tmp/libfabric
     fi
 
 {% if target == "runtime" %}
+{% if framework == "sglang" %}
+USER root
+{% else %}
 USER dynamo
+{% endif %}
 {% endif %}

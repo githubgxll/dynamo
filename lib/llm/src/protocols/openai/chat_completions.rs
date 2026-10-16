@@ -967,6 +967,36 @@ impl NvCreateChatCompletionRequest {
 mod tests {
 
     #[test]
+    fn tool_results_require_an_unanswered_preceding_call() {
+        use crate::engines::ValidateRequest;
+        use serde_json::json;
+        let assistant = json!({"role":"assistant","tool_calls":[
+            {"id":"a","type":"function","function":{"name":"lookup","arguments":"{}"}},
+            {"id":"b","type":"function","function":{"name":"lookup","arguments":"{}"}}
+        ]});
+        let a = json!({"role":"tool","tool_call_id":"a","content":"ok"});
+        let b = json!({"role":"tool","tool_call_id":"b","content":"ok"});
+        let user = json!({"role":"user","content":"hello"});
+        for (messages, valid) in [
+            (json!([user, a]), false),
+            (json!([a]), false),
+            (json!([assistant, a, b]), true),
+            (json!([assistant, b, a]), true),
+            (json!([assistant, a, a]), false),
+            (json!([assistant, user, a]), false),
+            (
+                json!([assistant, {"role":"tool","tool_call_id":"unknown","content":"ok"}]),
+                false,
+            ),
+            (json!([assistant, a, b, user, assistant, b, a]), true),
+        ] {
+            let request: super::NvCreateChatCompletionRequest =
+                serde_json::from_value(json!({"model":"glm-5.3","messages":messages})).unwrap();
+            assert_eq!(ValidateRequest::validate(&request).is_ok(), valid);
+        }
+    }
+
+    #[test]
     fn history_arguments_policy_is_narrow_and_does_not_rewrite() {
         use crate::engines::ValidateRequest;
         for (arguments, strict_ok, tolerant_ok) in [

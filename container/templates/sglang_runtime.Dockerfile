@@ -347,7 +347,9 @@ RUN chmod 755 /opt/dynamo/.launch_screen && \
     else echo "WARNING: no bundled nsys found under /opt/nvidia/nsight-compute"; fi
 {% endif %}
 
-USER dynamo
+# SGLang deployments support startup patches to the upstream engine package.
+# Keep the runtime user root so those files remain writable at startup.
+USER root
 ARG DYNAMO_COMMIT_SHA
 ENV DYNAMO_COMMIT_SHA=${DYNAMO_COMMIT_SHA}
 

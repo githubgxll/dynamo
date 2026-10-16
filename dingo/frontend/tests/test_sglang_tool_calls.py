@@ -592,16 +592,9 @@ class TestMalformedToolCalls:  # FRONTEND.4 — malformed model output → grace
         )
 
         text = '<tool_call>\n{"name": "evil_tool", "arguments": {"x": 1}}\n</tool_call>'
-        choice = post.process_output(
-            {
-                "token_ids": [ord(c) for c in text],
-                "finish_reason": "stop",
-            }
-        )
-
-        assert choice is not None
-        assert choice["finish_reason"] == "stop"
-        assert choice.get("delta", {}).get("tool_calls", []) == []
+        assert post.process_output({"token_ids": [ord(c) for c in text]}) is None
+        with pytest.raises(ValueError, match="not declared in request.tools"):
+            post.process_output({"token_ids": [], "finish_reason": "stop"})
 
     def test_malformed_arguments_stream_optimistically(self):
         dummy_tokenizer = self.DummyTokenizer()
@@ -1089,9 +1082,8 @@ class TestToolStreamingRecoveryRegression:
     def test_unknown_name_only_is_suppressed(self) -> None:
         post = self.make_post([[self.call(0, "unknown_tool", "")]], [])
         assert self.feed(post) is None
-        final = self.feed(post, text="", finish=True)
-        assert final["finish_reason"] == "stop"
-        assert not final["delta"].get("tool_calls")
+        with pytest.raises(ValueError, match="not declared in request.tools"):
+            self.feed(post, text="", finish=True)
 
     def test_glm47_union_schema_emits_identity_before_tool_closes(self) -> None:
         tools = [
