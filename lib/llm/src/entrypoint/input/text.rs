@@ -118,7 +118,6 @@ async fn main_loop(
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
-            do_sample: None,
             unsupported_fields: Default::default(),
         };
 
