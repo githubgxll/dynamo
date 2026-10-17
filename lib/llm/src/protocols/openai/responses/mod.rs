@@ -1033,7 +1033,6 @@ impl TryFrom<NvCreateResponse> for NvCreateChatCompletionRequest {
             chat_template_args: resp.chat_template_args,
             thinking: None,
             thinking_token_budget: resp.thinking_token_budget,
-            do_sample: None,
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             unsupported_fields: Default::default(),

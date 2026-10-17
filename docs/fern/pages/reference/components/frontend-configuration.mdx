@@ -803,24 +803,6 @@ The frontend exposes the following HTTP endpoints.
 | `POST` | `/v1/videos/generations/stream` | Video generation (streaming) |
 | `GET` | `/v1/models` | List available models |
 
-#### GLM-5.3 chat completion compatibility
-
-`POST /v1/chat/completions` accepts the root-level boolean `do_sample`, following the
-[Z.AI chat completion contract](https://docs.z.ai/api-reference/llm/chat-completion).
-Omitting it or setting it to `true` preserves the requested sampling controls. Setting it to
-`false` selects greedy decoding: the frontend supplies `temperature=0` and `top_p=1` to
-both Rust and Python backend adapters, for streaming and non-streaming requests.
-
-For GLM-5.3 model IDs (`glm-5.3`, `glm5.3`, and equivalent case, underscore, or organization
-prefix variants), the default `top_p` is `0.95`. The hosted API also accepts `top_p=0`.
-Dynamo accepts this value and maps it to `0.95` before backend dispatch because SGLang rejects
-zero. This is a compatibility fallback to the documented default; the hosted API's exact
-sampling distribution for zero is not documented. An explicit `do_sample=false` takes precedence.
-
-If a non-streaming response exhausts its output budget while producing only reasoning,
-`message.content` is `""` and `finish_reason` remains `"length"`. Reasoning stays in
-`message.reasoning_content`; the frontend does not increase the requested token budget.
-
 ### Anthropic (Experimental)
 
 | Method | Path | Description |
