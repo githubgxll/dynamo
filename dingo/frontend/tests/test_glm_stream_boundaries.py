@@ -28,7 +28,7 @@ class ByteTokenizer:
         )
 
 
-def make_post():
+def make_post(*, guided_decoding=None, tool_choice="auto"):
     tools = [
         {
             "type": "function",
@@ -43,10 +43,11 @@ def make_post():
         }
     ]
     tool, reason = create_parsers(
-        {"tools": tools},
+        {"tools": tools, "tool_choice": tool_choice},
         tool_call_parser_name="glm47",
         reasoning_parser_name="glm45",
         force_reasoning=True,
+        guided_decoding=guided_decoding,
     )
     return SglangStreamingPostProcessor(
         tokenizer=ByteTokenizer(),
@@ -55,6 +56,8 @@ def make_post():
         sglang_tools=convert_tools(tools),
         tool_call_parser_name="glm47",
         reasoning_parser_name="glm45",
+        guided_decoding=guided_decoding,
+        tool_guided_active=guided_decoding is not None,
     )
 
 
@@ -74,7 +77,9 @@ def run(post, ids, batch):
 
 @pytest.mark.parametrize("batch", [1, 2, 7, 10000])
 @pytest.mark.parametrize("reasoning", ["", "字面量 </think> 不结束思考。"])
-def test_literal_tags_and_utf8_before_tool_call(batch, reasoning):
+@pytest.mark.parametrize("tool_choice", ["auto", "required"])
+@pytest.mark.parametrize("guided", [False, True])
+def test_literal_tags_and_utf8_before_tool_call(batch, reasoning, tool_choice, guided):
     argument = "中文 <think></think>"
     ids = (
         list(reasoning.encode())
@@ -87,7 +92,12 @@ def test_literal_tags_and_utf8_before_tool_call(batch, reasoning):
             ).encode()
         )
     )
-    results = run(make_post(), ids, batch)
+    # Structural-tag payloads still use GLM tool markers, including for required.
+    guidance = {"structural_tag": {}} if guided else None
+    post = make_post(
+        guided_decoding=guidance, tool_choice=tool_choice if guided else "auto"
+    )
+    results = run(post, ids, batch)
     assert (
         "".join(r["delta"].get("reasoning_content", "") for r in results) == reasoning
     )
@@ -102,6 +112,59 @@ def test_literal_tags_and_utf8_before_tool_call(batch, reasoning):
     assert calls[0]["name"] == "lookup"
     assert json.loads(calls[0]["arguments"]) == {"query": argument}
     assert results[-1]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.parametrize("batch", [1, 2, 7, 10000])
+@pytest.mark.parametrize(
+    "reasoning", [None, "", "[check] 引用 <think> 和 </think> 后继续思考。"]
+)
+def test_glm_guided_json_keeps_token_boundaries_and_bare_json(batch, reasoning):
+    post = make_post(
+        guided_decoding={"json": {"type": "array"}}, tool_choice="required"
+    )
+    argument = "literal <think></think>"
+    payload = json.dumps([{"name": "lookup", "parameters": {"query": argument}}])
+    # None means bare JSON; empty reasoning still has a real closing token.
+    ids = [] if reasoning is None else list(reasoning.encode()) + [257]
+    ids += list((" \n" + payload).encode())
+    results = run(post, ids, batch)
+    assert "".join(r["delta"].get("reasoning_content", "") for r in results) == (
+        reasoning or ""
+    )
+    # The tool parser may pass through whitespace before the JSON array.
+    assert not "".join(r["delta"].get("content", "") for r in results).strip()
+    calls = [c for r in results for c in r["delta"].get("tool_calls", [])]
+    assert {c["index"] for c in calls} == {0}
+    assert sum("id" in c for c in calls) == 1
+    assert "".join(c.get("function", {}).get("name", "") for c in calls) == "lookup"
+    assert json.loads(
+        "".join(c.get("function", {}).get("arguments", "") for c in calls)
+    ) == {"query": argument}
+    assert results[-1]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.parametrize("batch", [1, 2, 7, 10000])
+@pytest.mark.parametrize("bare", [False, True])
+def test_glm_response_json_preserves_literal_tags(batch, bare):
+    from sglang.srt.parser.reasoning_parser import ReasoningParser
+
+    post = SglangStreamingPostProcessor(
+        tokenizer=ByteTokenizer(),
+        tool_call_parser=None,
+        reasoning_parser=ReasoningParser(model_type="glm45", force_reasoning=True),
+        reasoning_parser_name="glm45",
+        guided_decoding={"json": {"type": "object"}},
+        response_format_guided_active=True,
+    )
+    thought = 'The user wants "<think>\\n\\n</think>\\n\\n42". Wait, let me re-read.'
+    answer = ' {"text":"<think></think>"}'
+    ids = ([] if bare else list(thought.encode()) + [257]) + list(answer.encode())
+    results = run(post, ids, batch)
+    assert "".join(r["delta"].get("reasoning_content", "") for r in results) == (
+        "" if bare else thought
+    )
+    assert "".join(r["delta"].get("content", "") for r in results) == answer
+    assert results[-1]["finish_reason"] == "stop"
 
 
 @pytest.mark.parametrize("batch", [1, 2, 7, 10000])

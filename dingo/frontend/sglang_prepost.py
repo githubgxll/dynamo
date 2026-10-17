@@ -510,7 +510,7 @@ def _guided_json_start_chars(
             starts.add("[")
         return frozenset(starts)
 
-    if tool_guided_active:
+    if tool_guided_active and "json" in guided_decoding:
         # SGLang's required/named tool constraints use a JSON array root.
         return frozenset({"["})
 
@@ -1759,12 +1759,9 @@ class SglangStreamingPostProcessor:
             else None
         )
         self._pending_guided_reasoning_token_count = 0
+        self._pending_glm_reasoning_ids: list[int] = []
         self._glm_token_reasoning = None
-        if (
-            self._reasoning_parser_name == "glm45"
-            and reasoning_parser is not None
-            and self._pending_guided_reasoning_prefix is None
-        ):
+        if self._reasoning_parser_name == "glm45" and reasoning_parser is not None:
             from .glm_reasoning import GlmTokenReasoningSplitter
 
             self._glm_token_reasoning = GlmTokenReasoningSplitter.from_tokenizer(
@@ -2344,6 +2341,44 @@ class SglangStreamingPostProcessor:
         )
         return reasoning_text, normal_text, reasoning_tokens
 
+    def _split_glm_reasoning_tokens(
+        self, token_ids: list[int], *, finished: bool
+    ) -> tuple[str | None, str, int]:
+        """Resolve bare JSON without losing the token identities of reasoning.
+
+        Structural tags do not enter this prefix probe. JSON constraints may
+        start with bare JSON or with reasoning; buffer IDs until that choice is
+        known, then keep using control IDs for the entire reasoning stream.
+        """
+        splitter = self._glm_token_reasoning
+        assert splitter is not None
+        if self._pending_guided_reasoning_prefix is not None:
+            self._pending_glm_reasoning_ids.extend(token_ids)
+            token_ids = self._pending_glm_reasoning_ids
+            prefix = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+            stripped = prefix.lstrip()
+            array_tail = (
+                stripped[1:].lstrip()
+                if self._guided_tool_array and stripped.startswith("[")
+                else None
+            )
+            if (
+                not finished
+                and (not stripped or array_tail == "" or prefix.endswith("\ufffd"))
+                and len(prefix) < self.GUIDED_REASONING_PREFIX_LIMIT
+            ):
+                return None, "", 0
+            self._pending_guided_reasoning_prefix = None
+            self._pending_glm_reasoning_ids = []
+            if (
+                stripped
+                and stripped[0] in self._guided_json_start_chars
+                and (array_tail is None or array_tail.startswith(("{", "]")))
+            ):
+                splitter.in_reasoning = False
+                splitter.ended = True
+        return splitter.split(token_ids, self._incremental_decode, finished=finished)
+
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
 
@@ -2377,9 +2412,8 @@ class SglangStreamingPostProcessor:
 
         glm_reasoning = None
         if self._glm_token_reasoning is not None:
-            glm_reasoning = self._glm_token_reasoning.split(
+            glm_reasoning = self._split_glm_reasoning_tokens(
                 token_ids,
-                self._incremental_decode,
                 finished=finish_reason is not None,
             )
         delta_text = (
