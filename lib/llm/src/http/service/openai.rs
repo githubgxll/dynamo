@@ -4252,6 +4252,8 @@ async fn chat_completions(
         return Err(err_response);
     }
 
+    request.normalize_sampling_controls();
+
     // Create HTTP queue guard after template resolution so labels are correct
     let http_queue_guard = state.metrics_clone().create_http_queue_guard(&metric_model);
 
@@ -9006,6 +9008,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_required_fields(&request);
@@ -9041,6 +9044,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_required_fields(&request);
@@ -9341,6 +9345,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
 
@@ -9374,6 +9379,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9406,6 +9412,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9438,6 +9445,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9472,6 +9480,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9504,6 +9513,7 @@ mod tests {
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
+            do_sample: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
