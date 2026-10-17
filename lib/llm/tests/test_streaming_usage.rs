@@ -213,6 +213,7 @@ fn create_chat_request(
         media_io_kwargs: None,
         return_tokens_as_token_ids: None,
         thinking_token_budget: None,
+        do_sample: None,
         unsupported_fields: Default::default(),
     }
 }
@@ -807,6 +808,7 @@ fn create_nonstreaming_chat_request() -> NvCreateChatCompletionRequest {
         media_io_kwargs: None,
         return_tokens_as_token_ids: None,
         thinking_token_budget: None,
+        do_sample: None,
         unsupported_fields: Default::default(),
     }
 }
