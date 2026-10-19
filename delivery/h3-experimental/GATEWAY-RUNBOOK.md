@@ -118,13 +118,14 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 | soxr LGPL 门禁 | 复用精确 soxr1.1.0/vllm-runtime 实验例外；保留检查、NOTICE/SBOM，不扩大未知包白名单 |
 | Git ignored 文件导致提交失败 | 临时 index 验证后提交精确 tree，备份 index、保留文件模式 |
 | 参考 Dockerfile 哈希为 `null`，环境审计提前终止 | 根 `.dockerignore` 的 `container/**/*.Dockerfile` 排除了参考副本；改名为 `.Dockerfile.txt`，原始内容和 SHA256 保持不变；增加真实构建上下文导出预检，不跳过校验 |
-| OTEL common0.66b0 与 SDK1.40.0 冲突 | 旧求解遗漏了底图中部分监测包；将所有已安装 `opentelemetry-*` 包名加入同一次求解，不固定旧版本、不删除监测、不全量升级；保留全局依赖检查及 SDK/exporter 离线导入检查 |
+| OTEL common0.66b0 与 SDK1.40.0 冲突 | 联合求解监测能力及固定组件依赖；新版内部拆分 `opentelemetry-exporter-otlp-common` 不再作为独立必选根，求解后仅在全部已安装元数据都无人引用时清理；保留SDK/API、OTLP HTTP/gRPC、Prometheus和全局检查 |
+| LMCache0.5.5不变，但OTEL被升级到1.45.1/0.66b1 | 版本constraint不会自动引入依赖要求；从全部固定组件的实际元数据生成 `protected-runtime-requirements.txt`，将LMCache的API≤1.40、Prometheus≤0.61b0及其他固定组件约束加入同一次求解，不升级/删除LMCache，不增加兼容性豁免 |
 | Omni `direct_url.json` 缺少 SHA256 | 已在 uv0.8.22 复现官方 wheel 安装后 `archive_info={}`；先下载并实算固定 SHA256，再安装本地 wheel，保留约8MiB原文件、官方来源和下载记录，供离线重新哈希验证；不放宽为只比较版本号 |
 | 来源检查失败时 OpenCV 也显示 FAIL | 拆分 GPU 栈保护、wheel 来源和 OpenCV 校验结果，避免前一项异常误标后续检查；依赖检查失败时输出完整 uv 诊断 |
 
 2026-10-16 此次漏文件修复不改变 `.dockerignore`、native 模板或 builder 指纹，仍为 `76446244149f`。因此可以复用本次已经发布的 native builder；镜像存在且 Runner 有拉取权限时，CI 会跳过其构建。框架运行层仍需继续构建和验证，耗时不能仅凭 native 缓存命中保证。
 
-2026-10-19 的监测依赖和 wheel 来源修复同样不改变 native builder 输入。隔离 Windows 小环境已真实复现旧 OTEL 求解失败，并验证新增整组 roots 后 `uv pip check` 通过；官方 Omni wheel 的远端/本地安装来源记录也已实际检查。这些验证不等于完整 Linux Python3.12、CUDA、Gateway 或 H100 验收通过，仍须推送新提交运行 CI。不要 Re-run 旧提交。
+2026-10-19 的监测依赖和 wheel 来源修复同样不改变 native builder 输入。前一次隔离小环境只验证OTEL家族内部一致，未包含LMCache上限，因而没有覆盖后续CI冲突；本次已补上官方LMCache约束的实际resolver验证。确认兼容选择为API/SDK/OTLP1.40.0、Prometheus0.61b0，清理无人引用的新内部包后24包依赖检查及四类监测导入通过。小环境使用合成wheel承载LMCache四条官方OTEL约束，未安装真正LMCache或GPU包。官方Omni wheel来源修复在用户新日志中已PASS。这些证据不等于完整Linux Python3.12、CUDA、Gateway或H100验收通过，仍须推送新提交运行CI。不要Re-run旧提交。
 
 同日同事分支从 `e8c9195672f7` 前进到 `9ccee2f56d01`，新增 `5de10a366`（CephFS 配额祖先目录容量统计）和 `9ccee2f56`（监测面板部分 histogram 抓取/空区间）。比较了这两次提交：12 个文件变更，没有修改依赖声明、native 工具链或镜像模板。本轮继续修复固定 `e8c919` 配方，上述新监测功能尚未吸纳，不能称本镜像使用当前上游最新源码。原脚本将正常追加提交视为错误的限制已调整为显式固定基线策略。
 

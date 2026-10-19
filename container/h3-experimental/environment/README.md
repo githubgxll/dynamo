@@ -29,7 +29,8 @@ python3 /opt/h3-experimental/environment/service_smoke.py --output-dir /opt/h3-e
 ## 依赖边界
 
 - 完整求解并审计 ai-dingo 默认依赖和 **video-gateway extra**、ai-dingo-runtime、GMS、vLLM、Omni 默认依赖，以及递归要求的 extras。kubernetes、zstandard、pydantic 不会因 `--no-deps` 留下缺口。
-- 同一次求解显式加入底图中所有已安装 `opentelemetry-*` 包名，不固定旧版本。`uv pip install` 不会自动修复未进入本次依赖图的遗留包；例如 common0.66b0 要求 SDK1.45.x，却可能在旧安装流程后与 SDK1.40.0 并存。保留监测组件，联合选择兼容版本，最终全局审计仍检查所有已安装依赖。
+- 所有固定版本组件的默认依赖也参加同一次求解：只有 `lmcache==0.5.5` 这类 constraints 不会让 `uv pip install` 自动检查其依赖。新增输入从实际安装元数据提取 LMCache 和其他受保护组件的 `Requires-Dist`，保留平台条件与依赖 extras；不请求重新下载供应商原生 wheels，也不冻结可升级包的旧依赖。
+- 保留已安装的 OpenTelemetry SDK/API、OTLP HTTP/gRPC、Prometheus 和 instrumentation 等监测能力，联合选择兼容版本。唯一不再作为必选根的包是新版内部拆分 `opentelemetry-exporter-otlp-common`：其最早0.65b0已要求SDK1.44，而固定LMCache0.5.5要求API≤1.40、Prometheus exporter≤0.61b0。求解完成后扫描所有已安装包的元数据，只有无人引用时才用包管理器卸载该内部包；发现任何引用（包括可选extra）则保留，并交最终全局检查判断。**不要混淆或卸载 `opentelemetry-exporter-otlp-proto-common`，不要删除共享 `opentelemetry` 目录。**
 - 保留同事 `av>=14,<17` 约束，选择 `av==16.1.0`，也满足 Omni 的 `av>=14`。不因旧 main 配方使用 AV18 而放宽同事约束。Linux CPython3.12 wheel 已确认可用；实际编码兼容性由构建时真实媒体检查验证。
 - Transformers5.14.1/tokenizers0.22.2 联合求解。冻结实际 GPU 依赖和所有已安装 nvidia-* 版本。
 - 不整体激活 `ai-dingo[vllm]`：其 NIXL 固定版本不是本次核验的官方 vLLM0.31 native 组合。必要的 uvloop/blake3/soundfile/librosa/ray 辅助依赖单独验证。pyproject 的 vLLM 版本同步为0.31，但没有凭空替换 NIXL 固定版本。
@@ -42,7 +43,9 @@ python3 /opt/h3-experimental/environment/service_smoke.py --output-dir /opt/h3-e
 
 `environment-check.json`、`dependency-audit.json`、`uv-pip-check.txt` 记录真实安装结果；`installed-environment.json`、`omni-wheel-origin.json` 记录版本、元数据路径和 wheel hash。
 
-`telemetry-solve-inputs.json` 与 `inherited-telemetry-requirements.txt` 记录安装前监测包及参与联合求解的包名。实际最终版本以安装后清单为准；未使用全量 `--upgrade`，GPU 保护约束不变。
+`protected-runtime-solve-inputs.json`、`protected-runtime-requirements.txt` 记录固定组件及其真实依赖输入；`telemetry-solve-inputs.json`、`inherited-telemetry-requirements.txt` 记录监测能力根和被交给依赖图决定的内部包；`telemetry-reconciliation.json` 记录内部包的引用者和清理结果。实际最终版本以安装后清单为准；未使用全量 `--upgrade`，GPU及LMCache保护约束不变。
+
+2026-10-19实际小环境验证选择API/SDK/OTLP1.40.0及Prometheus/semantic-conventions0.61b0，依赖检查和监测导入通过。验证使用真实OTEL发行包及承载官方LMCache四条OTEL约束的合成测试wheel，未安装LMCache/GPU本体，不代表完整Linux338包组合通过。上述版本由元数据联合求解得到，并非添加新的人工metadata例外。
 
 `prepare_omni_wheel.py` 先下载固定官方 wheel 并实算 SHA256，将约8MiB文件保留在 `/opt/dynamo/build-info/omni-wheels/`，写入 `omni-wheel-download.json`，再把本地 wheel 交给同一次联合安装。已实际复现 uv0.8.22 的 `direct_url.json` 中 `archive_info` 为空，因此不能单靠该字段判断 wheel 身份；离线审计同时核对原始官方 URL、锁定哈希、实际保留文件、大小、路径和安装器 file URI。缺哈希的远端来源或被修改的本地文件仍拒绝。不要删除该保留文件，否则后续离线复验会失败。
 
@@ -51,7 +54,7 @@ GPU 栈保护、Omni 来源、OpenCV 提供者分别记录状态。一项失败�
 `media-smoke.json` 验证真实 CPU H.264/AAC 复用、PyAV/OpenCV/TorchCodec 解码，也执行同事 `VideoEncoder` 到 Omni0.31 的实际编码调用。FFmpeg/ffprobe 继承同事 runtime 的上游完整媒体栈，不重复 apt 安装或替换二进制。
 
 `service-smoke.json` 验证安装包的 Gateway、Omni worker、监控及适配器模块真实导入，以及 Gateway `--help`。检查禁用出站 socket，且不启动 NATS、ETCD、Gateway 监听、Omni engine 或模型。
-同时导入 OpenTelemetry SDK 与 gRPC/HTTP OTLP trace exporter；只检查可导入性，不实例化 exporter，也不连接监测后端。
+同时导入 OpenTelemetry SDK、gRPC/HTTP OTLP trace exporter及Prometheus exporter；只检查可导入性，不实例化 exporter，也不连接监测后端。
 
 `dependency-license-inventory.json` 仅记录 Python 声明许可证和安装前后差异，状态为 `METADATA_INVENTORY_ONLY_NOT_LEGAL_CLEARANCE`；框架 policy gate 独立决定构建是否允许。
 

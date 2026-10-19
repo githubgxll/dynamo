@@ -3,10 +3,16 @@
 """Small metadata fixtures exercise the dependency solve's input boundaries."""
 
 from pathlib import Path
+import json
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import runtime_dependencies as runtime
 from runtime_dependencies import (
-    inherited_telemetry_requirements, protected_constraints, runtime_requirements, snapshot, verify_protected,
+    inherited_telemetry_requirements, protected_constraints, protected_runtime_requirements,
+    runtime_requirements, snapshot, verify_protected,
 )
 
 
@@ -43,17 +49,173 @@ def inventory(*extra):
 
 
 class RuntimeRequirementsTests(unittest.TestCase):
-    def test_inherited_orphan_exporter_participates_without_freezing_mixed_versions(self):
+    def test_frozen_lmcache_dependencies_bound_otherwise_unconstrained_telemetry(self):
+        data = inventory(Distribution("lmcache", "0.5.5", [
+            "opentelemetry-api>=1.20.0,<=1.40.0",
+            "opentelemetry-exporter-prometheus>=0.50b0,<=0.61b0",
+        ]), Distribution("opentelemetry-api", "1.40.0"),
+            Distribution("opentelemetry-exporter-prometheus", "0.61b0"))
+        constraints = protected_constraints(data, ["lmcache"], omni_version="0.31.0rc1")
+        self.assertIn("lmcache==0.5.5", constraints)
+        # The old default roots omit these upper bounds despite freezing LMCache.
+        self.assertFalse(any("<=1.40.0" in line for line in runtime_requirements(data)))
+        lines = protected_runtime_requirements(data, constraints)
+        self.assertIn("opentelemetry-api<=1.40.0,>=1.20.0", lines)
+        self.assertIn("opentelemetry-exporter-prometheus<=0.61b0,>=0.50b0", lines)
+        self.assertEqual(inherited_telemetry_requirements(data), [
+            "opentelemetry-api", "opentelemetry-exporter-prometheus"])
+
+    def test_every_protected_component_contributes_not_just_lmcache(self):
+        data = inventory(Distribution("vendor-kernel", "2.0+cuda", ["shared-api<3"]),
+                         Distribution("nvidia-future-cu13", "13.5", ["runtime-loader>=2"]))
+        constraints = protected_constraints(data, ["vendor-kernel"], omni_version="0.31.0rc1")
+        lines = protected_runtime_requirements(data, constraints)
+        self.assertIn("shared-api<3", lines)
+        self.assertIn("runtime-loader>=2", lines)
+        # Feed installed metadata edges without asking an index for vendor wheels.
+        self.assertNotIn("vendor-kernel==2.0+cuda", lines)
+
+    def test_protected_dependencies_preserve_markers_and_requested_edge_extras(self):
+        data = inventory(Distribution("lmcache", "0.5.5", [
+            'transport[metrics]>=2; sys_platform == "linux"',
+            'win-only>=1; sys_platform == "win32"',
+            'optional-store>=1; extra == "redis"',
+        ]))
+        lines = protected_runtime_requirements(data, ["lmcache==0.5.5"],
+                                               environment={"sys_platform": "linux"})
+        self.assertIn('transport[metrics]>=2; sys_platform == "linux"', lines)
+        self.assertFalse(any("win-only" in line or "optional-store" in line for line in lines))
+
+    def test_mutable_api_and_telemetry_old_dependency_edges_are_not_frozen(self):
+        data = inventory(Distribution("transformers", "5.15.0", ["future-api>=9"]),
+                         Distribution("opentelemetry-exporter-otlp-common", "0.66b0", ["opentelemetry-sdk~=1.45.0"]),
+                         Distribution("lmcache", "0.5.5", ["opentelemetry-api<=1.40.0"]))
+        constraints = protected_constraints(data, ["lmcache", "transformers"], omni_version="0.31.0rc1")
+        lines = protected_runtime_requirements(data, constraints)
+        self.assertFalse(any("future-api" in line or "~=1.45.0" in line for line in lines))
+        self.assertIn("opentelemetry-api<=1.40.0", lines)
+
+    def test_protected_dependency_inventory_rejects_missing_or_different_versions(self):
+        for pins in (["lmcache==0.5.5"], ["torch==2.12.0"]):
+            with self.subTest(pins=pins), self.assertRaises(ValueError):
+                protected_runtime_requirements(inventory(), pins)
+
+    def test_protected_dependency_inventory_rejects_conflicting_metadata(self):
+        data = inventory(Distribution("lmcache", "0.5.5", ["opentelemetry-api<=1.40.0"]),
+                         Distribution("lmcache", "0.5.5", ["opentelemetry-api>=1.45"], "/other"))
+        with self.assertRaisesRegex(ValueError, "Conflicting installed requirements for lmcache"):
+            protected_runtime_requirements(data, ["lmcache==0.5.5"])
+
+    def test_protected_torch_edge_remains_visible_to_reviewed_nccl_override(self):
+        data = snapshot([Distribution("torch", "2.13.0+cu130", [
+            'nvidia-nccl-cu13==2.29.7; platform_system == "Linux"'])], phase="before")
+        self.assertIn('nvidia-nccl-cu13==2.29.7; platform_system == "Linux"',
+                      protected_runtime_requirements(data, ["torch==2.13.0+cu130"],
+                                                      environment={"platform_system": "Linux"}))
+
+    def test_before_phase_writes_protected_requirements_and_source_evidence(self):
+        data = inventory(Distribution("lmcache", "0.5.5", ["opentelemetry-api<=1.40.0"]),
+                         Distribution("opentelemetry-api", "1.40.0"))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            names = directory / "protected-packages.txt"
+            names.write_text("lmcache\n", encoding="utf-8")
+            argv = ["runtime_dependencies.py", "before", "--directory", str(directory),
+                    "--protected-packages", str(names), "--omni-version", "0.31.0rc1"]
+            with patch.object(runtime, "snapshot", return_value=data), patch.object(runtime.sys, "argv", argv):
+                runtime.main()
+            lines = (directory / "protected-runtime-requirements.txt").read_text().splitlines()
+            evidence = json.loads((directory / "protected-runtime-solve-inputs.json").read_text())
+            self.assertIn("opentelemetry-api<=1.40.0", lines)
+            self.assertIn("lmcache==0.5.5", evidence["protected_roots"])
+            self.assertEqual(evidence["requirements"], lines)
+            self.assertEqual(evidence["source_inventory"], "runtime-before-omni.json")
+            self.assertEqual(json.loads((directory / "runtime-before-omni.json").read_text()), data)
+
+    def test_new_internal_split_is_not_forced_into_older_compatible_family(self):
         data = inventory(
             Distribution("opentelemetry-exporter-otlp-common", "0.66b0", ["opentelemetry-sdk~=1.45.0"]),
+            Distribution("opentelemetry-exporter-otlp-proto-common", "1.40.0"),
+            Distribution("opentelemetry-exporter-otlp-proto-grpc", "1.40.0"),
+            Distribution("opentelemetry-exporter-otlp-proto-http", "1.40.0"),
+            Distribution("opentelemetry-exporter-prometheus", "0.61b0"),
             Distribution("opentelemetry-sdk", "1.40.0", ["opentelemetry-api==1.40.0"]),
             Distribution("opentelemetry-api", "1.40.0"),
             Distribution("opentelemetry-semantic-conventions", "0.61b0"),
         )
         self.assertEqual(inherited_telemetry_requirements(data), [
-            "opentelemetry-api", "opentelemetry-exporter-otlp-common",
+            "opentelemetry-api", "opentelemetry-exporter-otlp-proto-common",
+            "opentelemetry-exporter-otlp-proto-grpc", "opentelemetry-exporter-otlp-proto-http",
+            "opentelemetry-exporter-prometheus",
             "opentelemetry-sdk", "opentelemetry-semantic-conventions",
         ])
+
+    def test_internal_split_remains_a_real_requirement_when_a_protected_owner_needs_it(self):
+        data = inventory(Distribution("fixed-service", "1.0", ["opentelemetry-exporter-otlp-common>=0.65b0"]),
+                         Distribution("opentelemetry-exporter-otlp-common", "0.66b0"))
+        self.assertNotIn("opentelemetry-exporter-otlp-common", inherited_telemetry_requirements(data))
+        self.assertIn("opentelemetry-exporter-otlp-common>=0.65b0",
+                      protected_runtime_requirements(data, ["fixed-service==1.0"]))
+
+    def test_before_phase_records_internal_split_for_reconciliation_without_dropping_exporter(self):
+        data = inventory(Distribution("opentelemetry-exporter-otlp-common", "0.66b0"),
+                         Distribution("opentelemetry-exporter-otlp-proto-common", "1.40.0"))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            names = directory / "protected-packages.txt"
+            names.write_text("torch\n", encoding="utf-8")
+            argv = ["runtime_dependencies.py", "before", "--directory", str(directory),
+                    "--protected-packages", str(names), "--omni-version", "0.31.0rc1"]
+            with patch.object(runtime, "snapshot", return_value=data), patch.object(runtime.sys, "argv", argv):
+                runtime.main()
+            evidence = json.loads((directory / "telemetry-solve-inputs.json").read_text())
+            self.assertEqual(evidence["resolver_managed_internal_packages"],
+                             {"opentelemetry-exporter-otlp-common": "0.66b0"})
+            self.assertEqual(evidence["roots"], ["opentelemetry-exporter-otlp-proto-common"])
+
+    def test_reconciliation_removes_only_reviewed_orphan_not_monitoring_exporters(self):
+        data = inventory(Distribution("opentelemetry-exporter-otlp-common", "0.66b0"),
+                         Distribution("opentelemetry-exporter-otlp-proto-common", "1.40.0"),
+                         Distribution("opentelemetry-exporter-prometheus", "0.61b0"),
+                         Distribution("opentelemetry-exporter-http-transport", "0.66b1"))
+        plan = runtime.telemetry_reconciliation_plan(data)
+        self.assertEqual(plan["remove"], ["opentelemetry-exporter-otlp-common"])
+        self.assertEqual(plan["candidates"][plan["remove"][0]]["consumers"], [])
+
+    def test_reconciliation_preserves_internal_package_if_any_consumer_mentions_it(self):
+        for suffix in ("", '; extra == "optional"', '; sys_platform == "win32"'):
+            with self.subTest(marker=suffix):
+                data = inventory(Distribution("opentelemetry-exporter-otlp-common", "0.66b0"),
+                                 Distribution("other-exporter", "1", ["opentelemetry-exporter-otlp-common>=0.65b0" + suffix]))
+                plan = runtime.telemetry_reconciliation_plan(data)
+                self.assertEqual(plan["remove"], [])
+                item = plan["candidates"]["opentelemetry-exporter-otlp-common"]
+                self.assertEqual(item["action"], "retain-required")
+                self.assertEqual(len(item["consumers"]), 1)
+
+    def test_reconciliation_absent_split_is_noop(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(runtime.subprocess, "run") as run:
+            runtime.reconcile_telemetry(inventory(), Path(temporary))
+            run.assert_not_called()
+            result = json.loads((Path(temporary) / "telemetry-reconciliation.json").read_text())
+            self.assertEqual(result["status"], "COMPLETE")
+            self.assertEqual(result["remove"], [])
+
+    def test_reconciliation_uses_package_manager_and_records_failure(self):
+        data = inventory(Distribution("opentelemetry-exporter-otlp-common", "0.66b0"))
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                with patch.object(runtime.subprocess, "run", return_value=SimpleNamespace(returncode=exit_code, stdout="synthetic uninstall result")) as run:
+                    if exit_code:
+                        with self.assertRaisesRegex(RuntimeError, "Cannot reconcile"):
+                            runtime.reconcile_telemetry(data, directory)
+                    else:
+                        runtime.reconcile_telemetry(data, directory)
+                self.assertEqual(run.call_args.args[0], ["uv", "pip", "uninstall", "--python", runtime.sys.executable,
+                                                        "opentelemetry-exporter-otlp-common"])
+                result = json.loads((directory / "telemetry-reconciliation.json").read_text())
+                self.assertEqual(result["status"], "FAIL" if exit_code else "COMPLETE")
 
     def test_telemetry_roots_preserve_extra_installed_instrumentation(self):
         data = inventory(Distribution("OpenTelemetry_Instrumentation_FastAPI", "0.61b0"),

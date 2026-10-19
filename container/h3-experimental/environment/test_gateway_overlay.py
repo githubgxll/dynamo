@@ -31,6 +31,21 @@ class GatewayOverlayTests(unittest.TestCase):
         self.assertEqual(len(report["known_metadata_exceptions"]), 1)
         self.assertEqual(report["frameworks"]["vllm-omni"]["default_requirements"]["status"], "PASS")
 
+    def test_lmcache_telemetry_conflict_is_not_added_to_metadata_exemptions(self):
+        stack = official_stack() + [Distribution("lmcache", "0.5.5", [
+            "opentelemetry-api>=1.20.0,<=1.40.0",
+            "opentelemetry-exporter-prometheus>=0.50b0,<=0.61b0"]),
+            Distribution("opentelemetry-api", "1.45.1"),
+            Distribution("opentelemetry-exporter-prometheus", "0.66b1")]
+        report = self.report(stack)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(sum("lmcache==0.5.5" in error for error in report["errors"]), 2)
+        self.assertEqual(len(report["known_metadata_exceptions"]), 1)
+        stack[-2].version, stack[-1].version = "1.40.0", "0.61b0"
+        fixed = self.report(stack)
+        audit.review_uv_check(fixed, 1, KNOWN_UV_OUTPUT)
+        self.assertEqual(fixed["status"], "PASS_WITH_UPSTREAM_NCCL_OVERRIDE", fixed["errors"])
+
     def test_pynv_override_from_abandoned_main_recipe_is_rejected(self):
         stack = official_stack()
         stack[0].requires += ["PyNvVideoCodec==2.0.4"]

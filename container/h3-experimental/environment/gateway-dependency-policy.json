@@ -53,7 +53,7 @@
     "librosa>=0.10.0",
     "ray>=2.55.0"
   ],
-  "dependency_scope": "Installed ai-dingo[video-gateway], ai-dingo-runtime, gpu-memory-service, vllm and vllm-omni default requirements plus recursively requested extras, named backend helpers and every inherited opentelemetry-* package as a joint solve root. The complete ai-dingo[vllm] extra is not activated because its NIXL pin does not describe the inherited official vLLM 0.31 native stack.",
+  "dependency_scope": "Installed ai-dingo[video-gateway], ai-dingo-runtime, gpu-memory-service, vllm and vllm-omni default requirements plus active default Requires-Dist of every exact-version protected component (including LMCache), recursively requested dependency extras, named backend helpers and inherited monitoring capability packages as joint solve roots. The SDK1.44+ internal opentelemetry-exporter-otlp-common split is pruned after solving only if no installed package metadata requires it. The complete ai-dingo[vllm] extra is not activated because its NIXL pin does not describe the inherited official vLLM 0.31 native stack.",
   "validation_scope": "Gateway framework dependency solve and synthetic CPU media checks precede framework license policy validation. Final adapter/source overlay is audited again offline. None establish H100/model/media E2E acceptance.",
   "gateway_sha": "e8c9195672f761ec09344a641730844c9e6c9e99",
   "enabled_root_extras": {

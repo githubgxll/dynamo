@@ -120,7 +120,7 @@
     },
     "container/h3-experimental/environment/README.md": {
       "mode": "100644",
-      "blob": "81410812d561c24d4da4c87824c4e78e32ce535f",
+      "blob": "930e2c6f5d33cd67c2002b8f766a4f83e5d77ff8",
       "status": "A"
     },
     "container/h3-experimental/environment/audit_environment.py": {
@@ -135,12 +135,12 @@
     },
     "container/h3-experimental/environment/gateway-dependency-policy.json": {
       "mode": "100644",
-      "blob": "52f2d61e78dc86c86aeee34c7a2df8165fb24df3",
+      "blob": "70273d9fd060fbe9ce7ab45f3a32cda3fd4789f9",
       "status": "A"
     },
     "container/h3-experimental/environment/install_environment.sh": {
       "mode": "100644",
-      "blob": "b8cd6b5434ace10b29ee0f6a0ad7a76a7d244e16",
+      "blob": "20cf38fa5d6299f791a4c385a96b38c565fb72df",
       "status": "A"
     },
     "container/h3-experimental/environment/media_smoke.py": {
@@ -175,12 +175,12 @@
     },
     "container/h3-experimental/environment/runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "56dd57219841547154406328ee76c8bfa97a51be",
+      "blob": "fa7b43f616a2f8a57692483868ec7bff23f0a384",
       "status": "A"
     },
     "container/h3-experimental/environment/service_smoke.py": {
       "mode": "100644",
-      "blob": "cbb6bdba08a6ecb9bf231771e118a12f696e167f",
+      "blob": "e17c4d449225c02ccf3fa523ae4921d7fe34a43d",
       "status": "A"
     },
     "container/h3-experimental/environment/test_dependency_audit.py": {
@@ -190,7 +190,7 @@
     },
     "container/h3-experimental/environment/test_gateway_overlay.py": {
       "mode": "100644",
-      "blob": "809e86ec644a954e8cf299e446d973bd9fa351d5",
+      "blob": "8ddebde57c5847a287ee000daf49312f5c1778e1",
       "status": "A"
     },
     "container/h3-experimental/environment/test_prepare_omni_wheel.py": {
@@ -200,7 +200,7 @@
     },
     "container/h3-experimental/environment/test_runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "000b05dde633e8abc517196ebc2c4bad625380bc",
+      "blob": "7657851c91a2cbdc8057c013ca2b6a7b61bb91ed",
       "status": "A"
     },
     "container/h3-experimental/profiles/README.md": {
@@ -365,7 +365,7 @@
     },
     "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
       "mode": "100644",
-      "blob": "2c85299d10933cf0bf544b0692130cbcea090ee6",
+      "blob": "b7bdc4d6a9ed16689b69c1198d6830d849466f38",
       "status": "A"
     },
     "delivery/h3-experimental/README.md": {

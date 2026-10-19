@@ -27,12 +27,17 @@ uv pip install --system --prerelease=allow \
     --constraints "${INFO}/protected-before-omni.txt" \
     --constraints "${INFO}/h3-shared-constraints.txt" \
     --requirements "${INFO}/dynamo-vllm-default-requirements.txt" \
+    --requirements "${INFO}/protected-runtime-requirements.txt" \
     --requirements "${INFO}/inherited-telemetry-requirements.txt" \
     --requirements "${INFO}/h3-backend-helpers.txt" \
     --reinstall-package vllm-omni \
     "${OMNI_REQUIREMENT}" \
     av==16.1.0 soxr==1.1.0 torchcodec==0.14.0 \
     opencv-python==4.13.0.92 opencv-python-headless==4.13.0.92
+
+# SDK1.44+ split implementations may remain installed after choosing older
+# compatible exporters. Prune only the reviewed split with no metadata consumer.
+python3 "${SCRIPT_DIR}/runtime_dependencies.py" reconcile-telemetry --directory "${INFO}"
 
 # Two upstream default requirement graphs request different distribution names
 # for cv2. Keep both metadata, choose one actual provider, and verify its RECORD.
