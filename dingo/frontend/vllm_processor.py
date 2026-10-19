@@ -37,6 +37,7 @@ from dingo.common.multimodal.routing_utils import build_mm_routing_info_from_fea
 from dingo.common.utils import nvtx_utils as _nvtx
 from dingo.frontend.frontend_args import FrontendConfig
 from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
+from dynamo.llm.exceptions import InvalidArgument as DynamoInvalidArgument
 
 from .prepost import StreamingPostProcessor, preprocess_chat_request
 from .utils import (
@@ -46,6 +47,14 @@ from .utils import (
     random_uuid,
     resolve_chat_template,
 )
+
+try:
+    from vllm.exceptions import VLLMValidationError
+except ImportError:
+    # Older vLLM releases do not expose this exception; catch nothing instead.
+    _VALIDATION_ERRORS: tuple[type[Exception], ...] = ()
+else:
+    _VALIDATION_ERRORS = (VLLMValidationError,)
 
 logger = logging.getLogger(__name__)
 
@@ -333,15 +342,18 @@ class VllmProcessor:
         # which wraps our ImageLoader (LRU cache + in-flight dedup).
         # No data URI encoding needed.
         with _nvtx.annotate("mm_frontend:preprocess_chat", color="yellow"):
-            pre = await preprocess_chat_request(
-                request,
-                tokenizer=self.tokenizer,
-                renderer=self.input_processor.renderer,
-                tool_parser_class=self.tool_parser_class,
-                reasoning_parser_class=self.reasoning_parser_class,
-                exclude_tools_when_tool_choice_none=self.exclude_tools_when_tool_choice_none,
-                enable_auto_tool_choice=self.enable_auto_tool_choice,
-            )
+            try:
+                pre = await preprocess_chat_request(
+                    request,
+                    tokenizer=self.tokenizer,
+                    renderer=self.input_processor.renderer,
+                    tool_parser_class=self.tool_parser_class,
+                    reasoning_parser_class=self.reasoning_parser_class,
+                    exclude_tools_when_tool_choice_none=self.exclude_tools_when_tool_choice_none,
+                    enable_auto_tool_choice=self.enable_auto_tool_choice,
+                )
+            except _VALIDATION_ERRORS as exc:
+                raise DynamoInvalidArgument(str(exc)) from exc
 
         request_for_sampling = pre.request_for_sampling
         tool_parser = pre.tool_parser

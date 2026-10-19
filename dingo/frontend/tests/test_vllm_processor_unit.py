@@ -7,7 +7,11 @@ Tests for the tool-stripping behaviour of _prepare_request when
 tool_choice='none' and the exclude_tools_when_tool_choice_none flag.
 """
 
+import ast
+import asyncio
+import inspect
 import json
+import sys
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -869,6 +873,90 @@ async def _run_generate(processor, preproc, *, mm_routing_info=None, context=Non
             context=context,
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_kind", ["validation", "runtime", "value", "cancelled"])
+async def test_generator_renderer_errors(vllm_processor_module, stream, error_kind):
+    from dynamo.llm.exceptions import InvalidArgument as DynamoInvalidArgument
+
+    errors = {
+        "validation": VLLMValidationError(
+            "At most 1 video(s) may be provided in one prompt.", parameter="video"
+        ),
+        "runtime": RuntimeError("renderer failed"),
+        "value": ValueError("renderer failed"),
+        "cancelled": asyncio.CancelledError(),
+    }
+    error = errors[error_kind]
+    routed_engine = _FakeRoutedEngine()
+    processor = _make_processor(vllm_processor_module, routed_engine)
+    processor.tokenizer = SimpleNamespace(eos_token_id=2)
+    processor.tool_parser_class = None
+    processor.reasoning_parser_class = None
+    processor.exclude_tools_when_tool_choice_none = True
+    processor.enable_auto_tool_choice = False
+    renderer = _fake_renderer()
+    renderer.render_messages_async.side_effect = error
+    renderer.process_for_engine_async = AsyncMock()
+    processor.input_processor = SimpleNamespace(
+        renderer=renderer, generation_config_fields={}, process_inputs=Mock()
+    )
+    processor._prepare_mm_routing = AsyncMock()
+    generator = processor.generator(
+        {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": stream,
+        }
+    )
+    chunks = []
+    expected = DynamoInvalidArgument if error_kind == "validation" else type(error)
+    try:
+        with pytest.raises(expected) as caught:
+            async for chunk in generator:
+                chunks.append(chunk)
+    finally:
+        await generator.aclose()
+
+    if error_kind == "validation":
+        assert str(caught.value) == str(error)
+        assert caught.value.__cause__ is error
+    else:
+        assert caught.value is error
+    assert chunks == []
+    renderer.render_messages_async.assert_awaited_once()
+    renderer.process_for_engine_async.assert_not_called()
+    processor.input_processor.process_inputs.assert_not_called()
+    processor._prepare_mm_routing.assert_not_called()
+    assert routed_engine.requests == []
+    assert processor.output_processor.request_states == {}
+    assert processor.output_processor.added_requests == []
+    assert processor.output_processor.aborted_requests == []
+
+
+def test_validation_import_without_exception_class(vllm_processor_module, monkeypatch):
+    # Execute the production optional-import block without reloading the module
+    # or disturbing vLLM imports used by the rest of this test suite.
+    tree = ast.parse(inspect.getsource(vllm_processor_module))
+    blocks = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Try)
+        and any(
+            isinstance(child, ast.ImportFrom) and child.module == "vllm.exceptions"
+            for child in node.body
+        )
+    ]
+    assert len(blocks) == 1
+    monkeypatch.setitem(sys.modules, "vllm.exceptions", SimpleNamespace())
+    namespace = {}
+    exec(
+        compile(ast.Module(body=blocks, type_ignores=[]), "<validation-import>", "exec"),
+        namespace,
+    )
+    assert namespace["_VALIDATION_ERRORS"] == ()
 
 
 class TestRoutedEnginePath:
