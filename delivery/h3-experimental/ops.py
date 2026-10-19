@@ -145,13 +145,35 @@ def remote_head(branch):
     return rows[0][0]
 
 
+def verify_service_base(lock, upstream):
+    """Validate the pinned source separately from the moving upstream head."""
+    baseline = lock["service_base_commit"]
+    policy = lock.get("service_base_policy", "require-current-head")
+    if not HEX40.fullmatch(baseline) or not HEX40.fullmatch(upstream):
+        raise ValueError("Invalid pinned or observed service commit")
+    if policy not in {"require-current-head", "pinned-ancestor"}:
+        raise ValueError("Unknown service_base_policy")
+    if upstream != baseline:
+        if policy == "require-current-head":
+            raise ValueError(f"Upstream DingoRouter-video-gateway changed since review: pinned={baseline}, observed={upstream}. Review changes before updating the source lock.")
+        try:
+            git("merge-base", "--is-ancestor", baseline, upstream)
+        except RuntimeError as exc:
+            raise ValueError("Cannot verify the pinned service base in upstream history; inspect history availability or a branch rewrite before submission.") from exc
+        print(f"Upstream service branch has updates: {upstream}. Building the sealed pinned base {baseline}; no upstream changes are merged.")
+    return {"policy": policy, "service_base_commit": baseline,
+            "observed_upstream_commit": upstream, "update_available": upstream != baseline,
+            "scope": "Upstream ancestry only; the sealed source tree defines build inputs"}
+
+
 def prepare_remote(lock):
     branch = lock["remote_branch"]
     if branch != EXPERIMENT_BRANCH:
         raise ValueError("Only the designated MiniMax-H3 branch may be submitted")
     git("fetch", "--no-tags", "origin", "+refs/heads/DingoRouter-video-gateway:refs/remotes/origin/DingoRouter-video-gateway", network=True)
-    if git("rev-parse", "refs/remotes/origin/DingoRouter-video-gateway") != lock["service_base_commit"]:
-        raise ValueError("Upstream DingoRouter-video-gateway changed since review. Review service and dependency changes before rebuilding.")
+    upstream = git("rev-parse", "refs/remotes/origin/DingoRouter-video-gateway")
+    review = verify_service_base(lock, upstream)
+    dump(EVIDENCE / "remote-checks" / run_id() / "service-base.json", review)
     remote = remote_head(branch)
     if remote is None:
         if lock.get("allow_remote_branch_creation") is not True:

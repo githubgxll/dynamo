@@ -48,6 +48,7 @@ def check_environment_context(root, directory, report=None):
     policy = read(source / "gateway-dependency-policy.json")
     names = {
         "gateway-dependency-policy.json", "install_environment.sh",
+        "prepare_omni_wheel.py",
         "audit_environment.py", "dependency_audit.py", "runtime_dependencies.py",
         "protected_packages.txt", "media_smoke.py", "service_smoke.py",
         *policy["gateway_reference_sha256"],

@@ -37,11 +37,11 @@ call delivery\h3-experimental\02-submit-build.cmd
 第二条会真正提交、push，并触发 Linux Runner 构建及发布。脚本会：
 
 1. 校验精确服务基线、输入指纹、资产锁、Ref8 补丁、工作流和本地回归。
-2. 通过命令级本机 Git 代理 `http://127.0.0.1:17890` 查询 GitHub，确认 `DingoRouter-video-gateway` 没有在核验后漂移。
+2. 通过命令级本机 Git 代理 `http://127.0.0.1:17890` 查询 GitHub，确认固定服务 commit 仍属于 `DingoRouter-video-gateway` 历史。若同事有新提交，显示新旧 SHA，并写入 `.h3-experimental-evidence/local/remote-checks/`；继续构建已封存的基线，不自动合并新代码。
 3. 确认远端既有实验分支历史包含在本地。分支不存在、无权限、网络失败、历史分叉都会停止，不创建替代分支、不强推。
 4. 备份暂存区、写入已验证的完整 Git tree，保留已跟踪但被忽略的路径、Linux 文件模式和符号链接；创建 DCO sign-off 提交，普通 push。
 
-同事服务分支有新提交时，先审查新变化并更新锁。GitHub 403 要核对账号写权限，不要把密码/令牌写入聊天或脚本。不要手工 `git add -f .`，不要执行旧目录中的提交脚本。
+本次显式使用 `service_base_policy=pinned-ancestor`。锁定构建基线与上游最新提交是两件事：同事正常追加提交不阻断本轮修复；若要吸纳更新，则单独审查、更新基线及相关源码、再重新封存。上游历史无法验证、网络失败或实验分支分叉仍会停止。GitHub 403 要核对账号写权限，不要把密码/令牌写入聊天或脚本。不要手工 `git add -f .`，不要执行旧目录中的提交脚本。
 
 **必须推送本次新提交后再看 Actions**。旧 run 的 Re-run jobs 只会重跑旧源码，不会包含本次修复。
 
@@ -118,8 +118,15 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 | soxr LGPL 门禁 | 复用精确 soxr1.1.0/vllm-runtime 实验例外；保留检查、NOTICE/SBOM，不扩大未知包白名单 |
 | Git ignored 文件导致提交失败 | 临时 index 验证后提交精确 tree，备份 index、保留文件模式 |
 | 参考 Dockerfile 哈希为 `null`，环境审计提前终止 | 根 `.dockerignore` 的 `container/**/*.Dockerfile` 排除了参考副本；改名为 `.Dockerfile.txt`，原始内容和 SHA256 保持不变；增加真实构建上下文导出预检，不跳过校验 |
+| OTEL common0.66b0 与 SDK1.40.0 冲突 | 旧求解遗漏了底图中部分监测包；将所有已安装 `opentelemetry-*` 包名加入同一次求解，不固定旧版本、不删除监测、不全量升级；保留全局依赖检查及 SDK/exporter 离线导入检查 |
+| Omni `direct_url.json` 缺少 SHA256 | 已在 uv0.8.22 复现官方 wheel 安装后 `archive_info={}`；先下载并实算固定 SHA256，再安装本地 wheel，保留约8MiB原文件、官方来源和下载记录，供离线重新哈希验证；不放宽为只比较版本号 |
+| 来源检查失败时 OpenCV 也显示 FAIL | 拆分 GPU 栈保护、wheel 来源和 OpenCV 校验结果，避免前一项异常误标后续检查；依赖检查失败时输出完整 uv 诊断 |
 
 2026-10-16 此次漏文件修复不改变 `.dockerignore`、native 模板或 builder 指纹，仍为 `76446244149f`。因此可以复用本次已经发布的 native builder；镜像存在且 Runner 有拉取权限时，CI 会跳过其构建。框架运行层仍需继续构建和验证，耗时不能仅凭 native 缓存命中保证。
+
+2026-10-19 的监测依赖和 wheel 来源修复同样不改变 native builder 输入。隔离 Windows 小环境已真实复现旧 OTEL 求解失败，并验证新增整组 roots 后 `uv pip check` 通过；官方 Omni wheel 的远端/本地安装来源记录也已实际检查。这些验证不等于完整 Linux Python3.12、CUDA、Gateway 或 H100 验收通过，仍须推送新提交运行 CI。不要 Re-run 旧提交。
+
+同日同事分支从 `e8c9195672f7` 前进到 `9ccee2f56d01`，新增 `5de10a366`（CephFS 配额祖先目录容量统计）和 `9ccee2f56`（监测面板部分 histogram 抓取/空区间）。比较了这两次提交：12 个文件变更，没有修改依赖声明、native 工具链或镜像模板。本轮继续修复固定 `e8c919` 配方，上述新监测功能尚未吸纳，不能称本镜像使用当前上游最新源码。原脚本将正常追加提交视为错误的限制已调整为显式固定基线策略。
 
 ## 6. 仍需验证的风险
 

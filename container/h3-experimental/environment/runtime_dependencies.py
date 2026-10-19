@@ -123,6 +123,21 @@ def runtime_requirements(inventory, *, roots=DEFAULT_ROOTS, environment=None):
     return lines
 
 
+def inherited_telemetry_requirements(inventory):
+    """Keep every inherited telemetry component in the joint solve.
+
+    uv install does not solve unrelated installed packages. A retained exporter
+    can otherwise require a newer SDK than the requested graph selects. Use
+    names, not old version pins or old dependency edges, so the resolver can
+    select a mutually compatible family without removing monitoring.
+    """
+    records = index_records(inventory)
+    names = sorted(name for name in records if name.startswith("opentelemetry-"))
+    for name in names:
+        unique_version(records, name)
+    return names
+
+
 def verify_protected(inventory, constraints):
     records = index_records(inventory)
     for line in constraints:
@@ -159,6 +174,16 @@ def main():
         (args.directory / "dynamo-vllm-default-requirements.txt").write_text(
             "\n".join(runtime_requirements(inventory)) + "\n", encoding="utf-8"
         )
+        telemetry = inherited_telemetry_requirements(inventory)
+        (args.directory / "inherited-telemetry-requirements.txt").write_text(
+            "\n".join(telemetry) + "\n", encoding="utf-8"
+        )
+        records = index_records(inventory)
+        write_json(args.directory / "telemetry-solve-inputs.json", {
+            "strategy": "Resolve every inherited opentelemetry-* package together with full Omni/service requirements; no metadata exemptions",
+            "roots": telemetry,
+            "installed_before": {name: unique_version(records, name) for name in telemetry},
+        })
     else:
         verify_protected(inventory, constraints_path.read_text(encoding="utf-8").splitlines())
 

@@ -34,6 +34,8 @@
   "validation_boundary": "Local recipe checks only until the actual CI build, final digest, registry pull, H100 and media E2E evidence are collected",
   "service_base_branch": "DingoRouter-video-gateway",
   "service_base_commit": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "service_base_policy": "pinned-ancestor",
+  "service_base_policy_reason": "Keep the reviewed build reproducible while completing the current dependency repair. Upstream advances are reported, not merged automatically; the pinned commit must remain in upstream history. Refreshing the service base is a separate reviewed change.",
   "main_observed_reference_only": "049eece3f32f8d38dc1d8c52d4b793cb30e394bb",
   "successful_030_reference": "958c2ce95cd361fd5a6770e3023eac4de968f674",
   "framework_scope": "Preserve colleague Gateway and telemetry; independently validate service compatibility after upgrading Omni. Four distilled experiment profiles use the native Omni endpoint; no new public Gateway LoRA contract is claimed."

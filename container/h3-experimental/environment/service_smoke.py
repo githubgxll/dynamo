@@ -15,6 +15,9 @@ IMPORTS = (
     "dingo.vllm.omni.output_formatter", "dingo.vllm.omni.request_adapters.minimax_h3",
     "dingo.vllm.omni.omni_handler", "dingo.vllm.omni.stage_worker",
     "dingo.vllm.omni.stage_router",
+    "opentelemetry.sdk.trace",
+    "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
 )
 
 
@@ -55,7 +58,9 @@ socket.create_connection = deny
         if name == "gateway-cli-help" and "--config" not in result.stdout:
             raise RuntimeError("Gateway --help did not expose the expected configuration option")
     report = {"status": "PASS_SERVICE_IMPORTS_AND_HELP_ONLY", "checks": results,
-              "packages": {name: md.version(name) for name in ("ai-dingo", "ai-dingo-runtime", "vllm", "vllm-omni")},
+              "packages": {name: md.version(name) for name in (
+                  "ai-dingo", "ai-dingo-runtime", "vllm", "vllm-omni",
+                  "opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp")},
               "scope": "Real installed imports and Gateway help with outbound socket calls denied; no NATS/ETCD/Gateway server/Omni engine/GPU/model started"}
     (args.output_dir / "service-smoke.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     print(json.dumps(report, indent=2))

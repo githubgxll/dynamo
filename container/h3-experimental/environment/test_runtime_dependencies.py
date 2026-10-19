@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 
 from runtime_dependencies import (
-    protected_constraints, runtime_requirements, snapshot, verify_protected,
+    inherited_telemetry_requirements, protected_constraints, runtime_requirements, snapshot, verify_protected,
 )
 
 
@@ -43,6 +43,30 @@ def inventory(*extra):
 
 
 class RuntimeRequirementsTests(unittest.TestCase):
+    def test_inherited_orphan_exporter_participates_without_freezing_mixed_versions(self):
+        data = inventory(
+            Distribution("opentelemetry-exporter-otlp-common", "0.66b0", ["opentelemetry-sdk~=1.45.0"]),
+            Distribution("opentelemetry-sdk", "1.40.0", ["opentelemetry-api==1.40.0"]),
+            Distribution("opentelemetry-api", "1.40.0"),
+            Distribution("opentelemetry-semantic-conventions", "0.61b0"),
+        )
+        self.assertEqual(inherited_telemetry_requirements(data), [
+            "opentelemetry-api", "opentelemetry-exporter-otlp-common",
+            "opentelemetry-sdk", "opentelemetry-semantic-conventions",
+        ])
+
+    def test_telemetry_roots_preserve_extra_installed_instrumentation(self):
+        data = inventory(Distribution("OpenTelemetry_Instrumentation_FastAPI", "0.61b0"),
+                         Distribution("unrelated-package", "1.0"))
+        self.assertEqual(inherited_telemetry_requirements(data), ["opentelemetry-instrumentation-fastapi"])
+        self.assertEqual(inherited_telemetry_requirements(inventory()), [])
+
+    def test_conflicting_inherited_telemetry_versions_are_not_silently_hidden(self):
+        with self.assertRaisesRegex(ValueError, "Conflicting installed versions"):
+            inherited_telemetry_requirements(inventory(
+                Distribution("opentelemetry-sdk", "1.40.0"),
+                Distribution("opentelemetry-sdk", "1.45.0", location="/other")))
+
     def test_complete_roots_include_dynamo_and_vllm_default_requirements(self):
         lines = runtime_requirements(inventory(), environment={"platform_system": "Linux"})
         active = [line for line in lines if not line.startswith("#")]

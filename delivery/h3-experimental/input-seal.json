@@ -20,7 +20,7 @@
     },
     ".github/scripts/h3_experimental_ci.py": {
       "mode": "100644",
-      "blob": "9b71c1f90a409037aed40abe9ce4c3dfa219b649",
+      "blob": "0e99136373ae67d610d30497851e757c85d89661",
       "status": "A"
     },
     ".github/scripts/test_h3_experimental_ci.py": {
@@ -120,12 +120,12 @@
     },
     "container/h3-experimental/environment/README.md": {
       "mode": "100644",
-      "blob": "70d3cc9ab39b8920b1526c9a3eb6ef03408645d8",
+      "blob": "81410812d561c24d4da4c87824c4e78e32ce535f",
       "status": "A"
     },
     "container/h3-experimental/environment/audit_environment.py": {
       "mode": "100644",
-      "blob": "b488535da63e1e5e118665e368a758d538b3ea9f",
+      "blob": "43c575fd49ef94515e08080f9da38601ba44c6f0",
       "status": "A"
     },
     "container/h3-experimental/environment/dependency_audit.py": {
@@ -135,17 +135,22 @@
     },
     "container/h3-experimental/environment/gateway-dependency-policy.json": {
       "mode": "100644",
-      "blob": "9abf7b12c3a9aeab0384e8013eac41a3d9f029ec",
+      "blob": "52f2d61e78dc86c86aeee34c7a2df8165fb24df3",
       "status": "A"
     },
     "container/h3-experimental/environment/install_environment.sh": {
       "mode": "100644",
-      "blob": "052dd09e952821175257e8c4528cd81a4818a38e",
+      "blob": "b8cd6b5434ace10b29ee0f6a0ad7a76a7d244e16",
       "status": "A"
     },
     "container/h3-experimental/environment/media_smoke.py": {
       "mode": "100644",
       "blob": "179fc5efceff04476be0f8b17c697188b321577f",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/prepare_omni_wheel.py": {
+      "mode": "100644",
+      "blob": "06f0ec54a3bf60165b399632d341763270919c0f",
       "status": "A"
     },
     "container/h3-experimental/environment/protected_packages.txt": {
@@ -170,12 +175,12 @@
     },
     "container/h3-experimental/environment/runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "9c81f801b025443a1c5192e4ecc71f6d04ff7715",
+      "blob": "56dd57219841547154406328ee76c8bfa97a51be",
       "status": "A"
     },
     "container/h3-experimental/environment/service_smoke.py": {
       "mode": "100644",
-      "blob": "dbd22f3718d99d312a9b071dc9faa25d204fe2f1",
+      "blob": "cbb6bdba08a6ecb9bf231771e118a12f696e167f",
       "status": "A"
     },
     "container/h3-experimental/environment/test_dependency_audit.py": {
@@ -185,12 +190,17 @@
     },
     "container/h3-experimental/environment/test_gateway_overlay.py": {
       "mode": "100644",
-      "blob": "d951b43257e323fbdc42cbd67d835a3cf70f9e52",
+      "blob": "809e86ec644a954e8cf299e446d973bd9fa351d5",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/test_prepare_omni_wheel.py": {
+      "mode": "100644",
+      "blob": "6534ba4a508034904389d145fa47fbca16c61800",
       "status": "A"
     },
     "container/h3-experimental/environment/test_runtime_dependencies.py": {
       "mode": "100644",
-      "blob": "f963dac32c989df3acd7d29fdc966a17ab654085",
+      "blob": "000b05dde633e8abc517196ebc2c4bad625380bc",
       "status": "A"
     },
     "container/h3-experimental/profiles/README.md": {
@@ -355,12 +365,12 @@
     },
     "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
       "mode": "100644",
-      "blob": "a62be383456fb72c18b2132e4101214aca61bfe0",
+      "blob": "2c85299d10933cf0bf544b0692130cbcea090ee6",
       "status": "A"
     },
     "delivery/h3-experimental/README.md": {
       "mode": "100644",
-      "blob": "6c2720138c638205c14cd4f4ccf6120e1e89794a",
+      "blob": "c93ea83d054732cda8fac0bd26cea34150aa3aaf",
       "status": "A"
     },
     "delivery/h3-experimental/check_local.py": {
@@ -375,7 +385,7 @@
     },
     "delivery/h3-experimental/ops.py": {
       "mode": "100644",
-      "blob": "2f81dbb9c70b902122d85abaae807dfc3230147f",
+      "blob": "bbb97b283227fd7662038dbbee8a644ce5a32295",
       "status": "A"
     },
     "delivery/h3-experimental/service-source-review.json": {
@@ -385,7 +395,7 @@
     },
     "delivery/h3-experimental/source-lock.json": {
       "mode": "100644",
-      "blob": "60476f86e98af0e8c793d0e6f66f0557723382ca",
+      "blob": "284107dc362ccfb74e1de5b5c3877b4384ef71e0",
       "status": "A"
     },
     "delivery/h3-experimental/tests/test_gateway_compat.py": {
@@ -395,7 +405,7 @@
     },
     "delivery/h3-experimental/tests/test_ops.py": {
       "mode": "100644",
-      "blob": "558dcdd8310e95105a564d3e8a11a9a2c69f7434",
+      "blob": "bcee051323c836a9e5af83ca78e2931b3cfea129",
       "status": "A"
     },
     "delivery/h3-experimental/tests/test_staging.py": {

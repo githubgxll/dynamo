@@ -130,13 +130,17 @@ class BranchSubmissionTests(unittest.TestCase):
         self.remote = None
         self.head = "b" * 40
         self.tree = "c" * 40
+        self.upstream = self.lock["service_base_commit"]
+        self.writer = patch.object(ops, "dump")
+        self.record = self.writer.start()
+        self.addCleanup(self.writer.stop)
 
     def fake_git(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         if args[0] == "ls-remote":
             return "" if self.remote is None else self.remote + "\trefs/heads/" + ops.EXPERIMENT_BRANCH
         if args == ("rev-parse", "refs/remotes/origin/DingoRouter-video-gateway"):
-            return self.lock["service_base_commit"]
+            return self.upstream
         if args == ("rev-parse", "refs/remotes/origin/" + ops.EXPERIMENT_BRANCH):
             return self.remote
         if args == ("rev-parse", "HEAD"):
@@ -153,6 +157,46 @@ class BranchSubmissionTests(unittest.TestCase):
         fetches = [args for args, _ in self.calls if args[0] == "fetch"]
         self.assertEqual(len(fetches), 1)  # Only service base: do not fetch an absent ref.
         self.assertFalse(any(args[0] == "merge-base" for args, _ in self.calls))
+
+    def test_explicit_pinned_policy_accepts_upstream_advance_without_merging(self):
+        self.upstream = "f" * 40
+        self.remote = self.head
+        original_base = self.lock["service_base_commit"]
+        with patch.object(ops, "git", side_effect=self.fake_git):
+            self.assertEqual(ops.prepare_remote({**self.lock, "service_base_policy": "pinned-ancestor"}), self.remote)
+        self.assertIn((("merge-base", "--is-ancestor", original_base, self.upstream), {}), self.calls)
+        self.assertIn((("merge-base", "--is-ancestor", self.remote, "HEAD"), {}), self.calls)
+        self.assertFalse(any(args[0] in {"merge", "rebase", "reset", "push", "commit"} for args, _ in self.calls))
+        record = self.record.call_args.args[1]
+        self.assertEqual(record["service_base_commit"], original_base)
+        self.assertEqual(record["observed_upstream_commit"], self.upstream)
+        self.assertTrue(record["update_available"])
+
+    def test_pinned_policy_rejects_unverifiable_upstream_history(self):
+        self.upstream = "f" * 40
+        def rewritten(*args, **kwargs):
+            if args == ("merge-base", "--is-ancestor", self.lock["service_base_commit"], self.upstream):
+                raise RuntimeError("simulated history rewrite or unavailable history")
+            return self.fake_git(*args, **kwargs)
+        with patch.object(ops, "git", side_effect=rewritten), self.assertRaisesRegex(ValueError, "Cannot verify"):
+            ops.prepare_remote({**self.lock, "service_base_policy": "pinned-ancestor"})
+        self.record.assert_not_called()
+        self.assertFalse(any(args[0] in {"push", "commit", "ls-remote"} for args, _ in self.calls))
+
+    def test_legacy_strict_policy_still_stops_on_changed_service_head(self):
+        self.upstream = "f" * 40
+        with patch.object(ops, "git", side_effect=self.fake_git), self.assertRaisesRegex(ValueError, "changed since review"):
+            ops.prepare_remote(self.lock)
+
+    def test_unknown_source_policy_and_invalid_commit_are_rejected(self):
+        for policy, commit in (("silently-update", "f" * 40), ("pinned-ancestor", "not-a-sha")):
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                ops.verify_service_base({**self.lock, "service_base_policy": policy}, commit)
+
+    def test_upstream_fetch_failure_is_not_treated_as_pinned_success(self):
+        with patch.object(ops, "git", side_effect=RuntimeError("fetch network failure")), self.assertRaises(RuntimeError):
+            ops.prepare_remote({**self.lock, "service_base_policy": "pinned-ancestor"})
+        self.record.assert_not_called()
 
     def test_auth_or_network_failure_is_not_absent_branch(self):
         def fail_lookup(*args, **kwargs):

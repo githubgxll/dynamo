@@ -107,6 +107,106 @@ class GatewayOverlayTests(unittest.TestCase):
             with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(bad))):
                 with self.assertRaises(RuntimeError): overlay.wheel_origin_evidence(policy)
 
+    def test_remote_origin_without_hash_or_with_conflicting_hash_fields_fails(self):
+        policy = overlay.read_policy()
+        url, digest = policy["omni_wheel"].split("#sha256=")
+        for archive in ({}, {"hashes": {}},
+                        {"hashes": {"sha256": digest}, "hash": "sha256=" + "0" * 64}):
+            origin = {"url": url, "archive_info": archive}
+            with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(origin))):
+                with self.assertRaises(RuntimeError): overlay.wheel_origin_evidence(policy)
+
+    def retained_wheel_fixture(self, directory):
+        data = b"synthetic wheel bytes for checksum rejection tests"
+        digest = hashlib.sha256(data).hexdigest()
+        url = "https://files.pythonhosted.org/packages/test/vllm_omni-0.31.0rc1-py3-none-any.whl"
+        wheel = directory.resolve() / "omni-wheels" / url.rsplit("/", 1)[1]
+        wheel.parent.mkdir()
+        wheel.write_bytes(data)
+        receipt = {"schema": "h3-verified-omni-wheel/1", "url": url, "sha256": digest,
+                   "wheel_path": str(wheel), "wheel_uri": wheel.as_uri(), "size_bytes": len(data)}
+        (directory / "omni-wheel-download.json").write_text(json.dumps(receipt), encoding="utf-8")
+        return {"omni_wheel": url + "#sha256=" + digest}, wheel, receipt
+
+    def test_local_uv_empty_archive_info_requires_independent_retained_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            policy, wheel, receipt = self.retained_wheel_fixture(directory)
+            origin = {"url": wheel.as_uri(), "archive_info": {}}
+            with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(origin))):
+                result = overlay.wheel_origin_evidence(policy, inputs=directory)
+                self.assertEqual(result["status"], "PASS")
+                self.assertEqual(result["sha256"], receipt["sha256"])
+                self.assertFalse(result["installer_sha256_present"])
+                wheel.write_bytes(b"x" * receipt["size_bytes"])
+                with self.assertRaisesRegex(RuntimeError, "bytes do not match"):
+                    overlay.wheel_origin_evidence(policy, inputs=directory)
+
+    def test_retained_wheel_receipt_cannot_replace_policy_or_move_file(self):
+        for key, value in (("schema", "other"), ("url", "https://other.example/file.whl"),
+                           ("sha256", "0" * 64), ("wheel_path", "/tmp/other.whl"),
+                           ("wheel_uri", "file:///tmp/other.whl"), ("size_bytes", 0)):
+            with self.subTest(field=key), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                policy, wheel, receipt = self.retained_wheel_fixture(directory)
+                receipt[key] = value
+                (directory / "omni-wheel-download.json").write_text(json.dumps(receipt), encoding="utf-8")
+                origin = {"url": wheel.as_uri(), "archive_info": {}}
+                with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(origin))):
+                    with self.assertRaises(RuntimeError): overlay.wheel_origin_evidence(policy, inputs=directory)
+
+    def test_local_installer_origin_or_present_checksum_cannot_differ(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            policy, wheel, receipt = self.retained_wheel_fixture(directory)
+            for origin in ({"url": "file:///elsewhere/wheel.whl", "archive_info": {}},
+                           {"url": wheel.as_uri(), "archive_info": {"hashes": {"sha256": "0" * 64}}},
+                           {"url": receipt["url"], "archive_info": {}}):
+                with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(origin))):
+                    with self.assertRaises(RuntimeError): overlay.wheel_origin_evidence(policy, inputs=directory)
+
+    def test_missing_retained_wheel_or_download_receipt_fails(self):
+        for missing in ("wheel", "receipt"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                policy, wheel, receipt = self.retained_wheel_fixture(directory)
+                (wheel if missing == "wheel" else directory / "omni-wheel-download.json").unlink()
+                origin = {"url": wheel.as_uri(), "archive_info": {}}
+                with patch.object(overlay.md, "distribution", return_value=SimpleNamespace(read_text=lambda _: json.dumps(origin))):
+                    with self.assertRaises((RuntimeError, FileNotFoundError)):
+                        overlay.wheel_origin_evidence(policy, inputs=directory)
+
+    def test_origin_failure_does_not_mislabel_or_skip_opencv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            report = {"errors": []}
+            with patch.object(overlay, "snapshot", return_value={}), \
+                 patch.object(overlay, "verify_protected"), \
+                 patch.object(overlay, "wheel_origin_evidence", side_effect=RuntimeError("receipt missing")), \
+                 patch.object(overlay, "cv2_provider_evidence", return_value={"status": "PASS_SAME_VERSION_SHARED_NAMESPACE"}) as cv2:
+                checks = overlay.record_provenance_checks({}, directory, directory, "torch==1", report)
+            self.assertEqual(checks["protected-runtime"]["status"], "PASS")
+            self.assertEqual(checks["omni-wheel-origin"]["status"], "FAIL")
+            self.assertEqual(checks["opencv-provider"]["status"], "PASS_SAME_VERSION_SHARED_NAMESPACE")
+            cv2.assert_called_once()
+            self.assertEqual(report["errors"], ["omni-wheel-origin: receipt missing"])
+            self.assertEqual(json.loads((directory / "opencv-provider.json").read_text())["status"], checks["opencv-provider"]["status"])
+
+    def test_protected_failure_still_runs_origin_and_opencv_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            report = {"errors": []}
+            with patch.object(overlay, "snapshot", return_value={}), \
+                 patch.object(overlay, "verify_protected", side_effect=ValueError("protected changed")), \
+                 patch.object(overlay, "wheel_origin_evidence", return_value={"status": "PASS"}) as origin, \
+                 patch.object(overlay, "cv2_provider_evidence", side_effect=RuntimeError("RECORD mismatch")) as cv2:
+                checks = overlay.record_provenance_checks({}, directory, directory, "torch==1", report)
+            self.assertEqual(checks["protected-runtime"]["status"], "FAIL")
+            self.assertEqual(checks["omni-wheel-origin"]["status"], "PASS")
+            self.assertEqual(checks["opencv-provider"]["status"], "FAIL")
+            origin.assert_called_once(); cv2.assert_called_once()
+            self.assertEqual(report["errors"], ["protected-runtime: protected changed", "opencv-provider: RECORD mismatch"])
+
     def test_gateway_backend_helpers_are_required_without_activating_nixl_extra(self):
         policy = overlay.read_policy()
         packages = {"uvloop": "0.22.1", "blake3": "1.0.8", "soundfile": "0.13.1", "librosa": "0.11.0", "ray": "2.55.0"}

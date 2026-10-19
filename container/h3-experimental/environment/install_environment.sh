@@ -20,11 +20,14 @@ python3 "${SCRIPT_DIR}/runtime_dependencies.py" before \
 # A constraints file alone cannot express an upstream intentional metadata override.
 export UV_OVERRIDE="${INFO}/h3-reviewed-overrides.txt"
 export UV_LINK_MODE=copy
-OMNI_REQUIREMENT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["omni_wheel"])' "${SCRIPT_DIR}/gateway-dependency-policy.json")"
+uv --version > "${INFO}/uv-version.txt"
+OMNI_REQUIREMENT="$(python3 "${SCRIPT_DIR}/prepare_omni_wheel.py" \
+    --policy "${SCRIPT_DIR}/gateway-dependency-policy.json" --directory "${INFO}")"
 uv pip install --system --prerelease=allow \
     --constraints "${INFO}/protected-before-omni.txt" \
     --constraints "${INFO}/h3-shared-constraints.txt" \
     --requirements "${INFO}/dynamo-vllm-default-requirements.txt" \
+    --requirements "${INFO}/inherited-telemetry-requirements.txt" \
     --requirements "${INFO}/h3-backend-helpers.txt" \
     --reinstall-package vllm-omni \
     "${OMNI_REQUIREMENT}" \

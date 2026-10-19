@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -131,7 +132,7 @@ def check_versions(report, policy):
     audit.finalize_status(report)
 
 
-def wheel_origin_evidence(policy):
+def wheel_origin_evidence(policy, inputs=None):
     """The version label alone cannot prove the released wheel bytes were used."""
     dist = md.distribution("vllm-omni")
     raw = dist.read_text("direct_url.json")
@@ -140,13 +141,69 @@ def wheel_origin_evidence(policy):
     origin = json.loads(raw)
     url, expected_hash = policy["omni_wheel"].split("#sha256=", 1)
     archive = origin.get("archive_info", {})
-    actual_hash = archive.get("hashes", {}).get("sha256")
-    if actual_hash is None and archive.get("hash", "").startswith("sha256="):
-        actual_hash = archive["hash"].split("=", 1)[1]
-    if origin.get("url") != url or actual_hash != expected_hash:
-        raise RuntimeError("Omni direct_url evidence does not match the pinned released wheel and SHA256")
-    return {"url": url, "sha256": actual_hash,
-            "scope": "Installer direct-url receipt for exact released wheel; Ref8 source patch is checked separately"}
+    hashes = []
+    if "sha256" in archive.get("hashes", {}):
+        hashes.append(archive["hashes"]["sha256"])
+    if archive.get("hash", "").startswith("sha256="):
+        hashes.append(archive["hash"].split("=", 1)[1])
+    if any(value != expected_hash for value in hashes):
+        raise RuntimeError("Omni direct_url SHA256 does not match the pinned released wheel")
+    if origin.get("url") == url:
+        if not hashes:
+            raise RuntimeError("Omni remote direct_url has no SHA256; use the independently verified retained wheel")
+        return {"status": "PASS", "url": url, "sha256": expected_hash,
+                "verification": "installer_sha256_receipt",
+                "scope": "Installer receipt for exact released wheel; Ref8 source patch is checked separately"}
+    if inputs is None:
+        raise RuntimeError("Omni direct_url differs from the official URL and no retained-wheel evidence is supplied")
+    # uv may produce archive_info={} even when the input URL carries #sha256.
+    # For a local install we independently hash the retained artifact on every
+    # audit, including final offline/non-root checks. A JSON claim alone is not
+    # sufficient to accept a missing installer hash.
+    inputs = Path(inputs).resolve()
+    receipt = json.loads((inputs / "omni-wheel-download.json").read_text(encoding="utf-8"))
+    wheel = inputs / "omni-wheels" / Path(urlsplit(url).path).name
+    if wheel.is_symlink() or wheel.parent.is_symlink() or wheel.resolve() != wheel:
+        raise RuntimeError("Retained Omni wheel must be a regular artifact inside the build-info omni-wheels directory")
+    expected = {"schema": "h3-verified-omni-wheel/1", "url": url,
+                "sha256": expected_hash, "wheel_path": str(wheel), "wheel_uri": wheel.as_uri()}
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise RuntimeError(f"Retained Omni wheel receipt differs at {key}")
+    if origin.get("url") != expected["wheel_uri"]:
+        raise RuntimeError("Omni installed direct_url does not identify the independently verified retained wheel")
+    if not wheel.is_file():
+        raise RuntimeError("Retained Omni wheel is missing; cannot independently verify SHA256")
+    if type(receipt.get("size_bytes")) is not int or receipt["size_bytes"] != wheel.stat().st_size:
+        raise RuntimeError("Retained Omni wheel size differs from the download receipt")
+    actual_hash = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    if actual_hash != expected_hash:
+        raise RuntimeError("Retained Omni wheel bytes do not match the pinned released SHA256")
+    return {"status": "PASS", "url": url, "sha256": actual_hash,
+            "installed_url": origin["url"], "wheel_path": str(wheel),
+            "size_bytes": receipt["size_bytes"], "installer_sha256_present": bool(hashes),
+            "verification": "retained_wheel_sha256_and_local_installer_receipt",
+            "scope": "Independently hashed exact released wheel and installed origin; Ref8 source patch is checked separately"}
+
+
+def record_provenance_checks(policy, directory, inputs, protected_text, report):
+    """Run independent gates independently so one failure cannot mislabel cv2."""
+    results = {}
+    checks = (
+        ("protected-runtime", lambda: verify_protected(snapshot(phase="final"), protected_text.splitlines())),
+        ("omni-wheel-origin", lambda: wheel_origin_evidence(policy, inputs=inputs)),
+        ("opencv-provider", lambda: cv2_provider_evidence(policy)),
+    )
+    for name, check in checks:
+        try:
+            result = check()
+            result = {"status": "PASS"} if result is None else {"status": "PASS", **result}
+        except Exception as exc:
+            result = {"status": "FAIL", "error": str(exc)}
+            report["errors"].append(f"{name}: {exc}")
+        results[name] = result
+        write_json(directory / f"{name}.json", result)
+    return results
 
 
 def check_backend_helpers(report, policy):
@@ -202,18 +259,15 @@ def run_audit(policy, directory, inputs):
     audit.require_framework_versions(report)
     check_versions(report, policy)
     check_backend_helpers(report, policy)
-    try:
-        verify_protected(snapshot(phase="final"), protected_text.splitlines())
-        write_json(directory / "omni-wheel-origin.json", wheel_origin_evidence(policy))
-        opencv = cv2_provider_evidence(policy)
-    except Exception as exc:
-        report["errors"].append(str(exc))
-        opencv = {"status": "FAIL", "error": str(exc)}
+    provenance = record_provenance_checks(policy, directory, inputs, protected_text, report)
+    opencv = provenance["opencv-provider"]
     result = subprocess.run(["uv", "pip", "check", "--python", sys.executable],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env={**os.environ, "NO_COLOR": "1"}, check=False)
     (directory / "uv-pip-check.txt").write_text(result.stdout, encoding="utf-8")
     (directory / "uv-pip-check.exit-code").write_text(str(result.returncode) + "\n", encoding="utf-8")
+    if result.returncode:
+        print(f"=== uv-pip-check.txt (exit={result.returncode}) ===\n{result.stdout}\n=== end uv-pip-check.txt ===", flush=True)
     audit.review_uv_check(report, result.returncode, result.stdout)
     write_json(directory / "opencv-provider.json", opencv)
     write_json(directory / "dependency-audit.json", report)
@@ -232,6 +286,8 @@ def run_audit(policy, directory, inputs):
         "additional_backend_requirements": policy["additional_backend_requirements"],
         "dependency_status": report["status"],
         "known_metadata_exceptions": report["known_metadata_exceptions"],
+        "protected_runtime_status": provenance["protected-runtime"]["status"],
+        "omni_wheel_origin_status": provenance["omni-wheel-origin"]["status"],
         "opencv_provider_status": opencv["status"], "errors": report["errors"],
         "euid": os.geteuid(), "scope": "Installed dependencies and import provenance only; media smoke and GPU acceptance are separate gates"}
     write_json(directory / "environment-check.json", summary)
