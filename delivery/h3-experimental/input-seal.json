@@ -135,12 +135,12 @@
     },
     "container/h3-experimental/environment/README.md": {
       "mode": "100644",
-      "blob": "930e2c6f5d33cd67c2002b8f766a4f83e5d77ff8",
+      "blob": "2a20120a83391160c4ce25309a1ea3e8f191e0d1",
       "status": "A"
     },
     "container/h3-experimental/environment/audit_environment.py": {
       "mode": "100644",
-      "blob": "43c575fd49ef94515e08080f9da38601ba44c6f0",
+      "blob": "d33414ece7ad13b8907610073871c8f4a3bdeca9",
       "status": "A"
     },
     "container/h3-experimental/environment/dependency_audit.py": {
@@ -216,6 +216,11 @@
     "container/h3-experimental/environment/test_runtime_dependencies.py": {
       "mode": "100644",
       "blob": "7657851c91a2cbdc8057c013ca2b6a7b61bb91ed",
+      "status": "A"
+    },
+    "container/h3-experimental/environment/test_uv_check.py": {
+      "mode": "100644",
+      "blob": "1fc2417a77c1aca91749485ddab75d0b36d05673",
       "status": "A"
     },
     "container/h3-experimental/profiles/README.md": {
@@ -380,7 +385,7 @@
     },
     "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
       "mode": "100644",
-      "blob": "7b0bcd95d74678bef1ace20bd7ea2f6dcb9a9097",
+      "blob": "e3d2dde84f4f80f1aa9542714bc152011f404336",
       "status": "A"
     },
     "delivery/h3-experimental/README.md": {

@@ -51,6 +51,12 @@ python3 /opt/h3-experimental/environment/service_smoke.py --output-dir /opt/h3-e
 
 GPU 栈保护、Omni 来源、OpenCV 提供者分别记录状态。一项失败不再把另一项误记为 FAIL；`uv pip check` 失败时同时打印完整输出。
 
+2026-10-19 最终 UID1000 离线复验曾报 `Failed to initialize cache at /opt/uv/cache`，具体是 `sdists-v9/.git: Permission denied`。这是检查工具访问继承缓存的权限错误（exit2），不是新增依赖冲突。检查子进程现在移除继承的 `UV_*` 设置，以 `--no-config --no-cache --offline --no-python-downloads` 检查当前 Python；其临时目录位于当前可写的报告目录内，结束后删除。`--no-cache` 仍需临时空间，不能只加该参数而继续依赖继承的临时目录配置。
+
+`uv-pip-check-context.json` 记录实际命令、执行UID、超时和退出码，不记录继承环境中的凭据。此隔离仅作用于检查子进程；安装时的下载缓存、包版本和 Pod 运行环境不变。exit2、工具缺失或超时仍失败，exit1仍只接受已验证的精确Torch/NCCL诊断。最终 `USER dynamo`、`--network=none`、媒体和服务探针均保留，不通过切回root或放宽目录权限绕过检查。
+
+同日用真实uv0.10.7在Windows小环境验证：不可用缓存路径与无效 `UV_CONFIG_FILE` 分别导致旧调用exit2；新调用在二者同时存在且继承临时路径也不可用时exit0，包清单和父进程环境保持不变。再安装缺少依赖的真实requests wheel，新调用仍exit1并报告四项缺失依赖。单加 `--no-config` 不能屏蔽显式 `UV_CONFIG_FILE`，因此子进程环境隔离不可省略。这仅验证uv行为，不等于Linux UID1000或完整H3镜像验收。
+
 `media-smoke.json` 验证真实 CPU H.264/AAC 复用、PyAV/OpenCV/TorchCodec 解码，也执行同事 `VideoEncoder` 到 Omni0.31 的实际编码调用。FFmpeg/ffprobe 继承同事 runtime 的上游完整媒体栈，不重复 apt 安装或替换二进制。
 
 `service-smoke.json` 验证安装包的 Gateway、Omni worker、监控及适配器模块真实导入，以及 Gateway `--help`。检查禁用出站 socket，且不启动 NATS、ETCD、Gateway 监听、Omni engine 或模型。

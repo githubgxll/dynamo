@@ -123,6 +123,7 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 | Omni `direct_url.json` 缺少 SHA256 | 已在 uv0.8.22 复现官方 wheel 安装后 `archive_info={}`；先下载并实算固定 SHA256，再安装本地 wheel，保留约8MiB原文件、官方来源和下载记录，供离线重新哈希验证；不放宽为只比较版本号 |
 | 来源检查失败时 OpenCV 也显示 FAIL | 拆分 GPU 栈保护、wheel 来源和 OpenCV 校验结果，避免前一项异常误标后续检查；依赖检查失败时输出完整 uv 诊断 |
 | `oss-harmony@0.0.11` 许可证 UNKNOWN | 实查PyPI发布wheel、源码包及内嵌SBOM，许可证为Apache-2.0，但Python元数据缺少SPDX声明；增加仅0.0.11生效的识别纠正，保留原始LICENSE、Rust依赖各自声明和 `unknown=deny`。不能套用 `openai-harmony` 的MIT映射 |
+| 最终UID1000下 `uv pip check` exit2，`/opt/uv/cache/sdists-v9/.git: Permission denied` | 检查子进程使用当前用户专属临时目录，移除继承的UV配置，显式禁用持久缓存、配置发现、网络和Python下载；检查当前解释器的真实安装元数据。保留非root离线门禁及严格退出码判断，不调整依赖版本、不跳过审计 |
 
 2026-10-16 此次漏文件修复不改变 `.dockerignore`、native 模板或 builder 指纹，仍为 `76446244149f`。因此可以复用本次已经发布的 native builder；镜像存在且 Runner 有拉取权限时，CI 会跳过其构建。框架运行层仍需继续构建和验证，耗时不能仅凭 native 缓存命中保证。
 
@@ -133,6 +134,10 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 随后构建推进到许可证检查，2199个包中唯一报告失败的是 `oss-harmony==0.0.11`。它是vLLM0.31声明的依赖，修复不改变运行包版本。精确发布证据保存在 [license-evidence/oss-harmony-0.0.11/source.json](license-evidence/oss-harmony-0.0.11/source.json)：wheel与源码包SHA256均对照官方PyPI校验；两者LICENSE完全一致，源码Cargo.toml和wheel内嵌SBOM也声明Apache-2.0。纠正表新增可选精确版本字段；已有无版本规则行为不变，未审核版本仍按原规则识别并拒绝UNKNOWN，策略文件和457项例外均未改动。
 
 本地直接以真实wheel元数据和许可证运行生成器，Python包及其84个Rust依赖共85项通过现有策略，并验证NOTICE保留原文、SBOM保留各依赖的独立许可证；这是该发布包的局部验证，不能当作完整2199包镜像已经通过。该修复不改变native builder指纹；许可证打包及下游镜像层可能重新执行。
+
+**后续真实CI证据（2026-10-19）**：[run39210327006 / job117922031084](https://github.com/githubgxll/dynamo/actions/runs/39210327006/job/117922031084) 已通过完整2199包许可证检查，前面的root依赖、CPU媒体和服务导入检查也通过。最终蒸馏层资产、Ref8合同及profiles检查后，UID1000的依赖检查因继承 `/opt/uv/cache` 权限失败。该次最终非root媒体/服务探针尚未执行，最终镜像尚不能据此认定成功。
+
+此次缓存隔离只改变审计工具的执行环境，并新增 `uv-pip-check-context.json`；无需更换底图、上游分支或GPU组件。仍需提交新源码触发CI，以最终非root离线复验及发布结果为准。保留安装器下载缓存、native builder指纹与四权重缓存；框架环境目录变更会使对应运行层及下游重新校验，不能保证全部命中缓存。
 
 ## 6. 仍需验证的风险
 

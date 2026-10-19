@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlsplit
 
 from packaging.requirements import Requirement
@@ -248,6 +249,41 @@ def write_license_inventory(directory, inputs, inventory):
         (directory / "ffmpeg-copyright.txt").write_bytes(copyright_file.read_bytes())
 
 
+def run_uv_check(directory):
+    """Inspect this interpreter without touching the inherited install cache.
+
+    The upstream image can point uv at /opt/uv/cache, whose contents are owned
+    by root. Even `pip check` initializes that cache before reading metadata.
+    --no-cache still needs temporary interpreter data, so give each caller its
+    own writable directory rather than relying on HOME or the global temp path.
+    """
+    command = ["uv", "--no-config", "--no-cache", "--offline", "--no-python-downloads",
+               "pip", "check", "--python", sys.executable]
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("UV_")}
+    with tempfile.TemporaryDirectory(prefix=".uv-check-", dir=directory) as temporary:
+        env.update({"NO_COLOR": "1", "TMPDIR": temporary, "TMP": temporary, "TEMP": temporary})
+        context = {"command": command, "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+                   "timeout_seconds": 120, "temporary_directory": temporary,
+                   "environment_policy": "Child-only UV_* removal; no config/cache/network/Python downloads",
+                   "scope": "Read installed metadata for the audit interpreter; do not install or change packages"}
+        try:
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=env, timeout=120, check=False)
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            result = subprocess.CompletedProcess(command, 2, output + "\nuv pip check timed out after 120 seconds\n")
+            context["error_type"] = type(exc).__name__
+        except OSError as exc:
+            result = subprocess.CompletedProcess(command, 2, f"uv pip check could not execute: {type(exc).__name__}: {exc}\n")
+            context["error_type"] = type(exc).__name__
+        context["exit_code"] = result.returncode
+    context["temporary_directory_removed"] = True
+    write_json(directory / "uv-pip-check-context.json", context)
+    return result
+
+
 def run_audit(policy, directory, inputs):
     protected_text = (inputs / "protected-before-omni.txt").read_text(encoding="utf-8")
     nccl = audit.upstream_nccl_evidence(os.environ.get("DYNAMO_VLLM_BASE_IMAGE", ""),
@@ -261,9 +297,7 @@ def run_audit(policy, directory, inputs):
     check_backend_helpers(report, policy)
     provenance = record_provenance_checks(policy, directory, inputs, protected_text, report)
     opencv = provenance["opencv-provider"]
-    result = subprocess.run(["uv", "pip", "check", "--python", sys.executable],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        env={**os.environ, "NO_COLOR": "1"}, check=False)
+    result = run_uv_check(directory)
     (directory / "uv-pip-check.txt").write_text(result.stdout, encoding="utf-8")
     (directory / "uv-pip-check.exit-code").write_text(str(result.returncode) + "\n", encoding="utf-8")
     if result.returncode:
