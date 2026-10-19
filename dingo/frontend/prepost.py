@@ -105,14 +105,22 @@ def _materialize_assistant_tool_calls(
 def _validate_chat_completion_request(
     request: dict[str, Any] | ChatCompletionRequest,
 ) -> ChatCompletionRequest:
-    # With no tools, explicit auto is equivalent to omitting tool_choice, but
+    # An empty tools list means no tools at the compatibility boundary, but
     # vLLM rejects it. Normalize before either validation path, without mutating
     # the caller's payload (including partially constructed typed requests).
     if isinstance(request, ChatCompletionRequest):
-        if not request.tools and request.tool_choice == "auto":
+        if (isinstance(request.tools, list) and not request.tools) or (
+            not request.tools and request.tool_choice == "auto"
+        ):
             request = dict(request)
-    if isinstance(request, dict) and not request.get("tools"):
-        if request.get("tool_choice") == "auto":
+    if isinstance(request, dict):
+        tools = request.get("tools")
+        if isinstance(tools, list) and not tools:
+            request = request.copy()
+            request["tools"] = None
+        # With no tools, auto is equivalent to omission. Leave forced choices
+        # intact so strict validation still rejects them without available tools.
+        if not request.get("tools") and request.get("tool_choice") == "auto":
             request = request.copy()
             request.pop("tool_choice")
 
