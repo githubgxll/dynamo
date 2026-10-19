@@ -122,12 +122,17 @@ python3 /opt/h3-experimental/profiles/launch.py --profile turbo-ref8
 | LMCache0.5.5不变，但OTEL被升级到1.45.1/0.66b1 | 版本constraint不会自动引入依赖要求；从全部固定组件的实际元数据生成 `protected-runtime-requirements.txt`，将LMCache的API≤1.40、Prometheus≤0.61b0及其他固定组件约束加入同一次求解，不升级/删除LMCache，不增加兼容性豁免 |
 | Omni `direct_url.json` 缺少 SHA256 | 已在 uv0.8.22 复现官方 wheel 安装后 `archive_info={}`；先下载并实算固定 SHA256，再安装本地 wheel，保留约8MiB原文件、官方来源和下载记录，供离线重新哈希验证；不放宽为只比较版本号 |
 | 来源检查失败时 OpenCV 也显示 FAIL | 拆分 GPU 栈保护、wheel 来源和 OpenCV 校验结果，避免前一项异常误标后续检查；依赖检查失败时输出完整 uv 诊断 |
+| `oss-harmony@0.0.11` 许可证 UNKNOWN | 实查PyPI发布wheel、源码包及内嵌SBOM，许可证为Apache-2.0，但Python元数据缺少SPDX声明；增加仅0.0.11生效的识别纠正，保留原始LICENSE、Rust依赖各自声明和 `unknown=deny`。不能套用 `openai-harmony` 的MIT映射 |
 
 2026-10-16 此次漏文件修复不改变 `.dockerignore`、native 模板或 builder 指纹，仍为 `76446244149f`。因此可以复用本次已经发布的 native builder；镜像存在且 Runner 有拉取权限时，CI 会跳过其构建。框架运行层仍需继续构建和验证，耗时不能仅凭 native 缓存命中保证。
 
 2026-10-19 的监测依赖和 wheel 来源修复同样不改变 native builder 输入。前一次隔离小环境只验证OTEL家族内部一致，未包含LMCache上限，因而没有覆盖后续CI冲突；本次已补上官方LMCache约束的实际resolver验证。确认兼容选择为API/SDK/OTLP1.40.0、Prometheus0.61b0，清理无人引用的新内部包后24包依赖检查及四类监测导入通过。小环境使用合成wheel承载LMCache四条官方OTEL约束，未安装真正LMCache或GPU包。官方Omni wheel来源修复在用户新日志中已PASS。这些证据不等于完整Linux Python3.12、CUDA、Gateway或H100验收通过，仍须推送新提交运行CI。不要Re-run旧提交。
 
 同日同事分支从 `e8c9195672f7` 前进到 `9ccee2f56d01`，新增 `5de10a366`（CephFS 配额祖先目录容量统计）和 `9ccee2f56`（监测面板部分 histogram 抓取/空区间）。比较了这两次提交：12 个文件变更，没有修改依赖声明、native 工具链或镜像模板。本轮继续修复固定 `e8c919` 配方，上述新监测功能尚未吸纳，不能称本镜像使用当前上游最新源码。原脚本将正常追加提交视为错误的限制已调整为显式固定基线策略。
+
+随后构建推进到许可证检查，2199个包中唯一报告失败的是 `oss-harmony==0.0.11`。它是vLLM0.31声明的依赖，修复不改变运行包版本。精确发布证据保存在 [license-evidence/oss-harmony-0.0.11/source.json](license-evidence/oss-harmony-0.0.11/source.json)：wheel与源码包SHA256均对照官方PyPI校验；两者LICENSE完全一致，源码Cargo.toml和wheel内嵌SBOM也声明Apache-2.0。纠正表新增可选精确版本字段；已有无版本规则行为不变，未审核版本仍按原规则识别并拒绝UNKNOWN，策略文件和457项例外均未改动。
+
+本地直接以真实wheel元数据和许可证运行生成器，Python包及其84个Rust依赖共85项通过现有策略，并验证NOTICE保留原文、SBOM保留各依赖的独立许可证；这是该发布包的局部验证，不能当作完整2199包镜像已经通过。该修复不改变native builder指纹；许可证打包及下游镜像层可能重新执行。
 
 ## 6. 仍需验证的风险
 

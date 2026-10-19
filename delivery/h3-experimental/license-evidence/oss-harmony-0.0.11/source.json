@@ -1,0 +1,50 @@
+{
+  "schema": "h3-license-release-evidence/1",
+  "name": "oss-harmony",
+  "version": "0.0.11",
+  "spdx": "Apache-2.0",
+  "metadata_url": "https://pypi.org/pypi/oss-harmony/0.0.11/json",
+  "reviewed_date": "2026-10-19",
+  "artifacts": [
+    {
+      "filename": "oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/89/68/001d7429a692b2db0c03bd49b756f834716b64afc0bbbece96824e8f0af8/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "d877c6b526cdbdf55068bae8f05c60398e929c9e296c7f69a1d533339708be80",
+      "size_bytes": 3567858
+    },
+    {
+      "filename": "oss_harmony-0.0.11.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/43/88/ca56e5b17df4763bbb552c7be3abe432b51db3c51f6327a3848b88ad7c08/oss_harmony-0.0.11.tar.gz",
+      "sha256": "ccad467b71d61490df1f2204b7a064990833338615ac135536c5b3a8e2d03a15",
+      "size_bytes": 2198780
+    }
+  ],
+  "files": {
+    "METADATA": {
+      "sha256": "e95b4cd64018d43ca8f7c2dfadccb95ad3ea5b4cc41625e5c64dc30ace0fff58",
+      "source_path": "wheel-evidence/oss_harmony-0.0.11.dist-info/METADATA"
+    },
+    "LICENSE": {
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "source_path": "wheel-evidence/oss_harmony-0.0.11.dist-info/licenses/LICENSE"
+    },
+    "Cargo.toml": {
+      "sha256": "058609024c9eca364f0013f3d6015b4bdb06035fcb97e2320b2f80fcd7043c7f",
+      "source_path": "sdist-evidence/oss_harmony-0.0.11/Cargo.toml"
+    },
+    "oss-harmony.cyclonedx.json": {
+      "sha256": "65692904cdacd664abbeb89d20a6773c06282a1a602e43dad9a2f3e9a07fa30e",
+      "source_path": "oss_harmony-0.0.11.dist-info/sboms/oss-harmony.cyclonedx.json"
+    }
+  },
+  "finding": "Release wheel declares License-File: LICENSE but omits License, License-Expression and license classifier. Wheel and source archive carry identical Apache License 2.0 text; source Cargo.toml declares Apache-2.0.",
+  "scope": "Exact release package license classification and source bytes; not a complete audit of bundled native transitive dependencies or a full image build.",
+  "embedded_sbom": {
+    "root_license": [
+      {
+        "expression": "Apache-2.0"
+      }
+    ],
+    "separately_declared_rust_dependencies": 84
+  }
+}

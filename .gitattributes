@@ -24,3 +24,5 @@ container/h3-experimental/ref8/patch.lock.json -text -eol whitespace=cr-at-eol
 container/h3-experimental/profiles/fasth3_base_lock.json -text -eol
 container/h3-experimental/profiles/base_verify.py -text -eol
 container/h3-experimental/profiles/*.sh text eol=lf
+# Preserve exact upstream release license/metadata bytes used by local validation.
+delivery/h3-experimental/license-evidence/** -text -eol whitespace=-blank-at-eof,-blank-at-eol

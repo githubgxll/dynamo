@@ -10,7 +10,7 @@
     },
     ".gitattributes": {
       "mode": "100644",
-      "blob": "1c640d6e503293fd3681909123b5e7cd3db25256",
+      "blob": "8d0020d53e9720224dce76d9703a575fba2e1505",
       "status": "M"
     },
     ".github/dingo-images.json": {
@@ -36,6 +36,21 @@
     ".gitignore": {
       "mode": "100644",
       "blob": "482596f234e096a3eac56adabf467606b85c6a1c",
+      "status": "M"
+    },
+    "container/compliance/README.md": {
+      "mode": "100644",
+      "blob": "4079d16dcc1706dda90503892e9687610571c108",
+      "status": "M"
+    },
+    "container/compliance/license_overrides.yaml": {
+      "mode": "100644",
+      "blob": "f6f14912f96cfc2640ce3df8de6086e72b227bc9",
+      "status": "M"
+    },
+    "container/compliance/overrides.py": {
+      "mode": "100644",
+      "blob": "ee734ecfc7cb7b81e2cc844145e46538750c22d4",
       "status": "M"
     },
     "container/compliance/policy/licenses.toml": {
@@ -365,7 +380,7 @@
     },
     "delivery/h3-experimental/GATEWAY-RUNBOOK.md": {
       "mode": "100644",
-      "blob": "b7bdc4d6a9ed16689b69c1198d6830d849466f38",
+      "blob": "7b0bcd95d74678bef1ace20bd7ea2f6dcb9a9097",
       "status": "A"
     },
     "delivery/h3-experimental/README.md": {
@@ -381,6 +396,31 @@
     "delivery/h3-experimental/env.cmd": {
       "mode": "100644",
       "blob": "a730161d07f53436b19741e87b12a565100bdc74",
+      "status": "A"
+    },
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/Cargo.toml": {
+      "mode": "100644",
+      "blob": "23430204fc40dc91ebf7ffc3528b4e76d0784e4d",
+      "status": "A"
+    },
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/LICENSE": {
+      "mode": "100644",
+      "blob": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+      "status": "A"
+    },
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/METADATA": {
+      "mode": "100644",
+      "blob": "aa056260f6cd784587f478e2741eccb329287f55",
+      "status": "A"
+    },
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/oss-harmony.cyclonedx.json": {
+      "mode": "100644",
+      "blob": "bea23001f5ffca9073c164354bf70ca042cb116b",
+      "status": "A"
+    },
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/source.json": {
+      "mode": "100644",
+      "blob": "9eb7935f09ecbf728a440da448102bd83ffdf3d8",
       "status": "A"
     },
     "delivery/h3-experimental/ops.py": {
@@ -401,6 +441,11 @@
     "delivery/h3-experimental/tests/test_gateway_compat.py": {
       "mode": "100644",
       "blob": "babfcdfb9c36f5a7654923eb3dc952458c3ce36f",
+      "status": "A"
+    },
+    "delivery/h3-experimental/tests/test_license_resolution.py": {
+      "mode": "100644",
+      "blob": "d90a08528de1b53d12ff2b8c24ab0be5ae41d40b",
       "status": "A"
     },
     "delivery/h3-experimental/tests/test_ops.py": {

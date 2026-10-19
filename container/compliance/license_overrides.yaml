@@ -6,13 +6,14 @@
 # container/compliance/overrides.py via license_overrides.lookup(), which every
 # NOTICES generator calls before falling back to UNKNOWN.
 #
-# Match is by (ecosystem, name) — version-agnostic. If a package legitimately
-# changes license across versions, add separate entries with the version baked
-# into the name (e.g. cuda-nvcc-12-9 vs cuda-nvcc-13-0).
+# Match is by (ecosystem, name, optional exact version). An exact-version entry
+# takes precedence over a versionless entry. Omitting version retains the
+# historical all-version mapping; use a quoted version for release-only evidence.
 #
 # Schema:
 #   ecosystem: rust | go | python | dpkg | native
 #   name:      package name (must match exactly what the SBOM/metadata reports)
+#   version:   OPTIONAL exact version string; omitted means all versions
 #   license:   SPDX expression OR LicenseRef-* identifier
 #   source:    REQUIRED audit trail — link to the upstream LICENSE/EULA URL
 #              that establishes this license, OR a justification for why we're
@@ -24,6 +25,15 @@
 # the policy gate will reject it.
 
 overrides:
+  # oss-harmony is a distinct Apache-2.0 fork, not the MIT openai-harmony entry.
+  # Exact wheel/source artifact hashes and original LICENSE are retained in
+  # delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/source.json.
+  - ecosystem: python
+    name: oss-harmony
+    version: "0.0.11"
+    license: Apache-2.0
+    source: "Verified PyPI 0.0.11 wheel .dist-info/licenses/LICENSE and identical sdist LICENSE/Cargo.toml; metadata lacks SPDX declaration. https://pypi.org/pypi/oss-harmony/0.0.11/json; LICENSE SHA256 58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+
   # --- SGLang runtime Python packages with non-SPDX metadata ---
   - ecosystem: python
     name: tokenspeed-mla

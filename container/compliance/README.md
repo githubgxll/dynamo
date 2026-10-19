@@ -17,7 +17,7 @@ own filesystem; CI extracts `/legal` and `/sboms` from that stage with a warm ca
 | `policy/` | `licenses.toml` (allow/deny SPDX lists + per-package `[[exceptions]]`) and `validate.py` (the build-failing policy gate). |
 | `base_sboms/` | The baseline corpus: `manifest.json`, slim CycloneDX `*.cdx.json`, `capture_baseline_sbom.py`, and `check_drift.py`. |
 | `osrb/` | Release-time OSRB submission packager (`package.py`) and its `distribution.yaml` / `linkage.yaml`. |
-| `overrides.py`, `license_overrides.yaml` | Authoritative `(ecosystem, name) → SPDX` overrides consulted before automatic detection. |
+| `overrides.py`, `license_overrides.yaml` | Curated `(ecosystem, name, optional exact version) → SPDX` corrections for missing or malformed metadata. Exact-version entries take precedence over versionless mappings. |
 | `native_packages.yaml` | From-source / binary components attributed via a hand-curated overlay (optional `license_text_path`). |
 | `verify_sbom_diff.py` | Cross-checks generated NOTICES against the base SBOM corpus; fails on drift. |
 
