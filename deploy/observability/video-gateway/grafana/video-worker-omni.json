@@ -147,6 +147,29 @@
           ]
         },
         "options": []
+      },
+      {
+        "name": "snapshot_interval",
+        "type": "interval",
+        "hide": 2,
+        "skipUrlSync": true,
+        "auto": true,
+        "auto_count": 60000,
+        "auto_min": "15s",
+        "query": "15s,30s,1m,2m,5m,10m",
+        "refresh": 2,
+        "current": {
+          "text": "auto",
+          "value": "$__auto_interval_snapshot_interval"
+        },
+        "options": [
+          {
+            "text": "auto",
+            "value": "$__auto_interval_snapshot_interval",
+            "selected": true
+          }
+        ],
+        "description": "内部快照取点间隔，随展示范围调整；不等于耗时统计窗口。"
       }
     ]
   },
@@ -343,7 +366,7 @@
       "id": 6,
       "title": "Worker 执行平均 / P95",
       "type": "timeseries",
-      "description": "所选Worker的执行平均/P95，按workflow聚合；含Worker输出处理，不包含预取等待。P95为直方图桶内估算，低样本仅供参考；不同请求参数的样本会混合统计。",
+      "description": "Worker执行均值与P95，按workflow汇总；包含Worker输出处理，不含预取等待。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
@@ -357,15 +380,23 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(workflow) (rate(dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum by(workflow) (increase((dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
           "interval": "15s",
           "legendFormat": "{{workflow}} / mean"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95,sum by(le,workflow) (rate(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95,sum by(le,workflow) (increase((dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})) == max without(le) (timestamp(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}))) and (count without(le) (dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == count without(le) (present_over_time(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
           "interval": "15s",
           "legendFormat": "{{workflow}} / P95"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
@@ -387,9 +418,27 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "No data"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -403,7 +452,51 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 10,
@@ -583,7 +676,7 @@
           "id": 5,
           "title": "Worker 预取等待平均 / P95",
           "type": "timeseries",
-          "description": "所选Worker预取等待的平均/P95，按workflow聚合。P95为直方图桶内估算，缺失不补零。",
+          "description": "Worker预取等待均值与P95，按workflow汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
@@ -597,15 +690,23 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(workflow) (rate(dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}} / mean"
             },
             {
               "refId": "B",
-              "expr": "histogram_quantile(0.95,sum by(le,workflow) (rate(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95,sum by(le,workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})) == max without(le) (timestamp(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}))) and (count without(le) (dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == count without(le) (present_over_time(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
               "interval": "15s",
               "legendFormat": "{{workflow}} / P95"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -627,9 +728,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -643,7 +762,51 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 4,
@@ -709,7 +872,7 @@
           "id": 7,
           "title": "Omni E2E 平均",
           "type": "timeseries",
-          "description": "Omni 请求范围，不含 Dingo 预取排队/Gateway 后处理。",
+          "description": "Omni请求平均耗时，按workflow汇总；不含Dingo预取排队及Gateway后处理。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
@@ -723,9 +886,17 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(workflow) (rate(vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow) (increase((vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -747,9 +918,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -763,13 +952,57 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 8,
           "title": "Omni stage 生成平均",
           "type": "timeseries",
-          "description": "",
+          "description": "Omni各stage的平均生成耗时，按workflow和stage汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
@@ -783,9 +1016,17 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(workflow,stage) (rate(vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow,stage) (rate(vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow,stage) (increase((vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow,stage) (increase((vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}} / stage {{stage}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -807,9 +1048,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -823,13 +1082,57 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 9,
           "title": "Diffusion 执行 / forward 平均",
           "type": "timeseries",
-          "description": "exec 包含的阶段比单纯 denoise 更广；保留原生定义。",
+          "description": "Diffusion执行及forward平均耗时，按workflow汇总；exec覆盖范围大于denoise。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
@@ -843,15 +1146,23 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(workflow) (rate(vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow) (increase((vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}} / exec"
             },
             {
               "refId": "B",
-              "expr": "sum by(workflow) (rate(vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow) (increase((vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}} / forward"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -873,9 +1184,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -889,13 +1218,57 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 11,
           "title": "平均推理步数",
           "type": "timeseries",
-          "description": "",
+          "description": "Worker平均推理步数，按workflow汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
@@ -909,9 +1282,17 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(workflow) (rate(vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval])) / sum by(workflow) (rate(vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "expr": "sum by(workflow) (increase((vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
               "interval": "15s",
               "legendFormat": "{{workflow}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -933,9 +1314,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -949,7 +1348,51 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         }
       ]
     },

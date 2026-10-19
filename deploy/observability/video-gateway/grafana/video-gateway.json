@@ -181,11 +181,415 @@
           ]
         },
         "options": [],
-        "description": "仅作用于默认折叠的模型阶段诊断区。"
+        "description": "内部变量，默认选择全部模型阶段，用于自动生成逐阶段小图。",
+        "hide": 2,
+        "skipUrlSync": true
+      },
+      {
+        "name": "snapshot_interval",
+        "type": "interval",
+        "hide": 2,
+        "skipUrlSync": true,
+        "auto": true,
+        "auto_count": 60000,
+        "auto_min": "15s",
+        "query": "15s,30s,1m,2m,5m,10m",
+        "refresh": 2,
+        "current": {
+          "text": "auto",
+          "value": "$__auto_interval_snapshot_interval"
+        },
+        "options": [
+          {
+            "text": "auto",
+            "value": "$__auto_interval_snapshot_interval",
+            "selected": true
+          }
+        ],
+        "description": "内部快照取点间隔，随展示范围调整；不等于耗时统计窗口。"
       }
     ]
   },
   "panels": [
+    {
+      "id": 1020,
+      "title": "在途请求数",
+      "type": "stat",
+      "description": "尚未进入终态的请求，包含Gateway排队、派发、Worker执行/等待和结果收尾。在途＝Gateway排队＋Worker侧（含收尾）。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"queued|dispatching|in_progress|finalizing\"}))",
+          "legendFormat": "在途请求数",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1021,
+      "title": "Gateway 排队",
+      "type": "stat",
+      "description": "Gateway排队请求数：处于Gateway queued状态的请求，包含普通排队和故障重试等待。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=\"queued\"}))",
+          "legendFormat": "Gateway 排队",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1022,
+      "title": "Worker 侧请求",
+      "type": "stat",
+      "description": "Worker侧请求数（含收尾）：包含派发、执行、预取/内部等待和Gateway结果收尾。按Gateway任务状态统计，不能等同于GPU执行数或实际Worker队列长度。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"dispatching|in_progress|finalizing\"}))",
+          "legendFormat": "Worker 侧请求",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1024,
+      "title": "空闲槽位",
+      "type": "stat",
+      "description": "所选Namespace/Pool可用于准入的空闲槽位，包含执行及预取容量，不等于GPU空闲数。同部署同Pool跨Gateway取min后汇总，避免重复相加并保守处理视图差异。0表示没有可用槽位，也可能是容量视图不健康；请结合下方容量视图健康图判断。 大号数字为所选时间范围内最后一个有效采样值，趋势线展示该时段的数量变化。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(min by(region,namespace,deployment,pool) (dingo_video_worker_slots_free{namespace=~\"$namespace\",pool=~\"$pool\"}))",
+          "legendFormat": "空闲槽位",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1025,
+      "title": "制品余量",
+      "type": "stat",
+      "description": "所选Namespace内共享制品存储的剩余空间百分比，不受Pool筛选影响。剩余百分比＝剩余空间合计÷总空间合计×100，显示整数百分比。每个部署跨Gateway剩余量取min、总量取max后汇总；同部署共享PVC只计一次。只统计剩余量和有效总量均存在的部署，缺失或总量为0时不补0。以Gateway上报的容量统计为准，底层存储统计可能有刷新延迟。 大号数字为所选时间范围内最后一个有效采样值，趋势线展示该时段的数量变化。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum(min by(region,namespace,deployment) (dingo_video_artifact_free_bytes{namespace=~\"$namespace\"}) and on(region,namespace,deployment) (max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"}) > 0)) / sum((max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"}) > 0) and on(region,namespace,deployment) min by(region,namespace,deployment) (dingo_video_artifact_free_bytes{namespace=~\"$namespace\"}))",
+          "legendFormat": "制品余量",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1023,
+      "title": "采集状态",
+      "type": "stat",
+      "description": "所选Namespace内视频服务采集状态，不受Pool筛选影响。当前可见采集目标全部up=1为正常、部分up=0为部分异常、全部up=0为全部异常。目标范围与下方采集曲线一致；目标消失后不保证仍被计入，全部无数据时显示No data。表示指标采集情况，不代表模型业务就绪。 显示查询结束时的当前值。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time({__name__=~\"dingo_video_workers|dingo_video_worker_detached_execution_capacity\",namespace=~\"$namespace\"}[1h])) + max(up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time({__name__=~\"dingo_video_workers|dingo_video_worker_detached_execution_capacity\",namespace=~\"$namespace\"}[1h]))",
+          "legendFormat": "采集状态",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部异常",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "部分异常",
+                  "color": "orange"
+                },
+                "2": {
+                  "text": "正常",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 28
+        }
+      }
+    },
     {
       "id": 1009,
       "title": "新提交（区间）",
@@ -197,7 +601,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -250,7 +654,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -303,7 +707,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -356,7 +760,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -409,7 +813,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -462,7 +866,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 0,
+        "y": 4,
         "w": 4,
         "h": 4
       },
@@ -511,7 +915,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 8,
         "w": 24,
         "h": 1
       },
@@ -524,7 +928,7 @@
       "transparent": false,
       "gridPos": {
         "x": 16,
-        "y": 5,
+        "y": 9,
         "w": 8,
         "h": 1
       },
@@ -618,7 +1022,7 @@
               "links": [
                 {
                   "title": "秒",
-                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&${model_stage:queryparam}&var-throughput_unit=1&from=${__from}&to=${__to}",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=1&from=${__from}&to=${__to}",
                   "targetBlank": false,
                   "oneClick": true
                 }
@@ -663,7 +1067,7 @@
               "links": [
                 {
                   "title": "分钟",
-                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&${model_stage:queryparam}&var-throughput_unit=60&from=${__from}&to=${__to}",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=60&from=${__from}&to=${__to}",
                   "targetBlank": false,
                   "oneClick": true
                 }
@@ -708,7 +1112,7 @@
               "links": [
                 {
                   "title": "10分钟",
-                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&${model_stage:queryparam}&var-throughput_unit=600&from=${__from}&to=${__to}",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=600&from=${__from}&to=${__to}",
                   "targetBlank": false,
                   "oneClick": true
                 }
@@ -736,7 +1140,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 5,
+        "y": 9,
         "w": 8,
         "h": 8
       },
@@ -795,7 +1199,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 5,
+        "y": 9,
         "w": 8,
         "h": 8
       },
@@ -874,7 +1278,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 6,
+        "y": 10,
         "w": 8,
         "h": 7
       },
@@ -940,7 +1344,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 13,
+        "y": 17,
         "w": 8,
         "h": 8
       },
@@ -1009,7 +1413,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 13,
+        "y": 17,
         "w": 8,
         "h": 8
       },
@@ -1073,7 +1477,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 13,
+        "y": 17,
         "w": 8,
         "h": 8
       },
@@ -1128,7 +1532,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 25,
         "w": 24,
         "h": 1
       },
@@ -1145,7 +1549,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 26,
         "w": 12,
         "h": 8
       },
@@ -1214,7 +1618,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 22,
+        "y": 26,
         "w": 12,
         "h": 8
       },
@@ -1278,7 +1682,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 34,
         "w": 24,
         "h": 8
       },
@@ -1343,7 +1747,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 42,
         "w": 24,
         "h": 1
       },
@@ -1353,23 +1757,31 @@
       "id": 7,
       "title": "etcd P95",
       "type": "timeseries",
-      "description": "按Gateway Pod和etcd operation分别展示P95，不受Pool筛选影响。直方图分位数为桶内估算。",
+      "description": "按Gateway Pod和operation展示etcd P95，不受Pool筛选影响。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
       },
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 43,
         "w": 12,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95,sum by(le,operation,pod) (rate(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95,sum by(le,operation,pod) (increase((dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"})) == max without(le) (timestamp(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}))) and (count without(le) (dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}) == count without(le) (present_over_time(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
           "interval": "15s",
           "legendFormat": "{{pod}} / {{operation}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
@@ -1391,9 +1803,27 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "No data"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -1407,7 +1837,51 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 8,
@@ -1420,7 +1894,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 39,
+        "y": 43,
         "w": 12,
         "h": 8
       },
@@ -1480,7 +1954,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -1540,7 +2014,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 47,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -1600,7 +2074,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 55,
+        "y": 59,
         "w": 24,
         "h": 1
       },
@@ -1610,23 +2084,31 @@
       "id": 3,
       "title": "阶段平均耗时",
       "type": "timeseries",
-      "description": "所选Namespace/Pool内所有Gateway上报的阶段平均耗时，跨Pod汇总。按指标上报时间统计；不同请求参数的样本会混合统计。",
+      "description": "按所选范围汇总业务阶段平均耗时；不同请求参数的样本会混合统计。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
       },
       "gridPos": {
         "x": 0,
-        "y": 56,
+        "y": 60,
         "w": 12,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(region,namespace,deployment,pool,stage) (rate(dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"}[$__rate_interval])) / sum by(region,namespace,deployment,pool,stage) (rate(dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"}[$__rate_interval]))",
+          "expr": "sum by(region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(__name__) (timestamp(dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"}) == timestamp(dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"})))[$__rate_interval:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(__name__) (timestamp(dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"}) == timestamp(dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"})))[$__rate_interval:${snapshot_interval}]))",
           "interval": "15s",
           "legendFormat": "{{pool}} / {{stage}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
@@ -1648,9 +2130,27 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "No data"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -1664,29 +2164,81 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 4,
       "title": "阶段 P95",
       "type": "timeseries",
-      "description": "所选Namespace/Pool内所有Gateway上报的阶段P95，跨Pod合并直方图后估算。低样本仅供参考，缺失不补0。",
+      "description": "按所选范围汇总业务阶段P95；不同请求参数的样本会混合统计。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
       },
       "gridPos": {
         "x": 12,
-        "y": 56,
+        "y": 60,
         "w": 12,
         "h": 8
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95,sum by(le,region,namespace,deployment,pool,stage) (rate(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95,sum by(le,region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"})) == max without(le) (timestamp(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}))) and (count without(le) (dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}) == count without(le) (present_over_time(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
           "interval": "15s",
           "legendFormat": "{{pool}} / {{stage}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
@@ -1708,9 +2260,27 @@
                 "value": null
               }
             ]
-          }
+          },
+          "noValue": "No data"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -1724,7 +2294,51 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
     },
     {
       "id": 12,
@@ -1737,7 +2351,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 68,
         "w": 24,
         "h": 6
       },
@@ -1792,7 +2406,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 74,
         "w": 24,
         "h": 1
       },
@@ -1801,23 +2415,31 @@
           "id": 90,
           "title": "模型阶段平均耗时（Worker → Gateway）",
           "type": "timeseries",
-          "description": "模型诊断区：按所选Pool、计时Schema和模型阶段筛选。最近5分钟已交接样本；缺失不补零，父子阶段不相加。Gateway汇总Worker计时，不增加etcd查询。不同请求参数的样本会混合统计。 跨Gateway汇总。",
+          "description": "Worker返回的模型阶段平均耗时，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
           },
           "gridPos": {
             "x": 0,
-            "y": 71,
+            "y": 75,
             "w": 12,
             "h": 8
           },
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (rate(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m])) / sum by(region,namespace,deployment,pool,schema,stage) (rate(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m]))",
+              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}]))",
               "legendFormat": "{{pool}} / {{schema}} / {{stage}}",
               "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -1839,9 +2461,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -1855,29 +2495,81 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 91,
           "title": "模型阶段 P95（Worker → Gateway）",
           "type": "timeseries",
-          "description": "模型诊断区：按所选Pool、计时Schema和模型阶段筛选。最近5分钟已交接样本；缺失不补零，父子阶段不相加。Gateway汇总Worker计时，不增加etcd查询。不同请求参数的样本会混合统计。 跨Gateway汇总。",
+          "description": "Worker返回的模型阶段P95，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
           },
           "gridPos": {
             "x": 12,
-            "y": 71,
+            "y": 75,
             "w": 12,
             "h": 8
           },
           "targets": [
             {
               "refId": "A",
-              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (rate(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m])))",
+              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (increase((dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})) == max without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}))) and (count without(le) (dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == count without(le) (present_over_time(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[1h])))))[1m:${snapshot_interval}])))",
               "legendFormat": "{{pool}} / {{schema}} / {{stage}}",
               "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -1899,9 +2591,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -1915,35 +2625,87 @@
               "mode": "multi",
               "sort": "desc"
             }
-          }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         },
         {
           "id": 92,
           "title": "模型阶段：$model_stage",
           "type": "timeseries",
-          "description": "模型诊断区：按所选Pool、计时Schema和模型阶段筛选。最近5分钟已交接样本；缺失不补零，父子阶段不相加。Gateway汇总Worker计时，不增加etcd查询。不同请求参数的样本会混合统计。 按阶段自动生成小图。 跨Gateway汇总。",
+          "description": "Worker返回的模型阶段平均耗时与P95，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
           "datasource": {
             "type": "prometheus",
             "uid": "${data_source}"
           },
           "gridPos": {
             "x": 0,
-            "y": 79,
+            "y": 83,
             "w": 8,
             "h": 8
           },
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (rate(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m])) / sum by(region,namespace,deployment,pool,schema,stage) (rate(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m]))",
+              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}]))",
               "legendFormat": "{{pool}} / {{schema}} / 平均",
               "interval": "15s"
             },
             {
               "refId": "B",
-              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (rate(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[5m])))",
+              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (increase((dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})) == max without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}))) and (count without(le) (dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == count without(le) (present_over_time(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[1h])))))[1m:${snapshot_interval}])))",
               "legendFormat": "{{pool}} / {{schema}} / P95",
               "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
             }
           ],
           "fieldConfig": {
@@ -1965,9 +2727,27 @@
                     "value": null
                   }
                 ]
-              }
+              },
+              "noValue": "No data"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
@@ -1984,7 +2764,51 @@
           },
           "repeat": "model_stage",
           "repeatDirection": "h",
-          "maxPerRow": 3
+          "maxPerRow": 3,
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
         }
       ]
     }
