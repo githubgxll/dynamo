@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ops.py"
 spec = importlib.util.spec_from_file_location("srnorm_ops_tests", SCRIPT)
@@ -93,6 +94,49 @@ class SubmissionTests(unittest.TestCase):
     def test_submission_requires_explicit_entrypoint(self):
         with self.assertRaisesRegex(ValueError, "02-submit"):
             ops.submit(False)
+
+    def prepare_uploaded_recipe(self):
+        ops.seal()
+        lock, tree = ops.check_seal()
+        ops.LEGACY.stage_validated_tree(tree)
+        self.git("commit", "-m", "uploaded recipe")
+        return lock, tree, self.git("rev-parse", "HEAD")
+
+    def test_explicit_repeat_build_pushes_empty_commit_without_gh(self):
+        lock, tree, old_head = self.prepare_uploaded_recipe()
+        actual_git = ops.git
+        pushes = []
+        def controlled_git(*args, **kwargs):
+            if args[0] == "push":
+                pushes.append((args, kwargs))
+                return ""
+            return actual_git(*args, **kwargs)
+        with mock.patch.object(ops, "check", return_value=(lock, tree)), \
+             mock.patch.object(ops.LEGACY, "remote_head", return_value=old_head), \
+             mock.patch.object(ops, "git", side_effect=controlled_git):
+            ops.dispatch()
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), old_head)
+        self.assertEqual(self.git("rev-parse", "HEAD^"), old_head)
+        self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), tree)
+        self.assertNotIn("[skip ci]", self.git("log", "-1", "--format=%B"))
+        self.assertEqual(pushes, [(("push", "origin", "HEAD:refs/heads/" + lock["remote_branch"]), {"network": True})])
+
+    def test_repeat_rejects_unsubmitted_changes_before_committing(self):
+        lock, tree, old_head = self.prepare_uploaded_recipe()
+        self.put("container/omni-gateway-lite/example.py", "unsubmitted = True\n")
+        with mock.patch.object(ops, "check", return_value=(lock, tree)), \
+             mock.patch.object(ops.LEGACY, "remote_head", return_value=old_head):
+            with self.assertRaisesRegex(ValueError, "02-submit"):
+                ops.dispatch()
+        self.assertEqual(self.git("rev-parse", "HEAD"), old_head)
+
+    def test_repeat_rejects_remote_drift_before_committing(self):
+        lock, tree, old_head = self.prepare_uploaded_recipe()
+        with mock.patch.object(ops, "check", return_value=(lock, tree)), \
+             mock.patch.object(ops.LEGACY, "remote_head", return_value="0" * 40):
+            with self.assertRaisesRegex(ValueError, "02-submit"):
+                ops.dispatch()
+        self.assertEqual(self.git("rev-parse", "HEAD"), old_head)
 
 
 if __name__ == "__main__":

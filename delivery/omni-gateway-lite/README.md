@@ -45,26 +45,25 @@ cd /d D:\AI\dynamo-h3-experimental031
 call delivery\omni-gateway-lite\01-check.cmd
 ```
 
-检查通过后，提交并普通推送到原分支：
+检查通过后，提交并普通推送到原分支，自动启动轻量版构建：
 
 ```bat
 call delivery\omni-gateway-lite\02-submit-build.cmd
 ```
 
-这条命令使用 `[skip ci]` 提交标记，**只上传配方，避免同时触发旧版构建**。不新建分支、不强推、不自动 rebase 同事分支。原有工作区无关改动或远端分叉会被明确拦截。
+这条命令创建普通提交，**推送后只触发 `omni-gateway-lite`，不触发旧补丁版或完整框架版**。不新建分支、不强推、不自动 rebase 同事分支。原有工作区无关改动或远端分叉会被明确拦截。若同一个提交已经上传，脚本不会反复制造构建；会输出提交 SHA 供查找对应记录。
 
-然后到 [GitHub Actions 原工作流](https://github.com/githubgxll/dynamo/actions/workflows/dingo-router-ci.yml) 选择 **Run workflow**：
+然后到 [GitHub Actions 原工作流](https://github.com/githubgxll/dynamo/actions/workflows/dingo-router-ci.yml) 查看新运行记录。标题包含 `omni-gateway-lite`、分支和完整提交 SHA；每次运行有独立的 run ID，不会被同名记录覆盖。
 
-- 分支：`Dingorouter-H3-vllm-omni-jirx`
-- `build_recipe`：**`omni-gateway-lite`**
+**2026-10-21 触发方式修正：** 默认分支 `main@049eece…` 没有 `dingo-router-ci.yml`。GitHub 网页的手动触发要求工作流存在于默认分支，因此不能依赖 `Run workflow` 按钮。旧版脚本提交 `62d534c49945` 又带 `[skip ci]`，所以当时只有代码上传，没有构建记录。这是交付脚本的触发设计遗漏，与 Harbor 名称、镜像 tag 重复无关。当前已去掉跳过标记，并让分支推送直接运行轻量版；不用修改同事的 `main`。
 
-默认值仍是旧的 `seedvr2-rmsnorm`，本次必须选轻量版。若本机已安装并登录 GitHub CLI，也可运行：
+仅在已提交的同一份配方需要再次构建时，运行：
 
 ```bat
 call delivery\omni-gateway-lite\03-run-build.cmd
 ```
 
-该脚本只调度指定配方，使用已有登录态，不要求将 token 写进文件。继续复用本机 GitHub 的命令级代理；不会把本机代理写入镜像或 Pod。
+该脚本先检查工作区干净且本地/远端提交一致，再创建一个空提交并普通推送原分支。配方文件不变，但 Git 提交、Actions run 和最终 tag 都会有新身份。每运行一次就是明确请求再构建一次，首次提交后不用接着执行。无需 `gh` 或额外 token。继续复用本机 GitHub 的命令级代理，不把代理写入镜像或 Pod。
 
 构建成功的新标签：
 

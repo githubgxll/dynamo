@@ -238,12 +238,12 @@ class EvidenceTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_push_only_runs_patch_full_requires_explicit_dispatch(self):
+    def test_previous_recipes_require_explicit_dispatch(self):
         workflow = yaml.load((ci.ROOT / ".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-        self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["build_recipe"]["default"], "seedvr2-rmsnorm")
+        self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["build_recipe"]["default"], "omni-gateway-lite")
         self.assertEqual(workflow["jobs"]["h3-experimental"]["if"], f"github.ref_name == '{ci.BRANCH}' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'full'")
         job = workflow["jobs"]["h3-seedvr2-rmsnorm"]
-        self.assertEqual(job["if"], f"github.ref_name == '{ci.BRANCH}' && (github.event_name == 'push' || inputs.build_recipe == 'seedvr2-rmsnorm')")
+        self.assertEqual(job["if"], f"github.ref_name == '{ci.BRANCH}' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-rmsnorm'")
         self.assertEqual(job["runs-on"], ["self-hosted", "linux", "x64", "dingo"])
         builds = [s for s in job["steps"] if s.get("uses", "").startswith("docker/build-push-action@")]
         self.assertEqual(len(builds), 1)

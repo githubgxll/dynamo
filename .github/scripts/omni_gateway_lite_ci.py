@@ -61,8 +61,8 @@ def identity(environ):
     commit = environ.get("GITHUB_SHA", "")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected full GITHUB_SHA")
-    if environ.get("GITHUB_REF_NAME") != BRANCH or environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
-        raise ValueError("Use manual dispatch on the existing H3 branch")
+    if environ.get("GITHUB_REF_NAME") != BRANCH or environ.get("GITHUB_EVENT_NAME") not in {"push", "workflow_dispatch"}:
+        raise ValueError("Use push or dispatch on the existing H3 branch")
     for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
         if not re.fullmatch(r"[1-9][0-9]*", environ.get(key, "")):
             raise ValueError("Invalid Actions identity: " + key)

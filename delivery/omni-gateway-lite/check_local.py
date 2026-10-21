@@ -58,7 +58,14 @@ def check_workflow():
     path = ROOT / ".github/workflows/dingo-router-ci.yml"
     workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     if "omni-gateway-lite" not in workflow["on"]["workflow_dispatch"]["inputs"]["build_recipe"]["options"]:
-        raise ValueError("Lite workflow must be explicitly dispatched; avoid two simultaneous recipes")
+        raise ValueError("Missing lite recipe selection")
+    lite = workflow["jobs"]["omni-gateway-lite"]["if"]
+    if "github.event_name == 'push'" not in lite:
+        raise ValueError("Lite recipe must run on the existing branch push trigger")
+    for job in ("h3-experimental", "h3-seedvr2-rmsnorm"):
+        condition = workflow["jobs"][job]["if"]
+        if "github.event_name == 'workflow_dispatch'" not in condition or "github.event_name == 'push'" in condition:
+            raise ValueError("A lite push must not trigger old/full jobs")
     return sum(1 for step in workflow["jobs"]["omni-gateway-lite"]["steps"] if "run" in step)
 
 

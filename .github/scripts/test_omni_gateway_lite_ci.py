@@ -1,6 +1,7 @@
 """Publication regression fixtures; these tests never build or publish an image."""
 from __future__ import annotations
 
+import ast
 import copy
 import importlib.util
 import json
@@ -176,9 +177,10 @@ class ReportTests(unittest.TestCase):
 
 
 class PublicationTests(unittest.TestCase):
-    def test_only_manual_existing_branch_allowed(self):
-        self.assertEqual(ci.identity(ENV), COMMIT)
-        for key, value in (("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF_NAME", "main"), ("GITHUB_SHA", "abc")):
+    def test_push_and_manual_existing_branch_allowed(self):
+        for event in ("push", "workflow_dispatch"):
+            self.assertEqual(ci.identity({**ENV, "GITHUB_EVENT_NAME": event}), COMMIT)
+        for key, value in (("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_EVENT_NAME", "schedule"), ("GITHUB_REF_NAME", "main"), ("GITHUB_SHA", "abc")):
             with self.subTest(key=key), self.assertRaises(ValueError): ci.identity({**ENV, key: value})
 
     def test_this_push_digest_is_required(self):
@@ -264,13 +266,13 @@ class PublicationTests(unittest.TestCase):
         self.assertIn("cp", [a[0] for a in calls])
         self.assertEqual(calls[-1], ("rm", "failed-container"))
 
-    def test_workflow_is_manual_and_build_has_no_push(self):
+    def test_workflow_pushes_only_lite_and_build_has_no_push(self):
         workflow = yaml.safe_load((ci.ROOT / ".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"))
         trigger = workflow.get("on", workflow.get(True))
         self.assertIn("omni-gateway-lite", trigger["workflow_dispatch"]["inputs"]["build_recipe"]["options"])
         job = workflow["jobs"]["omni-gateway-lite"]
         self.assertIn(ci.BRANCH, job["if"])
-        self.assertIn("github.event_name == 'workflow_dispatch'", job["if"])
+        self.assertIn("github.event_name == 'push'", job["if"])
         self.assertIn("inputs.build_recipe == 'omni-gateway-lite'", job["if"])
         steps = job["steps"]
         build = next(step for step in steps if step.get("uses", "").startswith("docker/build-push-action@"))
@@ -279,6 +281,40 @@ class PublicationTests(unittest.TestCase):
         verify_index = next(i for i, step in enumerate(steps) if " verify-candidate " in step.get("run", ""))
         publish_index = next(i for i, step in enumerate(steps) if " publish " in step.get("run", ""))
         self.assertLess(verify_index, publish_index)
+
+
+    def test_workflow_routing_matrix_activates_exactly_one_recipe(self):
+        workflow = yaml.load((ci.ROOT / ".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        def selected(event, branch, recipe):
+            result = set()
+            for name, job in workflow["jobs"].items():
+                expression = job["if"]
+                for field, value in {"github.event_name": event, "github.ref_name": branch,
+                                     "inputs.build_recipe": recipe}.items():
+                    expression = expression.replace(field, repr(value))
+                expression = expression.replace("&&", "and").replace("||", "or")
+                tree = ast.parse(expression, mode="eval")
+                if any(not isinstance(node, (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Eq, ast.Constant))
+                       for node in ast.walk(tree)):
+                    raise AssertionError("Unexpected non-boolean workflow routing expression")
+                if eval(compile(tree, "workflow routing", "eval"), {"__builtins__": {}}):
+                    result.add(name)
+            return result
+        scenarios = [
+            ("push", ci.BRANCH, "", {"omni-gateway-lite"}),
+            ("workflow_dispatch", ci.BRANCH, "omni-gateway-lite", {"omni-gateway-lite"}),
+            ("workflow_dispatch", ci.BRANCH, "seedvr2-rmsnorm", {"h3-seedvr2-rmsnorm"}),
+            ("workflow_dispatch", ci.BRANCH, "full", {"h3-experimental"}),
+            ("push", "main", "", set()),
+            ("workflow_dispatch", "main", "omni-gateway-lite", set()),
+            ("pull_request", ci.BRANCH, "", set()),
+        ]
+        for event, branch, recipe, expected in scenarios:
+            with self.subTest(event=event, branch=branch, recipe=recipe):
+                self.assertEqual(selected(event, branch, recipe), expected)
+        self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["build_recipe"]["default"], "omni-gateway-lite")
+        for marker in ("omni-gateway-lite", "github.ref_name", "github.sha"):
+            self.assertIn(marker, workflow["run-name"])
 
 
 if __name__ == "__main__":

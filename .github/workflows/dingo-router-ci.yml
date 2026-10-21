@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Dingo H3 experimental image recipes
+run-name: "${{ github.event_name == 'push' && 'omni-gateway-lite' || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
 
 on:
   push:
@@ -10,7 +11,7 @@ on:
         description: 'Choose successful-image repair, adapter-free Omni/Gateway, or full framework rebuild'
         type: choice
         required: true
-        default: seedvr2-rmsnorm
+        default: omni-gateway-lite
         options: [seedvr2-rmsnorm, omni-gateway-lite, full]
 
 permissions:
@@ -241,7 +242,7 @@ jobs:
           retention-days: 30
 
   h3-seedvr2-rmsnorm:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && (github.event_name == 'push' || inputs.build_recipe == 'seedvr2-rmsnorm')
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-rmsnorm'
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -328,7 +329,7 @@ jobs:
           retention-days: 30
 
   omni-gateway-lite:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && (github.event_name == 'push' || inputs.build_recipe == 'omni-gateway-lite')
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:

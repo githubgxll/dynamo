@@ -29,5 +29,8 @@
   "gateway_policy": "Pinned reviewed source; later upstream movement requires a new source review, not automatic rebase.",
   "build_recipe": "omni-gateway-lite",
   "tag_prefix": "omni031rc1-gateway-lite-srnormfix",
-  "dispatch_workflow": "dingo-router-ci.yml"
+  "dispatch_workflow": "dingo-router-ci.yml",
+  "trigger": "push to the existing experiment branch; no skip-ci marker; only the lite job runs",
+  "repeat_build": "explicit empty commit via 03-run-build.cmd; same recipe tree and existing branch",
+  "manual_dispatch_limitation": "At review, workflow file is absent from default main branch. Do not rely on the webpage Run workflow button."
 }

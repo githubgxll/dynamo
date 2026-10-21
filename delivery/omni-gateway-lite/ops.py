@@ -8,7 +8,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +19,8 @@ SEAL = "delivery/omni-gateway-lite/input-seal.json"
 EVIDENCE = ROOT / ".h3-experimental-evidence/lite/local"
 ALLOWED_PREFIXES = ("container/omni-gateway-lite/", "delivery/omni-gateway-lite/")
 ALLOWED_FILES = {".github/workflows/dingo-router-ci.yml", ".github/scripts/omni_gateway_lite_ci.py",
-                 ".github/scripts/test_omni_gateway_lite_ci.py", ".github/scripts/test_h3_experimental_ci.py"}
+                 ".github/scripts/test_omni_gateway_lite_ci.py", ".github/scripts/test_h3_experimental_ci.py",
+                 ".github/scripts/test_h3_seedvr2_rmsnorm_ci.py"}
 
 
 
@@ -156,14 +156,16 @@ def submit(confirmed):
     if git("rev-parse", "HEAD^{tree}") != tree:
         git("var", "GIT_AUTHOR_IDENT")
         LEGACY.stage_validated_tree(tree)
-        git("commit", "-s", "-m", "build(omni): add Gateway lite RMSNorm recipe [skip ci]")
+        git("commit", "-s", "-m", "build(omni): submit Gateway lite RMSNorm image")
     if git("rev-parse", "HEAD^{tree}") != tree or git("status", "--porcelain"):
         raise ValueError("Checkout changed while committing; stop before push")
     if LEGACY.remote_head(branch) == git("rev-parse", "HEAD"):
-        print("This exact recipe is already uploaded. Use 03-run-build.cmd or Actions Run workflow for the lite build.")
+        print("This exact recipe is already uploaded; no duplicate push was made.")
+        print("Check Actions for commit " + git("rev-parse", "HEAD") + ". Use 03-run-build.cmd only to request another build.")
         return
     git("push", "origin", f"HEAD:refs/heads/{branch}", network=True)
-    print("Recipe uploaded with [skip ci]; no automatic heavy build. Run 03-run-build.cmd or manually select Omni Gateway lite in Actions on " + branch)
+    print("Uploaded commit " + git("rev-parse", "HEAD") + "; its push triggers ONLY the lightweight image build.")
+    print("Progress: https://github.com/githubgxll/dynamo/actions/workflows/dingo-router-ci.yml")
 
 
 def shared_inputs(lock):
@@ -187,16 +189,19 @@ def export_recipe(directory):
 
 
 def dispatch():
-    lock, _ = check_seal()
+    # The workflow does not exist on main, so GitHub's webpage dispatch button
+    # is unavailable. An explicit empty commit uses the existing working push
+    # trigger without requiring gh, a separate token, or changes to main.
+    lock, tree = check()
     if git("status", "--porcelain") or LEGACY.remote_head(lock["remote_branch"]) != git("rev-parse", "HEAD"):
-        raise ValueError("Submit this exact clean recipe before dispatch")
-    gh = shutil.which("gh")
-    if not gh:
-        raise RuntimeError("GitHub CLI is unavailable. In GitHub Actions select 'Dingo H3 experimental image recipes', Run workflow, build_recipe=omni-gateway-lite, branch " + lock["remote_branch"] + ". No extra token is needed in these scripts.")
-    env = dict(os.environ, HTTPS_PROXY=LEGACY.PROXY, HTTP_PROXY=LEGACY.PROXY)
-    subprocess.run([gh, "workflow", "run", lock["dispatch_workflow"], "--repo", "githubgxll/dynamo",
-                    "--ref", lock["remote_branch"], "-f", "build_recipe=omni-gateway-lite"], cwd=ROOT, env=env, check=True)
-    print("Lite build dispatched; inspect https://github.com/githubgxll/dynamo/actions/workflows/dingo-router-ci.yml")
+        raise ValueError("Submit this exact clean recipe with 02-submit-build.cmd before requesting a repeat build")
+    git("var", "GIT_AUTHOR_IDENT")
+    git("commit", "--allow-empty", "-s", "-m", "ci(omni): rerun Gateway lite image")
+    if git("rev-parse", "HEAD^{tree}") != tree or git("status", "--porcelain"):
+        raise ValueError("Checkout changed during the repeat-build request; refusing to push")
+    git("push", "origin", f"HEAD:refs/heads/{lock['remote_branch']}", network=True)
+    print("Repeat build requested by empty commit " + git("rev-parse", "HEAD") + "; recipe files are unchanged.")
+    print("Progress: https://github.com/githubgxll/dynamo/actions/workflows/dingo-router-ci.yml")
 
 
 def main():

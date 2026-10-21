@@ -5,7 +5,7 @@
   "delta": {
     ".github/scripts/omni_gateway_lite_ci.py": {
       "mode": "100644",
-      "blob": "312ed52bf8f41f34089bfcd4598c65cf4e308f4c",
+      "blob": "3781b4790e95cf6caa4b65f7cc3233608c7e842e",
       "status": "A"
     },
     ".github/scripts/test_h3_experimental_ci.py": {
@@ -13,14 +13,19 @@
       "blob": "cb52522048151e8c051e8574e3e86f69c689c067",
       "status": "M"
     },
+    ".github/scripts/test_h3_seedvr2_rmsnorm_ci.py": {
+      "mode": "100644",
+      "blob": "f7335370cab6d276e20d06f62ecb73fa997e5d36",
+      "status": "M"
+    },
     ".github/scripts/test_omni_gateway_lite_ci.py": {
       "mode": "100644",
-      "blob": "03ef07c7810aac6c4572c8b1ab738938e51c37dd",
+      "blob": "025c47797bc0ccec8c483b678cf3e1161db6cc14",
       "status": "A"
     },
     ".github/workflows/dingo-router-ci.yml": {
       "mode": "100644",
-      "blob": "0645a856fe8ef077f37265c9705d656e7d2df50f",
+      "blob": "0a9842676aa68d068f51cd380ed614b9fd8fdcbe",
       "status": "M"
     },
     "container/omni-gateway-lite/.gitattributes": {
@@ -195,12 +200,12 @@
     },
     "delivery/omni-gateway-lite/02-submit-build.cmd": {
       "mode": "100644",
-      "blob": "fb28963b31c1e9a62e18a27b09f3d6e8898a3520",
+      "blob": "c10d81c5424279b7d6bceeb090c4c55ac12b477d",
       "status": "A"
     },
     "delivery/omni-gateway-lite/03-run-build.cmd": {
       "mode": "100644",
-      "blob": "db7a603da57e336dc93c1ab37d65ab77f34b0969",
+      "blob": "b5ee3eac8f9a2f417725fb4270da606e293b8732",
       "status": "A"
     },
     "delivery/omni-gateway-lite/04-import-image-evidence.cmd": {
@@ -210,12 +215,12 @@
     },
     "delivery/omni-gateway-lite/README.md": {
       "mode": "100644",
-      "blob": "a4ce82db8f6c0f3cf7869f1954882b022f513318",
+      "blob": "fee822da03b1bd62cd388374c964d2984da7bfb9",
       "status": "A"
     },
     "delivery/omni-gateway-lite/check_local.py": {
       "mode": "100644",
-      "blob": "09fe36838a979b113e0d29eddbd74a15d4e8139a",
+      "blob": "26a1fab9dcf304ece613810cc3f54082048e9657",
       "status": "A"
     },
     "delivery/omni-gateway-lite/env.cmd": {
@@ -230,7 +235,7 @@
     },
     "delivery/omni-gateway-lite/ops.py": {
       "mode": "100644",
-      "blob": "703a56d1f2a50c6bc7e8e2838e11a93d3e7517d5",
+      "blob": "1ad2fe8123c9c50845f17f3daa52ab0842b49acc",
       "status": "A"
     },
     "delivery/omni-gateway-lite/parent-evidence/config.json": {
@@ -255,7 +260,7 @@
     },
     "delivery/omni-gateway-lite/source-lock.json": {
       "mode": "100644",
-      "blob": "14de17dd95f24973bbfacd3c66e4cebc13414a3a",
+      "blob": "3396fe03b293b0ed79dde1fc58bd1019f182e981",
       "status": "A"
     },
     "delivery/omni-gateway-lite/tests/test_artifact_paths.py": {
@@ -265,7 +270,7 @@
     },
     "delivery/omni-gateway-lite/tests/test_submission.py": {
       "mode": "100644",
-      "blob": "9e8a6f4e24eb58658c295b3f518f9748a2e9e085",
+      "blob": "ebbd8570ff5886fadff4c170725f62164e5e3021",
       "status": "A"
     }
   },
