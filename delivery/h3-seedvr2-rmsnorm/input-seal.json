@@ -1,0 +1,158 @@
+{
+  "schema": "h3-seedvr2-rmsnorm-input-seal/1",
+  "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7",
+  "delta": {
+    ".gitattributes": {
+      "mode": "100644",
+      "blob": "50922a9d2a4831d7b9d1b25b46096e9ffff8da97",
+      "status": "M"
+    },
+    ".github/scripts/h3_seedvr2_rmsnorm_ci.py": {
+      "mode": "100644",
+      "blob": "38881134e2eb0a675f222fb7c86d02c20bf6d2eb",
+      "status": "A"
+    },
+    ".github/scripts/test_h3_experimental_ci.py": {
+      "mode": "100644",
+      "blob": "7f4dc04e418c45d64cc308bcac18d83315e6ff70",
+      "status": "M"
+    },
+    ".github/scripts/test_h3_seedvr2_rmsnorm_ci.py": {
+      "mode": "100644",
+      "blob": "1ddb8d16c4b2413222c11656146da4eb40fe41d1",
+      "status": "A"
+    },
+    ".github/workflows/dingo-router-ci.yml": {
+      "mode": "100644",
+      "blob": "922c50f37938c0e948c315fdb9f7645a402bb37b",
+      "status": "M"
+    },
+    "container/h3-seedvr2-rmsnorm/Dockerfile": {
+      "mode": "100644",
+      "blob": "42f36a896ebb37d01443c82ee4d0d76911f244f5",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/Dockerfile.dockerignore": {
+      "mode": "100644",
+      "blob": "91c92790359d86d1e58a57b7b51f363453458a6c",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/NOTICE": {
+      "mode": "100644",
+      "blob": "abe9bcc5d1288c2c57672207bf7d805a38373e3d",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/apply_patch.py": {
+      "mode": "100644",
+      "blob": "2c5a2b42883491d0761df3c52cfe7ab40ebf71e8",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/check_retained.py": {
+      "mode": "100644",
+      "blob": "6e288f3cad31bf122590f6dffa4ffbc1156aeee7",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/patch.lock.json": {
+      "mode": "100644",
+      "blob": "6b9936dd36c1ad2ab277d865657d0be348b7268a",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/patchlib.py": {
+      "mode": "100644",
+      "blob": "4b7020764a6a0ab1f35b0e7db0789c0b270d7d22",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/preserve_runtime.py": {
+      "mode": "100644",
+      "blob": "dbba5072cbb9539657c1deaa29ae18a778d813a1",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/tests/fixtures/nadit.before.py.txt": {
+      "mode": "100644",
+      "blob": "3886ca37a7afa902661f9d4b953d40d7738926e8",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/tests/test_patch.py": {
+      "mode": "100644",
+      "blob": "37b91ab8a9548c3e522aff810e03ff71fa915e90",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/upstream/0708f05e2e27f16fca8b48e7c5a085277d1cafda.patch": {
+      "mode": "100644",
+      "blob": "42f5985ac61e79141fe4d77fdd8ccc9b090420dd",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/upstream/LICENSE": {
+      "mode": "100644",
+      "blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/upstream/test_seedvr2_norm.py": {
+      "mode": "100644",
+      "blob": "b02a37259d30823bf300c16e157902da67ce96a7",
+      "status": "A"
+    },
+    "container/h3-seedvr2-rmsnorm/validate_runtime.py": {
+      "mode": "100644",
+      "blob": "8c2388d01bcafb471131da313d4ced6948ed686f",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/01-check.cmd": {
+      "mode": "100644",
+      "blob": "fb802390bd74cbfd36608b796038fdbd369712c4",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/02-submit-build.cmd": {
+      "mode": "100644",
+      "blob": "b0765aa3c9f702d887c3304057e1b6d4f7bce7c1",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/03-import-image-evidence.cmd": {
+      "mode": "100644",
+      "blob": "0dd2d1488f2abe1a9a74d1a8a97ea480efa0ddda",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/README.md": {
+      "mode": "100644",
+      "blob": "c8d0e97c8a3506e26f96e1224721f1a84b41b97f",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/check_local.py": {
+      "mode": "100644",
+      "blob": "4bcb1819854d1c7c6ea11c7c67a365e371a9356e",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/env.cmd": {
+      "mode": "100644",
+      "blob": "f288a71d7663d63d585e8de4e438885f1b2b0791",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/import_evidence.py": {
+      "mode": "100644",
+      "blob": "6826431192d1108bde179fc08c0d4ba61698f9e6",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/ops.py": {
+      "mode": "100644",
+      "blob": "ba67ccb206c6669100513b229dfff786e93ca0c1",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/source-lock.json": {
+      "mode": "100644",
+      "blob": "136cd4ca146c67f55d3daa00c09f5576ea72a10a",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/tests/test_artifact_paths.py": {
+      "mode": "100644",
+      "blob": "2f65a9b9bb777278e67a161638f251ade07bae5d",
+      "status": "A"
+    },
+    "delivery/h3-seedvr2-rmsnorm/tests/test_submission.py": {
+      "mode": "100644",
+      "blob": "9d9736c04d39a77660e4b18b86f1f984f502e17b",
+      "status": "A"
+    }
+  },
+  "scope": "Exact Git modes/blobs relative to successful parent source; only derivative inputs, CI routing and their tests. Excludes this seal itself."
+}

@@ -199,9 +199,9 @@ class GatewayTemplateTests(unittest.TestCase):
     def test_workflow_routes_only_dedicated_branch_and_keeps_two_phase_digest(self):
         workflow = yaml.load((ROOT/".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         self.assertEqual(workflow["on"]["push"]["branches"], [ci.BRANCH])
-        self.assertEqual(set(workflow["jobs"]), {"h3-experimental"})
+        self.assertEqual(set(workflow["jobs"]), {"h3-experimental", "h3-seedvr2-rmsnorm"})
         job = workflow["jobs"]["h3-experimental"]
-        self.assertEqual(job["if"], f"github.ref_name == '{ci.BRANCH}'")
+        self.assertEqual(job["if"], f"github.ref_name == '{ci.BRANCH}' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'full'")
         self.assertNotIn("DingoRouter-h3-distilled-20261013", workflow["on"]["push"]["branches"])
         self.assertEqual(job["runs-on"], ["self-hosted", "linux", "x64", "dingo"])
         final_builds = [s for s in job["steps"] if s.get("with",{}).get("file") == "container/h3-experimental/Dockerfile"]

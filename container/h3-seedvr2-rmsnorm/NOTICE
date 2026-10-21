@@ -1,0 +1,19 @@
+SeedVR2 RMSNorm backport for the existing H3 experiment image
+
+This derivative modifies vllm_omni/diffusion/models/seedvr2/nadit.py from
+vLLM-Omni 0.31.0rc1 by backporting PR #8767, commit
+0708f05e2e27f16fca8b48e7c5a085277d1cafda. Copyright contributors to the
+vLLM-Omni project. The upstream Apache-2.0 license is in upstream/LICENSE.
+
+The change computes low-precision RMSNorm intermediates in FP32 and restores
+the input dtype before the optional affine multiplication. It does not change
+the checkpoint weights, framework package versions, normalization epsilon,
+schedule, attention implementation, VAE or parallelism.
+
+The original wheel origin receipt remains valid as installation provenance;
+it is not a statement that the installed wheel is unmodified. The separate
+patch-application report records the exact source and RECORD modification.
+
+Inherited /legal notices and SBOM describe the parent dependencies and remain
+unchanged. No new third-party package is installed. This file documents the
+source modification, not a new legal clearance or GPU-quality acceptance.

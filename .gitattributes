@@ -26,3 +26,6 @@ container/h3-experimental/profiles/base_verify.py -text -eol
 container/h3-experimental/profiles/*.sh text eol=lf
 # Preserve exact upstream release license/metadata bytes used by local validation.
 delivery/h3-experimental/license-evidence/** -text -eol whitespace=-blank-at-eof,-blank-at-eol
+# PR8767 upstream patch/test/license and fixed-source fixture are byte-pinned.
+container/h3-seedvr2-rmsnorm/upstream/** -text -eol whitespace=-blank-at-eof,-blank-at-eol
+container/h3-seedvr2-rmsnorm/tests/fixtures/** -text -eol

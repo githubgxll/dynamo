@@ -1,0 +1,14 @@
+# Send only this reviewed patch recipe, never the full source/model workspace.
+**
+!container/
+!container/h3-seedvr2-rmsnorm/
+!container/h3-seedvr2-rmsnorm/**
+!delivery/
+!delivery/h3-seedvr2-rmsnorm/
+!delivery/h3-seedvr2-rmsnorm/source-lock.json
+!delivery/h3-seedvr2-rmsnorm/input-seal.json
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+container/h3-seedvr2-rmsnorm/tests/
+container/h3-seedvr2-rmsnorm/fixtures/

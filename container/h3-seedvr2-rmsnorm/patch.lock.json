@@ -1,0 +1,31 @@
+{
+  "schema": "h3-seedvr2-rmsnorm-patch/1",
+  "upstream_pr": "https://github.com/vllm-project/vllm-omni/pull/8767",
+  "upstream_commit": "0708f05e2e27f16fca8b48e7c5a085277d1cafda",
+  "omni_base_commit": "6dd0d1f9310f7598b773c796b434c8000c2816ec",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7",
+  "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "before_sha256": "3c782ad3588f7f544a9cb14fe8258a9eb4d921881deee8501460ceaf0bf1ad63",
+  "after_sha256": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+  "source_sha256": {
+    "nadit.py": "3c782ad3588f7f544a9cb14fe8258a9eb4d921881deee8501460ceaf0bf1ad63",
+    "vae.py": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3",
+    "pipeline_seedvr2.py": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+    "config.py": "0debf02936e3f84f737747fd50b4e1448d6294c0ffee11a14a0d83450f6228ea",
+    "long_video.py": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340"
+  },
+  "required_versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0",
+    "pytest": "9.1.1",
+    "safetensors": "0.8.0"
+  },
+  "vendored_sha256": {
+    "upstream/0708f05e2e27f16fca8b48e7c5a085277d1cafda.patch": "ce834bb634f2f8b93bbc642e50cf980e5c214e515029a5297bb4df60d0f3ff47",
+    "upstream/test_seedvr2_norm.py": "56e39d8422fa0e89a201820e6de8e34ef20e92600cdedf54e4cd38c0e1c5374a",
+    "upstream/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "scope": "Only SeedVR2 RMSNorm accumulation changes. No package installation, framework upgrade or checkpoint mutation."
+}

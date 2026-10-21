@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-name: Dingo H3 gateway experimental Omni 0.31
+name: Dingo H3 experimental image recipes
 
 on:
   push:
     branches: [Dingorouter-H3-vllm-omni-jirx]
   workflow_dispatch:
+    inputs:
+      build_recipe:
+        description: 'seedvr2-rmsnorm reuses the successful image; full rebuilds the framework and adapters'
+        type: choice
+        required: true
+        default: seedvr2-rmsnorm
+        options: [seedvr2-rmsnorm, full]
 
 permissions:
   contents: read
@@ -15,7 +22,8 @@ concurrency:
 
 jobs:
   h3-experimental:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx'
+    # Full framework/native builds are now an explicit operator choice only.
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'full'
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 360
     env:
@@ -228,6 +236,93 @@ jobs:
         with:
           name: h3-experimental-omni031-${{ github.sha }}-${{ github.run_attempt }}
           path: .h3-experimental-evidence/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  h3-seedvr2-rmsnorm:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && (github.event_name == 'push' || inputs.build_recipe == 'seedvr2-rmsnorm')
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    env:
+      SR_EVIDENCE: .h3-experimental-evidence/srnorm/ci/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout the existing H3 experimental branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify sealed patch recipe and immutable parent
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker buildx version
+          python3 .github/scripts/h3_seedvr2_rmsnorm_ci.py prepare \
+            --directory "${SR_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Log in to the existing Harbor repository
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Reuse the persistent group Docker builder
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      - name: Pull only the successful immutable Harbor parent
+        env:
+          PARENT_IMAGE: ${{ steps.profile.outputs.parent_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${PARENT_IMAGE}"
+
+      - name: Build and load the minimal offline repair candidate without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: runtime
+          pull: false
+          push: false
+          load: true
+          tags: ${{ steps.profile.outputs.candidate_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.parent_image }}
+            H3_EXPERIMENTAL_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify the loaded final image as UID1000 with networking disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/h3_seedvr2_rmsnorm_ci.py verify-candidate \
+            --directory "${SR_EVIDENCE}"
+
+      - name: Publish the exact tested image then verify its immutable registry pull
+        id: publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/h3_seedvr2_rmsnorm_ci.py publish \
+            --directory "${SR_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+          echo '### SeedVR2 RMSNorm derivative publication' >> "${GITHUB_STEP_SUMMARY}"
+          cat "${SR_EVIDENCE}/deployment-image.txt" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'CPU precision/import and retained capability gates passed; CUDA, fixed-input video and visual acceptance remain separate.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Save fresh patch, final-image and inherited capability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-h3-seedvr2-rmsnorm-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.SR_EVIDENCE }}/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

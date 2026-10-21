@@ -1,0 +1,25 @@
+{
+  "schema": "h3-seedvr2-rmsnorm-source-lock/1",
+  "reviewed_date": "2026-10-21",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7",
+  "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "upstream_pr": "https://github.com/vllm-project/vllm-omni/pull/8767",
+  "upstream_commit": "0708f05e2e27f16fca8b48e7c5a085277d1cafda",
+  "omni_source_commit": "6dd0d1f9310f7598b773c796b434c8000c2816ec",
+  "source_before_sha256": "3c782ad3588f7f544a9cb14fe8258a9eb4d921881deee8501460ceaf0bf1ad63",
+  "source_after_sha256": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+  "upstream_test_sha256": "56e39d8422fa0e89a201820e6de8e34ef20e92600cdedf54e4cd38c0e1c5374a",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0"
+  },
+  "scope": "One RMSNorm source backport and wheel RECORD correction; preserve dependencies, weights, Gateway, H3 and Ref8. No main/service-branch rebase for this derivative.",
+  "local_network": "Optional command-scoped Git proxy http://127.0.0.1:17890; never copied into Runner or Pod.",
+  "validation_boundary": "Local recipe checks are not Linux image, Harbor, CUDA or generated-media acceptance."
+}

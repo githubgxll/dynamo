@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Validate a downloaded Actions artifact; its ZIP hash is not the image digest."""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import importlib.util
+import json
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import zipfile
+
+import ops
+
+
+def safe_name(name):
+    value = name.rstrip("/")
+    if not value or "\\" in value or ":" in value or value.startswith("/") or any(x in {"", ".", ".."} for x in value.split("/")):
+        raise ValueError("Unsafe artifact member name: " + name)
+    return PurePosixPath(value)
+
+
+def sha(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def import_archive(archive):
+    ops.check_seal(committed=True)
+    archive = archive.resolve(strict=True)
+    destination = ops.EVIDENCE / datetime.now(timezone.utc).strftime("import-%Y%m%dT%H%M%S.%fZ")
+    destination.mkdir(parents=True)
+    with zipfile.ZipFile(archive) as bundle:
+        members = bundle.infolist()
+        if len(members) > 20000 or sum(m.file_size for m in members) > 2 * 1024**3:
+            raise ValueError("Unexpectedly large evidence archive")
+        names = set()
+        for member in members:
+            relative = safe_name(member.filename)
+            key = relative.as_posix().casefold()
+            if key in names or ((member.external_attr >> 16) & 0o170000) == 0o120000:
+                raise ValueError("Duplicate path or symlink in evidence archive")
+            names.add(key)
+            target = destination.joinpath(*relative.parts)
+            if not target.resolve().is_relative_to(destination.resolve()):
+                raise ValueError("Artifact path escapes its new import directory")
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with bundle.open(member) as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+    records = list(destination.rglob("image.json"))
+    if len(records) != 1:
+        raise ValueError("Expected exactly one successful publication record")
+    record_path = records[0]
+    root = record_path.parent
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    lock = ops.load_lock()
+    if record.get("schema") != "h3-seedvr2-rmsnorm-publication/1" or record.get("status") != "PASS_PUBLISHED_AND_PULLED_CPU_VALIDATED":
+        raise ValueError("Artifact is not a successful SR patch publication")
+    commit = record.get("source_commit", "")
+    digest = record.get("digest", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("Missing source commit or complete IMAGE digest")
+    if commit != ops.git("rev-parse", "HEAD"):
+        raise ValueError("Artifact does not belong to this checkout HEAD; select the intended submitted commit")
+    expected_tag = lock["harbor_repository"] + ":omni031rc1-gateway-distilled-ref8shift12-srnormfix-" + commit[:12]
+    if record.get("image") != expected_tag or record.get("deployment_image") != lock["harbor_repository"] + "@" + digest:
+        raise ValueError("Unexpected publication destination")
+    for key in ("parent_image", "parent_source_commit", "upstream_commit", "source_before_sha256", "source_after_sha256"):
+        if record.get(key) != lock[key]:
+            raise ValueError("Publication identity differs: " + key)
+    hashes = record.get("evidence_sha256", {})
+    required = {"inputs.json", "candidate-verified.json", "package-preservation.json", "inheritance.json",
+                "final/runtime-validation.json", "build/patch-application.json", "build/preservation.json",
+                "build/runtime-validation.json", "final/upstream-pytest.xml", "final/upstream-pytest.txt",
+                "registry-push.txt", "registry-pull.txt"}
+    required.update("build/retained/" + name for name in (
+        "environment-check.json", "media-smoke.json", "service-smoke.json", "assets-report.json",
+        "profiles-check.json", "ref8-contract.json"))
+    if not required.issubset(hashes):
+        raise ValueError("Required fresh publication evidence is missing")
+    for name, expected in hashes.items():
+        path = root.joinpath(*safe_name(name).parts)
+        if not path.is_file() or sha(path) != expected:
+            raise ValueError("Artifact evidence hash mismatch: " + name)
+    spec = importlib.util.spec_from_file_location("srnorm_ci_import", ops.ROOT / ".github/scripts/h3_seedvr2_rmsnorm_ci.py")
+    ci = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ci)
+    ci.validate_build_evidence(root / "build", commit)
+    ci.validate_runtime_report(ci.read(root / "final/runtime-validation.json"), commit)
+    if (root / "deployment-image.txt").read_text(encoding="utf-8").strip() != record["deployment_image"]:
+        raise ValueError("Deployment image text differs from publication record")
+    seal = ci.read(ops.ROOT / ops.SEAL)
+    for relative in [name for name, entry in seal["delta"].items() if entry["status"] != "D"] + [ops.SEAL]:
+        name = "recipe/" + relative
+        archived = root / name
+        if name not in hashes or archived.read_bytes() != ops.git("show", commit + ":" + relative, binary=True):
+            raise ValueError("Artifact recipe does not match committed inputs: " + relative)
+    result = {"status": "PASS_IMPORTED_PUBLICATION_EVIDENCE_ONLY", "deployment_image": record["deployment_image"],
+              "image_tag": record["image"], "source_commit": commit, "actions_url": record["actions_url"],
+              "artifact_zip": str(archive), "artifact_zip_sha256": sha(archive), "evidence_directory": str(root),
+              "not_run_locally": ["registry pull", "CUDA", "H100 generation", "visual A/B"]}
+    (destination / "import-receipt.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("archive", type=Path)
+    import_archive(parser.parse_args().archive)
