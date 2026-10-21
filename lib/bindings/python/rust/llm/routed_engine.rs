@@ -9,10 +9,31 @@ use tokio_stream::StreamExt;
 use dynamo_llm::entrypoint::PrefillRoutedEngine;
 use dynamo_llm::protocols::common::preprocessor::PreprocessedRequest;
 use dynamo_llm::protocols::common::timing::RequestTracker;
+use dynamo_runtime::error::{BackendError, DynamoError, ErrorType};
 use dynamo_runtime::pipeline::{AsyncEngineContextProvider, SingleIn};
 use dynamo_runtime::protocols::annotated::Annotated as RsAnnotated;
 
 use crate::to_pyerr;
+
+fn stream_creation_error(error: anyhow::Error) -> RsAnnotated<PyObject> {
+    // Preserve typed errors through anyhow context, without inspecting arbitrary sources.
+    let error = error
+        .downcast_ref::<DynamoError>()
+        .cloned()
+        .unwrap_or_else(|| {
+            DynamoError::builder()
+                .error_type(ErrorType::Backend(BackendError::Unknown))
+                .message("Failed to create routed response stream")
+                .build()
+        });
+    RsAnnotated {
+        data: None,
+        id: None,
+        event: Some("error".to_string()),
+        comment: None,
+        error: Some(error),
+    }
+}
 
 fn ensure_request_tracker(request: &mut PreprocessedRequest) {
     // `PreprocessedRequest::tracker` is intentionally skipped by serde, so it cannot
@@ -37,12 +58,13 @@ impl RoutedEngine {
 #[pymethods]
 impl RoutedEngine {
     /// Send a preprocessed request through the Rust prefill-routed pipeline.
-    #[pyo3(signature = (preprocessed, context=None))]
+    #[pyo3(signature = (preprocessed, context=None, *, error_passthrough=false))]
     fn generate<'p>(
         &self,
         py: Python<'p>,
         preprocessed: PyObject,
         context: Option<crate::context::Context>,
+        error_passthrough: bool,
     ) -> PyResult<Bound<'p, PyAny>> {
         let mut request: PreprocessedRequest =
             depythonize(preprocessed.bind(py)).map_err(to_pyerr)?;
@@ -69,9 +91,19 @@ impl RoutedEngine {
         let inner = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut stream = inner.generate(request_context).await.map_err(to_pyerr)?;
-            let task_context = stream.context();
             let (tx, rx) = tokio::sync::mpsc::channel::<RsAnnotated<PyObject>>(32);
+            let mut stream = match inner.generate(request_context).await {
+                Ok(stream) => stream,
+                Err(error) if error_passthrough => {
+                    tracing::error!(error = ?error, "Failed to create routed response stream");
+                    let _ = tx.send(stream_creation_error(error)).await;
+                    return Ok(
+                        crate::AsyncResponseStream::new(rx, true).with_error_passthrough(true)
+                    );
+                }
+                Err(error) => return Err(to_pyerr(error)),
+            };
+            let task_context = stream.context();
 
             tokio::spawn(async move {
                 loop {
@@ -102,7 +134,7 @@ impl RoutedEngine {
                 }
             });
 
-            Ok(crate::AsyncResponseStream::new(rx, true))
+            Ok(crate::AsyncResponseStream::new(rx, true).with_error_passthrough(error_passthrough))
         })
     }
 }
@@ -122,6 +154,44 @@ mod tests {
             .tracker(Some(Arc::new(RequestTracker::new())))
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn creation_errors_preserve_typed_details_through_context() {
+        for error_type in [
+            ErrorType::Backend(BackendError::InvalidArgument),
+            ErrorType::Backend(BackendError::Unknown),
+        ] {
+            let original = DynamoError::builder()
+                .error_type(error_type)
+                .message(r#"{"code":415,"message":"unsupported input"}"#)
+                .build();
+            for with_context in [false, true] {
+                let error = anyhow::Error::new(original.clone());
+                let error = if with_context {
+                    error.context("routing")
+                } else {
+                    error
+                };
+                let response = stream_creation_error(error);
+                assert!(response.is_error());
+                assert_eq!(
+                    serde_json::to_value(response.error).unwrap(),
+                    serde_json::to_value(Some(original.clone())).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn untyped_creation_failure_is_internal_and_safe() {
+        let response = stream_creation_error(anyhow::anyhow!("secret /private/path"));
+        let error = response.error.unwrap();
+        assert_eq!(
+            error.error_type(),
+            ErrorType::Backend(BackendError::Unknown)
+        );
+        assert_eq!(error.message(), "Failed to create routed response stream");
     }
 
     #[test]

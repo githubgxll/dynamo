@@ -127,8 +127,8 @@ class MmKwargsSender(ABC):
     ) -> tuple[dict[str, Any] | None, list[Any]]:
         """Serialize and register mm_kwargs for transfer to the backend.
 
-        Walks mm_features, collects per-feature mm_hashes, skips
-        ``data is None`` features, pickles each remaining ``feat.data``,
+        Requires complete, homogeneous features with unmasked placeholders.
+        Collects per-feature mm_hashes, pickles each ``feat.data``,
         and delegates the transport-specific hand-off to
         :meth:`_encode_item`. Once all items are encoded, calls
         :meth:`_assemble_extra_args` to build the dict returned to the
@@ -142,7 +142,20 @@ class MmKwargsSender(ABC):
                 response stream completes.
         """
         with _nvtx.annotate(self._nvtx_label, color=self._nvtx_color):
-            if not self._is_available() or not mm_features:
+            if (
+                not mm_features
+                or modality not in {"image", "video", "audio", "vision_chunk"}
+                or any(
+                    getattr(feat, "modality", None) != modality
+                    or feat.data is None
+                    or not isinstance(feat.mm_hash, str)
+                    or not feat.mm_hash
+                    or getattr(getattr(feat, "mm_position", None), "is_embed", None)
+                    is not None
+                    for feat in mm_features
+                )
+                or not self._is_available()
+            ):
                 return None, []
 
             encoded_items: list[Any] = []
@@ -150,10 +163,7 @@ class MmKwargsSender(ABC):
             mm_hashes: list[str] = []
 
             for i, feat in enumerate(mm_features):
-                if feat.mm_hash:
-                    mm_hashes.append(feat.mm_hash)
-                if feat.data is None:
-                    continue
+                mm_hashes.append(feat.mm_hash)
 
                 with _nvtx.annotate(self._pickle_nvtx_label, color=self._nvtx_color):
                     pickled = pickle.dumps(feat.data)

@@ -12,6 +12,7 @@ import os
 import time
 from argparse import Namespace
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from msgspec.structs import replace as msgspec_replace
@@ -37,13 +38,12 @@ from dingo.common.multimodal.routing_utils import build_mm_routing_info_from_fea
 from dingo.common.utils import nvtx_utils as _nvtx
 from dingo.frontend.frontend_args import FrontendConfig
 from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
+from dynamo.llm.exceptions import DynamoException, HttpError
 from dynamo.llm.exceptions import InvalidArgument as DynamoInvalidArgument
 
 from .prepost import StreamingPostProcessor, preprocess_chat_request
 from .utils import (
     extract_mm_urls,
-    handle_engine_error,
-    make_internal_error,
     random_uuid,
     resolve_chat_template,
 )
@@ -67,6 +67,17 @@ _FINISH_REASON_MAP: dict[str, FinishReason] = {
     "cancelled": FinishReason.ABORT,
     "content_filter": FinishReason.STOP,
 }
+
+
+def _internal_error_envelope() -> dict[str, Any]:
+    return {
+        "_dynamo_annotated": True,
+        "event": "error",
+        "error": {
+            "error_type": {"Backend": "Unknown"},
+            "message": "Internal server error",
+        },
+    }
 
 
 def map_finish_reason(raw_reason: str | None) -> FinishReason | None:
@@ -215,18 +226,21 @@ class VllmProcessor:
                 vllm_preproc.mm_features,
                 prompt_token_ids=list(vllm_preproc.prompt_token_ids),
             )
-            # Forward mm_hashes to backend for hash consistency — the backend
-            # will use these directly instead of recomputing.
-            mm_hashes_list = [f.mm_hash for f in vllm_preproc.mm_features]
-            mm_placeholders_list = [
-                (f.mm_position.offset, f.mm_position.length)
-                for f in vllm_preproc.mm_features
-            ]
-            # Transport mm_hashes and mm_placeholders to backend via extra_args.
-            if "extra_args" not in dynamo_preproc:
-                dynamo_preproc["extra_args"] = {}
-            dynamo_preproc["extra_args"]["mm_hashes"] = mm_hashes_list
-            dynamo_preproc["extra_args"]["mm_placeholders"] = mm_placeholders_list
+            hashes_by_modality: dict[str, list[str | None]] = {}
+            placeholders_by_modality: dict[str, list[tuple[int, int]]] = {}
+            for feature in vllm_preproc.mm_features:
+                hashes_by_modality.setdefault(feature.modality, []).append(
+                    feature.mm_hash
+                )
+                placeholders_by_modality.setdefault(feature.modality, []).append(
+                    (feature.mm_position.offset, feature.mm_position.length)
+                )
+            extra_args = dynamo_preproc.setdefault("extra_args", {})
+            extra_args["mm_hashes_by_modality"] = hashes_by_modality
+            extra_args["mm_placeholders_by_modality"] = placeholders_by_modality
+            if set(hashes_by_modality) == {"image"}:
+                extra_args["mm_hashes"] = hashes_by_modality["image"]
+                extra_args["mm_placeholders"] = placeholders_by_modality["image"]
             # Forward the expanded prompt_token_ids (with image placeholders)
             # so the backend can use them in the pre-rendered MultiModalInput.
             dynamo_preproc["extra_args"]["expanded_token_ids"] = list(
@@ -242,7 +256,7 @@ class VllmProcessor:
                 "%d hashes, %d total blocks, %d blocks with MM content, "
                 "block_size=%d",
                 len(vllm_preproc.mm_features),
-                len(mm_hashes_list),
+                sum(map(len, hashes_by_modality.values())),
                 n_blocks,
                 n_mm_blocks,
                 self.block_size,
@@ -280,7 +294,8 @@ class VllmProcessor:
                     # NVTX annotation is owned by MmKwargsSender.prepare via
                     # the subclass's _nvtx_label/_nvtx_color class attrs.
                     extra_update, cleanup_items = await self._sender.prepare(
-                        vllm_preproc.mm_features, modality="image"
+                        vllm_preproc.mm_features,
+                        modality=vllm_preproc.mm_features[0].modality,
                     )
                     if extra_update is not None:
                         dynamo_preproc["extra_args"].update(extra_update)
@@ -313,8 +328,17 @@ class VllmProcessor:
         model inference to a backend using the router.
         """
         with _nvtx.annotate("mm_frontend:generator", color="blue"):
-            async for item in self._generator_inner(request, context=context):
-                yield item
+            try:
+                async with aclosing(
+                    self._generator_inner(request, context=context)
+                ) as stream:
+                    async for item in stream:
+                        yield item
+            except (DynamoException, HttpError):
+                raise
+            except Exception:
+                logger.exception("Error processing frontend request")
+                yield _internal_error_envelope()
 
     async def _generator_inner(
         self, request: dict[str, Any], context: Any | None = None
@@ -498,24 +522,13 @@ class VllmProcessor:
             (
                 mm_routing_info,
                 cleanup_items,
-                nixl_transferred,
+                _transferred,
             ) = await self._prepare_mm_routing(vllm_preproc, dynamo_preproc)
 
-            # Forward multimodal URLs so the backend handler can load the media.
-            # Only skip when ALL features were transferred — a partial transfer
-            # (some features had data=None due to processor cache) still needs
-            # URLs for the backend to process the missing features.
-            n_features = (
-                len(vllm_preproc.mm_features) if vllm_preproc.mm_features else 0
-            )
-            n_with_data = sum(
-                1 for f in (vllm_preproc.mm_features or []) if f.data is not None
-            )
-            all_transferred = nixl_transferred and n_with_data == n_features
-            if not all_transferred:
-                mm_data = extract_mm_urls(request.get("messages") or [])
-                if mm_data:
-                    dynamo_preproc["multi_modal_data"] = mm_data
+            # Keep references for cross-node SHM failures and receiver fallback.
+            mm_data = extract_mm_urls(request.get("messages") or [])
+            if mm_data:
+                dynamo_preproc["multi_modal_data"] = mm_data
 
             # Forward mm_processor_kwargs (e.g. use_audio_in_video) to the backend.
             if request_for_sampling.mm_processor_kwargs is not None:
@@ -542,20 +555,26 @@ class VllmProcessor:
                 output_idx: new_post_processor() for output_idx in range(sp.n)
             }
 
-            async for item in self._generate_and_stream(
-                request_id,
-                request,
-                dynamo_preproc,
-                tokens,
-                vllm_preproc,
-                post_processors,
-                mm_routing_info=mm_routing_info,
-                context=context,
-            ):
-                yield item
+            async with aclosing(
+                self._generate_and_stream(
+                    request_id,
+                    request,
+                    dynamo_preproc,
+                    tokens,
+                    vllm_preproc,
+                    post_processors,
+                    mm_routing_info=mm_routing_info,
+                    context=context,
+                )
+            ) as stream:
+                async for item in stream:
+                    yield item
         finally:
             if cleanup_items and self._sender is not None:
-                await self._sender.cleanup(cleanup_items)
+                try:
+                    await self._sender.cleanup(cleanup_items)
+                except Exception:
+                    logger.exception("Error cleaning up multimodal request %s", request_id)
 
     async def _generate_and_stream(
         self,
@@ -572,58 +591,60 @@ class VllmProcessor:
         output_request_ids: dict[int, str]
         registered_request_ids: list[str]
 
-        if sp.n == 1:
-            self.output_processor.add_request(vllm_preproc, None)
-            output_request_ids = {0: vllm_preproc.request_id}
-            registered_request_ids = [vllm_preproc.request_id]
-        else:
-            # vLLM's normal engine path fans out SamplingParams.n>1 into
-            # ParentRequest children before registering with OutputProcessor.
-            # Dynamo bypasses that path here: the backend generates indexed
-            # token chunks and this frontend feeds those chunks directly into
-            # vLLM's OutputProcessor. Recreate the same parent/child request
-            # state so each choice has its own request id, sampling params,
-            # detokenizer/logprob state, and OpenAI choice index.
-            #
-            # See vLLM's implementation:
-            # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/async_llm.py
-            # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/output_processor.py
-            # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/parallel_sampling.py
-            parent_preproc = vllm_preproc
-            if parent_preproc.external_req_id is None:
-                parent_preproc = msgspec_replace(
-                    parent_preproc, external_req_id=parent_preproc.request_id
-                )
-            parent_req = ParentRequest(parent_preproc)
-            output_request_ids = {}
-            registered_request_ids = []
-            for output_idx in range(sp.n):
-                child_request_id, child_sampling_params = parent_req.get_child_info(
-                    output_idx
-                )
-                child_preproc = msgspec_replace(
-                    parent_preproc,
-                    request_id=child_request_id,
-                    sampling_params=child_sampling_params,
-                )
-                self.output_processor.add_request(
-                    child_preproc,
-                    None,
-                    parent_req=parent_req,
-                    request_index=output_idx,
-                )
-                output_request_ids[output_idx] = child_request_id
-                registered_request_ids.append(child_request_id)
-
-        # llm_metrics totals; Rust postprocessor is bypassed on this path.
-        input_tokens = len(tokens)
-        cumulative_output_tokens = 0
-
+        registered_request_ids = []
+        rng_stream = None
         try:
+            if sp.n == 1:
+                self.output_processor.add_request(vllm_preproc, None)
+                output_request_ids = {0: vllm_preproc.request_id}
+                registered_request_ids = [vllm_preproc.request_id]
+            else:
+                # vLLM's normal engine path fans out SamplingParams.n>1 into
+                # ParentRequest children before registering with OutputProcessor.
+                # Dynamo bypasses that path here: the backend generates indexed
+                # token chunks and this frontend feeds those chunks directly into
+                # vLLM's OutputProcessor. Recreate the same parent/child request
+                # state so each choice has its own request id, sampling params,
+                # detokenizer/logprob state, and OpenAI choice index.
+                #
+                # See vLLM's implementation:
+                # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/async_llm.py
+                # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/output_processor.py
+                # https://github.com/vllm-project/vllm/blob/v0.19.1/vllm/v1/engine/parallel_sampling.py
+                parent_preproc = vllm_preproc
+                if parent_preproc.external_req_id is None:
+                    parent_preproc = msgspec_replace(
+                        parent_preproc, external_req_id=parent_preproc.request_id
+                    )
+                parent_req = ParentRequest(parent_preproc)
+                output_request_ids = {}
+                registered_request_ids = []
+                for output_idx in range(sp.n):
+                    child_request_id, child_sampling_params = parent_req.get_child_info(
+                        output_idx
+                    )
+                    child_preproc = msgspec_replace(
+                        parent_preproc,
+                        request_id=child_request_id,
+                        sampling_params=child_sampling_params,
+                    )
+                    self.output_processor.add_request(
+                        child_preproc,
+                        None,
+                        parent_req=parent_req,
+                        request_index=output_idx,
+                    )
+                    output_request_ids[output_idx] = child_request_id
+                    registered_request_ids.append(child_request_id)
+
+            # llm_metrics totals; Rust postprocessor is bypassed on this path.
+            input_tokens = len(tokens)
+            cumulative_output_tokens = 0
+
             _inject_routing_metadata(dynamo_preproc, dynamo_preproc, mm_routing_info)
             with _nvtx.annotate("mm_frontend:routed_engine_generate", color="red"):
                 dynamo_stream = await self.routed_engine.generate(
-                    dynamo_preproc, context=context
+                    dynamo_preproc, context=context, error_passthrough=True
                 )
 
             rng_stream = _nvtx.start_range(
@@ -631,47 +652,32 @@ class VllmProcessor:
             )
             async for dynamo_response in dynamo_stream:
                 if dynamo_response.is_error():
-                    comments = dynamo_response.comments() or []
-                    message = "; ".join(comments) or "unknown routed_engine error"
-                    logger.error(
-                        "routed_engine error for request %s: %s",
-                        request_id,
-                        message,
-                    )
-                    yield make_internal_error(request_id, message)
-                    break
+                    yield dynamo_response.to_error_envelope()
+                    return
                 engine_response = dynamo_response.data()
 
                 if engine_response is None:
-                    if dynamo_response.is_error():
-                        yield handle_engine_error(engine_response, request_id, logger)
-                        break
                     # No data or error fields, means we may have a comment or other kind of event.
                     # I'm not sure what those are used for, so TODO. Skip for now.
                     continue
 
-                if "token_ids" not in engine_response:
-                    yield handle_engine_error(engine_response, request_id, logger)
-                    break
+                if (
+                    not isinstance(engine_response, dict)
+                    or "token_ids" not in engine_response
+                ):
+                    raise RuntimeError("Invalid routed engine response")
 
                 # Count before any choice gate — tool/reasoning parsers may
                 # consume tokens without emitting a visible delta.
                 chunk_tokens = len(engine_response.get("token_ids") or [])
                 cumulative_output_tokens += chunk_tokens
 
-                output_idx = engine_response.get("index", 0) or 0
-                output_request_id = output_request_ids.get(output_idx)
-                if output_request_id is None:
-                    yield {
-                        "error": {
-                            "message": (
-                                f"Invalid engine choice index {output_idx} "
-                                f"for request {request_id}"
-                            ),
-                            "type": "internal_error",
-                        }
-                    }
-                    break
+                output_idx = engine_response.get("index", 0)
+                if output_idx is None:
+                    output_idx = 0
+                if type(output_idx) is not int or output_idx not in output_request_ids:
+                    raise RuntimeError(f"Invalid engine choice index {output_idx!r}")
+                output_request_id = output_request_ids[output_idx]
 
                 raw_finish_reason = engine_response.get("finish_reason")
                 finish_reason = map_finish_reason(raw_finish_reason)
@@ -702,28 +708,16 @@ class VllmProcessor:
                     pass
 
                 choices = []
-                postprocess_error = False
                 if vllm_out.request_outputs:
                     for output in vllm_out.request_outputs[0].outputs:
                         post = post_processors.get(output.index)
                         if post is None:
-                            yield {
-                                "error": {
-                                    "message": (
-                                        f"Invalid postprocessor choice index {output.index} "
-                                        f"for request {request_id}"
-                                    ),
-                                    "type": "internal_error",
-                                }
-                            }
-                            postprocess_error = True
-                            break
+                            raise RuntimeError(
+                                f"Invalid postprocessor choice index {output.index!r}"
+                            )
                         choice = post.process_output(output)
                         if choice:
                             choices.append(choice)
-
-                if postprocess_error:
-                    continue
 
                 # One envelope per iteration carries both data and metrics so
                 # client cancellation can't drop the annotation between yields.
@@ -749,16 +743,22 @@ class VllmProcessor:
                 envelope["comment"] = [json.dumps(metrics)]
 
                 yield envelope
-            _nvtx.end_range(rng_stream)
-        except Exception as e:
+        except (DynamoException, HttpError):
+            raise
+        except Exception:
             logger.exception("Error generating response for request %s", request_id)
-            yield make_internal_error(request_id, str(e))
+            yield _internal_error_envelope()
         finally:
+            if rng_stream is not None:
+                _nvtx.end_range(rng_stream)
             for output_request_id in registered_request_ids:
-                if output_request_id in self.output_processor.request_states:
-                    self.output_processor.abort_requests(
-                        [output_request_id], internal=True
-                    )
+                try:
+                    if output_request_id in self.output_processor.request_states:
+                        self.output_processor.abort_requests(
+                            [output_request_id], internal=True
+                        )
+                except Exception:
+                    logger.exception("Error aborting request %s", output_request_id)
 
 
 class EngineFactory:

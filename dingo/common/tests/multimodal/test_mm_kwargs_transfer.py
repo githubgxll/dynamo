@@ -4,7 +4,8 @@
 """Unit tests for MM kwargs transfer (NIXL sender/receiver + SHM sender/receiver)."""
 
 import pickle
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,13 +25,14 @@ pytestmark = [
 ]
 
 
-def _make_feature(data=None, mm_hash="hash_default"):
+def _make_feature(data=None, mm_hash="hash_default", modality="image"):
     """Create a mock MultiModalFeatureSpec."""
-    feat = MagicMock()
-    feat.data = data
-    feat.mm_hash = mm_hash
-    feat.modality = "image"
-    return feat
+    return SimpleNamespace(
+        data=data,
+        mm_hash=mm_hash,
+        modality=modality,
+        mm_position=SimpleNamespace(is_embed=None),
+    )
 
 
 class TestMmKwargsTransferMetadata:
@@ -108,20 +110,17 @@ class TestMmKwargsNixlSender:
         assert futures == []
 
     @pytest.mark.asyncio
-    async def test_prepare_skips_none_data_in_multi_feature(self):
-        """Mixed features: some with data, some without. Only data!=None are transferred."""
-        # Feature 0 has data, feature 1 does not, feature 2 has data
+    async def test_incomplete_features_fall_back_before_registration(self):
+        """A processor cache hit must not produce a partial NIXL envelope."""
         feats = [
             _make_feature(data="item_0", mm_hash="hash_0"),
             _make_feature(data=None, mm_hash="hash_1"),
-            _make_feature(data="item_2", mm_hash="hash_2"),
         ]
-        # Sender requires NIXL which isn't available in unit tests.
-        # Just verify it collects hashes for all features.
-        # The prepare() will fail at NIXL registration, so test the hash collection.
-        assert feats[0].mm_hash == "hash_0"
-        assert feats[1].data is None
-        assert feats[2].mm_hash == "hash_2"
+        sender = MmKwargsNixlSender.__new__(MmKwargsNixlSender)
+        sender._available = True
+        sender._encode_item = AsyncMock()
+        assert await sender.prepare(feats) == (None, [])
+        sender._encode_item.assert_not_awaited()
 
 
 class TestMmKwargsShmTransfer:
@@ -194,32 +193,17 @@ class TestMmKwargsShmTransfer:
         await sender.cleanup(handles)
 
     @pytest.mark.asyncio
-    async def test_skips_none_data_features(self):
-        """Features with data=None are skipped, hashes still collected."""
+    async def test_incomplete_features_fall_back_before_allocation(self):
+        """A cache hit cannot shift later kwargs onto the wrong hash."""
         feats = [
             _make_feature(data="real_data_0", mm_hash="hash_0"),
             _make_feature(data=None, mm_hash="hash_1"),
             _make_feature(data="real_data_2", mm_hash="hash_2"),
         ]
-
         sender = MmKwargsShmSender()
-        extra_update, handles = await sender.prepare(feats, modality="image")
-
-        assert extra_update is not None
-        meta = extra_update["mm_kwargs_shm"]
-        assert len(meta["items"]) == 2  # Only 2 features had data
-        assert meta["mm_hashes"] == ["hash_0", "hash_1", "hash_2"]  # All hashes
-
-        receiver = MmKwargsShmReceiver()
-        results = await receiver.receive(
-            MmKwargsShmTransferMetadata.model_validate(meta)
-        )
-        items = results["__pickled_kwargs_item__"]
-        assert len(items) == 2
-        assert pickle.loads(items[0]) == "real_data_0"
-        assert pickle.loads(items[1]) == "real_data_2"
-
-        await sender.cleanup(handles)
+        sender._encode_item = AsyncMock()
+        assert await sender.prepare(feats) == (None, [])
+        sender._encode_item.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_all_none_data_returns_none(self):
@@ -259,6 +243,77 @@ class TestMmKwargsShmTransfer:
         # Verify SHM is gone
         with pytest.raises(FileNotFoundError):
             shm_mod.SharedMemory(name=name, create=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["shm", "nixl"])
+@pytest.mark.parametrize("modality", ["image", "video", "audio", "vision_chunk"])
+async def test_homogeneous_transfer_retains_modality_and_duplicate_hashes(
+    transport, modality
+):
+    """Transport envelopes describe the actual media, in original order."""
+    features = [
+        _make_feature(data={"index": i}, mm_hash="same", modality=modality)
+        for i in range(2)
+    ]
+    if transport == "shm":
+        sender = MmKwargsShmSender()
+    else:
+        sender = MmKwargsNixlSender.__new__(MmKwargsNixlSender)
+        sender._available = True
+        sender._encode_item = AsyncMock(
+            side_effect=lambda i, data: (
+                TensorTransferSpec(
+                    field_name="__pickled_kwargs_item__",
+                    shape=[len(data)],
+                    dtype_str="uint8",
+                    serialized_request={"index": i},
+                ),
+                None,
+            )
+        )
+    extra, handles = await sender.prepare(features, modality=modality)
+    try:
+        metadata = extra[f"mm_kwargs_{transport}"]
+        assert metadata["modality"] == modality
+        assert metadata["mm_hashes"] == ["same", "same"]
+        key = "items" if transport == "shm" else "tensor_specs"
+        assert len(metadata[key]) == 2
+    finally:
+        await sender.cleanup(handles)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["shm", "nixl"])
+@pytest.mark.parametrize(
+    "invalid",
+    ["mixed", "missing_hash", "empty_hash", "bad_hash", "masked", "unsupported"],
+)
+async def test_unsafe_features_do_not_allocate(transport, invalid):
+    """Reject unsupported envelopes before SHM allocation or NIXL registration."""
+    features = [_make_feature(data="first"), _make_feature(data="second")]
+    modality = "image"
+    if invalid == "mixed":
+        features[1].modality = "video"
+    elif invalid in {"missing_hash", "empty_hash", "bad_hash"}:
+        features[1].mm_hash = {"missing_hash": None, "empty_hash": "", "bad_hash": 3}[
+            invalid
+        ]
+    elif invalid == "masked":
+        features[1].mm_position.is_embed = [True, False]
+    else:
+        modality = "unknown"
+        for feature in features:
+            feature.modality = modality
+    sender = (
+        MmKwargsShmSender()
+        if transport == "shm"
+        else MmKwargsNixlSender.__new__(MmKwargsNixlSender)
+    )
+    sender._available = True
+    sender._encode_item = AsyncMock()
+    assert await sender.prepare(features, modality=modality) == (None, [])
+    sender._encode_item.assert_not_awaited()
 
 
 class TestMmKwargsShmCleanupErrorHandling:

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine as _FakeRoutedEngine
+from _routed_engine_fakes import FakeRoutedItem as _FakeRoutedItem
 from transformers import AutoTokenizer
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.exceptions import VLLMValidationError
@@ -1005,20 +1006,23 @@ async def test_generator_renderer_errors(vllm_processor_module, stream, error_ki
         }
     )
     chunks = []
-    expected = DynamoInvalidArgument if error_kind == "validation" else type(error)
     try:
-        with pytest.raises(expected) as caught:
-            async for chunk in generator:
-                chunks.append(chunk)
+        if error_kind in ("validation", "cancelled"):
+            expected = DynamoInvalidArgument if error_kind == "validation" else type(error)
+            with pytest.raises(expected) as caught:
+                async for chunk in generator:
+                    chunks.append(chunk)
+            if error_kind == "validation":
+                assert str(caught.value) == str(error)
+                assert caught.value.__cause__ is error
+            else:
+                assert caught.value is error
+            assert chunks == []
+        else:
+            chunks = [chunk async for chunk in generator]
+            assert chunks == [vllm_processor_module._internal_error_envelope()]
     finally:
         await generator.aclose()
-
-    if error_kind == "validation":
-        assert str(caught.value) == str(error)
-        assert caught.value.__cause__ is error
-    else:
-        assert caught.value is error
-    assert chunks == []
     renderer.render_messages_async.assert_awaited_once()
     renderer.process_for_engine_async.assert_not_called()
     processor.input_processor.process_inputs.assert_not_called()
@@ -1052,10 +1056,88 @@ def test_validation_import_without_exception_class(vllm_processor_module, monkey
     assert namespace["_VALIDATION_ERRORS"] == ()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modalities",
+    [
+        ["image", "image", "video", "image"],
+        ["audio", "image", "video", "audio", "image"],
+        ["image", "image"],
+        ["video", "video"],
+        ["audio", "audio"],
+        ["vision_chunk", "vision_chunk"],
+    ],
+)
+async def test_mm_routing_groups_hashes_and_placeholders_in_order(
+    vllm_processor_module, modalities
+):
+    """Interleaved and cached features retain identity without flat mixed hashes."""
+    processor = _make_processor(vllm_processor_module, None)
+    processor.nixl_mm_enabled = False
+    processor.block_size = 16
+    features = [
+        SimpleNamespace(
+            modality=modality,
+            mm_hash="abcdef" if i % 2 == 0 else None,
+            identifier="not-the-content-hash",
+            mm_position=SimpleNamespace(offset=i, length=1, is_embed=None),
+            data=None,
+        )
+        for i, modality in enumerate(modalities)
+    ]
+    preproc = SimpleNamespace(
+        mm_features=features, prompt_token_ids=[1] * len(features)
+    )
+    payload = {}
+    routing, cleanup, transferred = await processor._prepare_mm_routing(
+        preproc, payload
+    )
+    extra = payload["extra_args"]
+    for modality in set(modalities):
+        indices = [i for i, value in enumerate(modalities) if value == modality]
+        assert extra["mm_hashes_by_modality"][modality] == [
+            features[i].mm_hash for i in indices
+        ]
+        assert extra["mm_placeholders_by_modality"][modality] == [
+            (i, 1) for i in indices
+        ]
+    assert ("mm_hashes" in extra) == (set(modalities) == {"image"})
+    assert ("mm_placeholders" in extra) == (set(modalities) == {"image"})
+    assert routing is not None
+    assert cleanup == []
+    assert transferred is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modality", ["image", "video", "audio", "vision_chunk"])
+async def test_mm_routing_transfers_actual_modality(vllm_processor_module, modality):
+    processor = _make_processor(vllm_processor_module, None)
+    processor.nixl_mm_enabled = True
+    processor.block_size = 16
+    processor._sender = SimpleNamespace(
+        prepare=AsyncMock(return_value=({"mm_kwargs_shm": {}}, []))
+    )
+    features = [
+        SimpleNamespace(
+            modality=modality,
+            mm_hash="abcdef",
+            mm_position=SimpleNamespace(offset=0, length=1, is_embed=None),
+            data={"values": [1]},
+        )
+    ]
+    payload = {}
+    _, _, transferred = await processor._prepare_mm_routing(
+        SimpleNamespace(mm_features=features, prompt_token_ids=[1]), payload
+    )
+    processor._sender.prepare.assert_awaited_once_with(features, modality=modality)
+    assert transferred is True
+
+
 class TestRoutedEnginePath:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("response_format", "schema"), _RESPONSE_FORMATS)
     @pytest.mark.parametrize("native_tools", [False, True])
+    @pytest.mark.parametrize("transferred", [False, True])
     async def test_generator_routes_response_format_and_reasoning_metadata(
         self,
         vllm_processor_module,
@@ -1064,6 +1146,7 @@ class TestRoutedEnginePath:
         schema,
         native_registry,
         native_tools,
+        transferred,
     ):
         module = vllm_processor_module
         routed_engine = _FakeRoutedEngine()
@@ -1089,14 +1172,31 @@ class TestRoutedEnginePath:
             generation_config_fields={},
             process_inputs=process_inputs,
         )
-        processor._prepare_mm_routing = AsyncMock(return_value=(None, [], False))
+        cleanup_items = [object()]
+        processor._prepare_mm_routing = AsyncMock(
+            return_value=(None, cleanup_items, transferred)
+        )
+        processor._sender = SimpleNamespace(cleanup=AsyncMock())
         monkeypatch.setattr(
             module.InputProcessor, "assign_request_id", lambda request: None
         )
         monkeypatch.setattr(
             module, "StreamingPostProcessor", lambda **kwargs: _FakePostProcessor()
         )
+        media = {
+            "image_url": "https://example.com/image.png",
+            "video_url": "https://example.com/video.mp4",
+            "audio_url": "https://example.com/audio.wav",
+        }
         request = _structured_request(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": key, key: {"url": url}} for key, url in media.items()
+                    ],
+                }
+            ],
             response_format=response_format,
             max_tokens=17,
             temperature=0.25,
@@ -1112,9 +1212,13 @@ class TestRoutedEnginePath:
             )
 
         _ = [chunk async for chunk in processor._generator_inner(request)]
+        processor._sender.cleanup.assert_awaited_once_with(cleanup_items)
 
         assert len(routed_engine.requests) == 1
         payload = routed_engine.requests[0]
+        assert payload["multi_modal_data"] == {
+            key: [{"Url": url}] for key, url in media.items()
+        }
         expected = {"structural_tag": _NATIVE_TAG} if native_tools else {"json": schema}
         assert payload["sampling_options"]["guided_decoding"] == expected
         assert payload["sampling_options"]["temperature"] == 0.25
@@ -1155,9 +1259,10 @@ class TestRoutedEnginePath:
         }
 
     @pytest.mark.asyncio
-    async def test_routed_stream_produces_openai_chunks(self, vllm_processor_module):
+    @pytest.mark.parametrize("index", [{}, {"index": None}, {"index": 0}])
+    async def test_routed_stream_produces_openai_chunks(self, vllm_processor_module, index):
         routed_engine = _FakeRoutedEngine(
-            [{"token_ids": [101], "index": 0, "finish_reason": None}]
+            [None, {"token_ids": [101], "finish_reason": None, **index}]
         )
         processor = _make_processor(vllm_processor_module, routed_engine)
 
@@ -1190,6 +1295,200 @@ class TestRoutedEnginePath:
             "output_tokens": 1,
             "chunk_tokens": 1,
         }
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed_error", ["http", "dynamo"])
+@pytest.mark.parametrize("stage", ["preprocess", "stream_setup", "stream"])
+async def test_generator_preserves_explicit_error_classification(
+    vllm_processor_module, typed_error, stage
+):
+    from dynamo.llm.exceptions import HttpError, InvalidArgument
+
+    error = (
+        HttpError(429, "Retry later")
+        if typed_error == "http"
+        else InvalidArgument("bad input")
+    )
+    processor = _make_processor(vllm_processor_module, None)
+
+    async def failing_stream():
+        raise error
+        yield
+
+    if stage == "stream_setup":
+        processor.routed_engine = SimpleNamespace(generate=AsyncMock(side_effect=error))
+    elif stage == "stream":
+        processor.routed_engine = SimpleNamespace(
+            generate=AsyncMock(return_value=failing_stream())
+        )
+
+    async def inner(*args, **kwargs):
+        if stage == "preprocess":
+            raise error
+        for chunk in await _run_generate(processor, _base_preproc()):
+            yield chunk
+
+    processor._generator_inner = inner
+    with pytest.raises(type(error)) as caught:
+        await anext(processor.generator({}))
+    assert caught.value is error
+    assert processor.output_processor.request_states == {}
+    if stage != "preprocess":
+        assert processor.output_processor.aborted_requests == [(["vllm-request"], True)]
+
+
+@pytest.mark.asyncio
+async def test_stream_setup_error_survives_abort_failure(vllm_processor_module):
+    processor = _make_processor(
+        vllm_processor_module,
+        SimpleNamespace(generate=AsyncMock(side_effect=ValueError("private detail"))),
+    )
+    processor.output_processor.abort_requests = Mock(side_effect=RuntimeError("cleanup"))
+    assert await _run_generate(processor, _base_preproc()) == [
+        vllm_processor_module._internal_error_envelope()
+    ]
+    processor.output_processor.abort_requests.assert_called_once_with(
+        ["vllm-request"], internal=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_chunk", [False, True])
+@pytest.mark.parametrize("error_type", [{"Backend": "Unknown"}, "InvalidArgument"])
+async def test_backend_error_preserves_envelope_and_stops(
+    vllm_processor_module, after_chunk, error_type
+):
+    envelope = {
+        "_dynamo_annotated": True,
+        "event": "error",
+        "id": "backend-id",
+        "comment": ["backend diagnostic"],
+        "error": {"error_type": error_type, "message": "original message"},
+    }
+    error = _FakeRoutedItem(None, is_error=True)
+    error.to_error_envelope = Mock(return_value=envelope)
+    chunk = {"token_ids": [101]}
+    engine = _FakeRoutedEngine(([chunk] if after_chunk else []) + [error, chunk])
+    processor = _make_processor(vllm_processor_module, engine)
+
+    chunks = await _run_generate(processor, _base_preproc())
+
+    assert len(chunks) == 1 + after_chunk
+    assert chunks[-1] is envelope
+    error.to_error_envelope.assert_called_once_with()
+    assert engine.kwargs == [{"context": None, "error_passthrough": True}]
+    assert processor.output_processor.request_states == {}
+    assert processor.output_processor.aborted_requests == [(["vllm-request"], True)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"error": "sensitive backend detail"},
+        [],
+        {"token_ids": [1], "index": -1},
+        {"token_ids": [1], "index": False},
+        {"token_ids": [1], "index": "0"},
+    ],
+)
+async def test_invalid_engine_output_is_terminal_internal_error(
+    vllm_processor_module, response
+):
+    processor = _make_processor(
+        vllm_processor_module, _FakeRoutedEngine([response, {"token_ids": [2]}])
+    )
+    chunks = await _run_generate(processor, _base_preproc())
+    assert chunks == [
+        {
+            "_dynamo_annotated": True,
+            "event": "error",
+            "error": {
+                "error_type": {"Backend": "Unknown"},
+                "message": "Internal server error",
+            },
+        }
+    ]
+    assert processor.output_processor.request_states == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_chunk", [False, True])
+@pytest.mark.parametrize("failure", [ValueError(), TypeError("secret"), RuntimeError()])
+async def test_stream_exception_is_safe_and_closes_nvtx(
+    vllm_processor_module, monkeypatch, after_chunk, failure, caplog
+):
+    module = vllm_processor_module
+    end_range = Mock()
+    monkeypatch.setattr(module._nvtx, "end_range", end_range)
+
+    async def stream():
+        if after_chunk:
+            yield _FakeRoutedItem({"token_ids": [1]})
+        raise failure
+
+    engine = SimpleNamespace(generate=AsyncMock(return_value=stream()))
+    processor = _make_processor(module, engine)
+    chunks = await _run_generate(processor, _base_preproc())
+    assert len(chunks) == 1 + after_chunk
+    assert chunks[-1] == module._internal_error_envelope()
+    assert any(record.exc_info for record in caplog.records)
+    assert processor.output_processor.request_states == {}
+    end_range.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_postprocessor_index_stops_before_next_chunk(vllm_processor_module):
+    processor = _make_processor(
+        vllm_processor_module,
+        _FakeRoutedEngine([{"token_ids": [1]}, {"token_ids": [2]}]),
+    )
+    processor.output_processor.process_outputs = Mock(
+        return_value=SimpleNamespace(
+            reqs_to_abort=[],
+            request_outputs=[SimpleNamespace(outputs=[SimpleNamespace(index=9)])],
+        )
+    )
+    assert await _run_generate(processor, _base_preproc()) == [
+        vllm_processor_module._internal_error_envelope()
+    ]
+    processor.output_processor.process_outputs.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close", [False, True])
+async def test_stream_cancellation_and_close_release_request(
+    vllm_processor_module, monkeypatch, close
+):
+    module = vllm_processor_module
+    end_range = Mock()
+    monkeypatch.setattr(module._nvtx, "end_range", end_range)
+
+    async def stream():
+        yield _FakeRoutedItem({"token_ids": [1]})
+        raise asyncio.CancelledError()
+
+    processor = _make_processor(
+        module, SimpleNamespace(generate=AsyncMock(return_value=stream()))
+    )
+    generator = processor._generate_and_stream(
+        "request-id",
+        {"model": MODEL},
+        _base_preproc(),
+        [1, 2, 3],
+        SimpleNamespace(
+            sampling_params=SimpleNamespace(n=1), request_id="vllm-request"
+        ),
+        {0: _FakePostProcessor()},
+    )
+    assert "data" in await anext(generator)
+    if close:
+        await generator.aclose()
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await anext(generator)
+    assert processor.output_processor.request_states == {}
+    end_range.assert_called_once()
 
 
 OBJECT_TYPED_TOOL_REQUEST = {

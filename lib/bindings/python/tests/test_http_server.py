@@ -74,6 +74,23 @@ class MockHttpEngine:
         elif MSG_CONTAINS_INTERNAL_ERROR.lower() in user_message.lower():
             raise ValueError("Simulated internal error")
 
+        envelope = None
+        if user_message.startswith("annotated:"):
+            _, category, timing = user_message.split(":")
+            envelope = {
+                "_dynamo_annotated": True,
+                "event": "error",
+                "error": {
+                    "error_type": {"Backend": category},
+                    "message": "invalid image count"
+                    if category == "InvalidArgument"
+                    else "secret /private/backend.py UUID/data mismatch",
+                },
+            }
+            if timing == "early":
+                yield envelope
+                return
+
         # Stream a mock response
         created = int(time.time())
         response_text = "This is a mock response."
@@ -92,6 +109,9 @@ class MockHttpEngine:
                     }
                 ],
             }
+            if envelope is not None:
+                yield envelope
+                return
             await asyncio.sleep(0.01)
 
 
@@ -211,3 +231,55 @@ async def test_chat_completion_http_error(http_server, msg_to_code: tuple[str, i
                 # detail is logged server-side.
                 assert "simulated internal error" not in str(error_json).lower()
                 assert "internal server error" in str(error_json).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.forked
+@pytest.mark.parametrize("category,code", [("InvalidArgument", 400), ("Unknown", 500)])
+@pytest.mark.parametrize("timing", ["early", "late"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_annotated_error_survives_python_http_hop(
+    http_server, category, code, timing, stream
+):
+    """Tagged errors never enter chat-data decoding; HTTP retains safe 400/500 errors."""
+    base_url, model_name = http_server
+    async with (
+        aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session,
+        session.post(
+            f"{base_url}/v1/chat/completions",
+            json={
+                "model": model_name,
+                "messages": [
+                    {"role": "user", "content": f"annotated:{category}:{timing}"}
+                ],
+                "stream": stream,
+            },
+        ) as response,
+    ):
+        body = await response.text()
+        assert "missing field" not in body
+        assert "secret" not in body
+        assert "/private/" not in body
+        if stream and response.status == 200:
+            frames = [
+                json.loads(line[6:])
+                for line in body.splitlines()
+                if line.startswith("data: ") and line[6:] != "[DONE]"
+            ]
+            errors = [frame["error"] for frame in frames if "error" in frame]
+            assert len(errors) == 1
+            assert frames[-1] == {"error": errors[0]}
+            assert errors[0]["code"] == code
+            assert "data: [DONE]" in body
+            if timing == "late":
+                assert any("choices" in frame for frame in frames[:-1])
+        else:
+            assert response.status == code
+            error = json.loads(body)
+            assert error["code"] == code
+            assert error["message"]
+            assert error["type"]
+        if code == 400:
+            assert "invalid image count" in body
+        else:
+            assert "internal server error" in body.lower()

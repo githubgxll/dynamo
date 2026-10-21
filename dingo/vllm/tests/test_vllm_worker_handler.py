@@ -1707,6 +1707,330 @@ class TestPadMmHashesTo64:
         assert mod._pad_mm_hashes_to_64(["abc", h64]) == ["abc" + "0" * 61, h64]
 
 
+class TestMultimodalIdentityForwarding:
+    """UUIDs retain modality and order; vLLM owns media item-count parsing."""
+
+    @pytest.mark.parametrize(
+        "groups,media",
+        [
+            (
+                {"image": ["a", "b", "a"], "video": ["v"]},
+                {"image": [object()] * 3, "video": (object(), {})},
+            ),
+            ({"audio": ["a"]}, {"audio": (np.zeros(8), 16000)}),
+            ({"video": ["v"]}, {"video": (object(), {})}),
+            ({"image": ["a", None]}, {"image": [object(), object()]}),
+            (
+                {"image": ["i"], "audio": ["a", "a"], "video": ["v"]},
+                {"image": object(), "audio": [object(), object()], "video": object()},
+            ),
+        ],
+    )
+    def test_grouped_uuids_preserve_order_duplicates_and_missing_hashes(
+        self, groups, media
+    ):
+        handler = _make_decode_handler()
+        handler._use_unified_vision_chunk = False
+        prompt, _, error = handler._build_prompt_from_request(
+            {
+                "token_ids": [1],
+                "extra_args": {
+                    "mm_hashes_by_modality": groups,
+                    "mm_hashes": ["ignored"],
+                },
+            },
+            "req",
+            media,
+        )
+        assert error is None
+        assert prompt["multi_modal_uuids"] == {
+            modality: mod._pad_mm_hashes_to_64(hashes)
+            for modality, hashes in groups.items()
+        }
+        assert prompt["multi_modal_data"] is media
+
+    @pytest.mark.parametrize("modality", ["image", "vision_chunk"])
+    @pytest.mark.parametrize("grouped", [True, False])
+    def test_kimi_image_compatibility(self, modality, grouped):
+        handler = _make_decode_handler()
+        handler._use_unified_vision_chunk = True
+        extra = (
+            {"mm_hashes_by_modality": {modality: ["i"]}}
+            if grouped
+            else {"mm_hashes": ["i"]}
+        )
+        prompt, _, error = handler._build_prompt_from_request(
+            {"token_ids": [1], "extra_args": extra}, "req", {"vision_chunk": object()}
+        )
+        assert error is None
+        assert prompt["multi_modal_uuids"] == {"vision_chunk": ["i".ljust(64, "0")]}
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"mm_hashes_by_modality": None},
+            {"mm_hashes_by_modality": []},
+            {"mm_hashes_by_modality": {"image": "hash"}},
+            {"mm_hashes_by_modality": {"image": [3]}},
+            {"mm_hashes_by_modality": {"other": ["a"]}},
+            {"mm_hashes_by_modality": {"image": [""]}},
+            {"mm_placeholders_by_modality": {"image": [[0, 1]]}},
+            {
+                "mm_hashes_by_modality": {"image": ["a"]},
+                "mm_placeholders_by_modality": {"video": [[0, 1]]},
+            },
+            {
+                "mm_hashes_by_modality": {"image": ["a"]},
+                "mm_placeholders_by_modality": {"image": []},
+            },
+            {
+                "mm_hashes_by_modality": {"image": ["a"]},
+                "mm_placeholders_by_modality": {"image": [[-1, 1]]},
+            },
+        ],
+    )
+    def test_malformed_grouped_metadata_never_uses_flat_fallback(self, extra):
+        handler = _make_decode_handler()
+        handler._use_unified_vision_chunk = False
+        prompt, _, error = handler._build_prompt_from_request(
+            {"token_ids": [1], "extra_args": {"mm_hashes": ["legacy"], **extra}},
+            "req",
+            {"image": object()},
+        )
+        assert prompt is None
+        assert "Invalid multimodal metadata" in error["finish_reason"]
+
+    @pytest.mark.parametrize(
+        "media",
+        [
+            {"video": object()},
+            {"audio": object()},
+            {"image": object(), "video": object()},
+        ],
+    )
+    def test_legacy_flat_hashes_reject_non_image_media(self, media):
+        handler = _make_decode_handler()
+        prompt, _, error = handler._build_prompt_from_request(
+            {"token_ids": [1], "extra_args": {"mm_hashes": ["a"]}},
+            "req",
+            media,
+        )
+        assert prompt is None
+        assert "Legacy flat mm_hashes require pure image" in error["finish_reason"]
+
+    @pytest.mark.parametrize("kimi", [True, False])
+    def test_legacy_image_uuids(self, kimi):
+        handler = _make_decode_handler()
+        handler._use_unified_vision_chunk = kimi
+        modality = "vision_chunk" if kimi else "image"
+        prompt, _, error = handler._build_prompt_from_request(
+            {"token_ids": [1], "extra_args": {"mm_hashes": ["i", None]}},
+            "req",
+            {modality: [object(), object()]},
+        )
+        assert error is None
+        assert prompt["multi_modal_uuids"] == {modality: ["i".ljust(64, "0"), None]}
+
+    @pytest.mark.asyncio
+    async def test_video_extracted_audio_keeps_its_own_uuid(self):
+        handler = _make_decode_handler()
+        handler._use_unified_vision_chunk = False
+        video = (object(), {})
+        audio = (np.zeros(8), 16000)
+        handler.video_loader = SimpleNamespace(
+            load_video_batch=AsyncMock(return_value=[video])
+        )
+        handler.audio_loader = SimpleNamespace(load_audio=AsyncMock(return_value=audio))
+        request = {
+            "token_ids": [1],
+            "multi_modal_data": {
+                "video_url": [{"Url": "https://example.com/video.mp4"}]
+            },
+            "extra_args": {"mm_hashes_by_modality": {"video": ["v"], "audio": ["a"]}},
+        }
+        kwargs = {"use_audio_in_video": True}
+        media = await handler._extract_multimodal_data(request, "req", None, kwargs)
+        prompt, _, error = handler._build_prompt_from_request(
+            request,
+            "req",
+            media,
+            mm_processor_kwargs=kwargs,
+        )
+        assert error is None
+        assert media["audio"] is audio
+        assert media["video"] is video
+        assert prompt["multi_modal_uuids"] == {
+            "video": ["v".ljust(64, "0")],
+            "audio": ["a".ljust(64, "0")],
+        }
+        assert prompt["mm_processor_kwargs"] == kwargs
+        handler.audio_loader.load_audio.assert_awaited_once_with(
+            "https://example.com/video.mp4"
+        )
+
+    def test_explicit_and_video_audio_reject_ambiguous_uuid_order(self):
+        handler = _make_decode_handler()
+        request = {
+            "token_ids": [1],
+            "multi_modal_data": {
+                "video_url": [{"Url": "video"}],
+                "audio_url": [{"Url": "audio"}],
+            },
+            "extra_args": {
+                "mm_hashes_by_modality": {"audio": ["a", "b"], "video": ["v"]}
+            },
+        }
+        prompt, _, error = handler._build_prompt_from_request(
+            request,
+            "req",
+            {"video": object(), "audio": [object(), object()]},
+            mm_processor_kwargs={"use_audio_in_video": True},
+        )
+        assert prompt is None
+        assert "ambiguous" in error["finish_reason"]
+
+
+class TestReceiveMultimodalIdentity:
+    """Reject incomplete transfer envelopes before publishing cache entries."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("modality", ["image", "vision_chunk", "video", "audio"])
+    @pytest.mark.parametrize("transport", ["shm", "nixl"])
+    async def test_single_modality_transfer(self, modality, transport):
+        handler = _make_decode_handler()
+        handler.engine_client = MagicMock()
+        extra = {
+            "mm_hashes_by_modality": {modality: ["a"]},
+            "mm_placeholders_by_modality": {modality: [[0, 1]]},
+            "expanded_token_ids": [1],
+        }
+        metadata = SimpleNamespace(modality=modality, mm_hashes=["a"])
+        setattr(metadata, "tensor_specs" if transport == "nixl" else "items", [{}])
+        receiver = SimpleNamespace(
+            receive=AsyncMock(
+                return_value={
+                    "__pickled_kwargs_item__": [
+                        mod.pickle.dumps(mod.MultiModalKwargsItem())
+                    ]
+                }
+            )
+        )
+        result = await handler._receive_mm_kwargs(extra, transport, receiver, metadata)
+        assert result["mm_hashes"] == {modality: ["a".ljust(64, "0")]}
+        assert list(result["mm_kwargs"]) == [modality]
+        handler.engine_client.input_processor.inject_into_mm_cache.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "modality",
+            "hash",
+            "metadata_count",
+            "received_count",
+            "item_type",
+            "placeholder_count",
+            "placeholder_range",
+            "missing_hash",
+            "mixed",
+            "missing_placeholders",
+        ],
+    )
+    @pytest.mark.parametrize("transport", ["shm", "nixl"])
+    async def test_inconsistent_transfer_falls_back_without_cache_injection(
+        self, failure, transport
+    ):
+        handler = _make_decode_handler()
+        handler.engine_client = MagicMock()
+        extra = {
+            "mm_hashes_by_modality": {"image": ["a"]},
+            "mm_placeholders_by_modality": {"image": [[0, 1]]},
+            "expanded_token_ids": [1],
+        }
+        metadata = SimpleNamespace(modality="image", mm_hashes=["a"])
+        item_field = "tensor_specs" if transport == "nixl" else "items"
+        setattr(metadata, item_field, [{}])
+        items = [mod.pickle.dumps(mod.MultiModalKwargsItem())]
+        if failure == "modality":
+            metadata.modality = "video"
+        elif failure == "hash":
+            metadata.mm_hashes = ["other"]
+        elif failure == "metadata_count":
+            setattr(metadata, item_field, [])
+        elif failure == "received_count":
+            items *= 2
+        elif failure == "item_type":
+            items = [mod.pickle.dumps({})]
+        elif failure == "placeholder_count":
+            extra["mm_placeholders_by_modality"]["image"] = []
+        elif failure == "placeholder_range":
+            extra["mm_placeholders_by_modality"]["image"] = [[0, 2]]
+        elif failure == "missing_hash":
+            extra["mm_hashes_by_modality"]["image"] = [None]
+            metadata.mm_hashes = [None]
+        elif failure == "mixed":
+            extra["mm_hashes_by_modality"]["video"] = ["v"]
+            extra["mm_placeholders_by_modality"]["video"] = [[0, 1]]
+        else:
+            del extra["mm_placeholders_by_modality"]
+        receiver = SimpleNamespace(
+            receive=AsyncMock(return_value={"__pickled_kwargs_item__": items})
+        )
+        assert (
+            await handler._receive_mm_kwargs(extra, transport, receiver, metadata)
+            is None
+        )
+        handler.engine_client.input_processor.inject_into_mm_cache.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["mm_kwargs_shm", "mm_kwargs_nixl"])
+    async def test_malformed_transport_metadata_falls_back(self, field):
+        handler = _make_decode_handler()
+        assert await handler._try_receive_mm_kwargs(
+            {"extra_args": {field: {"modality": "image"}}}
+        ) is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_mixed_request_cannot_skip_video_processing(self):
+        handler = _make_decode_handler()
+        handler._receive_mm_kwargs = AsyncMock()
+        request = {
+            "multi_modal_data": {"video_url": [{"Url": "video"}]},
+            "extra_args": {
+                "mm_kwargs_shm": {"modality": "image", "items": [], "mm_hashes": ["i"]},
+                "mm_hashes": ["i"],
+            },
+        }
+        assert await handler._try_receive_mm_kwargs(request) is None
+        handler._receive_mm_kwargs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_image_transfer(self):
+        handler = _make_decode_handler()
+        handler.engine_client = MagicMock()
+        metadata = SimpleNamespace(modality="image", mm_hashes=["a"], items=[{}])
+        receiver = SimpleNamespace(
+            receive=AsyncMock(
+                return_value={
+                    "__pickled_kwargs_item__": [
+                        mod.pickle.dumps(mod.MultiModalKwargsItem())
+                    ]
+                }
+            )
+        )
+        result = await handler._receive_mm_kwargs(
+            {
+                "mm_hashes": ["a"],
+                "mm_placeholders": [[0, 1]],
+                "expanded_token_ids": [1],
+            },
+            "shm",
+            receiver,
+            metadata,
+        )
+        assert result["mm_hashes"] == {"image": ["a".ljust(64, "0")]}
+
+
 class TestRLAdminRouteHardening:
     """Regressions for the codex round-2 RL admin fixes."""
 

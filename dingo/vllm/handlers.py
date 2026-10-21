@@ -374,7 +374,7 @@ class VllmEnginePauseController:
         self._generation_paused = False
 
 
-def _pad_mm_hashes_to_64(mm_hashes: list[str]) -> list[str]:
+def _pad_mm_hashes_to_64(mm_hashes: list[str | None]) -> list[str | None]:
     """Pad the frontend's canonical 16-char hex hashes to vLLM's 64-char
     BlockStored form. The router's parse_mm_hash_from_extra_key keys on the
     64-char length to distinguish MM hashes from other extra_keys, so vLLM
@@ -383,6 +383,53 @@ def _pad_mm_hashes_to_64(mm_hashes: list[str]) -> list[str]:
     return [
         h.ljust(64, "0") if isinstance(h, str) and len(h) < 64 else h for h in mm_hashes
     ]
+
+
+_MM_MODALITIES = frozenset({"image", "vision_chunk", "video", "audio"})
+
+
+def _validate_mm_hashes(hashes: Any) -> None:
+    if not isinstance(hashes, list) or any(
+        h is not None and (not isinstance(h, str) or not h) for h in hashes
+    ):
+        raise ValueError("Multimodal hashes must be a list of nonempty strings or None")
+
+
+def _grouped_mm_hashes(extra_args: dict[str, Any]) -> dict | None:
+    if "mm_hashes_by_modality" not in extra_args:
+        if "mm_placeholders_by_modality" in extra_args:
+            raise ValueError("Grouped multimodal placeholders require grouped hashes")
+        return None
+    grouped = extra_args["mm_hashes_by_modality"]
+    if (
+        not isinstance(grouped, dict)
+        or not grouped
+        or not set(grouped) <= _MM_MODALITIES
+    ):
+        raise ValueError(
+            "Invalid mm_hashes_by_modality: expected supported modality groups"
+        )
+    for hashes in grouped.values():
+        _validate_mm_hashes(hashes)
+    if "mm_placeholders_by_modality" in extra_args:
+        placeholders = extra_args["mm_placeholders_by_modality"]
+        if not isinstance(placeholders, dict) or set(placeholders) != set(grouped):
+            raise ValueError(
+                "Grouped multimodal placeholders must match hash modalities"
+            )
+        for modality, positions in placeholders.items():
+            if not isinstance(positions, list) or len(positions) != len(
+                grouped[modality]
+            ):
+                raise ValueError("Grouped multimodal placeholder/hash counts differ")
+            for position in positions:
+                if (
+                    not isinstance(position, (list, tuple))
+                    or len(position) != 2
+                    or any(type(value) is not int or value < 0 for value in position)
+                ):
+                    raise ValueError("Invalid grouped multimodal placeholder range")
+    return grouped
 
 
 def _compute_mm_uuids(
@@ -2459,19 +2506,32 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
             list(extra_args.keys()),
         )
 
+        if "mm_hashes_by_modality" not in extra_args:
+            raw_media = request.get("multi_modal_data") or {}
+            if raw_media.get(VIDEO_URL_KEY) or raw_media.get(AUDIO_URL_KEY):
+                return None
+
         # SHM path first (same-node, ~1.5ms). Only works when frontend and
         # backend share /dev/shm; if the read fails (cross-node), fall through
         # to normal processing.
         shm_meta_raw = extra_args.get("mm_kwargs_shm")
         if shm_meta_raw:
-            shm_meta = MmKwargsShmTransferMetadata.model_validate(shm_meta_raw)
+            try:
+                shm_meta = MmKwargsShmTransferMetadata.model_validate(shm_meta_raw)
+            except ValueError:
+                logger.warning("Invalid mm_kwargs SHM metadata; falling back")
+                return None
             return await self._receive_mm_kwargs(
                 extra_args, "shm", MmKwargsShmReceiver(), shm_meta
             )
 
         nixl_meta_raw = extra_args.get("mm_kwargs_nixl")
         if nixl_meta_raw:
-            nixl_meta = MmKwargsTransferMetadata.model_validate(nixl_meta_raw)
+            try:
+                nixl_meta = MmKwargsTransferMetadata.model_validate(nixl_meta_raw)
+            except ValueError:
+                logger.warning("Invalid mm_kwargs NIXL metadata; falling back")
+                return None
             if self._mm_kwargs_receiver is None:
                 self._mm_kwargs_receiver = MmKwargsNixlReceiver()
             return await self._receive_mm_kwargs(
@@ -2499,21 +2559,56 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
         color = "magenta" if transport == "nixl" else "cyan"
         rng = _nvtx.start_range(f"mm_backend:{transport}_receive", color=color)
         try:
-            mm_hashes = extra_args.get("mm_hashes")
-            mm_placeholders = extra_args.get("mm_placeholders")
+            if metadata.modality not in _MM_MODALITIES:
+                return None
+            grouped = _grouped_mm_hashes(extra_args)
+            if grouped is not None:
+                placeholders = extra_args.get("mm_placeholders_by_modality")
+                if set(grouped) != {metadata.modality} or placeholders is None:
+                    return None
+                mm_hashes = grouped[metadata.modality]
+                mm_placeholders = placeholders[metadata.modality]
+            else:
+                if metadata.modality not in {"image", "vision_chunk"}:
+                    return None
+                mm_hashes = extra_args.get("mm_hashes")
+                mm_placeholders = extra_args.get("mm_placeholders")
             if not mm_hashes or not mm_placeholders:
                 logger.warning(
                     "[mm-routing] %s present but mm_hashes/mm_placeholders missing",
                     transport,
                 )
                 return None
+            _validate_mm_hashes(mm_hashes)
+            if (
+                any(h is None for h in mm_hashes)
+                or metadata.mm_hashes != mm_hashes
+                or len(metadata.tensor_specs if transport == "nixl" else metadata.items)
+                != len(mm_hashes)
+                or not isinstance(mm_placeholders, list)
+                or len(mm_placeholders) != len(mm_hashes)
+            ):
+                return None
+            expanded_token_ids = extra_args.get("expanded_token_ids")
+            if not isinstance(expanded_token_ids, list) or not expanded_token_ids:
+                return None
+            for position in mm_placeholders:
+                if (
+                    not isinstance(position, (list, tuple))
+                    or len(position) != 2
+                    or any(type(value) is not int or value < 0 for value in position)
+                    or sum(position) > len(expanded_token_ids)
+                ):
+                    return None
             mm_hashes = _pad_mm_hashes_to_64(mm_hashes)
 
             # Receive pickled kwargs items (NVTX wrap is owned by the receiver).
             results = await receiver.receive(metadata)
 
             pickled_items = results.get("__pickled_kwargs_item__")
-            if not pickled_items:
+            if not isinstance(pickled_items, list) or len(pickled_items) != len(
+                mm_hashes
+            ):
                 logger.warning(
                     "[mm-routing] %s: no pickled kwargs items received", transport
                 )
@@ -2539,15 +2634,6 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
             # mm_placeholders and transferred kwargs are aligned to the
             # expanded sequence — using unexpanded tokens would misplace
             # every placeholder.
-            expanded_token_ids = extra_args.get("expanded_token_ids")
-            if not expanded_token_ids:
-                logger.warning(
-                    "[mm-routing] %s: no expanded_token_ids in extra_args, "
-                    "cannot use pre-rendered mm_kwargs; falling back",
-                    transport,
-                )
-                return None
-
             mm_hashes_dict = {metadata.modality: mm_hashes}
             mm_kwargs_dict = {metadata.modality: kwargs_items}
             with _nvtx.annotate(
@@ -2839,19 +2925,59 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
         extra_args = request.get("extra_args") or {}
         forwarded_hashes = extra_args.get("mm_hashes")
         mm_uuids: dict[str, Any] | None = None
-        if forwarded_hashes:
-            forwarded_hashes = _pad_mm_hashes_to_64(forwarded_hashes)
-            # vLLM binds multi_modal_uuids by modality key string match.
-            # For models with use_unified_vision_chunk=True (e.g. Kimi-K2.5)
-            # images live under `vision_chunk`, not `image`; hardcoding
-            # `image` here would silently fail to bind and force vLLM back
-            # to its own content-derived hash, breaking router/worker
-            # cache-key alignment.
-            mm_modality_key = (
-                "vision_chunk" if self._use_unified_vision_chunk else "image"
+        try:
+            grouped = _grouped_mm_hashes(extra_args)
+            if grouped is not None:
+                raw_media = request.get("multi_modal_data") or {}
+                if (
+                    mm_processor_kwargs
+                    and mm_processor_kwargs.get("use_audio_in_video")
+                    and raw_media.get(AUDIO_URL_KEY)
+                    and raw_media.get(VIDEO_URL_KEY)
+                    and "audio" in grouped
+                ):
+                    raise ValueError(
+                        "Grouped audio UUID order is ambiguous with explicit audio "
+                        "and use_audio_in_video"
+                    )
+                mm_uuids = {}
+                for modality, hashes in grouped.items():
+                    key = (
+                        "vision_chunk"
+                        if modality == "image" and self._use_unified_vision_chunk
+                        else modality
+                    )
+                    if key in mm_uuids:
+                        raise ValueError(
+                            "Conflicting image and vision_chunk UUID groups"
+                        )
+                    mm_uuids[key] = _pad_mm_hashes_to_64(hashes)
+            elif forwarded_hashes is not None:
+                _validate_mm_hashes(forwarded_hashes)
+                modalities = set(multi_modal_data or {})
+                if not modalities or not modalities <= {"image", "vision_chunk"}:
+                    raise ValueError(
+                        "Legacy flat mm_hashes require pure image media; "
+                        "use mm_hashes_by_modality for video/audio or mixed media"
+                    )
+                if len(modalities) != 1:
+                    raise ValueError(
+                        "Ambiguous legacy image/vision_chunk UUID metadata"
+                    )
+                key = next(iter(modalities))
+                if key == "image" and self._use_unified_vision_chunk:
+                    key = "vision_chunk"
+                mm_uuids = {key: _pad_mm_hashes_to_64(forwarded_hashes)}
+        except ValueError as exc:
+            return (
+                None,
+                None,
+                {
+                    "finish_reason": f"error: Invalid multimodal metadata: {exc}",
+                    "token_ids": [],
+                },
             )
-            mm_uuids = {mm_modality_key: forwarded_hashes}
-        elif self.embedding_loader is None:
+        if mm_uuids is None and self.embedding_loader is None:
             mm_uuids = _compute_mm_uuids(multi_modal_data)
             if mm_uuids and multi_modal_data:
                 logger.warning(

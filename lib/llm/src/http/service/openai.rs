@@ -1413,19 +1413,7 @@ pub(super) async fn check_for_backend_error(
             continue;
         }
         if let Some((error_msg, status_code)) = extract_backend_error_if_present(&event) {
-            return Err(match SanitizedError::for_backend_status(status_code) {
-                Some(variant) => ErrorMessage::sanitized_with_details(variant, error_msg),
-                // 4xx (non-499): protocol contract — forward backend message as-is.
-                None => (
-                    status_code,
-                    Json(ErrorMessage {
-                        message: error_msg,
-                        error_type: map_error_code_to_error_type(status_code),
-                        code: status_code.as_u16(),
-                        details: None,
-                    }),
-                ),
-            });
+            return Err(backend_error_response(error_msg, status_code));
         }
 
         // First non-annotation, non-error event — push it back and stop;
@@ -1434,6 +1422,40 @@ pub(super) async fn check_for_backend_error(
         break;
     }
     Ok(futures::stream::iter(buffered).chain(stream))
+}
+
+fn backend_error_response(message: String, status: StatusCode) -> ErrorResponse {
+    match SanitizedError::for_backend_status(status) {
+        Some(variant) => ErrorMessage::sanitized_with_details(variant, message),
+        // 4xx (non-499): forward the trusted backend message.
+        None => (
+            status,
+            Json(ErrorMessage {
+                message,
+                error_type: map_error_code_to_error_type(status),
+                code: status.as_u16(),
+                details: None,
+            }),
+        ),
+    }
+}
+
+/// Retain backend classification even after the first data chunk of a unary response.
+async fn aggregate_chat_response(
+    stream: impl futures::Stream<Item = Annotated<NvCreateChatCompletionStreamResponse>>,
+    parsing_options: crate::protocols::openai::ParsingOptions,
+) -> Result<NvCreateChatCompletionResponse, ErrorResponse> {
+    let mut backend_error = None;
+    let stream = stream.take_while(|event| {
+        backend_error = extract_backend_error_if_present(event);
+        futures::future::ready(backend_error.is_none())
+    });
+    let response =
+        NvCreateChatCompletionResponse::from_annotated_stream(stream, parsing_options).await;
+    if let Some((message, status)) = backend_error {
+        return Err(backend_error_response(message, status));
+    }
+    response.map_err(|error| ErrorMessage::sanitized_with_details(SanitizedError::Internal, error))
 }
 
 #[derive(Serialize)]
@@ -1847,21 +1869,12 @@ async fn chat_completions(
             );
         });
 
-        let response =
-            NvCreateChatCompletionResponse::from_annotated_stream(stream, parsing_options.clone())
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        request_id,
-                        "Failed to parse chat completion response: {:?}",
-                        e
-                    );
-                    let err_response = ErrorMessage::internal_server_error(
-                        "Failed to parse chat completion response",
-                    );
-                    inflight_guard.mark_error(extract_error_type_from_response(&err_response));
-                    err_response
-                })?;
+        let response = aggregate_chat_response(stream, parsing_options.clone())
+            .await
+            .map_err(|err_response| {
+                inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+                err_response
+            })?;
 
         inflight_guard.mark_ok();
         // If the engine context was killed (client disconnect), the response was
@@ -2326,16 +2339,12 @@ async fn responses(
             );
         });
 
-        let response =
-            NvCreateChatCompletionResponse::from_annotated_stream(stream, parsing_options.clone())
-                .await
-                .map_err(|e| {
-                    tracing::error!(request_id, "Failed to fold responses stream: {:?}", e);
-                    let err_response =
-                        ErrorMessage::internal_server_error("Failed to fold responses stream");
-                    inflight_guard.mark_error(extract_error_type_from_response(&err_response));
-                    err_response
-                })?;
+        let response = aggregate_chat_response(stream, parsing_options.clone())
+            .await
+            .map_err(|err_response| {
+                inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+                err_response
+            })?;
 
         // Convert NvCreateChatCompletionResponse --> NvResponse
         let response: NvResponse =
@@ -3621,6 +3630,61 @@ mod tests {
                     super::ErrorType::Validation
                 );
                 assert_eq!(response.1.message, message);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unary_chat_errors_keep_classification_after_data() {
+        use dynamo_runtime::error::{BackendError, DynamoError, ErrorType};
+        for (kind, message, status, public_message) in [
+            (
+                BackendError::InvalidArgument,
+                "invalid image count",
+                400,
+                "invalid image count",
+            ),
+            (
+                BackendError::Unknown,
+                "secret /private/backend.py",
+                500,
+                "Internal server error",
+            ),
+            (
+                BackendError::InvalidArgument,
+                r#"{"code":415,"message":"unsupported input"}"#,
+                415,
+                "unsupported input",
+            ),
+        ] {
+            for after_data in [false, true] {
+                let mut events = Vec::new();
+                if after_data {
+                    let data = serde_json::from_value(serde_json::json!({
+                        "id": "chat-test", "object": "chat.completion.chunk",
+                        "created": 0, "model": "test", "choices": []
+                    }))
+                    .unwrap();
+                    events.push(Annotated::from_data(data));
+                }
+                let mut error = Annotated::from_error("");
+                error.error = Some(
+                    DynamoError::builder()
+                        .error_type(ErrorType::Backend(kind))
+                        .message(message)
+                        .build(),
+                );
+                events.push(error);
+                let stream = stream::iter(events).chain(stream::poll_fn(|_| {
+                    panic!("unary aggregation must stop at the first backend error")
+                }));
+                let error = aggregate_chat_response(stream, Default::default())
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.0.as_u16(), status);
+                assert_eq!(error.1.code, status);
+                assert_eq!(error.1.message, public_message);
+                assert!(error.1.details.is_none());
             }
         }
     }

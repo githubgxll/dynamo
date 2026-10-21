@@ -1631,6 +1631,7 @@ async fn process_stream(
 pub(crate) struct AsyncResponseStream {
     rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RsAnnotated<PyObject>>>>,
     annotated: bool,
+    error_passthrough: bool,
 }
 
 impl AsyncResponseStream {
@@ -1641,7 +1642,13 @@ impl AsyncResponseStream {
         Self {
             rx: Arc::new(Mutex::new(rx)),
             annotated,
+            error_passthrough: false,
         }
+    }
+
+    pub(crate) fn with_error_passthrough(mut self, enabled: bool) -> Self {
+        self.error_passthrough = enabled;
+        self
     }
 }
 
@@ -1657,12 +1664,18 @@ impl AsyncResponseStream {
     fn next<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyAny>> {
         let rx = self.rx.clone();
         let annotated = self.annotated;
+        let error_passthrough = self.error_passthrough;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             loop {
                 let value = rx.lock().await.recv().await;
                 match value {
                     Some(pyobj) => {
+                        if error_passthrough && pyobj.is_error() {
+                            return Python::with_gil(|py| {
+                                Annotated { inner: pyobj }.into_py_any(py)
+                            });
+                        }
                         let pyobj = match pyobj.ok() {
                             Ok(pyobj) => pyobj,
                             Err(e) => {
@@ -1737,6 +1750,76 @@ impl PyAsyncRequestStream {
     }
 }
 
+#[cfg(test)]
+mod response_stream_tests {
+    use super::*;
+    use dynamo_runtime::error::{BackendError, DynamoError, ErrorType};
+
+    #[test]
+    fn errors_round_trip_through_python_only_when_opted_in() {
+        pyo3::prepare_freethreaded_python();
+        for error_type in [
+            ErrorType::Backend(BackendError::InvalidArgument),
+            ErrorType::Backend(BackendError::Unknown),
+        ] {
+            for passthrough in [false, true] {
+                for after_data in [false, true] {
+                    Python::with_gil(|py| {
+                        let error = DynamoError::builder()
+                            .error_type(error_type)
+                            .message(r#"{"code":400,"message":"original detail"}"#)
+                            .build();
+                        let (tx, rx) = tokio::sync::mpsc::channel(4);
+                        if after_data {
+                            tx.try_send(RsAnnotated::from_data(py.None())).unwrap();
+                        }
+                        tx.try_send(RsAnnotated {
+                            data: None,
+                            id: Some("request-id".into()),
+                            event: Some("error".into()),
+                            comment: Some(vec!["backend comment".into()]),
+                            error: Some(error.clone()),
+                        })
+                        .unwrap();
+                        drop(tx);
+                        let stream =
+                            AsyncResponseStream::new(rx, true).with_error_passthrough(passthrough);
+                        let locals = PyDict::new(py);
+                        locals
+                            .set_item("stream", Py::new(py, stream).unwrap())
+                            .unwrap();
+                        locals.set_item("after_data", after_data).unwrap();
+                        py.run(c"import asyncio\nasync def consume():\n    if after_data:\n        assert not (await anext(stream)).is_error()\n    return (await anext(stream)).to_error_envelope()\n", Some(&locals), None).unwrap();
+                        let result = py.eval(c"asyncio.run(consume())", Some(&locals), None);
+                        if passthrough {
+                            let envelope = result.unwrap();
+                            assert!(
+                                envelope
+                                    .get_item("_dynamo_annotated")
+                                    .unwrap()
+                                    .is_truthy()
+                                    .unwrap()
+                            );
+                            // The same deserialization used by PythonAsyncEngine must not
+                            // require successful chat response fields (notably `id`).
+                            let decoded: RsAnnotated<dynamo_llm::protocols::openai::chat_completions::NvCreateChatCompletionStreamResponse> =
+                                pythonize::depythonize(&envelope).unwrap();
+                            assert_eq!(
+                                serde_json::to_value(decoded.error).unwrap(),
+                                serde_json::to_value(Some(error)).unwrap()
+                            );
+                            assert_eq!(decoded.id.as_deref(), Some("request-id"));
+                            assert_eq!(decoded.comment.unwrap(), vec!["backend comment"]);
+                        } else {
+                            assert!(result.unwrap_err().is_instance_of::<PyValueError>(py));
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[pyclass]
 struct Annotated {
     inner: RsAnnotated<PyObject>,
@@ -1753,6 +1836,23 @@ impl Annotated {
 
     fn is_error(&self) -> bool {
         self.inner.is_error()
+    }
+
+    /// Export only errors using the wire format accepted by PythonAsyncEngine.
+    fn to_error_envelope<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if !self.inner.is_error() {
+            return Err(PyValueError::new_err("Annotated response is not an error"));
+        }
+        let envelope = RsAnnotated::<serde_json::Value> {
+            data: None,
+            id: self.inner.id.clone(),
+            event: self.inner.event.clone(),
+            comment: self.inner.comment.clone(),
+            error: self.inner.error.clone(),
+        };
+        let envelope = pythonize::pythonize(py, &envelope)?;
+        envelope.set_item("_dynamo_annotated", true)?;
+        Ok(envelope)
     }
 
     fn data(&self) -> Option<PyObject> {
