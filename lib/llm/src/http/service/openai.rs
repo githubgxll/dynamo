@@ -3319,13 +3319,191 @@ where
                         Ok(request)
                     }
                     Err(_) => parse_json_request_lossy(endpoint, body)
+                        .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                         .map_err(|_| json_deserialize_error(original_error)),
                 }
             } else {
                 parse_json_request_lossy(endpoint, body)
+                    .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                     .map_err(|_| json_deserialize_error(original_error))
             }
         }
+    }
+}
+
+/// Retry a body whose strict/lossy deserialization failed by dropping
+/// empty historical tool call stubs from assistant messages.
+///
+/// Some serving stacks emit an extra function call with no id, name, or
+/// meaningful arguments before a real call. Only that empty stub is removed;
+/// partially malformed calls may still carry useful history and must fail
+/// normal request validation instead of being silently discarded.
+fn parse_json_request_repaired_tool_calls<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "tool call repair is only supported for chat completions",
+        )));
+    }
+
+    // Reuse the existing syntax recovery before inspecting the JSON tree.
+    let lossy_body = String::from_utf8_lossy(body);
+    let normalized_body = escape_json_string_control_chars(lossy_body.as_bytes())
+        .unwrap_or_else(|| lossy_body.into_owned().into_bytes());
+
+    // A Value round trip would otherwise erase duplicate object keys and
+    // could make a request with an unrelated schema error appear valid.
+    serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
+
+    let mut repaired = false;
+    if let Some(messages) = value
+        .get_mut("messages")
+        .and_then(|m| m.as_array_mut())
+    {
+        for message in messages.iter_mut() {
+            if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                continue;
+            }
+            let Some(tool_calls) = message
+                .get_mut("tool_calls")
+                .and_then(|t| t.as_array_mut())
+            else {
+                continue;
+            };
+            let before = tool_calls.len();
+            tool_calls.retain(|tool_call| !is_empty_historical_tool_call(tool_call));
+            repaired |= tool_calls.len() != before;
+        }
+    }
+
+    if !repaired {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "no empty historical tool call stubs found to repair",
+        )));
+    }
+
+    let repaired_body =
+        serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
+    let request = serde_json::from_slice(&repaired_body)?;
+    tracing::warn!(
+        endpoint,
+        "Accepted request after dropping empty historical tool call stubs"
+    );
+    Ok(request)
+}
+
+fn is_empty_historical_tool_call(tool_call: &serde_json::Value) -> bool {
+    let Some(call) = tool_call.as_object() else {
+        return false;
+    };
+    if call.get("type").and_then(serde_json::Value::as_str) != Some("function")
+        || call
+            .keys()
+            .any(|key| !matches!(key.as_str(), "type" | "id" | "function"))
+    {
+        return false;
+    }
+    let Some(function) = call.get("function").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    if function
+        .keys()
+        .any(|key| !matches!(key.as_str(), "name" | "arguments"))
+    {
+        return false;
+    }
+
+    let blank = |value: Option<&serde_json::Value>| match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(text)) => text.trim().is_empty(),
+        _ => false,
+    };
+    let empty_arguments = match function.get("arguments") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(text)) => {
+            text.trim().is_empty()
+                || serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                    .is_ok_and(|arguments| arguments.is_empty())
+        }
+        Some(serde_json::Value::Object(arguments)) => arguments.is_empty(),
+        _ => false,
+    };
+    blank(call.get("id")) && blank(function.get("name")) && empty_arguments
+}
+
+/// Consume JSON recursively while rejecting duplicate object keys before a
+/// serde_json::Value round trip can collapse them.
+struct JsonWithoutDuplicateKeys;
+
+impl<'de> Deserialize<'de> for JsonWithoutDuplicateKeys {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = JsonWithoutDuplicateKeys;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("JSON without duplicate object keys")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<JsonWithoutDuplicateKeys>()?.is_some() {}
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut keys = HashSet::new();
+                while let Some((key, _)) = map.next_entry::<String, JsonWithoutDuplicateKeys>()? {
+                    if !keys.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate field `{key}`"
+                        )));
+                    }
+                }
+                Ok(JsonWithoutDuplicateKeys)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 }
 
