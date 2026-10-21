@@ -1,0 +1,15 @@
+{
+  "schema": "omni-gateway-lite-parent-lineage/1",
+  "observed_date": "2026-10-21",
+  "evidence_observed_date": "2026-10-19",
+  "successful_final_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7",
+  "successful_final_config_sha256": "c003e53780680ae26b50df0887947c07225dd53296ddd9a63eab2fd6cc6f014c",
+  "framework_parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:898cdea0a39ba5a673ca03ba10fbd15bfeebaa90ec6fffe6953e89408b5c9a1e",
+  "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "evidence_file": "H3_Ref8_Omni031_Registry_Audit_20261019/evidence/config.json",
+  "matching_evidence_fields": [
+    "config.Env:H3_EXPERIMENTAL_BASE_IMAGE",
+    "config.Labels:org.opencontainers.image.base.name"
+  ],
+  "boundary": "Recovered from historical successful final image config; CI must pull this exact framework digest and validate actual contents before publishing."
+}

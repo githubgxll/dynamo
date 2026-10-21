@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       build_recipe:
-        description: 'seedvr2-rmsnorm reuses the successful image; full rebuilds the framework and adapters'
+        description: 'Choose successful-image repair, adapter-free Omni/Gateway, or full framework rebuild'
         type: choice
         required: true
         default: seedvr2-rmsnorm
-        options: [seedvr2-rmsnorm, full]
+        options: [seedvr2-rmsnorm, omni-gateway-lite, full]
 
 permissions:
   contents: read
@@ -323,6 +323,92 @@ jobs:
         with:
           name: image-evidence-h3-seedvr2-rmsnorm-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.SR_EVIDENCE }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  omni-gateway-lite:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    env:
+      LITE_EVIDENCE: .h3-experimental-evidence/lite/ci/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout the existing H3 branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify sealed lightweight inputs
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker buildx version
+          python3 .github/scripts/omni_gateway_lite_ci.py prepare \
+            --directory "${LITE_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Log in to the existing Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Reuse the persistent group builder
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      - name: Pull the immutable adapter-free framework parent
+        shell: bash
+        env:
+          PARENT_IMAGE: ${{ steps.profile.outputs.parent_image }}
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${PARENT_IMAGE}"
+
+      - name: Build and load the offline candidate without publication
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: runtime
+          pull: false
+          push: false
+          load: true
+          tags: ${{ steps.profile.outputs.candidate_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.parent_image }}
+            H3_EXPERIMENTAL_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify actual final imports, precision, Gateway and full dependency closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/omni_gateway_lite_ci.py verify-candidate \
+            --directory "${LITE_EVIDENCE}"
+
+      - name: Publish the exact tested image and verify its immutable pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/omni_gateway_lite_ci.py publish \
+            --directory "${LITE_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+          echo '### Omni031 Gateway Lite publication' >> "${GITHUB_STEP_SUMMARY}"
+          cat "${LITE_EVIDENCE}/deployment-image.txt" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'CPU precision, installed source, media and dependency gates passed. GPU, Gateway service E2E and video quality remain separate.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Save new evidence even when a gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-omni-gateway-lite-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.LITE_EVIDENCE }}/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

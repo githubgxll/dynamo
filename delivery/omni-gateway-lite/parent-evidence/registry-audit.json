@@ -1,0 +1,64 @@
+{
+  "status": "PASS_REGISTRY_IDENTITY_AND_EMBEDDED_CPU_EVIDENCE_ONLY",
+  "observed_at_utc": "2026-10-19T09:44:19.499550+00:00",
+  "tag": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm:omni031rc1-gateway-distilled-ref8shift12-db65d1ec869b",
+  "deployment_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7",
+  "config_digest": "sha256:c003e53780680ae26b50df0887947c07225dd53296ddd9a63eab2fd6cc6f014c",
+  "evidence_layer_digest": "sha256:ee6bd38c596e3b4105e39cd8855128caf256ea6c00f5c97a6e156aa409bb7435",
+  "config_user": "dynamo",
+  "source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "download_scope": "Manifest + image config + one 188233-byte CPU report layer; no large model/runtime layers",
+  "credentials_saved": false,
+  "gpu_validated": false,
+  "media_model_output_validated": false,
+  "files": {
+    "assets-report.json": {
+      "bytes": 4247,
+      "sha256": "348e341a9490329fcdf020254df82ca76c937b07fb2857e1d5caaf113dff687a"
+    },
+    "config.json": {
+      "bytes": 66997,
+      "sha256": "c003e53780680ae26b50df0887947c07225dd53296ddd9a63eab2fd6cc6f014c"
+    },
+    "cpu-evidence-layer.tar.gz": {
+      "bytes": 188233,
+      "sha256": "ee6bd38c596e3b4105e39cd8855128caf256ea6c00f5c97a6e156aa409bb7435"
+    },
+    "environment-check.json": {
+      "bytes": 1815,
+      "sha256": "424beec17aabdf84c9e258443d173df5a2e23be606ffad1c062d4f44237be009"
+    },
+    "image-inputs.json": {
+      "bytes": 631,
+      "sha256": "656bb55a2a6783ab4cda3fed4b6a4971e465b196e59ef470b4b9bb1d67321561"
+    },
+    "manifest.json": {
+      "bytes": 15810,
+      "sha256": "112e34379489f05c737079212abb9fa587676fd82650dd1c1af96b32f46dc9a7"
+    },
+    "media-smoke.json": {
+      "bytes": 743,
+      "sha256": "def61bed0515116083690cd9150fd79279ff0a920596e9220385d8124d484371"
+    },
+    "omni-wheel-origin.json": {
+      "bytes": 702,
+      "sha256": "f56d1d1cc63c692f8f67b5f444cc2a05f34197226facd6196a4a2d7439b07bf4"
+    },
+    "profiles-check.json": {
+      "bytes": 622,
+      "sha256": "312a2d791e16ce32e27b530be9c56170a4267a578681d30824806ec3c6191671"
+    },
+    "ref8-contract.json": {
+      "bytes": 12045,
+      "sha256": "f3be0904676ebac0e285f4a7ea9b92ba013ddd5d7be9bb72ee7915c1de5cca13"
+    },
+    "service-smoke.json": {
+      "bytes": 649,
+      "sha256": "3dff26f987c1143914671f580f1cb5f900c121095d019373b6ddb424e60c41dc"
+    },
+    "uv-pip-check-context.json": {
+      "bytes": 549,
+      "sha256": "c3d295715cf69c25b1fea32a212c3165830171aaad565c62202801b85acf1dc0"
+    }
+  }
+}

@@ -1,0 +1,2 @@
+# Preserve source-locked upstream bytes on Windows checkout and in Docker context.
+gateway/** -text -eol -whitespace

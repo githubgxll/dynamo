@@ -1,0 +1,10 @@
+This image reuses the reviewed framework-only H3 Omni 0.31.0rc1 image.
+It changes only:
+1. SeedVR2 RMSNorm FP32 accumulation, upstream PR 8767, commit
+   0708f05e2e27f16fca8b48e7c5a085277d1cafda (Apache-2.0).
+2. Dingo Gateway artifact_store.py, from DingoRouter-video-gateway commit
+   9ccee2f56d0122be94d7436ae2f5fec96d15ea9b (Apache-2.0).
+Original package metadata and legal inventories remain unchanged. New source
+identity and verification evidence reside in /opt/omni-gateway-lite/build-info.
+The existing six Dingo Omni031 integration adaptations are retained. No adapter
+weights, Ref8 experimental patch, package installation or GPU acceptance is implied.

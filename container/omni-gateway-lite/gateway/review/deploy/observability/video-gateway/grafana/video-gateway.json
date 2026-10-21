@@ -1,0 +1,2827 @@
+{
+  "uid": "dingo-video-overview",
+  "title": "Video Gateway",
+  "tags": [
+    "dingo",
+    "video"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": false,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "data_source",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "regex": "",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "query": {
+          "query": "label_values(dingo_video_workers, namespace)",
+          "refId": "namespace"
+        },
+        "hide": 0,
+        "multi": true,
+        "includeAll": true,
+        "allowCustomValue": false,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "definition": "label_values(dingo_video_workers, namespace)",
+        "refresh": 1,
+        "sort": 1,
+        "allValue": ".*"
+      },
+      {
+        "name": "pool",
+        "label": "pool",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_workers{namespace=~\"$namespace\"},pool)",
+          "refId": "pool"
+        },
+        "definition": "label_values(dingo_video_workers{namespace=~\"$namespace\"},pool)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "name": "throughput_unit",
+        "label": "吞吐单位",
+        "type": "custom",
+        "query": "请求/秒 : 1, 请求/分钟 : 60, 请求/10分钟 : 600",
+        "multi": false,
+        "includeAll": false,
+        "allowCustomValue": false,
+        "hide": 2,
+        "current": {
+          "text": "请求/分钟",
+          "value": "60",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "请求/秒",
+            "value": "1",
+            "selected": false
+          },
+          {
+            "text": "请求/分钟",
+            "value": "60",
+            "selected": true
+          },
+          {
+            "text": "请求/10分钟",
+            "value": "600",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "timing_schema",
+        "label": "计时 Schema",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"}, schema)",
+          "refId": "timing_schema"
+        },
+        "definition": "label_values(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"}, schema)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "description": "仅作用于默认折叠的模型阶段诊断区。"
+      },
+      {
+        "name": "model_stage",
+        "label": "模型阶段",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\"}, stage)",
+          "refId": "model_stage"
+        },
+        "definition": "label_values(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\"}, stage)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "description": "内部变量，默认选择全部模型阶段，用于自动生成逐阶段小图。",
+        "hide": 2,
+        "skipUrlSync": true
+      },
+      {
+        "name": "snapshot_interval",
+        "type": "interval",
+        "hide": 2,
+        "skipUrlSync": true,
+        "auto": true,
+        "auto_count": 60000,
+        "auto_min": "15s",
+        "query": "15s,30s,1m,2m,5m,10m",
+        "refresh": 2,
+        "current": {
+          "text": "auto",
+          "value": "$__auto_interval_snapshot_interval"
+        },
+        "options": [
+          {
+            "text": "auto",
+            "value": "$__auto_interval_snapshot_interval",
+            "selected": true
+          }
+        ],
+        "description": "内部快照取点间隔，随展示范围调整；不等于耗时统计窗口。"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1020,
+      "title": "在途请求数",
+      "type": "stat",
+      "description": "尚未进入终态的请求，包含Gateway排队、派发、Worker执行/等待和结果收尾。在途＝Gateway排队＋Worker侧（含收尾）。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"queued|dispatching|in_progress|finalizing\"}))",
+          "legendFormat": "在途请求数",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1021,
+      "title": "Gateway 排队",
+      "type": "stat",
+      "description": "Gateway排队请求数：处于Gateway queued状态的请求，包含普通排队和故障重试等待。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=\"queued\"}))",
+          "legendFormat": "Gateway 排队",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1022,
+      "title": "Worker 侧请求",
+      "type": "stat",
+      "description": "Worker侧请求数（含收尾）：包含派发、执行、预取/内部等待和Gateway结果收尾。按Gateway任务状态统计，不能等同于GPU执行数或实际Worker队列长度。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"dispatching|in_progress|finalizing\"}))",
+          "legendFormat": "Worker 侧请求",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1024,
+      "title": "空闲槽位",
+      "type": "stat",
+      "description": "所选Namespace/Pool可用于准入的空闲槽位，包含执行及预取容量，不等于GPU空闲数。同部署同Pool跨Gateway取min后汇总，避免重复相加并保守处理视图差异。0表示没有可用槽位，也可能是容量视图不健康；请结合下方容量视图健康图判断。 大号数字为所选时间范围内最后一个有效采样值，趋势线展示该时段的数量变化。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(min by(region,namespace,deployment,pool) (dingo_video_worker_slots_free{namespace=~\"$namespace\",pool=~\"$pool\"}))",
+          "legendFormat": "空闲槽位",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1025,
+      "title": "制品余量",
+      "type": "stat",
+      "description": "所选Namespace内共享制品存储的剩余空间百分比，不受Pool筛选影响。剩余百分比＝剩余空间合计÷总空间合计×100，显示整数百分比。每个部署跨Gateway剩余量取min、总量取max后汇总；同部署共享PVC只计一次。只统计剩余量和有效总量均存在的部署，缺失或总量为0时不补0。以Gateway上报的容量统计为准，底层存储统计可能有刷新延迟。 大号数字为所选时间范围内最后一个有效采样值，趋势线展示该时段的数量变化。缺失显示No data，不补0。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * sum(min by(region,namespace,deployment) (dingo_video_artifact_free_bytes{namespace=~\"$namespace\"}) and on(region,namespace,deployment) (max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"}) > 0)) / sum((max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"}) > 0) and on(region,namespace,deployment) min by(region,namespace,deployment) (dingo_video_artifact_free_bytes{namespace=~\"$namespace\"}))",
+          "legendFormat": "制品余量",
+          "instant": false,
+          "range": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 72
+        }
+      }
+    },
+    {
+      "id": 1023,
+      "title": "采集状态",
+      "type": "stat",
+      "description": "所选Namespace内视频服务采集状态，不受Pool筛选影响。当前可见采集目标全部up=1为正常、部分up=0为部分异常、全部up=0为全部异常。目标范围与下方采集曲线一致；目标消失后不保证仍被计入，全部无数据时显示No data。表示指标采集情况，不代表模型业务就绪。 显示查询结束时的当前值。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time({__name__=~\"dingo_video_workers|dingo_video_worker_detached_execution_capacity\",namespace=~\"$namespace\"}[1h])) + max(up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time({__name__=~\"dingo_video_workers|dingo_video_worker_detached_execution_capacity\",namespace=~\"$namespace\"}[1h]))",
+          "legendFormat": "采集状态",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "noValue": "No data",
+          "color": {
+            "mode": "thresholds"
+          },
+          "max": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "全部异常",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "部分异常",
+                  "color": "orange"
+                },
+                "2": {
+                  "text": "正常",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "valueSize": 28
+        }
+      }
+    },
+    {
+      "id": 1009,
+      "title": "新提交（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 只统计新创建任务，排除幂等重放。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_submissions_total{namespace=~\"$namespace\",pool=~\"$pool\",outcome=\"created\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 1010,
+      "title": "已结束（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 等于成功+失败+取消，过期事件不重复计入。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"completed|failed|cancelled\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 1011,
+      "title": "成功（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=\"completed\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 1012,
+      "title": "失败（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 没有失败事件序列时显示0；需同时检查采集健康。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=\"failed\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 1013,
+      "title": "取消（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=\"cancelled\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 1014,
+      "title": "过期事件（区间）",
+      "type": "stat",
+      "description": "统计 Dashboard 所选时间范围内的事件增量，跨 Gateway/历史 Pod 合并，不依赖 up 筛选。Prometheus increase() 会对边界外推，可能出现小数；采集空档或重启前未采集增量可能遗漏。用于监控估算，不作审计或计费。 已完成/取消任务后来过期或删除可能再次记录此事件，不是另一个独立任务。 无对应事件序列且至少一个 Gateway 采集正常时补0；全部采集失败且没有历史增量时显示 No data，不伪装成0。已有历史增量不受当前 up 筛选影响。 服务级统计，",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 4,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=\"expired\"}[$__range])) or (0 * (count((up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])) == 1) > 0))",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "服务概况",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 10020,
+      "title": "",
+      "type": "canvas",
+      "transparent": false,
+      "gridPos": {
+        "x": 16,
+        "y": 9,
+        "w": 8,
+        "h": 1
+      },
+      "options": {
+        "inlineEditing": false,
+        "panZoom": false,
+        "zoomToContent": false,
+        "showAdvancedTypes": false,
+        "tooltip": {
+          "mode": "single",
+          "disableForOneClick": true
+        },
+        "root": {
+          "name": "切换控件",
+          "type": "frame",
+          "elements": [
+            {
+              "name": "label",
+              "type": "text",
+              "config": {
+                "text": {
+                  "fixed": "单位："
+                },
+                "align": "left",
+                "valign": "middle",
+                "size": 13,
+                "color": {
+                  "fixed": "text"
+                }
+              },
+              "placement": {
+                "top": 0,
+                "left": 8,
+                "width": 76,
+                "height": 28,
+                "rotation": 0
+              },
+              "constraint": {
+                "horizontal": "left",
+                "vertical": "top"
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "width": 0,
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "links": []
+            },
+            {
+              "name": "choice-0",
+              "type": "text",
+              "config": {
+                "text": {
+                  "fixed": "秒"
+                },
+                "align": "left",
+                "valign": "middle",
+                "size": 13,
+                "color": {
+                  "fixed": "#5794F2"
+                }
+              },
+              "placement": {
+                "top": 0,
+                "left": 88,
+                "width": 76,
+                "height": 28,
+                "rotation": 0
+              },
+              "constraint": {
+                "horizontal": "left",
+                "vertical": "top"
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "width": 0,
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "links": [
+                {
+                  "title": "秒",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=1&from=${__from}&to=${__to}",
+                  "targetBlank": false,
+                  "oneClick": true
+                }
+              ]
+            },
+            {
+              "name": "choice-1",
+              "type": "text",
+              "config": {
+                "text": {
+                  "fixed": "分钟"
+                },
+                "align": "left",
+                "valign": "middle",
+                "size": 13,
+                "color": {
+                  "fixed": "#5794F2"
+                }
+              },
+              "placement": {
+                "top": 0,
+                "left": 168,
+                "width": 76,
+                "height": 28,
+                "rotation": 0
+              },
+              "constraint": {
+                "horizontal": "left",
+                "vertical": "top"
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "width": 0,
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "links": [
+                {
+                  "title": "分钟",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=60&from=${__from}&to=${__to}",
+                  "targetBlank": false,
+                  "oneClick": true
+                }
+              ]
+            },
+            {
+              "name": "choice-2",
+              "type": "text",
+              "config": {
+                "text": {
+                  "fixed": "10分钟"
+                },
+                "align": "left",
+                "valign": "middle",
+                "size": 13,
+                "color": {
+                  "fixed": "#5794F2"
+                }
+              },
+              "placement": {
+                "top": 0,
+                "left": 248,
+                "width": 76,
+                "height": 28,
+                "rotation": 0
+              },
+              "constraint": {
+                "horizontal": "left",
+                "vertical": "top"
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "width": 0,
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "links": [
+                {
+                  "title": "10分钟",
+                  "url": "/d/${__dashboard.uid}/video-gateway?${data_source:queryparam}&${namespace:queryparam}&${pool:queryparam}&${timing_schema:queryparam}&var-throughput_unit=600&from=${__from}&to=${__to}",
+                  "targetBlank": false,
+                  "oneClick": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "description": "Grafana 12.2 单击切换控件：正常 13px 字号，一格高度，无内边距。保留当前数据源、Namespace、Pool 和时间范围。",
+      "pluginVersion": "12.2.1",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": []
+    },
+    {
+      "id": 1001,
+      "title": "指标采集状态（1=成功）",
+      "type": "timeseries",
+      "description": "不受 Pool 筛选影响。不限定采集 Job；按 namespace、instance 匹配视频 Gateway/Worker 专属指标，避免混入其它服务或同 Pod 的其它端口。1=最近一次采集成功，0=失败，不代表模型业务就绪。最近 1 小时从未成功采集专属指标的目标不会显示，缺失不等于正常。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time({__name__=~\"dingo_video_workers|dingo_video_worker_detached_execution_capacity\",namespace=~\"$namespace\"}[1h])",
+          "legendFormat": "{{job}} / {{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10022,
+      "title": "每池请求数（时段内累计）",
+      "type": "timeseries",
+      "description": "从所选时间范围的起点开始累计。曲线分别表示截至各时刻的提交、成功、失败、取消事件数，不按固定时间桶归零。提交和终态分别按事件计数，成功数可能包含所选时段之前提交的任务。先按每个进程计数器计算短步长 increase（处理重启归零），再仅累计视图起点之后的增量，最后按池汇总；不直接相减进程计数器。查询步长随显示范围变化，边界约有一个步长的时间分辨率误差；Prometheus 外推可产生小数、首次采集前事件无法保证计入。不是精确审计计数。保持断线/缺样本可见，不将未知数据强制补零。 最小统计步长 15 秒，默认最近 6 小时可保持 15 秒粒度；更长时间范围可能自动增大步长。建议指标采集周期为 5 秒，采集更慢时应相应增大统计步长。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 9,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(namespace,deployment,pool) (sum_over_time((increase(dingo_video_task_submissions_total{namespace=~\"$namespace\",pool=~\"$pool\",outcome=\"created\"}[$__interval]) and on() (vector(time()) > ${__from} / 1000))[$__range:$__interval]))",
+          "legendFormat": "{{pool}} / submitted",
+          "interval": "15s",
+          "intervalFactor": 1,
+          "instant": false,
+          "range": true
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(namespace,deployment,pool,status) (sum_over_time((increase(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"completed|failed|cancelled\"}[$__interval]) and on() (vector(time()) > ${__from} / 1000))[$__range:$__interval]))",
+          "legendFormat": "{{pool}} / {{status}}",
+          "interval": "15s",
+          "intervalFactor": 1,
+          "instant": false,
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "maxDataPoints": 2000,
+      "interval": "15s"
+    },
+    {
+      "id": 1002,
+      "title": "每池请求吞吐（请求 / ${throughput_unit:raw} 秒）",
+      "type": "timeseries",
+      "description": "按吞吐单位切换展示：请求/秒、请求/分钟、请求/10分钟。使用相同 $__rate_interval 窗口估算每秒速率，再乘 1/60/600 换算单位；不是最近 1 分钟或 10 分钟的累计请求数，可能有小数。只影响本图。新提交排除幂等重放；终态含成功、失败和取消，不含过期。没有事件样本时可无曲线，请结合采集状态判断。 点击图表上方的秒 / 分钟 / 10分钟切换吞吐单位；切换会导航回当前看板并保留其它筛选及时间范围。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 10,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(region,namespace,deployment,pool) (rate(dingo_video_task_submissions_total{namespace=~\"$namespace\",pool=~\"$pool\",outcome=\"created\"}[$__rate_interval]))) * ${throughput_unit:raw}",
+          "legendFormat": "{{pool}} / submitted",
+          "interval": "15s"
+        },
+        {
+          "refId": "B",
+          "expr": "(sum by(region,namespace,deployment,pool,status) (rate(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"completed|failed|cancelled\"}[$__rate_interval]))) * ${throughput_unit:raw}",
+          "legendFormat": "{{pool}} / {{status}}",
+          "interval": "15s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 1,
+      "title": "Gateway 排队 / 后处理",
+      "type": "timeseries",
+      "description": "普通排队、故障重试等待及 finalizing 任务数。相同部署/Pool 的共享状态跨 Gateway 取 max，不相加。finalizing 是尚未进入终态的任务数，不等于本机正在执行的 finalizer 数。 ",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_normal_queue_depth{namespace=~\"$namespace\",pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} / normal"
+        },
+        {
+          "refId": "B",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_retry_waiting_tasks{namespace=~\"$namespace\",pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} / retry"
+        },
+        {
+          "refId": "C",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=\"finalizing\"})",
+          "legendFormat": "{{pool}} / finalizing"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 1006,
+      "title": "Worker 执行 / 预取等待",
+      "type": "timeseries",
+      "description": "按 Worker Pod 展示实际执行许可占用与预取等待；不是GPU利用率。Namespace与model共同映射到Pool，映射见settings.json。未知映射只在All下可见。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_join(dingo_video_worker_detached_execution_active{namespace=~\"$namespace\"},\"namespace_model\",\";\",\"namespace\",\"model\"),\"pool\",\"minimax-h3-fl2va\",\"namespace_model\",\"example\\\\-video;minimax\\\\-h3\"),\"pool\",\"minimax-h3-ref2va\",\"namespace_model\",\"example\\\\-video;minimax\\\\-h3\\\\-ref2va\"),\"pool\",\"dingo-minimax-h3-fl2va\",\"namespace_model\",\"example\\\\-serving;minimax\\\\-h3\"),\"pool\",\"dingo-minimax-h3-ref2va\",\"namespace_model\",\"example\\\\-serving;minimax\\\\-h3\\\\-ref2va\"),\"selected_pool\",\"yes\",\"pool\",\"${pool:regex}\") and on(selected_pool) label_replace(vector(1),\"selected_pool\",\"yes\",\"__name__\",\".*\")",
+          "legendFormat": "{{pool}} / {{pod}} / active"
+        },
+        {
+          "refId": "B",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_join(dingo_video_worker_detached_prefetch_waiting{namespace=~\"$namespace\"},\"namespace_model\",\";\",\"namespace\",\"model\"),\"pool\",\"minimax-h3-fl2va\",\"namespace_model\",\"example\\\\-video;minimax\\\\-h3\"),\"pool\",\"minimax-h3-ref2va\",\"namespace_model\",\"example\\\\-video;minimax\\\\-h3\\\\-ref2va\"),\"pool\",\"dingo-minimax-h3-fl2va\",\"namespace_model\",\"example\\\\-serving;minimax\\\\-h3\"),\"pool\",\"dingo-minimax-h3-ref2va\",\"namespace_model\",\"example\\\\-serving;minimax\\\\-h3\\\\-ref2va\"),\"selected_pool\",\"yes\",\"pool\",\"${pool:regex}\") and on(selected_pool) label_replace(vector(1),\"selected_pool\",\"yes\",\"__name__\",\".*\")",
+          "legendFormat": "{{pool}} / {{pod}} / prefetch"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "本机后处理积压",
+      "type": "timeseries",
+      "description": "按Pool筛选，每个Gateway Pod分别展示本机运行与等待中的finalizer数量。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dingo_video_finalization_pending_local{namespace=~\"$namespace\",pool=~\"$pool\"}",
+          "legendFormat": "{{pod}} / {{pool}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 301,
+      "type": "row",
+      "title": "调度与资源",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "title": "Worker 准入租约（共享 max）",
+      "type": "timeseries",
+      "description": "共享slot按Pool筛选，跨Gateway取max；不受Pod筛选影响。busy包含执行、预取和结果交接，不等于GPU正在计算。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_worker_slots_busy{namespace=~\"$namespace\",pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} / busy"
+        },
+        {
+          "refId": "B",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_worker_slots_free{namespace=~\"$namespace\",pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} / free"
+        },
+        {
+          "refId": "C",
+          "expr": "max by(region,namespace,deployment,pool) (dingo_video_worker_slots_quarantined{namespace=~\"$namespace\",pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} / quarantined"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "发现 / 容量视图健康",
+      "type": "timeseries",
+      "description": "按Pool筛选，分别展示每个Gateway Pod的视图健康。1表示健康，0表示不一致；无序列不等于健康。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dingo_video_discovery_consistent{namespace=~\"$namespace\",pool=~\"$pool\"}",
+          "legendFormat": "{{pod}} / {{pool}} / discovery"
+        },
+        {
+          "refId": "B",
+          "expr": "dingo_video_worker_capacity_view_healthy{namespace=~\"$namespace\",pool=~\"$pool\"}",
+          "legendFormat": "{{pod}} / {{pool}} / capacity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Gateway RSS / 内部预算使用",
+      "type": "timeseries",
+      "description": "每个Gateway Pod分别展示内存和内部预算，不受Pool筛选影响。内部预算是准入记账值，不等于RSS。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dingo_video_process_rss_bytes{namespace=~\"$namespace\"}",
+          "legendFormat": "{{pod}} / RSS"
+        },
+        {
+          "refId": "B",
+          "expr": "dingo_video_media_memory_used_bytes{namespace=~\"$namespace\"}",
+          "legendFormat": "{{pod}} / budget-used"
+        },
+        {
+          "refId": "C",
+          "expr": "dingo_video_media_memory_budget_bytes{namespace=~\"$namespace\"}",
+          "legendFormat": "{{pod}} / budget-limit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 302,
+      "type": "row",
+      "title": "依赖与异常",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 7,
+      "title": "etcd P95",
+      "type": "timeseries",
+      "description": "按Gateway Pod和operation展示etcd P95，不受Pool筛选影响。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95,sum by(le,operation,pod) (increase((dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"})) == max without(le) (timestamp(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}))) and (count without(le) (dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}) == count without(le) (present_over_time(dingo_video_etcd_request_duration_seconds_bucket{namespace=~\"$namespace\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
+          "interval": "15s",
+          "legendFormat": "{{pod}} / {{operation}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "etcd 错误速率",
+      "type": "timeseries",
+      "description": "按Gateway Pod和etcd operation分别展示错误速率，不受Pool筛选影响。无错误时可无序列，请结合采集可用性判断。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 43,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(pod,operation) (rate(dingo_video_etcd_request_errors_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "interval": "15s",
+          "legendFormat": "{{pod}} / {{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "失败终态（按错误码）",
+      "type": "timeseries",
+      "description": "所选Pool内所有Gateway按error_code汇总failed终态速率。无失败时可无序列，请结合采集可用性判断。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(region,namespace,deployment,pool,error_code) (rate(dingo_video_task_terminal_total{namespace=~\"$namespace\",pool=~\"$pool\",status=\"failed\"}[$__rate_interval]))",
+          "interval": "15s",
+          "legendFormat": "{{pool}} / {{error_code}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 1008,
+      "title": "共享制品 PVC 已用 / 总量",
+      "type": "timeseries",
+      "description": "部署级共享空间，不受 Pool 筛选影响。每个部署共享同一制品 PVC；跨 Gateway 取 max，避免重复相加。已用量为总量减空闲量，不是逐文件精确统计。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"} - dingo_video_artifact_free_bytes{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} / used"
+        },
+        {
+          "refId": "B",
+          "expr": "max by(region,namespace,deployment) (dingo_video_artifact_total_bytes{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} / total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "辅助诊断",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 59,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 3,
+      "title": "阶段平均耗时",
+      "type": "timeseries",
+      "description": "按所选范围汇总业务阶段平均耗时；不同请求参数的样本会混合统计。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(__name__) (timestamp(dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"}) == timestamp(dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"})))[$__rate_interval:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(__name__) (timestamp(dingo_video_task_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\"}) == timestamp(dingo_video_task_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\"})))[$__rate_interval:${snapshot_interval}]))",
+          "interval": "15s",
+          "legendFormat": "{{pool}} / {{stage}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "阶段 P95",
+      "type": "timeseries",
+      "description": "按所选范围汇总业务阶段P95；不同请求参数的样本会混合统计。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95,sum by(le,region,namespace,deployment,pool,stage) (increase((dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"})) == max without(le) (timestamp(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}))) and (count without(le) (dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}) == count without(le) (present_over_time(dingo_video_task_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
+          "interval": "15s",
+          "legendFormat": "{{pool}} / {{stage}}"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "采集耗时",
+      "type": "timeseries",
+      "description": "分别展示每个Gateway Pod的采集耗时，不受Pool筛选影响。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "scrape_duration_seconds{namespace=~\"$namespace\"} and on(namespace,instance) max_over_time(dingo_video_workers{namespace=~\"$namespace\"}[1h])",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 201,
+      "type": "row",
+      "title": "模型阶段诊断（Prometheus）",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 74,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 90,
+          "title": "模型阶段平均耗时（Worker → Gateway）",
+          "type": "timeseries",
+          "description": "Worker返回的模型阶段平均耗时，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 75,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}]))",
+              "legendFormat": "{{pool}} / {{schema}} / {{stage}}",
+              "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 91,
+          "title": "模型阶段 P95（Worker → Gateway）",
+          "type": "timeseries",
+          "description": "Worker返回的模型阶段P95，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 75,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (increase((dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})) == max without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}))) and (count without(le) (dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == count without(le) (present_over_time(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[1h])))))[1m:${snapshot_interval}])))",
+              "legendFormat": "{{pool}} / {{schema}} / {{stage}}",
+              "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 92,
+          "title": "模型阶段：$model_stage",
+          "type": "timeseries",
+          "description": "Worker返回的模型阶段平均耗时与P95，按Pool、Schema和阶段汇总；父子阶段不可相加。每点统计此前1分钟上报的样本；右上角只决定展示范围，非全部历史。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 83,
+            "w": 8,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}])) / sum by(region,namespace,deployment,pool,schema,stage) (increase((dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(__name__) (timestamp(dingo_video_model_stage_duration_seconds_sum{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == timestamp(dingo_video_model_stage_duration_seconds_count{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})))[1m:${snapshot_interval}]))",
+              "legendFormat": "{{pool}} / {{schema}} / 平均",
+              "interval": "15s"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by(region,namespace,deployment,pool,schema,stage,le) (increase((dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"})) == max without(le) (timestamp(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}))) and (count without(le) (dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}) == count without(le) (present_over_time(dingo_video_model_stage_duration_seconds_bucket{namespace=~\"$namespace\",pool=~\"$pool\",schema=~\"$timing_schema\",stage=~\"$model_stage\"}[1h])))))[1m:${snapshot_interval}])))",
+              "legendFormat": "{{pool}} / {{schema}} / P95",
+              "interval": "15s"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "repeat": "model_stage",
+          "repeatDirection": "h",
+          "maxPerRow": 3,
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "title": "Video Worker and Omni",
+      "type": "link",
+      "url": "/d/dingo-video-worker?var-data_source=${data_source}",
+      "includeVars": false,
+      "keepTime": true
+    }
+  ],
+  "description": "总览与Gateway合并：请求数量、吞吐、服务采集健康、队列与Worker占用、Gateway资源与依赖。模型阶段平均值和P95见模型阶段诊断。",
+  "id": null
+}

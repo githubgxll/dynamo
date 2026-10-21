@@ -1,0 +1,12 @@
+{
+  "schema": "h3-experimental-inputs/1",
+  "source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "base_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:898cdea0a39ba5a673ca03ba10fbd15bfeebaa90ec6fffe6953e89408b5c9a1e",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1"
+  },
+  "assets_lock_sha256": "dfc6a8e45c0b65eb31a7fbbda99a720741abbf89f050a161ea470b0b53f1c824",
+  "dynamo_gateway_source_sha": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "dynamo_vllm_base_image": "vllm/vllm-openai:v0.31.0-ubuntu2404@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460"
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "omni-gateway-lite-source-lock/1",
+  "reviewed_date": "2026-10-21",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:898cdea0a39ba5a673ca03ba10fbd15bfeebaa90ec6fffe6953e89408b5c9a1e",
+  "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+  "upstream_pr": "https://github.com/vllm-project/vllm-omni/pull/8767",
+  "upstream_commit": "0708f05e2e27f16fca8b48e7c5a085277d1cafda",
+  "omni_source_commit": "6dd0d1f9310f7598b773c796b434c8000c2816ec",
+  "source_before_sha256": "3c782ad3588f7f544a9cb14fe8258a9eb4d921881deee8501460ceaf0bf1ad63",
+  "source_after_sha256": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+  "upstream_test_sha256": "56e39d8422fa0e89a201820e6de8e34ef20e92600cdedf54e4cd38c0e1c5374a",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0"
+  },
+  "scope": "Complete inherited Omni031rc1 default runtime + latest reviewed Gateway runtime changes + PR8767 only; no distilled adapters, Ref8 patch, model weights, package installs or framework upgrade.",
+  "local_network": "Optional command-scoped Git proxy http://127.0.0.1:17890; never copied into Runner or Pod.",
+  "validation_boundary": "Local recipe checks are not Linux image, Harbor, CUDA or generated-media acceptance.",
+  "recipe_base_commit": "be113ffa77dfbcad0095581dc799c07efb6e9989",
+  "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "gateway_previous_commit": "e8c9195672f761ec09344a641730844c9e6c9e99",
+  "gateway_branch": "DingoRouter-video-gateway",
+  "gateway_policy": "Pinned reviewed source; later upstream movement requires a new source review, not automatic rebase.",
+  "build_recipe": "omni-gateway-lite",
+  "tag_prefix": "omni031rc1-gateway-lite-srnormfix",
+  "dispatch_workflow": "dingo-router-ci.yml"
+}

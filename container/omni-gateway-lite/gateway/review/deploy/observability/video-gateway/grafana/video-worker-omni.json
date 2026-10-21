@@ -1,0 +1,1798 @@
+{
+  "uid": "dingo-video-worker",
+  "title": "Video Worker and Omni",
+  "tags": [
+    "dingo",
+    "video",
+    "vllm-omni"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": false,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "data_source",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "regex": "",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_worker_detached_execution_capacity, namespace)",
+          "refId": "namespace"
+        },
+        "definition": "label_values(dingo_video_worker_detached_execution_capacity, namespace)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "name": "workflow",
+        "label": "workflow",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\"},workflow)",
+          "refId": "workflow"
+        },
+        "definition": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\"},workflow)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "name": "model",
+        "label": "model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\"},model)",
+          "refId": "model"
+        },
+        "definition": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\"},model)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "name": "pod",
+        "label": "pod",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${data_source}"
+        },
+        "query": {
+          "query": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\"},pod)",
+          "refId": "pod"
+        },
+        "definition": "label_values(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\"},pod)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "name": "snapshot_interval",
+        "type": "interval",
+        "hide": 2,
+        "skipUrlSync": true,
+        "auto": true,
+        "auto_count": 60000,
+        "auto_min": "15s",
+        "query": "15s,30s,1m,2m,5m,10m",
+        "refresh": 2,
+        "current": {
+          "text": "auto",
+          "value": "$__auto_interval_snapshot_interval"
+        },
+        "options": [
+          {
+            "text": "auto",
+            "value": "$__auto_interval_snapshot_interval",
+            "selected": true
+          }
+        ],
+        "description": "内部快照取点间隔，随展示范围调整；不等于耗时统计窗口。"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "执行数 / 执行容量",
+      "type": "timeseries",
+      "description": "取得执行许可至 Worker 执行/终态持久化结束；不是 GPU 利用率。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dingo_video_worker_detached_execution_active{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}",
+          "legendFormat": "{{workflow}} / {{pod}} / active"
+        },
+        {
+          "refId": "B",
+          "expr": "dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}",
+          "legendFormat": "{{workflow}} / {{pod}} / capacity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "预取等待 / 预取容量",
+      "type": "timeseries",
+      "description": "Worker 已接收、等待执行许可的任务数。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dingo_video_worker_detached_prefetch_waiting{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}",
+          "legendFormat": "{{workflow}} / {{pod}} / waiting"
+        },
+        {
+          "refId": "B",
+          "expr": "dingo_video_worker_detached_prefetch_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}",
+          "legendFormat": "{{workflow}} / {{pod}} / capacity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Worker 终态速率",
+      "type": "timeseries",
+      "description": "按workflow、Pod、outcome展示Worker终态速率，按attempt/执行计数；不等于Gateway最终业务状态。不同Pod显示独立曲线。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(workflow,pod,outcome) (rate(dingo_video_worker_detached_tasks_total{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+          "interval": "15s",
+          "legendFormat": "{{workflow}} / {{pod}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Worker 执行平均 / P95",
+      "type": "timeseries",
+      "description": "Worker执行均值与P95，按workflow汇总；包含Worker输出处理，不含预取等待。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(workflow) (increase((dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_execution_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_execution_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+          "interval": "15s",
+          "legendFormat": "{{workflow}} / mean"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95,sum by(le,workflow) (increase((dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})) == max without(le) (timestamp(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}))) and (count without(le) (dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == count without(le) (present_over_time(dingo_video_worker_detached_execution_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
+          "interval": "15s",
+          "legendFormat": "{{workflow}} / P95"
+        },
+        {
+          "refId": "Z",
+          "expr": "vector(0)",
+          "legendFormat": "__sample_timeline__",
+          "interval": "15s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "No data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "__sample_timeline__"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": true,
+                  "viz": true,
+                  "legend": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "string",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "Time",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "Time",
+                "destinationType": "time",
+                "dateFormat": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Time",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "峰值显存（Omni MB）",
+      "type": "timeseries",
+      "description": "Omni上报的峰值显存，单位沿用原生MB；不是实时GPU显存、GPU利用率，也不是DCGM全卡显存。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "vllm_omni:peak_memory_mb{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}",
+          "legendFormat": "{{workflow}} / {{pod}} / stage {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:MB",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Worker 采集可用性 / 采集耗时",
+      "type": "timeseries",
+      "description": "左轴UP：1=指标抓取成功，0=抓取失败，不等于模型业务就绪；右轴scrape duration：单次抓取耗时（秒）。按workflow和Pod筛选，不受model筛选影响，因为采集目标是整个Pod。无目标时可无序列，不补0。 不限定采集 Job；通过相同 namespace、instance 上的视频 Worker 专属指标识别目标，保留最近 1 小时内识别到的实例。未曾成功采集或超过 1 小时无专属指标的目标不会显示。 不限定采集 Job；通过相同 namespace、instance 上的视频 Worker 专属指标识别目标，保留最近 1 小时内识别到的实例。未曾成功采集或超过 1 小时无专属指标的目标不会显示。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${data_source}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "scrape_duration_seconds{namespace=~\"$namespace\",pod=~\"$pod\"} and on(namespace,instance) max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])",
+          "legendFormat": "{{pod}} / scrape"
+        },
+        {
+          "refId": "B",
+          "expr": "up{namespace=~\"$namespace\",pod=~\"$pod\"} and on(namespace,instance) max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])",
+          "legendFormat": "{{pod}} / UP"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "right",
+            "axisLabel": "scrape duration (s)"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "left"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "UP (0/1)"
+              },
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Omni 诊断",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 5,
+          "title": "Worker 预取等待平均 / P95",
+          "type": "timeseries",
+          "description": "Worker预取等待均值与P95，按workflow汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。P95要求同实例桶集合完整且采样时间一致，为桶内估算，低样本仅供参考。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 25,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(dingo_video_worker_detached_queue_wait_seconds_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(dingo_video_worker_detached_queue_wait_seconds_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / mean"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95,sum by(le,workflow) (increase((dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(le) ((min without(le) (timestamp(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})) == max without(le) (timestamp(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}))) and (count without(le) (dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == count without(le) (present_over_time(dingo_video_worker_detached_queue_wait_seconds_bucket{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[1h])))))[$__rate_interval:${snapshot_interval}])))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / P95"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Omni 成功速率",
+          "type": "timeseries",
+          "description": "底层 Omni 原生结果口径。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 25,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow,pod) (rate(vllm_omni:requests_success_total{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}[$__rate_interval]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / {{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "Omni E2E 平均",
+          "type": "timeseries",
+          "description": "Omni请求平均耗时，按workflow汇总；不含Dingo预取排队及Gateway后处理。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 33,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow) (increase((vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:e2e_request_latency_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:e2e_request_latency_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Omni stage 生成平均",
+          "type": "timeseries",
+          "description": "Omni各stage的平均生成耗时，按workflow和stage汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 33,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow,stage) (increase((vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow,stage) (increase((vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:stage_gen_time_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:stage_gen_time_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / stage {{stage}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "title": "Diffusion 执行 / forward 平均",
+          "type": "timeseries",
+          "description": "Diffusion执行及forward平均耗时，按workflow汇总；exec覆盖范围大于denoise。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 41,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow) (increase((vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_exec_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_exec_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / exec"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by(workflow) (increase((vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:diffusion_forward_s_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:diffusion_forward_s_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}} / forward"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "title": "平均推理步数",
+          "type": "timeseries",
+          "description": "Worker平均推理步数，按workflow汇总。每点统计此前的滚动窗口（$__rate_interval，由Grafana自动计算，非固定5分钟）；右上角只决定展示范围。均值按样本数加权，要求总量与样本数采样时间一致。无有效样本时断线、不补零；窗口内仍有样本时可保持平线。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 41,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(workflow) (increase((vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}])) / sum by(workflow) (increase((vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"} and ignoring(__name__) (timestamp(vllm_omni:num_inference_steps_sum{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"}) == timestamp(vllm_omni:num_inference_steps_count{namespace=~\"$namespace\",workflow=~\"$workflow\",pod=~\"$pod\",model=~\"$model\"})))[$__rate_interval:${snapshot_interval}]))",
+              "interval": "15s",
+              "legendFormat": "{{workflow}}"
+            },
+            {
+              "refId": "Z",
+              "expr": "vector(0)",
+              "legendFormat": "__sample_timeline__",
+              "interval": "15s",
+              "range": true,
+              "instant": false
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "noValue": "No data"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "__sample_timeline__"
+                },
+                "properties": [
+                  {
+                    "id": "custom.hideFrom",
+                    "value": {
+                      "tooltip": true,
+                      "viz": true,
+                      "legend": true
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "string",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "joinByField",
+              "options": {
+                "byField": "Time",
+                "mode": "outerTabular"
+              }
+            },
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "targetField": "Time",
+                    "destinationType": "time",
+                    "dateFormat": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "sort": [
+                  {
+                    "field": "Time",
+                    "desc": false
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 300,
+      "title": "资源与稳定性",
+      "type": "row",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 301,
+          "title": "GPU 使用率（按 Worker Pod 平均）",
+          "type": "timeseries",
+          "description": "DCGM 各 GPU 使用率的算术平均，单位 %；平均值可能掩盖单卡不均衡。 按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；不依赖 Job 名称，不纳入其它模型服务。需要同一数据源采集对应基础设施指标并保留 namespace、pod 标签；缺失时显示 No data，不补零。身份匹配使用回看窗口，不能保证保留已超出窗口的旧 Pod。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 50,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(avg by(namespace,pod) (max by(namespace,pod,UUID,gpu) (DCGM_FI_DEV_GPU_UTIL{namespace=~\"$namespace\",pod=~\"$pod\"}))) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 302,
+          "title": "GPU 显存占用（按 Worker Pod）",
+          "type": "timeseries",
+          "description": "各 GPU 已用显存之和 / 总显存之和；这是设备当前显存使用比例，与 Omni 峰值显存指标不同。 按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；不依赖 Job 名称，不纳入其它模型服务。需要同一数据源采集对应基础设施指标并保留 namespace、pod 标签；缺失时显示 No data，不补零。身份匹配使用回看窗口，不能保证保留已超出窗口的旧 Pod。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 50,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum by(namespace,pod) (max by(namespace,pod,UUID,gpu) (DCGM_FI_DEV_FB_USED{namespace=~\"$namespace\",pod=~\"$pod\"})) / (sum by(namespace,pod) (max by(namespace,pod,UUID,gpu) (DCGM_FI_DEV_FB_USED{namespace=~\"$namespace\",pod=~\"$pod\"})) + sum by(namespace,pod) (max by(namespace,pod,UUID,gpu) (DCGM_FI_DEV_FB_FREE{namespace=~\"$namespace\",pod=~\"$pod\"})))) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 303,
+          "title": "CPU 使用（核）",
+          "type": "timeseries",
+          "description": "容器 CPU 使用速率汇总为核数，1 表示占用一个 CPU 核；包含该 Worker Pod 的业务容器及 sidecar。 按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；不依赖 Job 名称，不纳入其它模型服务。需要同一数据源采集对应基础设施指标并保留 namespace、pod 标签；缺失时显示 No data，不补零。身份匹配使用回看窗口，不能保证保留已超出窗口的旧 Pod。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 58,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum by(namespace,pod) (max by(namespace,pod,container,cpu) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",pod=~\"$pod\",container!=\"\",container!=\"POD\"}[$__rate_interval])))) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 304,
+          "title": "容器内存 working set",
+          "type": "timeseries",
+          "description": "Pod 内容器 working set 之和，不是进程 RSS，也不是模型权重或 GPU 显存。 按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；不依赖 Job 名称，不纳入其它模型服务。需要同一数据源采集对应基础设施指标并保留 namespace、pod 标签；缺失时显示 No data，不补零。身份匹配使用回看窗口，不能保证保留已超出窗口的旧 Pod。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 58,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum by(namespace,pod) (max by(namespace,pod,container) (container_memory_working_set_bytes{namespace=~\"$namespace\",pod=~\"$pod\",container!=\"\",container!=\"POD\"}))) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 305,
+          "title": "容器重启次数（所选时间范围）",
+          "type": "table",
+          "description": "所选时间范围内重启计数器的 increase 估算，可能有小数；Pod 删除重建不等同于容器 restart。首次采集前发生的重启不保证被计入。 按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；不依赖 Job 名称，不纳入其它模型服务。需要同一数据源采集对应基础设施指标并保留 namespace、pod 标签；缺失时显示 No data，不补零。身份匹配使用回看窗口，不能保证保留已超出窗口的旧 Pod。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 66,
+            "w": 12,
+            "h": 6
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(sum by(namespace,pod) (max by(namespace,pod,container) (increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\",pod=~\"$pod\"}[$__range])))) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": true,
+              "range": false,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm"
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "namespace": 0,
+                  "pod": 1,
+                  "Value": 2
+                },
+                "renameByName": {
+                  "Value": "Restarts (estimated)"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 306,
+          "title": "GPU 功率（按 Worker Pod 合计）",
+          "type": "timeseries",
+          "description": "DCGM_FI_DEV_POWER_USAGE，单位 W；同一 Worker Pod 各 GPU 当前功率之和。功率是设备口径，共享 GPU 时不代表该 Pod 独占用电量。用于结合 GPU 使用率判断负载，不是累计耗电量。按视频 Worker 专属容量指标识别 Pod，并应用 Namespace/workflow/model/pod 筛选；无 Job 限定。依赖 DCGM 指标和 namespace、pod 标签，缺失不补零。",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${data_source}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 66,
+            "w": 12,
+            "h": 6
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(namespace,pod) (max by(namespace,pod,UUID,gpu) (DCGM_FI_DEV_POWER_USAGE{namespace=~\"$namespace\",pod=~\"$pod\"})) and on(namespace,pod) max by(namespace,pod) (max_over_time(dingo_video_worker_detached_execution_capacity{namespace=~\"$namespace\",workflow=~\"$workflow\",model=~\"$model\",pod=~\"$pod\"}[$__range]))",
+              "legendFormat": "{{namespace}} / {{pod}}",
+              "instant": false,
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "title": "Video Gateway",
+      "type": "link",
+      "url": "/d/dingo-video-overview?var-data_source=${data_source}",
+      "includeVars": false,
+      "keepTime": true
+    }
+  ],
+  "description": "Worker运行监控：默认6张图，Omni诊断默认折叠；采集可用性与采集耗时分左右轴，终态速率图例包含Pod。",
+  "id": null
+}
