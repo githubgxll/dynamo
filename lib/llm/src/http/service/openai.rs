@@ -3319,16 +3319,73 @@ where
                         Ok(request)
                     }
                     Err(_) => parse_json_request_lossy(endpoint, body)
+                        .or_else(|_| parse_json_request_repaired_duplicate_fields(endpoint, body))
                         .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                         .map_err(|_| json_deserialize_error(original_error)),
                 }
             } else {
                 parse_json_request_lossy(endpoint, body)
+                    .or_else(|_| parse_json_request_repaired_duplicate_fields(endpoint, body))
                     .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                     .map_err(|_| json_deserialize_error(original_error))
             }
         }
     }
+}
+
+/// Retry a GLM-5.3 chat request with duplicate JSON keys using the last value
+/// for each key, as the upstream API does. Keep normal schema validation.
+fn parse_json_request_repaired_duplicate_fields<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "duplicate field repair is only supported for chat completions",
+        )));
+    }
+
+    let lossy_body = String::from_utf8_lossy(body);
+    let normalized_body = escape_json_string_control_chars(lossy_body.as_bytes())
+        .unwrap_or_else(|| lossy_body.into_owned().into_bytes());
+
+    match serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body) {
+        Ok(_) => {
+            return Err(serde_json::Error::io(std::io::Error::other(
+                "no duplicate JSON object keys found to repair",
+            )));
+        }
+        Err(error) if !error.to_string().starts_with("duplicate field `") => {
+            return Err(error);
+        }
+        Err(_) => {}
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
+    if !is_glm53_chat_request(&value) {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "duplicate field repair is only supported for GLM-5.3",
+        )));
+    }
+    let repaired_body =
+        serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
+    let request = serde_json::from_slice(&repaired_body)?;
+    tracing::warn!(
+        endpoint,
+        "Accepted chat request after retaining the last duplicate JSON field"
+    );
+    Ok(request)
+}
+
+fn is_glm53_chat_request(value: &serde_json::Value) -> bool {
+    value
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|model| model.rsplit('/').next())
+        .is_some_and(|name| name.to_ascii_lowercase().replace(['-', '_'], "") == "glm5.3")
 }
 
 /// Retry a body whose strict/lossy deserialization failed by dropping
@@ -3356,10 +3413,13 @@ where
     let normalized_body = escape_json_string_control_chars(lossy_body.as_bytes())
         .unwrap_or_else(|| lossy_body.into_owned().into_bytes());
 
-    // A Value round trip would otherwise erase duplicate object keys and
-    // could make a request with an unrelated schema error appear valid.
-    serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body)?;
+    // Preserve duplicate-field errors for other models. GLM-5.3 follows the
+    // upstream API's last-value behavior, including when empty tool call
+    // stubs also need repair.
     let mut value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
+    if !is_glm53_chat_request(&value) {
+        serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body)?;
+    }
 
     let mut repaired = false;
     if let Some(messages) = value
@@ -7179,18 +7239,48 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_completion_stream_options_preserves_duplicate_field_errors() {
+    fn test_parse_completion_stream_options_uses_last_duplicate_field() {
         let chat_body = br#"{
             "model":"first-model",
-            "model":"second-model",
+            "model":"glm-5.3",
             "messages":[{"role":"user","content":"hello"}],
             "stream_options":{"include_usage":null}
         }"#;
-        let chat_error =
-            parse_json_request::<NvCreateChatCompletionRequest>("chat completions", chat_body)
-                .unwrap_err();
-        assert_eq!(chat_error.0, StatusCode::BAD_REQUEST);
-        assert!(chat_error.1.message.contains("duplicate field `model`"));
+        let chat: NvCreateChatCompletionRequest =
+            parse_json_request("chat completions", chat_body).expect("last model should win");
+        assert_eq!(chat.inner.model, "glm-5.3");
+        let other_model = br#"{"model":"other-model","model":"another-model","messages":[{"role":"user","content":"hello"}]}"#;
+        let error =
+            parse_json_request::<NvCreateChatCompletionRequest>("chat completions", other_model)
+                .expect_err("other models should retain strict duplicate validation");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_parse_chat_completion_request_repairs_duplicate_message_fields() {
+        let body = br#"{
+            "model":"glm-5.3",
+            "messages":[
+                {"role":"assistant","content":"previous answer",
+                 "reasoning_content":"first","reasoning_content":"second"},
+                {"role":"user","content":"first","content":"continue"}
+            ]
+        }"#;
+        let repaired: serde_json::Value =
+            parse_json_request_repaired_duplicate_fields("chat completions", body)
+                .expect("duplicate fields should be repaired");
+        assert_eq!(repaired["messages"][0]["reasoning_content"], "second");
+        assert_eq!(repaired["messages"][1]["content"], "continue");
+        let _: NvCreateChatCompletionRequest =
+            parse_json_request("chat completions", body).expect("request should parse");
+    }
+
+    #[test]
+    fn test_parse_chat_completion_request_keeps_schema_errors_after_deduplication() {
+        let body = br#"{"model":"first-model","model":"glm-5.3","messages":42}"#;
+        let error = parse_json_request::<NvCreateChatCompletionRequest>("chat completions", body)
+            .expect_err("invalid messages should still fail");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]
