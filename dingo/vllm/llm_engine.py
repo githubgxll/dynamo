@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncGenerator
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, cast
 
 from vllm.config import VllmConfig
@@ -73,6 +74,7 @@ from dingo.vllm.capacity import per_rank_kv_blocks
 
 from .handlers import (
     VllmEnginePauseController,
+    _request_reasoning_metadata,
     build_sampling_params,
     get_dp_range_for_worker,
 )
@@ -80,6 +82,7 @@ from .logits_processing import (
     activate_logits_processors,
     register_dynamo_logits_processor,
 )
+from .thinking_budget import generate_with_thinking_budget
 
 if TYPE_CHECKING:
     from dynamo._core.backend import EngineMetrics  # type: ignore[import-not-found]
@@ -385,6 +388,8 @@ class VllmLLMEngine(LLMEngine):
             }
             sampling_params.max_tokens = 1
             sampling_params.min_tokens = 1
+            if hasattr(sampling_params, "thinking_token_budget"):
+                sampling_params.thinking_token_budget = None
         elif self.disaggregation_mode == DisaggregationMode.DECODE:
             prefill_result = require_prefill_result(request, self.disaggregation_mode)
             # `disaggregated_params` may be present-but-None (prefill error path
@@ -428,7 +433,17 @@ class VllmLLMEngine(LLMEngine):
         # raises rather than silently falling back to the base model.
         lora_request = self._resolve_lora_request(request.get("model"))
 
-        gen = self.engine_client.generate(
+        is_prefill = self.disaggregation_mode == DisaggregationMode.PREFILL
+        if is_prefill:
+            generate = self.engine_client.generate
+        else:
+            generate = partial(
+                generate_with_thinking_budget,
+                self.engine_client,
+                budget_parser_kwargs=_request_reasoning_metadata(request)[1],
+            )
+
+        gen = generate(
             prompt,
             sampling_params,
             request_id,
@@ -437,7 +452,6 @@ class VllmLLMEngine(LLMEngine):
             **telemetry.engine_trace_kwargs(context),
         )
 
-        is_prefill = self.disaggregation_mode == DisaggregationMode.PREFILL
         tokenizer = getattr(self.engine_client, "tokenizer", None)
         # vLLM emits a selected-token logprob dict even at `logprobs=0`,
         # so the top-k suppression happens below, not at the engine.

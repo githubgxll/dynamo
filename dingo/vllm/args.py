@@ -27,6 +27,7 @@ from dingo.vllm.backend_args import DynamoVllmArgGroup, DynamoVllmConfig
 from dingo.vllm.constants import DisaggregationMode
 
 from . import envs
+from .thinking_budget import default_thinking_budget
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ def parse_args(argv: list[str] | None = None) -> Config:
     # as we use the model name as served_model_name (if served_model_name is not set)
     dynamo_config.model = vllm_args.model
 
+    default_thinking_budget()
     engine_config = AsyncEngineArgs.from_cli_args(vllm_args)
 
     cross_validate_config(dynamo_config, engine_config)

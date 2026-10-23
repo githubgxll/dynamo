@@ -87,7 +87,7 @@ from dynamo.llm import (
     register_model,
     unregister_model,
 )
-from dynamo.llm.exceptions import EngineShutdown
+from dynamo.llm.exceptions import EngineShutdown, HttpError
 from dynamo.runtime import Client
 from dynamo.runtime.logging import configure_dynamo_logging
 from dingo.vllm.kv_connector_protocols import (
@@ -110,6 +110,7 @@ from .multimodal_utils.models.qwen import (
     load_qwen_grid_params,
 )
 from .multimodal_utils.prefill_worker_utils import MultiModalEmbeddingLoader
+from .thinking_budget import generate_with_thinking_budget
 
 # Multimodal data dictionary keys
 IMAGE_URL_KEY: Final = "image_url"
@@ -837,14 +838,10 @@ def build_sampling_params(
         ):
             existing = sampling_params.stop_token_ids or []
             sampling_params.stop_token_ids = list(set(existing).union(value))
-        # Dynamo's StopConditions uses `max_thinking_tokens`; vLLM 0.20+ exposes
-        # the same concept as `thinking_token_budget` on SamplingParams and
-        # enforces it via the builtin thinking-budget logits processor.
-        if (
-            key == "max_thinking_tokens"
-            and value is not None
-            and hasattr(sampling_params, "thinking_token_budget")
-        ):
+        # Keep the requested budget for the decode-side abort guard.
+        if key == "max_thinking_tokens" and value is not None:
+            if not hasattr(sampling_params, "thinking_token_budget"):
+                raise HttpError(400, "thinking_token_budget is unsupported by this engine")
             sampling_params.thinking_token_budget = value
 
     # Apply output_options (logprobs, prompt_logprobs, etc.)
@@ -933,9 +930,9 @@ def build_sampling_params_openai(
         sampling_params.min_tokens = request["min_tokens"]
 
     nvext_max_thinking_tokens = (request.get("nvext") or {}).get("max_thinking_tokens")
-    if nvext_max_thinking_tokens is not None and hasattr(
-        sampling_params, "thinking_token_budget"
-    ):
+    if nvext_max_thinking_tokens is not None:
+        if not hasattr(sampling_params, "thinking_token_budget"):
+            raise HttpError(400, "thinking_token_budget is unsupported by this engine")
         sampling_params.thinking_token_budget = nvext_max_thinking_tokens
 
     return sampling_params
@@ -3114,11 +3111,13 @@ class BaseWorkerHandler(ABC, Generic[RequestT, ResponseT]):
                 request_id,
                 lora_request,
             )
-            gen = generate_with_validation(
-                self.engine_client.generate,
+            gen = generate_with_thinking_budget(
+                self.engine_client,
                 prompt,
                 sampling_params,
                 request_id,
+                abort_guard=self._deferred_aborts.get(request_id),
+                budget_parser_kwargs=reasoning_parser_kwargs,
                 lora_request=lora_request,
                 data_parallel_rank=data_parallel_rank,
                 trace_headers=trace_headers,
@@ -3585,11 +3584,13 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             context, request_id, abort_guard=abort_guard
         ):
             try:
-                gen = generate_with_validation(
-                    self.engine_client.generate,
+                gen = generate_with_thinking_budget(
+                    self.engine_client,
                     prompt,
                     sampling_params,
                     request_id,
+                    abort_guard=abort_guard,
+                    budget_parser_kwargs=_request_reasoning_metadata(request)[1],
                     data_parallel_rank=dp_rank,
                     trace_headers=trace_headers,
                     priority=priority,
@@ -3761,6 +3762,9 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         # Override for prefill: only generate 1 token
         sampling_params.max_tokens = 1
         sampling_params.min_tokens = 1
+        # Only decode enforces the budget; prefill must not force </think>.
+        if hasattr(sampling_params, "thinking_token_budget"):
+            sampling_params.thinking_token_budget = None
 
         # Extract LoRA request if present
         model_name = request.get("model")

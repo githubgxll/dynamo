@@ -29,6 +29,55 @@ The `--help` output is organized into the following groups:
 
 Use `--dyn-tool-call-parser` and `--dyn-reasoning-parser` to match the model's output format when the model emits tool calls and/or reasoning content. The current supported values are documented in [Tool Call Parsing (Dynamo)](../../tool-calling/README.md#supported-tool-call-parsers) and [Reasoning Parsing (Dynamo)](../../reasoning/README.md#supported-reasoning-parsers).
 
+### Thinking Budget Abort
+
+Set an optional default on vLLM workers before startup:
+
+```bash
+export DYN_VLLM_DEFAULT_MAX_THINKING_TOKENS=8192
+python -m dingo.vllm --model <model> --reasoning-parser glm45
+```
+
+The value is a nonnegative integer, read once per process. It only fills a missing
+or null budget; an explicit request value, including `0`, takes precedence. If
+neither the request nor the environment specifies a budget, behavior is unchanged.
+Dynamo Chat requests use `"nvext": {"max_thinking_tokens": 128}`. Internally this
+maps to `SamplingParams.thinking_token_budget`. This setting does not change
+`max_tokens`, sampling penalties, or context length.
+
+When a budget is present, decode workers disable vLLM's native forced-reasoning-end
+behavior for that request and enforce **abort on exhaustion** instead. The model's
+native reasoning parser identifies the initial state from actual prompt token IDs,
+including implicit GLM reasoning and current-turn boundaries. The guard counts
+newly generated reasoning tokens per choice, excluding reasoning delimiters and
+answer tokens. Reopened reasoning uses the same accumulated budget. Reaching the
+budget in any choice aborts the whole request, closes the engine stream, and raises
+HTTP error 400 with a message beginning `thinking_token_budget_exceeded`.
+A zero budget aborts if the request starts in or enters reasoning; it is not an
+instruction to disable thinking and continue answering.
+
+Non-streaming Chat returns an error rather than a partial successful response.
+An already-started Chat SSE response cannot change its HTTP status: it sends the
+existing structured `data: {"error": ...}` frame with code `400`, followed by
+`data: [DONE]`. Already-delivered chunks cannot be recalled. The offending engine
+batch is not forwarded. MTP batches are checked token by token at the worker;
+already-computed speculative tokens cannot be undone. This is not a wall-clock
+or GPU-scheduler-level token deadline.
+
+The initial implementation requires a native `--reasoning-parser` with initialized
+single-token start/end markers, such as the local `glm45` implementation.
+Multi-token markers, missing prompt IDs, or final-only engine output are rejected
+rather than silently leaving the budget unenforced. Prefill's one-token KV transfer
+is not subject to the decode guard. Decode-only aborts are issued only after an
+engine output confirms the transfer has completed.
+
+> [!WARNING]
+> Rebuild workers with this implementation before setting the environment variable.
+> Older images ignore it. CPU tests cover accounting, abort, and error propagation,
+> not GLM model behavior. Validate the exact model/tokenizer/image with stream on
+> and off, speculation off and MTP/5, budgets `0`, `1`, and a draft-block boundary,
+> and prompts with thinking enabled and disabled before production rollout.
+
 ### Priority Scheduling
 
 vLLM engine-level request priority is controlled by the upstream vLLM
