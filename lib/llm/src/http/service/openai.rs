@@ -11,7 +11,7 @@ use std::{
 use axum::{
     Json, Router,
     body::Body,
-    extract::State,
+    extract::{FromRequest, State},
     http::Request,
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
@@ -479,6 +479,42 @@ pub async fn smart_json_error_middleware(request: Request<Body>, next: Next) -> 
         // Pass through if it is not a 422
         response
     }
+}
+
+/// Inspect chat content before the typed JSON extractor rejects unsupported variants.
+async fn reject_custom_files_middleware(request: Request<Body>, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+    // Use Axum's extractor to retain the configured body limit and read errors.
+    let bytes = match Bytes::from_request(Request::from_parts(parts.clone(), body), &()).await {
+        Ok(bytes) => bytes,
+        Err(error) => return error.into_response(),
+    };
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(messages) = value.get("messages").and_then(serde_json::Value::as_array)
+        && messages.iter().any(|message| {
+            message
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|content| {
+                    content.iter().any(|part| {
+                        matches!(
+                            part.get("type").and_then(serde_json::Value::as_str),
+                            Some("file" | "input_file")
+                        )
+                    })
+                })
+        })
+    {
+        return ErrorMessage::from_http_error(HttpError {
+            code: StatusCode::BAD_REQUEST.as_u16(),
+            message: "Unsupported custom files in chat messages content (file/input_file)"
+                .to_string(),
+        })
+        .into_response();
+    }
+    // Invalid JSON and all other content still go through the normal extractor.
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 /// Return the request ID for the current request.
@@ -2576,6 +2612,7 @@ pub fn chat_completions_router(
     let doc = RouteDoc::new(axum::http::Method::POST, &path);
     let router = Router::new()
         .route(&path, post(handler_chat_completions))
+        .layer(middleware::from_fn(reject_custom_files_middleware))
         .layer(middleware::from_fn(smart_json_error_middleware))
         .layer(axum::extract::DefaultBodyLimit::max(get_body_limit()))
         .with_state((state, template));
@@ -3300,6 +3337,109 @@ mod tests {
         ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
         CreateCompletionRequest,
     };
+
+    #[tokio::test]
+    async fn test_chat_http_custom_files() {
+        use serde_json::json;
+
+        let router =
+            Router::new()
+                .route(
+                    "/custom/chat",
+                    post(
+                        |Json(request): Json<NvCreateChatCompletionRequest>| async move {
+                            Json(request)
+                        },
+                    ),
+                )
+                .layer(middleware::from_fn(reject_custom_files_middleware))
+                .layer(middleware::from_fn(smart_json_error_middleware))
+                .layer(axum::extract::DefaultBodyLimit::max(4096));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/custom/chat", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = reqwest::Client::new();
+
+        for part in [
+            json!({"type": "file", "file": {"file_id": "file-123"}}),
+            json!({"type": "file", "file": {
+                "filename": "private.pdf", "file_data": "data:application/pdf;base64,cHJpdmF0ZQ=="
+            }}),
+            json!({"type": "input_file", "file_id": "file-123"}),
+        ] {
+            let response = client
+                .post(&url)
+                .json(&json!({
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "read this"}, part
+                    ]}]
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let error: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(error["code"], 400);
+            assert_eq!(error["type"], "Bad Request");
+            assert_eq!(
+                error["message"],
+                "Unsupported custom files in chat messages content (file/input_file)"
+            );
+        }
+
+        for content in [
+            json!("file input_file"),
+            json!([{"type": "text", "text": "{\"type\":\"file\"}"}]),
+            json!([
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/file.png"}}
+            ]),
+        ] {
+            let response = client
+                .post(&url)
+                .json(&json!({
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": content}],
+                    "metadata": {"type": "file"}
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["messages"][0]["content"], content);
+        }
+
+        for body in [
+            r#"{"messages":[{"content":[{"type":"file"}]}],"model": "#,
+            r#"{"model":"test-model","messages":[{"role":"user","content":42}]}"#,
+            r#"{"model":"test-model","messages":[{"role":"user","content":[{"type":"unknown"}]}]}"#,
+            r#"{"type":"file"}"#,
+        ] {
+            let response = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let error = response.text().await.unwrap();
+            assert!(!error.contains("Unsupported custom files"), "{error}");
+            assert!(error.contains("Failed to"), "{error}");
+        }
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(" ".repeat(4097))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        server.abort();
+    }
 
     #[test]
     fn test_chat_http_tool_result_associations() {
