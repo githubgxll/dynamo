@@ -106,9 +106,21 @@ impl OpenAIPreprocessor {
             gd.json = None;
         }
 
+        let mut guidance_tools = convert_tools(tools.as_ref());
+        if self.runtime_config.supports_runtime_capability(
+            crate::local_model::runtime_config::SGLANG_GENERATE_CAPABILITY,
+        ) {
+            relax_glm53_lookahead_guidance(
+                &request.inner.model,
+                self.tool_call_parser.as_deref(),
+                &parser_tool_choice,
+                self.runtime_config.structural_tag_schema,
+                &mut guidance_tools,
+            );
+        }
         if self.apply_tool_choice_structural_tag(
             &parser_tool_choice,
-            &convert_tools(tools.as_ref()),
+            &guidance_tools,
             request.inner.parallel_tool_calls,
             prompt_injected_reasoning,
             common_request,
@@ -201,6 +213,94 @@ pub(crate) fn convert_tools(tools: &[ChatCompletionTool]) -> Vec<ToolDefinition>
             strict: tool.function.strict,
         })
         .collect()
+}
+
+// Compatibility for the October 2026 GLM-5.3 auto-tool lookahead failures.
+// Only the grammar copy is relaxed, using the builder's existing strict=false
+// argument mode; prompt schemas and native tool-envelope constraints stay intact.
+// Remove when the supported grammar backend passes this pattern's regression.
+fn relax_glm53_lookahead_guidance(
+    model: &str,
+    parser: Option<&str>,
+    choice: &ToolChoice,
+    schema_mode: crate::local_model::runtime_config::StructuralTagSchemaMode,
+    tools: &mut [ToolDefinition],
+) {
+    let model = model.rsplit('/').next().unwrap_or(model);
+    if model.to_ascii_lowercase().replace(['-', '_'], "") != "glm5.3"
+        || parser != Some("glm47")
+        || !matches!(choice, ToolChoice::Auto)
+        || !matches!(
+            schema_mode,
+            crate::local_model::runtime_config::StructuralTagSchemaMode::Auto
+        )
+    {
+        return;
+    }
+    for tool in tools {
+        if tool.strict.is_none()
+            && tool
+                .parameters
+                .as_ref()
+                .is_some_and(has_anchored_negative_lookahead)
+        {
+            tool.strict = Some(false);
+        }
+    }
+}
+
+fn has_anchored_negative_lookahead(schema: &serde_json::Value) -> bool {
+    let Some(schema) = schema.as_object() else {
+        return false;
+    };
+    if schema
+        .get("pattern")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|pattern| pattern.starts_with("^(?!"))
+    {
+        return true;
+    }
+    for key in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+    ] {
+        if let Some(children) = schema.get(key).and_then(serde_json::Value::as_object)
+            && children.values().any(has_anchored_negative_lookahead)
+        {
+            return true;
+        }
+    }
+    for key in [
+        "items",
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "prefixItems",
+    ] {
+        if let Some(child) = schema.get(key) {
+            if let Some(children) = child.as_array() {
+                if children.iter().any(has_anchored_negative_lookahead) {
+                    return true;
+                }
+            } else if has_anchored_negative_lookahead(child) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Normalize and validate all tools visible to the model without rewriting the request.
