@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod tool_history;
+
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -4482,6 +4484,7 @@ async fn chat_completions(
     }
 
     // Handle Rest of Validation Errors
+    tool_history::repair_placeholder_results(&mut request.inner.messages);
     if let Err(err_response) = validate_chat_completion_fields_with_history_policy(
         &request,
         state.allows_invalid_history_arguments(&request.inner.model),
@@ -4578,6 +4581,10 @@ async fn chat_completions(
 
     // apply any annotations to the front of the stream
     let stream = stream::iter(annotations).chain(stream);
+
+    // Validate tool identities before either SSE projection or aggregation.
+    // Keep the engine context above for disconnect/cancellation propagation.
+    let stream = tool_history::guard_stream(stream);
 
     // todo - tap the stream and propagate request level metrics
     // note - we might do this as part of the post processing set to make it more generic
@@ -4784,7 +4791,7 @@ async fn chat_completions(
                 error_response
             })?;
 
-        let response =
+        let mut response =
             NvCreateChatCompletionResponse::from_annotated_stream(stream, parsing_options.clone())
                 .await
                 .map_err(|e| {
@@ -4795,6 +4802,15 @@ async fn chat_completions(
                     inflight_guard.mark_error(extract_error_type_from_response(&err_response));
                     err_response
                 })?;
+
+        tool_history::guard_response(&mut response).map_err(|message| {
+            let err_response = ErrorMessage::internal_server_error_with_details(
+                "Invalid tool call in backend response",
+                message,
+            );
+            inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+            err_response
+        })?;
 
         inflight_guard.mark_ok();
         // If the engine context was killed (client disconnect), the response was
