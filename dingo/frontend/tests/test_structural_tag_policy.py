@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from copy import deepcopy
+
 import pytest
 
 from dingo.frontend.structural_tag_policy import (
     effective_tool_strict,
+    glm53_lookahead_guidance_tools,
     runtime_structural_tag_excludes_reasoning,
     runtime_structural_tag_options,
     should_attempt_structural_tag,
@@ -136,3 +139,47 @@ def test_reasoning_boundary_resolution(boundary, backend_excludes, expected):
     if backend_excludes:
         config.update(_EXCLUDES)
     assert runtime_structural_tag_excludes_reasoning(config) is expected
+
+
+@pytest.mark.parametrize(
+    ("strict", "mode", "expected"),
+    [
+        (None, "auto", False),
+        (True, "auto", True),
+        (None, "strict", None),
+    ],
+)
+def test_glm53_report_lookahead_only_relaxes_implicit_strictness(
+    strict, mode, expected
+):
+    request = {
+        "model": "glm-5.3",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "demo",
+                    "strict": strict,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "pattern": "^(?!x)y"}
+                        },
+                    },
+                },
+            }
+        ],
+    }
+    before = deepcopy(request)
+    result = glm53_lookahead_guidance_tools(request, parser="glm47", schema_mode=mode)
+    assert result[0]["function"]["strict"] is expected
+    assert (
+        result[0]["function"]["parameters"]
+        == before["tools"][0]["function"]["parameters"]
+    )
+    assert request == before
+    request["tool_choice"] = "required"
+    assert (
+        glm53_lookahead_guidance_tools(request, parser="glm47", schema_mode=mode)
+        == request["tools"]
+    )

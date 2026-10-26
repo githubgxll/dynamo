@@ -40,6 +40,7 @@ from .sglang_prompt_renderer import (
 from .structural_tag_policy import (
     ToolChoiceKind,
     effective_tool_strict,
+    glm53_lookahead_guidance_tools,
     should_attempt_structural_tag,
 )
 from .thinking import apply_default_thinking_mode_to_template_kwargs
@@ -1005,8 +1006,16 @@ def build_tool_call_guided_decoding(
     )
 
     if attempt_structural_tag and tool_call_parser_name:
+        # Keep explicit engine-wide PARAMETER policy authoritative as well.
+        guidance_raw_tools = raw_tools
+        if envs.SGLANG_TOOL_STRICT_LEVEL.get() < ToolStrictLevel.PARAMETER:
+            guidance_raw_tools = glm53_lookahead_guidance_tools(
+                request,
+                parser=_normalize_sglang_parser_name(tool_call_parser_name),
+                schema_mode=structural_tag_schema,
+            )
         guidance_tools = convert_tools(
-            raw_tools,
+            guidance_raw_tools,
             structural_tag_schema=structural_tag_schema,
         )
         if is_named_choice:
