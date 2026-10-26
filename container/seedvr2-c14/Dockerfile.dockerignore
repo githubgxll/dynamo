@@ -1,0 +1,11 @@
+**
+!container/
+!container/seedvr2-c14/
+!container/seedvr2-c14/**
+!delivery/
+!delivery/seedvr2-c14/
+!delivery/seedvr2-c14/source-lock.json
+!delivery/seedvr2-c14/input-seal.json
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

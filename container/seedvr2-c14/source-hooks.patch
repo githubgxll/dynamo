@@ -1,0 +1,311 @@
+--- a/vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py
++++ b/vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py
+@@ -23,6 +23,7 @@
+ from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
+ from vllm_omni.diffusion.distributed.utils import get_local_device
+ from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
++from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
+ from vllm_omni.diffusion.models.seedvr2 import config as envs
+ from vllm_omni.diffusion.models.seedvr2.config import COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION_METHOD
+ from vllm_omni.diffusion.models.seedvr2.nadit import SEEDVR2_3B_CONFIG, SeedVR2NaDiT, validate_seedvr2_parallel_config
+@@ -544,7 +545,7 @@
+     return _seedvr2_post_process
+ 
+ 
+-def finish_video(decoded: torch.Tensor, sample: torch.Tensor, frame_count: int, method: str) -> torch.Tensor:
++def finish_video(decoded: torch.Tensor, sample: torch.Tensor, frame_count: int, method: str, capture=None) -> torch.Tensor:
+     """Colour-correct and quantize decoded ``[B,3,T,H,W]`` frames to uint8 ``[B,T,H,W,3]``.
+ 
+     One frame at a time: whole-clip float copies would dominate device memory on
+@@ -557,14 +558,22 @@
+         frame = slice(index, index + 1)
+         # Restoration shifts global colour, so the resized input carries the
+         # reference colour back onto the restored detail.
+-        corrected = correct_video_color(
+-            ((decoded[:, :, frame].float() + 1) / 2).clamp(0, 1),
+-            ((sample[:, :, frame].float() + 1) / 2).clamp(0, 1),
+-            method=method,
+-        )
++        if capture is None:
++            corrected = correct_video_color(
++                ((decoded[:, :, frame].float() + 1) / 2).clamp(0, 1),
++                ((sample[:, :, frame].float() + 1) / 2).clamp(0, 1),
++                method=method,
++            )
++        else:
++            color_input = ((decoded[:, :, frame].float() + 1) / 2).clamp(0, 1)
++            color_reference = ((sample[:, :, frame].float() + 1) / 2).clamp(0, 1)
++            corrected = correct_video_color(color_input, color_reference, method=method)
++            _c14.color_frame(capture, index, color_input, color_reference, corrected)
++            del color_input, color_reference
+         # Quantize on the device, matching the encoders' rint(clip(x) * 255), so
+         # the host copy and the IPC payload are a quarter of the float size.
+         video[:, index] = (corrected[:, :, 0].clamp(0, 1) * 255).round_().permute(0, 2, 3, 1)
++    _c14.quantized(capture, video)
+     return video
+ 
+ 
+@@ -637,35 +646,60 @@
+             if not isinstance(request.prepared_layout, SeedVR2Input):
+                 prepare_request(request, frame_pixels=self.frame_pixels, clip_pixels=self.clip_pixels)
+             prepared = request.prepared_layout
+-            sample = prepare_video(prepared.frames, params.height, params.width, self.device)
+-            generator = params.generator
+-            if generator is None:
+-                generator = torch.Generator(device=self.device).manual_seed(params.seed)
+-            if not isinstance(generator, torch.Generator):
+-                raise ValueError("SeedVR2 accepts one generator per request")
+-            latent = self.vae.encode(sample).sample(generator=generator)
+-            condition = latent.permute(0, 2, 3, 4, 1).squeeze(0) * 0.9152
+-            noise = sample_noise(condition, generator)
+-            video = torch.cat((noise, condition, torch.ones_like(condition[..., :1])), dim=-1).reshape(-1, 33)
+-            shape = torch.tensor([condition.shape[:3]], device=self.device, dtype=torch.long)
+-            text_shape = torch.tensor([[self.text.shape[0]]], device=self.device, dtype=torch.long)
+-            timestep = torch.tensor([1000.0], device=self.device, dtype=torch.float16)
+-            runtime = self.transformer.build_runtime(
+-                self.transformer.token_grid_for(shape),
+-                text_len=self.text.shape[0],
+-                parallel_config=self.od_config.parallel_config,
+-            )
+-            velocity = self.transformer(video, self.text, shape, text_shape, timestep, runtime).vid_sample
+-            # Reference Euler returns fp32, then VAE casts to fp16 before scaling.
+-            restored = noise - velocity.reshape_as(noise)
+-            decoded = self.vae.decode((restored / 0.9152).permute(3, 0, 1, 2).unsqueeze(0))
+-            method = params.extra_args.get("color_correction_method") or DEFAULT_COLOR_CORRECTION_METHOD
+-            video = finish_video(decoded, sample, prepared.frame_count, method)
+-            payload: dict[str, object] = {"video": video}
+-            fps = prepared.source.fps if prepared.source is not None else params.fps
+-            metadata: dict[str, object] = {"video": {"fps": fps}} if fps is not None else {}
+-            if prepared.source is not None and prepared.source.audio is not None:
+-                payload["audio"] = prepared.source.audio
+-                metadata["audio"] = {"sample_rate": prepared.source.audio_sample_rate}
+-            outputs.append(DiffusionOutput(output={"payload": payload, "metadata": metadata}))
++            with _c14.session(request, self, prepared) as capture:
++                sample = prepare_video(prepared.frames, params.height, params.width, self.device)
++                generator = params.generator
++                if generator is None:
++                    generator = torch.Generator(device=self.device).manual_seed(params.seed)
++                if not isinstance(generator, torch.Generator):
++                    raise ValueError("SeedVR2 accepts one generator per request")
++                if capture is None:
++                    latent = self.vae.encode(sample).sample(generator=generator)
++                else:
++                    capture.tensor("input_decoded", prepared.frames, "THWC" if prepared.frames.dtype == torch.uint8 else "TCHW", "decoded RGB")
++                    capture.tensor("prepared_sample", sample, "BCTHW", "RGB [-1,1], padded")
++                    posterior = self.vae.encode(sample)
++                    capture.tensor("posterior_mean", posterior.mean, "BCTHW")
++                    capture.tensor("posterior_logvar", posterior.logvar, "BCTHW")
++                    capture.tensor("rng_before", generator.get_state(), "N", "generator state before posterior sample")
++                    latent = posterior.sample(generator=generator)
++                    capture.tensor("rng_after", generator.get_state(), "N", "generator state after posterior sample")
++                    capture.tensor("posterior_sample", latent, "BCTHW")
++                    del posterior
++                condition = latent.permute(0, 2, 3, 4, 1).squeeze(0) * 0.9152
++                noise = sample_noise(condition, generator)
++                if capture is not None:
++                    capture.tensor("dit_condition", condition, "THWC")
++                    capture.tensor("dit_noise", noise, "THWC")
++                video = torch.cat((noise, condition, torch.ones_like(condition[..., :1])), dim=-1).reshape(-1, 33)
++                shape = torch.tensor([condition.shape[:3]], device=self.device, dtype=torch.long)
++                text_shape = torch.tensor([[self.text.shape[0]]], device=self.device, dtype=torch.long)
++                timestep = torch.tensor([1000.0], device=self.device, dtype=torch.float16)
++                runtime = self.transformer.build_runtime(
++                    self.transformer.token_grid_for(shape),
++                    text_len=self.text.shape[0],
++                    parallel_config=self.od_config.parallel_config,
++                )
++                velocity = self.transformer(video, self.text, shape, text_shape, timestep, runtime).vid_sample
++                if capture is not None:
++                    capture.tensor("dit_velocity", velocity, "NC", "native NaDiT canonical rows")
++                # Reference Euler returns fp32, then VAE casts to fp16 before scaling.
++                restored = noise - velocity.reshape_as(noise)
++                if capture is None:
++                    decoded = self.vae.decode((restored / 0.9152).permute(3, 0, 1, 2).unsqueeze(0))
++                else:
++                    decode_input = (restored / 0.9152).permute(3, 0, 1, 2).unsqueeze(0)
++                    capture.tensor("vae_decode_input", decode_input, "BCTHW", "actual decode input after 0.9152 transform")
++                    decoded = self.vae.decode(decode_input)
++                    capture.tensor("decoded_rgb", decoded, "BCTHW", "clamp-before VAE RGB")
++                    del decode_input
++                method = params.extra_args.get("color_correction_method") or DEFAULT_COLOR_CORRECTION_METHOD
++                video = finish_video(decoded, sample, prepared.frame_count, method, capture=capture)
++                payload: dict[str, object] = {"video": video}
++                fps = prepared.source.fps if prepared.source is not None else params.fps
++                metadata: dict[str, object] = {"video": {"fps": fps}} if fps is not None else {}
++                if prepared.source is not None and prepared.source.audio is not None:
++                    payload["audio"] = prepared.source.audio
++                    metadata["audio"] = {"sample_rate": prepared.source.audio_sample_rate}
++                outputs.append(DiffusionOutput(output={"payload": payload, "metadata": metadata}))
+         return outputs
+--- a/vllm_omni/diffusion/models/seedvr2/vae.py
++++ b/vllm_omni/diffusion/models/seedvr2/vae.py
+@@ -17,6 +17,7 @@
+ from vllm_omni.diffusion.distributed.autoencoders.distributed_vae_executor import DistributedVaeMixin
+ from vllm_omni.diffusion.distributed.autoencoders.wan_spatial_shard import halo_exchange
+ from vllm_omni.diffusion.distributed.parallel_state import get_sp_group
++from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
+ 
+ 
+ @dataclass(frozen=True)
+@@ -368,11 +369,13 @@
+             z = context.spatial.split(z)
+         if chunk_size is None or z.shape[2] <= chunk_size:
+             decoded = self.decoder(z, context)
++            _c14.decode_chunk(0, z.shape[2], decoded)
+         else:
+             context.cache_temporal = True
+             chunks = []
+             for start in range(0, z.shape[2], chunk_size):
+                 chunks.append(self.decoder(z[:, :, start : start + chunk_size], context))
++                _c14.decode_chunk(start, min(start + chunk_size, z.shape[2]), chunks[-1])
+                 context.first = False
+             decoded = torch.cat(chunks, dim=2)
+         if context.spatial is not None:
+--- a/vllm_omni/diffusion/models/seedvr2/long_video.py
++++ b/vllm_omni/diffusion/models/seedvr2/long_video.py
+@@ -29,6 +29,7 @@
+ from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
+ from fastapi.responses import FileResponse
+ 
++from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
+ from vllm_omni.diffusion.models.seedvr2 import config as envs
+ from vllm_omni.diffusion.models.seedvr2.config import COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION_METHOD
+ from vllm_omni.diffusion.models.seedvr2.pipeline_seedvr2 import max_frames, sharded_budget
+@@ -168,7 +169,10 @@
+     color_correction_method: str,
+     port: int,
+     authorization: str,
++    c14_context=None,
+ ) -> list[np.ndarray]:
++    segment = _segment(frames)
++    _c14.media(c14_context, "window-input.mkv", segment)
+     response = requests.post(
+         f"http://127.0.0.1:{port}/v1/videos/sync",
+         data={
+@@ -179,10 +183,10 @@
+             "guidance_scale": "1",
+             "seed": str(seed),
+             "extra_params": json.dumps(
+-                {"video_codec_options": LOSSLESS, "color_correction_method": color_correction_method}
++                _c14.child_options(c14_context, {"video_codec_options": LOSSLESS, "color_correction_method": color_correction_method})
+             ),
+         },
+-        files={"input_references": ("window.mkv", _segment(frames), "video/x-matroska")},
++        files={"input_references": ("window.mkv", segment, "video/x-matroska")},
+         headers={"Authorization": authorization} if authorization else {},
+         timeout=900,
+     )
+@@ -190,6 +194,7 @@
+         response.raise_for_status()
+     except requests.HTTPError as error:
+         raise JobError("SeedVR2 window restoration failed") from error
++    _c14.media(c14_context, "window-output.mp4", response.content)
+     with av.open(io.BytesIO(response.content)) as container:
+         video = container.streams.video[0]
+         decoded = list(container.decode(video=0))
+@@ -239,22 +244,24 @@
+     output = scratch / "output.mp4"
+     source_frames = _frames(source, width, height, loop)
+ 
+-    def windows() -> Iterator[list[av.VideoFrame]]:
++    def windows() -> Iterator[tuple[int, list[av.VideoFrame]]]:
+         batch = list(itertools.islice(source_frames, min(window, target)))
+         start = 0
+         while True:
+             if len(batch) != min(window, target - start):
+                 raise JobError("Input video has fewer frames than requested; set loop_input=true to repeat it")
+-            yield batch
++            yield start, batch
+             start += len(batch) - OVERLAP
+             if start + OVERLAP >= target:
+                 return
+             batch = batch[-OVERLAP:] + list(itertools.islice(source_frames, min(window, target - start) - OVERLAP))
+ 
+-    def restore(frames: list[av.VideoFrame]) -> Future[list[np.ndarray]]:
++    def restore(batch: tuple[int, list[av.VideoFrame]]) -> Future[list[np.ndarray]]:
++        start, frames = batch
+         if (job / "cancel").exists():
+             raise JobCancelledError("SeedVR2 long-video job was cancelled")
+-        return pool.submit(_restore, frames, width, height, seed, color_correction_method, port, authorization)
++        context = _c14.window_context(job, start, len(frames), width, height, target, seed, color_correction_method)
++        return pool.submit(_restore, frames, width, height, seed, color_correction_method, port, authorization, context)
+ 
+     written = 0
+     pending: list[np.ndarray] = []
+@@ -264,9 +271,11 @@
+         video = container.add_stream("libx264", rate=FPS)
+         video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+         video.options = {"preset": "veryfast", "crf": "18", "tune": "zerolatency", "bf": "0"}
++        _c14.long_encoder(job, video)
+ 
+         def write(array: np.ndarray) -> None:
+             nonlocal written
++            _c14.fused_frame(job, written, array)
+             frame = av.VideoFrame.from_ndarray(array, format="rgb24")
+             frame.pts, frame.time_base = written, Fraction(1, FPS)
+             for packet in video.encode(frame):
+@@ -300,7 +309,7 @@
+     with av.open(str(source)) as container:
+         has_audio = bool(container.streams.audio)
+     if has_audio:
+-        subprocess.run(
++        _c14.run_mux(job, subprocess.run,
+             [
+                 imageio_ffmpeg.get_ffmpeg_exe(),
+                 "-nostdin",
+--- a/vllm_omni/entrypoints/openai/serving_video.py
++++ b/vllm_omni/entrypoints/openai/serving_video.py
+@@ -640,13 +640,15 @@
+                 artifacts.actions[0],
+                 video_metadata,
+             )
+-        video_bytes = _encode_video_bytes(
+-            artifacts.videos[0],
+-            fps=artifacts.output_fps,
+-            video_codec_options=video_codec_options,
+-            frame_converter=self._video_frame_converter,
+-            **encoding_options,
+-        )
++        from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
++        with _c14.encoding_context(request.extra_params, video_codec_options, self._video_frame_converter, encoding_options):
++            video_bytes = _encode_video_bytes(
++                artifacts.videos[0],
++                fps=artifacts.output_fps,
++                video_codec_options=video_codec_options,
++                frame_converter=self._video_frame_converter,
++                **encoding_options,
++            )
+         _t_encode_ms = (time.perf_counter() - _t_encode_start) * 1000
+         logger.info("Video response encoding (MP4 bytes): %.2f ms", _t_encode_ms)
+         return video_bytes, artifacts.stage_durations, artifacts.peak_memory_mb, artifacts.actions[0], video_metadata
+--- a/vllm_omni/entrypoints/openai/video_api_utils.py
++++ b/vllm_omni/entrypoints/openai/video_api_utils.py
+@@ -769,6 +769,8 @@
+     effective_frame_conversion_workers: int,
+     reason: str | None = None,
+ ) -> None:
++    from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
++    _c14.encoding_route(selected_path, frames, frame_shape, common_dtype, fps, audio_sample_rate, effective_frame_conversion_workers, reason)
+     reason_field = "" if reason is None else f" reason={reason}"
+     logger.info(
+         "Video response encoding route selected: selected_path=%s%s frames=%d frame_shape=%s dtype=%s fps=%s "
+--- a/vllm_omni/diffusion/utils/media_utils.py
++++ b/vllm_omni/diffusion/utils/media_utils.py
+@@ -391,6 +391,8 @@
+     if video_codec_options:
+         options.update(video_codec_options)
+     v_stream.options = options
++    from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
++    _c14.muxer_settings(v_stream, video_codec, fps, options)
+ 
+     a_stream: av.AudioStream | None = None
+     samples: np.ndarray | None = None
+@@ -460,6 +462,8 @@
+         if video_codec_options:
+             options.update(video_codec_options)
+         v_stream.options = options
++        from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
++        _c14.muxer_settings(v_stream, video_codec, fps, options)
+ 
+         a_stream: av.AudioStream | None = None
+         samples: np.ndarray | None = None

@@ -1,0 +1,7 @@
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+Dockerfile.dockerignore text eol=lf
+upstream/** -text
+source-hooks.patch -whitespace

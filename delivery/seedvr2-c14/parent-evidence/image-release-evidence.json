@@ -1,0 +1,81 @@
+{
+  "schema": "h3-seedvr2-image-release-evidence/1",
+  "status": "PUBLISHED_AND_CPU_VALIDATED_GPU_ACCEPTANCE_PENDING",
+  "provenance": {
+    "primary_source": "Previously read GitHub Actions job log; no additional network lookup required by this file",
+    "actions_url": "https://github.com/githubgxll/dynamo/actions/runs/39583937193",
+    "job_url": "https://github.com/githubgxll/dynamo/actions/runs/39583937193/job/119168053924",
+    "run_id": 39583937193,
+    "job_id": 119168053924,
+    "run_attempt": 1,
+    "event": "push",
+    "run_conclusion": "success",
+    "publication_log_utc": "2026-10-21T10:25:17Z",
+    "publication_status": "PASS_PUBLISHED_AND_PULLED_CPU_VALIDATED",
+    "artifact": {
+      "id": 12338617370,
+      "name": "image-evidence-omni-gateway-lite-2362a3241c03a286b98e51b8003a51f494fab4f1-1",
+      "url": "https://github.com/githubgxll/dynamo/actions/runs/39583937193/artifacts/12338617370",
+      "bytes": 2394711,
+      "sha256": "a3faa3c244af2995b88cfa841335f31491137f3d71e0bce82d58174a239182ab",
+      "archive_saved_locally": false,
+      "supplementary_check": "Archive was read into memory only before the stop-network instruction; SHA256 matched GitHub metadata and all ZIP CRCs passed. image.json, final/runtime-validation.json and final/rmsnorm/runtime-validation.json confirmed the job-log identity. This JSON is a concise evidence record, not the original artifact ZIP."
+    }
+  },
+  "image": {
+    "deployment_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:9382949d2789b23cdfe4ea71d68c7973592de28f209082bd7907c1d09fe008c9",
+    "tag": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm:omni031rc1-gateway-lite-srnormfix-2362a3241c03",
+    "image_id": "sha256:a7ec5a64808d76b0104ea078e462ee466d51f364057790db5b7640ef1cc2e5d7",
+    "source_commit": "2362a3241c03a286b98e51b8003a51f494fab4f1",
+    "branch": "Dingorouter-H3-vllm-omni-jirx",
+    "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:898cdea0a39ba5a673ca03ba10fbd15bfeebaa90ec6fffe6953e89408b5c9a1e",
+    "parent_source_commit": "db65d1ec869b6deee02debe7a58e108de7c927ef",
+    "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+    "rmsnorm_upstream_commit": "0708f05e2e27f16fca8b48e7c5a085277d1cafda"
+  },
+  "observed_cpu_runtime": {
+    "status": "PASS",
+    "device": "cpu",
+    "euid": 1000,
+    "versions": {
+      "vllm": "0.31.0",
+      "vllm-omni": "0.31.0rc1",
+      "torch": "2.13.0+cu130",
+      "cache-dit": "1.5.0",
+      "pytest": "9.1.1",
+      "safetensors": "0.8.0"
+    },
+    "module_path": "/usr/local/lib/python3.12/dist-packages/vllm_omni/diffusion/models/seedvr2/nadit.py",
+    "six_numerical_groups_passed": 6,
+    "upstream_pytest_cases_passed": 6,
+    "all_300_output_min": 1.0,
+    "all_300_output_max": 1.0,
+    "old_formula_all_zero": true,
+    "adapters_present": false,
+    "ref8_patch_present": false,
+    "retained_packages_unchanged": true,
+    "gateway_regression_case_count": 9
+  },
+  "expected_source_hashes": {
+    "config.py": "0debf02936e3f84f737747fd50b4e1448d6294c0ffee11a14a0d83450f6228ea",
+    "long_video.py": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
+    "nadit.py": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+    "pipeline_seedvr2.py": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+    "vae.py": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3"
+  },
+  "observed_installed_source_hashes": {
+    "config.py": "0debf02936e3f84f737747fd50b4e1448d6294c0ffee11a14a0d83450f6228ea",
+    "long_video.py": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
+    "nadit.py": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+    "pipeline_seedvr2.py": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+    "vae.py": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3"
+  },
+  "observed_hash_scope": "Actual installed source during CPU image validation, confirmed by final/rmsnorm/runtime-validation.json; not a runtime read from a new Kubernetes Pod.",
+  "not_run": [
+    "GPU inference with this image",
+    "Gateway external-service E2E",
+    "Same-input video A/B",
+    "Human quality review"
+  ],
+  "base_ref2va_scope": "The lite recipe retains the complete original Omni model package and dependencies; omitted distilled adapter files and Ref8-only shift12 patch are not required by H3 Base50 Ref2VA. Actual Base Ref2VA plus SeedVR2 GPU/media acceptance remains pending."
+}

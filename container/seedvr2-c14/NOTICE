@@ -1,0 +1,5 @@
+This source-only experimental layer derives from the pinned published Omni
+Gateway lite image and preserves its /legal inventory and license notices.
+The C14 additions instrument the Apache-2.0 vLLM-Omni package and retain its
+original source headers. No dependency, model weight or license-policy changes
+are made. Captures/replays support diagnosis, not a claim of repaired C14 quality.

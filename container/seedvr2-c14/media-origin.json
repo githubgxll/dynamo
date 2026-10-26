@@ -1,0 +1,26 @@
+{
+  "source_file": "Ref7 resident_media.py",
+  "source_sha256": "3e20b10042d70b6a181e8f91d127e870c7afd9b5725b8274c76eb9fefbf3bb8f",
+  "retained_functions": [
+    "_NoRedirect",
+    "_reparse",
+    "_response_headers",
+    "audio_packet_proof",
+    "canonical_hash",
+    "command",
+    "compare_audio",
+    "curl_request",
+    "get_state",
+    "inside",
+    "local_url",
+    "now",
+    "probe_media",
+    "read_json",
+    "require",
+    "run_owned",
+    "sha",
+    "write_new_json"
+  ],
+  "output_sha256": "41b8e7039eee98c044d7f62f46478fd580fd496099f4da525b8f98726ba6b518",
+  "scope": "Unchanged selected media verification/loopback HTTP functions; no H3 generation entrypoint"
+}

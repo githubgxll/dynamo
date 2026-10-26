@@ -1,0 +1,32 @@
+{
+  "schema": "seedvr2-c14-source-patches/1",
+  "upstream_commit": "6dd0d1f9310f7598b773c796b434c8000c2816ec",
+  "scope": "Exact default-off diagnostic hooks; no quality repair claim",
+  "files": {
+    "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py": {
+      "before_sha256": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+      "after_sha256": "0c7ec81816daa4978697c1cbe69817c772b8a1e42a7acf607f9420a0c02760b1"
+    },
+    "vllm_omni/diffusion/models/seedvr2/vae.py": {
+      "before_sha256": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3",
+      "after_sha256": "06a2ffa2df5aaac83c1fab78086d8429e2ff02e0c676a3115e793c76ce28a1f3"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video.py": {
+      "before_sha256": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
+      "after_sha256": "526345dca3930384417f075f2dc8fde6bf34ec9c0ff3241fbf2540baf701d480"
+    },
+    "vllm_omni/entrypoints/openai/serving_video.py": {
+      "before_sha256": "a425493d5eed3118a050f1c3d78b9408872545a88b46db4d43ccefdb3b8ebb7e",
+      "after_sha256": "9f28e24af559b80eefa0e1814b4e300a203cab2456db156ce7911f8414f2fe78"
+    },
+    "vllm_omni/entrypoints/openai/video_api_utils.py": {
+      "before_sha256": "4f2136f858d18d770326fdcb16e8e1fd3e8c7f1bb315315aa1f18d99b471be74",
+      "after_sha256": "eab82e9764dbdc7ef50165fb3d4bb25bfba4a4f88f2cda0d7bfb0bdc9bebd340"
+    },
+    "vllm_omni/diffusion/utils/media_utils.py": {
+      "before_sha256": "045cf1819eb88d8aaa3b0c7e4c21b3c7dfbc81954c6188605e7e8fec632c3380",
+      "after_sha256": "ee1d98e748819c214fa46dbc915e3a72be2b55ee5bcb1cb51cc0935a2e5df6e6"
+    }
+  },
+  "helper_sha256": "7de785d45d4a1ff01b7c2fec235a5d09b16a29cc33d8a11104fce62ea6375620"
+}

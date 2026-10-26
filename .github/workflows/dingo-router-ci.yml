@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Dingo H3 experimental image recipes
-run-name: "${{ github.event_name == 'push' && 'omni-gateway-lite' || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
+run-name: "${{ github.event_name == 'push' && (contains(github.event.head_commit.message, '[seedvr2-c14]') && 'seedvr2-c14' || 'omni-gateway-lite') || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
         type: choice
         required: true
         default: omni-gateway-lite
-        options: [seedvr2-rmsnorm, omni-gateway-lite, full]
+        options: [seedvr2-c14, seedvr2-rmsnorm, omni-gateway-lite, full]
 
 permissions:
   contents: read
@@ -329,7 +329,7 @@ jobs:
           retention-days: 30
 
   omni-gateway-lite:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && (github.event_name == 'push' || inputs.build_recipe == 'omni-gateway-lite')
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-c14]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -410,6 +410,92 @@ jobs:
         with:
           name: image-evidence-omni-gateway-lite-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.LITE_EVIDENCE }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  seedvr2-c14:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[seedvr2-c14]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    env:
+      C14_EVIDENCE: .h3-experimental-evidence/c14/ci/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout the existing H3 branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify sealed C14 diagnostic inputs
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker buildx version
+          python3 .github/scripts/seedvr2_c14_ci.py prepare \
+            --directory "${C14_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Log in to the existing Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Reuse the persistent group builder
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      - name: Pull the immutable published adapter-free Gateway lite parent
+        shell: bash
+        env:
+          PARENT_IMAGE: ${{ steps.profile.outputs.parent_image }}
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${PARENT_IMAGE}"
+
+      - name: Build and load the offline candidate without publication
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: runtime
+          pull: false
+          push: false
+          load: true
+          tags: ${{ steps.profile.outputs.candidate_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.parent_image }}
+            H3_C14_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify actual final imports, precision, Gateway and full dependency closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_c14_ci.py verify-candidate \
+            --directory "${C14_EVIDENCE}"
+
+      - name: Publish the exact tested image and verify its immutable pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_c14_ci.py publish \
+            --directory "${C14_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+          echo '### SeedVR2 C14 diagnostic publication' >> "${GITHUB_STEP_SUMMARY}"
+          cat "${C14_EVIDENCE}/deployment-image.txt" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'CPU diagnostic, precision, source and dependency gates passed. C14 root cause, SP8 replay and quality remain unproven pending controlled GPU trials.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Save new evidence even when a gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-seedvr2-c14-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.C14_EVIDENCE }}/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
