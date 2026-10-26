@@ -1,5 +1,5 @@
 # Built-in Dockerfile frontend: no extra Docker Hub dependency.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:9382949d2789b23cdfe4ea71d68c7973592de28f209082bd7907c1d09fe008c9
 FROM ${BASE_IMAGE} AS runtime
 ARG BASE_IMAGE
 ARG H3_C14_SOURCE_COMMIT

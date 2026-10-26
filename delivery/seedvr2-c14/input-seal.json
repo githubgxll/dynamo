@@ -25,7 +25,7 @@
     },
     "container/seedvr2-c14/Dockerfile": {
       "mode": "100644",
-      "blob": "d4ce83248811193f64f3b12324c22c138a091c41",
+      "blob": "a56a7a611ae8c91b741db0d0e3938cf9175cdacb",
       "status": "A"
     },
     "container/seedvr2-c14/Dockerfile.dockerignore": {
@@ -95,7 +95,7 @@
     },
     "container/seedvr2-c14/runtime.py": {
       "mode": "100644",
-      "blob": "a62d8252580cae757a83a9921486ff022653a5de",
+      "blob": "2d9ff227efdbc414c49ae299d23098fa820ab18b",
       "status": "A"
     },
     "container/seedvr2-c14/source-hooks.patch": {
@@ -136,6 +136,11 @@
     "container/seedvr2-c14/tests/test_replay_torch.py": {
       "mode": "100644",
       "blob": "b21b3a6c2ce1f3c9fa02e3e0fc0016729a3c66a1",
+      "status": "A"
+    },
+    "container/seedvr2-c14/tests/test_runtime_preservation.py": {
+      "mode": "100644",
+      "blob": "c9cbf746e6f54cb638080c7eef0fa24ef0e6e38a",
       "status": "A"
     },
     "container/seedvr2-c14/tests/test_sr_only.py": {
@@ -210,7 +215,7 @@
     },
     "delivery/seedvr2-c14/README.md": {
       "mode": "100644",
-      "blob": "c652fa6d7fe3707b281a25c1645dfc47d99bdcc6",
+      "blob": "9b4de7eef4c2bca597ae895095822c279e426dcc",
       "status": "A"
     },
     "delivery/seedvr2-c14/REPLAY.md": {

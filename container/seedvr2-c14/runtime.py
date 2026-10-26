@@ -2,6 +2,7 @@
 """Apply/verify exact C14 source delta over the published Omni/Gateway lite image."""
 from __future__ import annotations
 import argparse
+from collections import Counter
 import csv
 import hashlib
 import importlib
@@ -64,6 +65,71 @@ def contract(lite, lock):
 
 def preservation_lock(lock):
     return {**lock, "preserved_trees": [*lock["preserved_trees"], str(LITE)]}
+
+
+def json_probe(script, *arguments):
+    """Read JSON in a fresh interpreter with the same user/startup environment."""
+    result = subprocess.run([sys.executable, "-B", str(script), *arguments],
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="strict", timeout=120)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("Snapshot probe did not return an object")
+    return value
+
+
+def snapshot_environment():
+    # Native imports (notably setuptools via Torch) can append bundled vendor
+    # metadata to sys.path. Inventory the unchanged installation in a clean
+    # process, just as the inherited parent validator's subprocess gates do.
+    # No package is filtered; real metadata/direct_url/OS/file changes still fail.
+    return json_probe(HERE / "runtime.py", "snapshot")
+
+
+def snapshot_difference(expected, actual):
+    sections = {}
+    for key in sorted(set(expected) | set(actual)):
+        before, after = expected.get(key), actual.get(key)
+        if before == after and (key in expected) == (key in actual):
+            continue
+        if key == "packages" and isinstance(before, list) and isinstance(after, list):
+            def identities(rows):
+                return Counter(json.dumps({"name": row["name"], "version": row["version"],
+                    "metadata_sha256": digest(json.dumps(row.get("metadata")).encode()),
+                    "direct_url_sha256": digest(json.dumps(row.get("direct_url")).encode())}, sort_keys=True)
+                    for row in rows)
+            old, new = identities(before), identities(after)
+            sections[key] = {"added": [json.loads(item) for item in sorted((new - old).elements())],
+                "removed": [json.loads(item) for item in sorted((old - new).elements())]}
+        elif isinstance(before, dict) and isinstance(after, dict):
+            sections[key] = {"added": sorted(set(after) - set(before)),
+                "removed": sorted(set(before) - set(after)),
+                "changed": sorted(name for name in before.keys() & after.keys() if before[name] != after[name])}
+        elif isinstance(before, list) and isinstance(after, list):
+            old, new = Counter(before), Counter(after)
+            sections[key] = {"added": sorted((new - old).elements()), "removed": sorted((old - new).elements())}
+        else:
+            sections[key] = {"changed": True}
+    return sections
+
+
+def assert_snapshot(expected, actual, output, phase):
+    if actual == expected:
+        return
+    changes = snapshot_difference(expected, actual)
+    report = {"status": "FAIL", "phase": phase, "changes": changes,
+        "inspection": "Fresh interpreter; complete inherited inventory, no package exceptions"}
+    dump(output / ("environment-diff-" + phase + ".json"), report)
+    # Log names/counts, never raw package metadata or credential-bearing URLs.
+    summary = {key: {kind: len(value) if isinstance(value, list) else value for kind, value in delta.items()}
+               for key, delta in changes.items()}
+    preview = {key: {kind: [(item["name"] + "==" + item["version"] if isinstance(item, dict) else item)
+                            for item in value[:10]] if isinstance(value, list) else value
+                     for kind, value in delta.items()} for key, delta in changes.items()}
+    print(json.dumps({"status": "FAIL_ENVIRONMENT_PRESERVATION", "phase": phase,
+        "sections": summary, "first_changed_items": preview}), flush=True)
+    raise ValueError("Inherited environment changed; review environment-diff-" + phase + ".json")
 
 
 def source_expected(lite, lock):
@@ -154,7 +220,7 @@ def apply(output):
     lite.validate_inputs(lock, gateway)
     contract(lite, lock)
     before_sources = lite.source_proofs(lock, gateway, patched=True)
-    snapshot = lite.snapshot(preservation_lock(lock))
+    snapshot = snapshot_environment()
     dist, root = lite.installed_root("vllm-omni")
     record = lite.distribution_record(dist)
     record_before = record.read_bytes()
@@ -188,8 +254,7 @@ def apply(output):
         "added_sources": [HELPER], "scope": "Exact default-off instrumentation; C14 quality is not yet determined"}
     dump(output / "application.json", receipt)
     proof = verify_installed()
-    if lite.snapshot(preservation_lock(lock)) != snapshot:
-        raise ValueError("Source-only update modified dependencies or inherited evidence")
+    assert_snapshot(snapshot, snapshot_environment(), output, "after-apply")
     dump(output / "source-verification.json", proof)
     return receipt
 
@@ -231,8 +296,8 @@ def validate(output):
     lite = lite_runtime()
     lock = read(LITE / "runtime.lock.json")
     baseline = read(INFO / "parent-snapshot.json")
-    if lite.snapshot(preservation_lock(lock)) != baseline:
-        raise ValueError("Dependencies/OS/inherited evidence changed")
+    assert_snapshot(baseline, snapshot_environment(), output, "before-validation")
+    search_path_before = list(sys.path)
     proof = verify_installed()
     dump(output / "source-verification.json", proof)
     # Actual installed imports; static extraction of functions is not accepted here.
@@ -254,8 +319,14 @@ def validate(output):
     if diagnostics.get("status") != "PASS" or diagnostics.get("tests_run", 0) < 3 or any(diagnostics.get(k) != 0 for k in ("failures", "errors", "skipped")):
         raise ValueError("Actual CPU diagnostic regression suite incomplete")
     dump(output / "diagnostics-regression.json", diagnostics)
-    if lite.snapshot(preservation_lock(lock)) != baseline or verify_installed() != proof:
-        raise ValueError("Validation changed inherited environment or installed sources")
+    dump(output / "inventory-context.json", {"mode": "fresh-interpreter-same-user-and-environment",
+        "validation_sys_path_before": search_path_before, "validation_sys_path_after": list(sys.path),
+        "scope": "Import search-path changes are recorded separately from the strict installed environment snapshot"})
+    assert_snapshot(baseline, snapshot_environment(), output, "after-validation")
+    source_after = verify_installed()
+    dump(output / "source-verification-after.json", source_after)
+    if source_after != proof:
+        raise ValueError("Installed source proof changed; compare source-verification.json and source-verification-after.json")
     dump(output / "preservation.json", {"status": "PASS", "packages": len(baseline["packages"]),
         "dpkg": len(baseline["dpkg"]), "inherited_evidence_files": len(baseline["inherited_files_sha256"]),
         "scope": "Metadata/direct_url, dpkg, legal and all inherited lite/build receipts unchanged"})
@@ -271,9 +342,16 @@ def validate(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("apply", "validate"))
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("action", choices=("apply", "validate", "snapshot"))
+    parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.action == "snapshot":
+        lite = lite_runtime()
+        lock = preservation_lock(read(LITE / "runtime.lock.json"))
+        print(json.dumps(lite.snapshot(lock)))
+        return
+    if args.output_dir is None:
+        parser.error("--output-dir is required for apply/validate")
     try:
         print(json.dumps(apply(args.output_dir) if args.action == "apply" else validate(args.output_dir), indent=2))
     except Exception as error:
