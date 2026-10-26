@@ -18,6 +18,17 @@ runtime = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runtime)
 
 
+def inventory_probe(root):
+    probe = root / "inventory.py"
+    probe.write_text("import importlib.metadata as m,json\n"
+        "rows=[(d.metadata['Name'],d.version,d.read_text('METADATA')) for d in m.distributions()]\n"
+        # Match the production snapshot's sort key. Keep raw None and duplicate
+        # rows in JSON: only ordering treats missing METADATA as an empty string.
+        "rows.sort(key=lambda row:(row[0].lower(),row[1],row[2] or ''))\n"
+        "print(json.dumps({'packages':rows}))\n", encoding="utf-8")
+    return probe
+
+
 class InventoryIsolation(unittest.TestCase):
     def test_fresh_process_ignores_import_added_vendor_but_sees_real_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -27,10 +38,7 @@ class InventoryIsolation(unittest.TestCase):
             dist.mkdir(parents=True)
             dist_metadata = dist / "METADATA"
             dist_metadata.write_text("Metadata-Version: 2.1\nName: c14-probe-vendor\nVersion: 1.0\n", encoding="utf-8")
-            probe = root / "inventory.py"
-            probe.write_text("import importlib.metadata as m,json\n"
-                "print(json.dumps({'packages':sorted((d.metadata['Name'],d.version,d.read_text('METADATA')) "
-                "for d in m.distributions())}))\n", encoding="utf-8")
+            probe = inventory_probe(root)
             before = runtime.json_probe(probe)
             # Equivalent to setuptools importing its bundled _vendor directory:
             # no files were installed, but same-process distributions() expands.
@@ -44,11 +52,47 @@ class InventoryIsolation(unittest.TestCase):
                 dist_metadata.write_text("Metadata-Version: 2.1\nName: c14-probe-vendor\nVersion: 2.0\n", encoding="utf-8")
                 self.assertNotEqual(runtime.json_probe(probe), visible)
 
+    def test_mixed_egg_and_dist_info_preserves_raw_metadata_and_duplicates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            site = root / "linux-site"
+            for suffix, filename in (("dist-info", "METADATA"), ("egg-info", "PKG-INFO")):
+                folder = site / ("c14_probe_system-1.0." + suffix)
+                folder.mkdir(parents=True)
+                (folder / filename).write_text("Metadata-Version: 2.1\nName: c14-probe-system\nVersion: 1.0\n", encoding="utf-8")
+            raw = [(d.metadata["Name"], d.version, d.read_text("METADATA"))
+                   for d in metadata.distributions(path=[str(site)])]
+            self.assertEqual(len(raw), 2)
+            # Reproduce the old fixture's failure with real importlib readers.
+            with self.assertRaises(TypeError):
+                sorted(raw)
+            probe = inventory_probe(root)
+            with patch.dict(os.environ, {"PYTHONPATH": str(site)}):
+                before = runtime.json_probe(probe)
+                actual = [row for row in before["packages"] if row[0] == "c14-probe-system"]
+                self.assertEqual(len(actual), 2)
+                self.assertEqual(sum(row[2] is None for row in actual), 1)
+                self.assertTrue(any(isinstance(row[2], str) and "Name: c14-probe-system" in row[2] for row in actual))
+                (site / "c14_probe_system-1.0.dist-info" / "METADATA").write_text(
+                    "Metadata-Version: 2.1\nName: c14-probe-system\nVersion: 1.0\nRequires-Dist: changed\n", encoding="utf-8")
+                self.assertNotEqual(runtime.json_probe(probe), before)
+
     def test_probe_failure_is_not_an_empty_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             script = Path(temporary) / "fail.py"
-            script.write_text("raise SystemExit(9)\n", encoding="utf-8")
-            with self.assertRaises(subprocess.CalledProcessError):
+            script.write_text("import sys\nprint('private-inventory-content')\n"
+                              "print('TypeError: mixed metadata fixture',file=sys.stderr)\nraise SystemExit(9)\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "exit 9") as caught:
+                runtime.json_probe(script)
+            self.assertIn("TypeError: mixed metadata fixture", str(caught.exception))
+            self.assertNotIn("private-inventory-content", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, subprocess.CalledProcessError)
+
+    def test_probe_failure_without_stderr_keeps_exit_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / "empty-fail.py"
+            script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "(?s)exit 7.*no stderr"):
                 runtime.json_probe(script)
 
     def test_probe_rejects_wrong_schema_type(self):

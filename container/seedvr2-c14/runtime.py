@@ -69,10 +69,18 @@ def preservation_lock(lock):
 
 def json_probe(script, *arguments):
     """Read JSON in a fresh interpreter with the same user/startup environment."""
-    result = subprocess.run([sys.executable, "-B", str(script), *arguments],
-        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), check=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        encoding="utf-8", errors="strict", timeout=120)
+    try:
+        result = subprocess.run([sys.executable, "-B", str(script), *arguments],
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="strict", timeout=120)
+    except subprocess.CalledProcessError as error:
+        # unittest and the Docker failure receipt normally show only str(error),
+        # which hides captured stderr. Never dump stdout: it can hold the entire
+        # installed metadata inventory, including direct_url values.
+        detail = (error.stderr or "").strip() or "(child emitted no stderr)"
+        raise RuntimeError(f"JSON probe {Path(script).name} failed (exit {error.returncode}); "
+                           f"child stderr (last 8000 characters):\n{detail[-8000:]}") from error
     value = json.loads(result.stdout)
     if not isinstance(value, dict):
         raise ValueError("Snapshot probe did not return an object")

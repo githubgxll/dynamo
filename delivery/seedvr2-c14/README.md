@@ -102,6 +102,7 @@ call delivery\seedvr2-c14\04-import-image-evidence.cmd "C:\Users\admin\Downloads
 | 现象 | 处理 |
 |---|---|
 | 本地检查通过但 Linux 镜像失败 | 本地无 Torch/无镜像，证据级别不同；检查本轮 artifact，不跳过最终安装模块检查 |
+| 新增的 `test_fresh_process_ignores_import_added_vendor_but_sees_real_changes` 在临时 `inventory.py` 退出1 | 该测试原先直接排序原始元组；同名同版本的dist-info和egg-info并存时，METADATA分别为字符串/None，排序会抛TypeError。归档父环境的cryptography41.0.7存在这种布局。本轮让测试采用正式清单的排序键，仅排序时处理None，保留原始元数据和重复项；增加真实importlib混合格式回归。子进程失败会显示退出码和stderr末尾8000字符，不输出完整清单stdout。原日志缺少stderr，具体CI异常仍以重跑记录确认 |
 | 依赖、媒体及102项CPU测试通过，最后报 `Validation changed inherited environment or installed sources` | 旧C14检查在导入框架前后枚举同一进程；父镜像的setuptools80.10.2导入会把自带vendor目录加入sys.path，造成包发现范围变化。现已改为同UID/同环境的干净子进程快照，仍严格比较完整METADATA/direct_url、dpkg和继承文件；不忽略依赖。若仍有真实差异，控制台输出类别和前10项名称，完整差异保存为 `environment-diff-*.json`，另保存 `inventory-context.json` 与前后源码证明。原失败日志未保留分项差异，最终原因以重跑证据确认 |
 | `Inputs differ from their reviewed seal` | 有文件变动；先 review 根因和完整 diff，再由维护者重新封存。不要把自动 seal 加进02来掩盖变动 |
 | 工作区有其他修改或远端已前进 | 保留文件；脚本拒绝无关暂存和强推，先合并/核对既有分支 |

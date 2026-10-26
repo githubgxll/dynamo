@@ -95,7 +95,7 @@
     },
     "container/seedvr2-c14/runtime.py": {
       "mode": "100644",
-      "blob": "2d9ff227efdbc414c49ae299d23098fa820ab18b",
+      "blob": "28dc6081c717b9740dfc8ba21cb9ccf31651ef54",
       "status": "A"
     },
     "container/seedvr2-c14/source-hooks.patch": {
@@ -140,7 +140,7 @@
     },
     "container/seedvr2-c14/tests/test_runtime_preservation.py": {
       "mode": "100644",
-      "blob": "c9cbf746e6f54cb638080c7eef0fa24ef0e6e38a",
+      "blob": "0b1102b8496b6d84d5c46c5b8f9f82e3526e0dac",
       "status": "A"
     },
     "container/seedvr2-c14/tests/test_sr_only.py": {
@@ -215,7 +215,7 @@
     },
     "delivery/seedvr2-c14/README.md": {
       "mode": "100644",
-      "blob": "9b4de7eef4c2bca597ae895095822c279e426dcc",
+      "blob": "4d672d175a5c380d087a3527459df240a526ad8b",
       "status": "A"
     },
     "delivery/seedvr2-c14/REPLAY.md": {
