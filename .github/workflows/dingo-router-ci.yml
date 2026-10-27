@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Dingo H3 experimental image recipes
-run-name: "${{ github.event_name == 'push' && (contains(github.event.head_commit.message, '[seedvr2-c14]') && 'seedvr2-c14' || 'omni-gateway-lite') || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
+run-name: "${{ github.event_name == 'push' && (contains(github.event.head_commit.message, '[h3-hsdp-offload]') && 'h3-hsdp-offload' || contains(github.event.head_commit.message, '[seedvr2-c14]') && 'seedvr2-c14' || 'omni-gateway-lite') || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
         type: choice
         required: true
         default: omni-gateway-lite
-        options: [seedvr2-c14, seedvr2-rmsnorm, omni-gateway-lite, full]
+        options: [h3-hsdp-offload, seedvr2-c14, seedvr2-rmsnorm, omni-gateway-lite, full]
 
 permissions:
   contents: read
@@ -329,7 +329,7 @@ jobs:
           retention-days: 30
 
   omni-gateway-lite:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-c14]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -415,7 +415,7 @@ jobs:
           retention-days: 30
 
   seedvr2-c14:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[seedvr2-c14]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -496,6 +496,94 @@ jobs:
         with:
           name: image-evidence-seedvr2-c14-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.C14_EVIDENCE }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  h3-hsdp-offload:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'h3-hsdp-offload'))
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    env:
+      HSDP_EVIDENCE: .h3-experimental-evidence/hsdp/ci/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout the existing H3 branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify sealed HSDP offload candidate inputs
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker buildx version
+          python3 .github/scripts/h3_hsdp_offload_ci.py prepare \
+            --directory "${HSDP_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Log in to the existing Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Reuse the persistent group builder
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      - name: Pull and archive actual installed parent Omni and Torch sources
+        shell: bash
+        env:
+          PARENT_IMAGE: ${{ steps.profile.outputs.parent_image }}
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "${PARENT_IMAGE}"
+          python3 .github/scripts/h3_hsdp_offload_ci.py snapshot-parent \
+            --directory "${HSDP_EVIDENCE}"
+
+      - name: Build and load the offline candidate without publication
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: runtime
+          pull: false
+          push: false
+          load: true
+          tags: ${{ steps.profile.outputs.candidate_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.parent_image }}
+            H3_HSDP_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify actual final source, inherited dependencies and CPU regression evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/h3_hsdp_offload_ci.py verify-candidate \
+            --directory "${HSDP_EVIDENCE}"
+
+      - name: Publish the exact tested image and verify its immutable pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/h3_hsdp_offload_ci.py publish \
+            --directory "${HSDP_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+          echo '### HSDP offload CPU candidate publication' >> "${GITHUB_STEP_SUMMARY}"
+          cat "${HSDP_EVIDENCE}/deployment-image.txt" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'CPU candidate only: GPU_NOT_RUN. Actual HSDP CUDA migration and eight-GPU C02 cold/warm/repeated media acceptance must pass before Ref7 or deployment promotion.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Save new evidence even when a gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-h3-hsdp-offload-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.HSDP_EVIDENCE }}/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

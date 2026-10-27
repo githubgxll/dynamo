@@ -1,0 +1,7 @@
+H3 HSDP component offload candidate, 2026-10-27.
+Original vLLM-Omni source references are Apache-2.0, copyright the vLLM-Omni contributors.
+Pinned Omni release commit: 6dd0d1f9310f7598b773c796b434c8000c2816ec.
+Native PyTorch behavior reference: https://github.com/pytorch/pytorch/tree/v2.13.0
+No PyTorch source is replaced. No Python package or OS dependency is added.
+Existing legal evidence in the successful parent image is retained unchanged.
+This candidate requires real multi-GPU and same-input H3 acceptance.

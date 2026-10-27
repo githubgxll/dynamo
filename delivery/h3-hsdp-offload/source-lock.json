@@ -1,0 +1,28 @@
+{
+  "schema": "h3-hsdp-offload-source-lock/1",
+  "reviewed_date": "2026-10-27",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:87365073cbdf95fa17ca352a24a93cb74fde144a47c96135e91011d1a03df72e",
+  "parent_source_commit": "0b11a41b083facf74d3387696a72893d0d3e40e1",
+  "parent_image_id": "sha256:c1298a2a8403e20b689bb73c380d0f9f74fec8cc698bf9461a0721361af87e99",
+  "recipe_base_commit": "0b11a41b083facf74d3387696a72893d0d3e40e1",
+  "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "build_recipe": "h3-hsdp-offload",
+  "tag_prefix": "omni031rc1-gateway-hsdp-offload",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0"
+  },
+  "parent_source_sha256": {
+    "vllm_omni/diffusion/offloader/sequential_backend.py": "2d086ea9a2872ee9ebce3a4bc8a0ad840d355a4d728d541d80bae97457c4bc6a",
+    "vllm_omni/diffusion/distributed/hsdp.py": "7eb25d685e9ef1d50b42c06530b065ba7a4601c5cd78f213ad7ec559e001ed0a",
+    "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py": "e8d37d9e086b72930d33b419efadbf25ff695bcef295cba8f3c0c2b59edc85e0"
+  },
+  "gpu_validation_status": "NOT_RUN",
+  "scope": "Source-only HSDP component CPU offload candidate over successful immutable C14 image. No dependency, weight, adapter, Gateway or SR reinstallation. CPU gates do not approve GPU deployment."
+}

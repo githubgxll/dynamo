@@ -1,0 +1,154 @@
+{
+  "schema": "h3-hsdp-base-and-skill-review/1",
+  "checked_at": "2026-10-27 10:09:11 UTC",
+  "repository": "https://github.com/githubgxll/dynamo",
+  "branches": [
+    {
+      "name": "DingoRouter-video-gateway",
+      "sha": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+      "date": "2026-10-19T02:18:19Z",
+      "message": "[fix][observability] handle partial histogram scrapes and empty intervals",
+      "url": "https://github.com/githubgxll/dynamo/tree/DingoRouter-video-gateway"
+    },
+    {
+      "name": "DingoRouter-base",
+      "sha": "f0a976ba3bbd633ca7af421564f062ce4af99213",
+      "date": "2026-10-21T02:39:50Z",
+      "message": "fix(dingo): preserve GLM reasoning tokens with tool guidance",
+      "url": "https://github.com/githubgxll/dynamo/tree/DingoRouter-base"
+    },
+    {
+      "name": "main",
+      "sha": "049eece3f32f8d38dc1d8c52d4b793cb30e394bb",
+      "date": "2026-10-08T07:22:59Z",
+      "message": "fix(omni): omit unsupported diffusion layer count at startup (#15388)\n\nSigned-off-by: maheshrbapatu <maheshbapatu@gmail.com>",
+      "url": "https://github.com/githubgxll/dynamo/tree/main"
+    },
+    {
+      "name": "Dingorouter-H3-vllm-omni-jirx",
+      "sha": "0b11a41b083facf74d3387696a72893d0d3e40e1",
+      "date": "2026-10-26T03:38:48Z",
+      "message": "build(omni): submit SeedVR2 C14 diagnostics [seedvr2-c14]\n\nSigned-off-by: Ruoxi000 <ruoxi.ji2000@gmail.com>",
+      "url": "https://github.com/githubgxll/dynamo/tree/Dingorouter-H3-vllm-omni-jirx"
+    }
+  ],
+  "comparisons": {
+    "gateway-to-base": {
+      "status": "diverged",
+      "ahead_by": 49,
+      "behind_by": 20,
+      "merge_base": "4df56d18533478d3a3afe36c40b054ab1a12164b"
+    },
+    "main-to-gateway": {
+      "status": "diverged",
+      "ahead_by": 106,
+      "behind_by": 1916,
+      "merge_base": "b35efbb37077a5b3265ae5346c08bc3129df39c7"
+    }
+  },
+  "branch_source": "GitHub branch API via connected GitHub app; exact base commit fetched with Git for source review",
+  "source_review": {
+    "DingoRouter-video-gateway": {
+      "project_name": "ai-dingo",
+      "project_version": "1.3.0",
+      "args_path": "dingo/vllm/omni/args.py",
+      "args_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
+      "diffusion_offload_config_present": false,
+      "diffusion_offload_cli_present": false,
+      "enable_cpu_offload_present": true,
+      "text_encoder_tp_size_present": true,
+      "handler_sha256": "712c70248938ed6264039300d96e7a6ee83a5f76992c105da4985796cee12c45"
+    },
+    "DingoRouter-base": {
+      "project_name": "ai-dingo",
+      "project_version": "1.6.0",
+      "args_path": "dingo/vllm/omni/args.py",
+      "args_sha256": "1b9fce2c29d3abf18427358e069e497bf299e36ca351a2df49fe3ee644335c75",
+      "diffusion_offload_config_present": false,
+      "diffusion_offload_cli_present": false,
+      "enable_cpu_offload_present": true,
+      "text_encoder_tp_size_present": true,
+      "handler_sha256": "db84bf26d7ad46afa8858985671250cd1b98ad5be77ec3bd384bdc03750077a4"
+    },
+    "main": {
+      "project_name": "ai-dynamo",
+      "project_version": "1.6.0",
+      "args_path": "components/src/dynamo/vllm/omni/args.py",
+      "args_sha256": "bb187ac65bdc1adf13c56d53ce9ba463eaf4aa7109208de31b36b1da4ce98c78",
+      "diffusion_offload_config_present": false,
+      "diffusion_offload_cli_present": false,
+      "enable_cpu_offload_present": true,
+      "text_encoder_tp_size_present": true,
+      "handler_sha256": "b487e3c1f90450b2264a1f9c964079b55ec499ba8c849669905bd880b98b07bd"
+    },
+    "Dingorouter-H3-vllm-omni-jirx": {
+      "project_name": "ai-dingo",
+      "project_version": "1.3.0",
+      "args_path": "dingo/vllm/omni/args.py",
+      "args_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
+      "diffusion_offload_config_present": false,
+      "diffusion_offload_cli_present": false,
+      "enable_cpu_offload_present": true,
+      "text_encoder_tp_size_present": true,
+      "handler_sha256": "11f0c1804e6d9f2b88f8f3644dc82ef7abe02e9309b3db79cde435cb1ed19261"
+    }
+  },
+  "base_only_commits": [
+    "f0a976ba3bbd633ca7af421564f062ce4af99213 2026-10-21 fix(dingo): preserve GLM reasoning tokens with tool guidance",
+    "1238925d9a2dbcaef1b968d8afe489eb31ebd7b1 2026-10-21 fix(dingo): normalize nonpositive GLM-5.3 top_p to 0.01",
+    "c7aa02a69060405c72a441c66a90496e9c593cb9 2026-10-21 Revert \"fix(dingo): align GLM-5.3 sampling and truncated responses\"",
+    "ece97b8b08916f151cfdb4e5620bbe4f8b59a045 2026-10-21 fix(dingo): align GLM-5.3 sampling and truncated responses",
+    "5e4a13a2f5b7ff398ded912d4e29a7d09adc2321 2026-10-21 fix(dingo): preserve GLM reasoning boundaries and reject invalid tool turns",
+    "750a80edcbd620c488dfa7eeaa795f2df94777ff 2026-10-21 fix(sglang): default GLM engine reasoner from Dynamo parser",
+    "8baf02242baca9998e0cfe5d1f5d121dc874edf9 2026-10-21 fix(build): stage AISimulate in standalone binding lockfiles",
+    "4af6ca4d75cb192402257dca3bfd932bdbce86bc 2026-10-21 fix(ci): stage pinned AISimulate Rust source and repair validation tests",
+    "b8e8d968a3a24721b5ef11bc91f2ce1ff60d912e 2026-10-21 fix(frontend): opt in GLM malformed history argument compatibility",
+    "adca349852f88c035201ab95eff6bc0ced9ad93c 2026-10-14 Merge pull request #76 from githubgxll/DingoRouter-t5-upstream-sync",
+    "00565c1c168e500797403f2323af997d0c984c2a 2026-10-13 fix(sglang): infer GLM reasoning parser before applying stops",
+    "9112dd680a6793203420482bc43690bb8c9a1aca 2026-10-13 fix(sglang): align GLM-5.3 sampling and reasoning stops",
+    "badd16ffb033209893892af4fa0b9e3ed381f139 2026-10-12 build: default to SGLang v0.5.21 runtime image",
+    "30f27ce258b0d89173ed223e6aa7e2fae97645c5 2026-10-12 fix(sglang): emit cumulative streaming usage with cache counts per engine update",
+    "d64c67c0194b423cf7bfe0379082f2cf5ab88c10 2026-09-30 test(openai): cover Anthropic tool result conversion",
+    "56c83d61d2e8b1768c2132764e29dce68db5027b 2026-09-30 fix(openai): scope Anthropic tool result conversion",
+    "c2f28d105964a42f68066b4612a0dbbc43b6e7c2 2026-09-30 fix(openai): convert Anthropic tool_result blocks",
+    "643ad6af1e2f5045c323382b55c1a64e32b19ce6 2026-09-30 fix(openai): align Anthropic block tests and clarify validation",
+    "0853451eae1c1f2d8c9ba5933d9ccef5a1b519d3 2026-09-30 fix(openai): reject unrepresentable block ordering in Anthropic compat converter",
+    "e83fccc559d6770496557296ce1ab93b4f4f8f5a 2026-09-30 fix(openai): reject non-array tool_calls instead of silently overwriting it",
+    "71b8095a1ce9ed696d020afdbb8f584184a1b77b 2026-09-30 fix(openai): reject unprovable mixed formats and malformed Anthropic blocks",
+    "0e359309a35f168a08958307a7024f9761d3f0ed 2026-09-30 fix(openai): normalize Anthropic content blocks in chat completions requests",
+    "77a1716960867bf1aba0af53c1993aa352506e9e 2026-09-29 fix(ci): restrict GC to generated tag allowlist and document recovery admission",
+    "9614a318ab16f6d5371d3c2306502b180cc70b8b 2026-09-29 fix(ci): run daily GC inside runner with job locks and disk admission",
+    "71a0baecb2fc7b4e617e0f9af734bb6ab5e4cec5 2026-09-29 fix(ci): reclaim runner disk daily and retain five runtime images",
+    "688941acf3c78376d84494edee03d0c1e55c1f3f 2026-09-29 [feat][video-gateway] expose versioned task timing diagnostics",
+    "164a683d974194c952b1fd8cc57015559228a0fc 2026-09-29 [fix][container] keep vLLM image build enabled",
+    "55f38c4fc33def4f7cec9367ad2e22627e4aaa7a 2026-09-29 [fix][container] allow upstream vLLM FFmpeg licenses",
+    "bcfb95bacd78dbfc17da151e83bbea13291d2817 2026-09-29 [docs][video-gateway] document API and lease invariants",
+    "79a3bd04c818ca285170c10650ef2a0317aaa0ac 2026-09-29 [fix][video-gateway] avoid optional result media reads",
+    "0853d5bc5997793e592274b826cb09d07f703319 2026-09-29 [fix][video-gateway] tolerate delayed artifact visibility",
+    "9ba635047ad2dbd006e5ce8d69c0ec60edf4c593 2026-09-29 [fix][omni] isolate detached engine health monitoring",
+    "75e1b2e3ab1d8f17466d68492afb65b102cb84b6 2026-09-29 [fix][video-gateway] harden recovery and task observability",
+    "ffe6f54b9c377a188549ccd6b7ccf8da7ea82058 2026-09-29 [fix][container] preserve upstream vLLM media tools",
+    "0d8d29fb51c2714acbefab69c53dd43fd8f773f0 2026-09-29 [test][video-gateway] allow explicit remote contract wait budgets",
+    "04ad82060bcf8ae16703fad3a54daf11a30352a2 2026-09-29 [feat][video-gateway] support continuous multi-slot execution",
+    "a8c9579379daec730692dcdfb62c1ca3081b9d70 2026-09-29 [fix][container] align Omni 0.29 runtime and media dependencies",
+    "d719e80388e1c55cc4bf9a953d3580d1336bb3bf 2026-09-29 [fix][video-gateway] harden admission and retry lost workers",
+    "384c568022eb248fd925b98188826f03ad9b5097 2026-09-29 [fix][omni] restart detached workers after Runtime termination",
+    "1ed2559a6c5e7b4ba1486464dbec43dcb384e442 2026-09-29 [fix][video-gateway] recover stale discovery watches safely",
+    "f8026916545fbcb9e31648a7e52f69d40579b7d9 2026-09-28 fix(frontend): rewrite refs in schema maps, withhold stranded logprobs, dedupe terminal split (review 20260928)",
+    "04c73dd082fa5dd91b8c6daea17c5e5f7eb5f95a 2026-09-28 fix(sglang): use incremental mode for logprobs extraction",
+    "df7f97c9cf66557170a69be893410c966645caaf 2026-09-28 fix(sglang): pass through logprobs data to OpenAI response",
+    "51f88506f516a57d77019b3d408b1aa1e8ee79f4 2026-09-28 test(frontend): cover JSON-pointer suffix preservation in $defs ref rewrites",
+    "d0b8db63533e7461423058c5f3527acd8e4b50ff 2026-09-28 fix(frontend): hoist tool parameter  to guided schema root for  resolution",
+    "063f1a29725b49bb2e78f376b7b062ebf8fbce09 2026-09-28 [fix][sglang] Enable SGLang top logprobs by default",
+    "32228872e82339d9587931e986e400ae9303706a 2026-09-25 fix(frontend): recover tool calls entirely missed during streaming",
+    "7da72d8984dc82b887501dc0fb99588a09efe12e 2026-09-25 fix(frontend): preserve terminal tool deltas and stream confirmed names",
+    "73c72636f4a3057856d2ce40d3c1c5159d18f35d 2026-09-25 fix(sglang): stream tool_call deltas incrementally instead of buffering until finish"
+  ],
+  "service_diff_stat": " dingo/video_gateway/METRICS.md               |   54 --\n dingo/video_gateway/adapters/minimax_h3.py   |   29 +-\n dingo/video_gateway/api.py                   |   50 --\n dingo/video_gateway/app.py                   |   29 -\n dingo/video_gateway/artifact_store.py        |   33 +-\n dingo/video_gateway/config.py                |   53 --\n dingo/video_gateway/models.py                |    4 +-\n dingo/video_gateway/performance.py           |  120 ---\n dingo/video_gateway/performance_cache.py     |  154 ----\n dingo/video_gateway/service.py               |    9 -\n dingo/video_gateway/telemetry.py             |  109 +--\n dingo/vllm/omni/__init__.py                  |   26 +-\n dingo/vllm/omni/args.py                      |  263 ++++++-\n dingo/vllm/omni/audex.py                     |  405 ++++++++++\n dingo/vllm/omni/audio_handler.py             |  400 ++++++----\n dingo/vllm/omni/base_handler.py              |  115 ++-\n dingo/vllm/omni/connectors/__init__.py       |   14 +\n dingo/vllm/omni/connectors/nixl_connector.py |  641 ++++++++++++++++\n dingo/vllm/omni/detached_tasks.py            |  110 ---\n dingo/vllm/omni/engine_inputs.py             |   44 ++\n dingo/vllm/omni/main.py                      |  128 +++-\n dingo/vllm/omni/omni_handler.py              |  703 ++++++++++++++---\n dingo/vllm/omni/output_formatter.py          | 1057 +++++++++++++++++++++++++-\n dingo/vllm/omni/realtime_handler.py          |  398 ++++------\n dingo/vllm/omni/realtime_utils.py            |   48 +-\n dingo/vllm/omni/stage_router.py              |  138 +++-\n dingo/vllm/omni/stage_worker.py              |  409 ++++++++--\n dingo/vllm/omni/utils.py                     |  303 +++++++-\n pyproject.toml                               |  123 ++-\n 29 files changed, 4564 insertions(+), 1405 deletions(-)\n",
+  "decision": "Keep successful parent digest and Gateway9ccee2f for native Omni HSDP repair; no main/base rebase or dependency reinstall. Gateway A passthrough remains a separate integration requirement.",
+  "skill_sha256": {
+    "D:\\AI\\skill\\h3-image-handoff\\SKILL.md": "1100fd11d35e8188c60ca16a7ff9be9fb3755598cc073cc923099feeb2829197",
+    "D:\\AI\\skill\\h3-image-handoff\\references\\identity-and-integration.md": "39152477825e6194b121f6a534b7684e69b23e301b7d884309a3ddff2c4787c7",
+    "D:\\AI\\skill\\h3-experiment-operations\\SKILL.md": "10d337eb67876086d62c7acef8b465a81dd4a794f194f4b48fd06431f50ed8e7"
+  }
+}

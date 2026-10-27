@@ -1,0 +1,345 @@
+{
+  "schema": "h3-hsdp-offload-input-seal/1",
+  "recipe_base_commit": "0b11a41b083facf74d3387696a72893d0d3e40e1",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:87365073cbdf95fa17ca352a24a93cb74fde144a47c96135e91011d1a03df72e",
+  "delta": {
+    ".github/scripts/h3_hsdp_offload_ci.py": {
+      "mode": "100644",
+      "blob": "f6fa5e10f07c1a3a339ed7777adf4e9a341e515b",
+      "status": "A"
+    },
+    ".github/scripts/test_h3_hsdp_offload_ci.py": {
+      "mode": "100644",
+      "blob": "824c44eb8f030ffc251049a53da2946283afbcb8",
+      "status": "A"
+    },
+    ".github/workflows/dingo-router-ci.yml": {
+      "mode": "100644",
+      "blob": "b07fe9339595af7a0fa97ea24ab7acf2f7e1a6d5",
+      "status": "M"
+    },
+    "container/h3-hsdp-offload/DESIGN.md": {
+      "mode": "100644",
+      "blob": "c421eed777c222458357d7c1eb9eba4b9ec9e9f7",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/Dockerfile": {
+      "mode": "100644",
+      "blob": "a389c5a2a52a425475a03d68bbafe31d59819888",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/Dockerfile.dockerignore": {
+      "mode": "100644",
+      "blob": "08f57f5df084eddf31fabe1972354969d9e65f84",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/NOTICE": {
+      "mode": "100644",
+      "blob": "d7208ce703dfb8ef6cbf8f16bd95adef716728bd",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/cpu_smoke.py": {
+      "mode": "100644",
+      "blob": "8721a4ca300ef205d49a5e01c7efa1c8346ea51a",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/gpu_roundtrip.py": {
+      "mode": "100644",
+      "blob": "10b095d4ed9c2973417c6ba724ed710e225a0d65",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/hsdp_migration.py": {
+      "mode": "100644",
+      "blob": "b448fb555df11af38e93a10cfac7f4694c8f310d",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/runtime.py": {
+      "mode": "100644",
+      "blob": "f6f80999ee97ce0c80409f02fe39799c40f62a66",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/source-patches.lock.json": {
+      "mode": "100644",
+      "blob": "b5c3d9cbf1e4ff6fdcd2f6af1af9e04ce1b01f1e",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/source_patches.py": {
+      "mode": "100644",
+      "blob": "81822c81f9ee8322e355928ffa754df417b05c52",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_recipe.py": {
+      "mode": "100644",
+      "blob": "69962f7ad6f86e45d9b6167e0090ddc430f3cadd",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/torch-contract.json": {
+      "mode": "100644",
+      "blob": "fccba8679b284d2397d72b0a06c999ece1af7a15",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/torch_contract.py": {
+      "mode": "100644",
+      "blob": "f517195558dad7ae3080952204dbf7211cf86e3e",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/original/vllm_omni/diffusion/distributed/hsdp.py": {
+      "mode": "100644",
+      "blob": "7e20d8471704feed7582e9cb83bcf3d66df00a25",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/original/vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py": {
+      "mode": "100644",
+      "blob": "b1dfc78b9b13549f2bd5bd802a1a13d0afdb84d0",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/original/vllm_omni/diffusion/offloader/sequential_backend.py": {
+      "mode": "100644",
+      "blob": "b03be36876a0b9f24ed5296ab8194f4b8f109530",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/.gitattributes": {
+      "mode": "100644",
+      "blob": "f3158d18e0e1ec3f6ed529ca90d09bfdecdba9d0",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/01-check.cmd": {
+      "mode": "100644",
+      "blob": "fb802390bd74cbfd36608b796038fdbd369712c4",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/02-submit-build.cmd": {
+      "mode": "100644",
+      "blob": "be56ac8af550feb7bedc1e95a2f26fb5c8f54555",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/03-run-build.cmd": {
+      "mode": "100644",
+      "blob": "abbdc73a87f81a9dccc419a2c018b44b98738e34",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/04-import-image-evidence.cmd": {
+      "mode": "100644",
+      "blob": "1a5d74e7619aeff85c880e2b9d59e741590ad6df",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/BASE-AND-SKILL-REVIEW-20261027.md": {
+      "mode": "100644",
+      "blob": "abc9d67805341040eadaabdfaf33c31cf4fb0118",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/README.md": {
+      "mode": "100644",
+      "blob": "407fc8fc62dfa3acc097ca9ff6627216a24cf9c2",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/base-review-20261027.json": {
+      "mode": "100644",
+      "blob": "a4aa8112029c7d8ccb2d2d89f6b547f2534aed22",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/check_local.py": {
+      "mode": "100644",
+      "blob": "202e3ad60986346f67c2d83e6d08e3cdb52b39a2",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/env.cmd": {
+      "mode": "100644",
+      "blob": "f288a71d7663d63d585e8de4e438885f1b2b0791",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/import_evidence.py": {
+      "mode": "100644",
+      "blob": "34e079fad2e92043a9223b2a579ecdbcd5f30de9",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/ops.py": {
+      "mode": "100644",
+      "blob": "ec7b0eb291a5e4a6e8118117879288004691be9f",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/parent-evidence/image-release-evidence.json": {
+      "mode": "100644",
+      "blob": "69a5105ecf8b0b484e0895ff7b8a566ea03b7bf3",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/source-lock.json": {
+      "mode": "100644",
+      "blob": "d68bb0c95a3c87266407cbc297d71b1b34469610",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/tests/test_artifact_paths.py": {
+      "mode": "100644",
+      "blob": "ec0dca95e2c9ae936c2a239290ab0ab73e2039c1",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/tests/test_import_evidence.py": {
+      "mode": "100644",
+      "blob": "5e0ee2bafd736d0624da4b29075431589dfea756",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/tests/test_submission.py": {
+      "mode": "100644",
+      "blob": "957155ae0c98e228fbe8192306cb50f2fade99d2",
+      "status": "A"
+    }
+  },
+  "shared_inputs": {
+    ".github/scripts/omni_gateway_lite_ci.py": "3781b4790e95cf6caa4b65f7cc3233608c7e842e",
+    ".github/scripts/seedvr2_c14_ci.py": "0c2dcdc8f883aa9b118759ede2cacc4a643d52b0",
+    "container/h3-experimental/environment/README.md": "2a20120a83391160c4ce25309a1ea3e8f191e0d1",
+    "container/h3-experimental/environment/audit_environment.py": "d33414ece7ad13b8907610073871c8f4a3bdeca9",
+    "container/h3-experimental/environment/dependency_audit.py": "86bc8e52871886872300bce49a75006588122899",
+    "container/h3-experimental/environment/gateway-dependency-policy.json": "70273d9fd060fbe9ce7ab45f3a32cda3fd4789f9",
+    "container/h3-experimental/environment/install_environment.sh": "20cf38fa5d6299f791a4c385a96b38c565fb72df",
+    "container/h3-experimental/environment/media_smoke.py": "179fc5efceff04476be0f8b17c697188b321577f",
+    "container/h3-experimental/environment/prepare_omni_wheel.py": "06f0ec54a3bf60165b399632d341763270919c0f",
+    "container/h3-experimental/environment/protected_packages.txt": "a9035338577e6aee335ce7751daf866835e2971b",
+    "container/h3-experimental/environment/reference-gateway-pyproject.toml": "ba51e060ffee0d9cde5b85811366c1dff50f35ba",
+    "container/h3-experimental/environment/reference-gateway-runtime-pyproject.toml": "1e4109cfbf9f5602ff979cb84aa40beb8de37e20",
+    "container/h3-experimental/environment/reference-gateway-vllm-runtime.Dockerfile.txt": "c9f248a5ca5a1ca33dedbf5d3cbe281b84a48d93",
+    "container/h3-experimental/environment/runtime_dependencies.py": "fa7b43f616a2f8a57692483868ec7bff23f0a384",
+    "container/h3-experimental/environment/service_smoke.py": "e17c4d449225c02ccf3fa523ae4921d7fe34a43d",
+    "container/h3-experimental/environment/test_dependency_audit.py": "2a90d71a63ac03abfb8cbaa53fd2fd3be7e265c3",
+    "container/h3-experimental/environment/test_gateway_overlay.py": "8ddebde57c5847a287ee000daf49312f5c1778e1",
+    "container/h3-experimental/environment/test_prepare_omni_wheel.py": "6534ba4a508034904389d145fa47fbca16c61800",
+    "container/h3-experimental/environment/test_runtime_dependencies.py": "7657851c91a2cbdc8057c013ca2b6a7b61bb91ed",
+    "container/h3-experimental/environment/test_uv_check.py": "1fc2417a77c1aca91749485ddab75d0b36d05673",
+    "container/h3-seedvr2-rmsnorm/Dockerfile": "42f36a896ebb37d01443c82ee4d0d76911f244f5",
+    "container/h3-seedvr2-rmsnorm/Dockerfile.dockerignore": "91c92790359d86d1e58a57b7b51f363453458a6c",
+    "container/h3-seedvr2-rmsnorm/NOTICE": "abe9bcc5d1288c2c57672207bf7d805a38373e3d",
+    "container/h3-seedvr2-rmsnorm/apply_patch.py": "2c5a2b42883491d0761df3c52cfe7ab40ebf71e8",
+    "container/h3-seedvr2-rmsnorm/check_retained.py": "6e288f3cad31bf122590f6dffa4ffbc1156aeee7",
+    "container/h3-seedvr2-rmsnorm/patch.lock.json": "6b9936dd36c1ad2ab277d865657d0be348b7268a",
+    "container/h3-seedvr2-rmsnorm/patchlib.py": "4b7020764a6a0ab1f35b0e7db0789c0b270d7d22",
+    "container/h3-seedvr2-rmsnorm/preserve_runtime.py": "dbba5072cbb9539657c1deaa29ae18a778d813a1",
+    "container/h3-seedvr2-rmsnorm/tests/fixtures/nadit.before.py.txt": "3886ca37a7afa902661f9d4b953d40d7738926e8",
+    "container/h3-seedvr2-rmsnorm/tests/test_patch.py": "37b91ab8a9548c3e522aff810e03ff71fa915e90",
+    "container/h3-seedvr2-rmsnorm/upstream/0708f05e2e27f16fca8b48e7c5a085277d1cafda.patch": "42f5985ac61e79141fe4d77fdd8ccc9b090420dd",
+    "container/h3-seedvr2-rmsnorm/upstream/LICENSE": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+    "container/h3-seedvr2-rmsnorm/upstream/test_seedvr2_norm.py": "b02a37259d30823bf300c16e157902da67ce96a7",
+    "container/h3-seedvr2-rmsnorm/validate_runtime.py": "8c2388d01bcafb471131da313d4ced6948ed686f",
+    "container/omni-gateway-lite/.gitattributes": "80a28b08e9658c7829c7c4725b1e529f85fc7cbb",
+    "container/omni-gateway-lite/Dockerfile": "d65b87091b8d4518a804fb378f0af598d498d318",
+    "container/omni-gateway-lite/Dockerfile.dockerignore": "52afb05db09d82a27346c65828a73b5ac3286b13",
+    "container/omni-gateway-lite/NOTICE": "a80af5ea03d04a06e0210642628c3c90013a87af",
+    "container/omni-gateway-lite/environment-policy.json": "8396f71a6b9e2aa813ab31f8a2fae1d7b55dc459",
+    "container/omni-gateway-lite/gateway.lock.json": "c3ee52ae51a8368bc0735ec7f73646f5663b90a9",
+    "container/omni-gateway-lite/gateway/after/artifact_store.py": "57228c3e5b06d75c744cc0c320cd1f7f93ae623d",
+    "container/omni-gateway-lite/gateway/before/artifact_store.py": "ffbfa31177bdca224bf7d3709cab818d31b5a775",
+    "container/omni-gateway-lite/gateway/parent-lineage.json": "865af1f16ef9cf1705a1375aafa7a6ac4b4f66d6",
+    "container/omni-gateway-lite/gateway/reference-gateway-pyproject.toml": "ba51e060ffee0d9cde5b85811366c1dff50f35ba",
+    "container/omni-gateway-lite/gateway/reference-gateway-runtime-pyproject.toml": "1e4109cfbf9f5602ff979cb84aa40beb8de37e20",
+    "container/omni-gateway-lite/gateway/reference-gateway-vllm-runtime.Dockerfile.txt": "c9f248a5ca5a1ca33dedbf5d3cbe281b84a48d93",
+    "container/omni-gateway-lite/gateway/reference-parent-dockerignore.txt": "d08eb89eba2879c186d80378901f4f70f2aed885",
+    "container/omni-gateway-lite/gateway/reference-parent-hatch_build.py.txt": "bda824023cb847cb37069b07062667a87d2c68fe",
+    "container/omni-gateway-lite/gateway/reference-parent-pyproject.toml": "997e35c2abce54082db5ffad113437dc854e7f4e",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/README.md": "be4c9c8fd5662734b9c4758fdba20b7b95504f81",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/grafana/video-gateway.json": "fbc044009b29950e6f78092912d7025e879f54ab",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/grafana/video-worker-omni.json": "07b23431ef84c88c9780e261043d320914fe0059",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/tests/fixtures/execution-partial-scrapes.jsonl": "f85bab52612b47f1556cb6615af5fc7e328d0527",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/tests/fixtures/histogram-partial-scrapes.jsonl": "5ec5a117b2409eb7e89630d08d9b7c7473aa352a",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/tests/grafana_gap_regression.cjs": "89e982d2d08b8a2efd6b811e8ef14a38bf06e7c7",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/tests/test_histogram_partial_scrapes.py": "f46b38fe89aff8de2d28f2c05d4fe4a96089ee49",
+    "container/omni-gateway-lite/gateway/review/deploy/observability/video-gateway/tests/test_video_metrics_dashboards.py": "530d29aebbf834deefd5eda364f845d85383d436",
+    "container/omni-gateway-lite/gateway/review/dingo/video_gateway/METRICS.md": "24ce542490cd7977182a4dd907664cbe10a755a7",
+    "container/omni-gateway-lite/gateway/review/dingo/video_gateway/artifact_store.py": "57228c3e5b06d75c744cc0c320cd1f7f93ae623d",
+    "container/omni-gateway-lite/gateway/review/tests/video_gateway/test_artifact_capacity_metrics.py": "fa726332152ee13df29bb9744c8c4bfd1710bdb4",
+    "container/omni-gateway-lite/gateway/review/tests/video_gateway/test_artifact_store.py": "8e9cf893a0d1a65b7c1347bcfd22d11d8319d28e",
+    "container/omni-gateway-lite/gateway_regression.py": "9949452710f134c67a7e4c8ab98faba00e4d774b",
+    "container/omni-gateway-lite/rmsnorm-patch.lock.json": "2b7fd663f1640e432ab4aa63bcf30e9160e45968",
+    "container/omni-gateway-lite/runtime.lock.json": "d5f92e1900b87a2161463ac4379c59d6bd19d3be",
+    "container/omni-gateway-lite/runtime.py": "7c7deac25e6cb620e8d538cb840f637d05c70b72",
+    "container/omni-gateway-lite/tests/test_runtime.py": "f1c93a8207461b3831a39626b77cde36df7da18a",
+    "container/seedvr2-c14/.gitattributes": "2c1dd00c8081060b6fb1e53b43080a90940c05d8",
+    "container/seedvr2-c14/Dockerfile": "a56a7a611ae8c91b741db0d0e3938cf9175cdacb",
+    "container/seedvr2-c14/Dockerfile.dockerignore": "a042310602de171f60fc09fea846772da4efd9d7",
+    "container/seedvr2-c14/NOTICE": "52295a08aedf6b218d1a9ede18ec5c3c6a388255",
+    "container/seedvr2-c14/c14_capture.py": "578bd4027959aea6f3e638300502d054a4dc451e",
+    "container/seedvr2-c14/contracts.py": "ae09b37c4ec3407024d2417c5b4e3eaa23bed52e",
+    "container/seedvr2-c14/cpu_smoke.py": "a8dec894002797862a1d5350623a69c3440c2cc6",
+    "container/seedvr2-c14/gpu_guard.py": "d9deb2839eda0d9e0c1849d0180971816bae8c4a",
+    "container/seedvr2-c14/media-origin.json": "3cc83e031b53d79a1be0969062cb33e5e9046e99",
+    "container/seedvr2-c14/media.py": "58e0da5c19cac2c5f55795fe7252bba6cb63e0da",
+    "container/seedvr2-c14/replay_chain.py": "dcdd1d86d4216e69951849351e20420ccc55fa19",
+    "container/seedvr2-c14/replay_color.py": "c4eddbe65df3e74e1e0dfc85f39fbfcc7c7e9a4d",
+    "container/seedvr2-c14/replay_common.py": "14a83fb21f7b554936c18a070c9ecb936880540f",
+    "container/seedvr2-c14/replay_decode.py": "00d2b6058e34de5d2b41dc647d5ca33f024a3fa2",
+    "container/seedvr2-c14/replay_encoding.py": "c09698a06e944150e17be0575d3f040fa7aec1f3",
+    "container/seedvr2-c14/runtime.py": "28dc6081c717b9740dfc8ba21cb9ccf31651ef54",
+    "container/seedvr2-c14/source-hooks.patch": "217163ab1f703081be7f83fe87b90294d14f5fca",
+    "container/seedvr2-c14/source-patches.lock.json": "979c880d7a83f5fb161d0372d3cff709b480b625",
+    "container/seedvr2-c14/source_patches.py": "c6644b7e474a09284e648cd7e2d0f5c4a875e0ed",
+    "container/seedvr2-c14/sr_only.py": "fbf3eb1473842d373340c249eb94428aa0e56e7b",
+    "container/seedvr2-c14/tests/test_capture.py": "1f5b3acb538c185e483bd6265fd2ae6f3baf256f",
+    "container/seedvr2-c14/tests/test_gpu_guard.py": "3f13bb29cee9dd95bf35386d678214621bc1cd5a",
+    "container/seedvr2-c14/tests/test_replay_contracts.py": "c895df60f92f0318c2883d282d33fe0de29f99e2",
+    "container/seedvr2-c14/tests/test_replay_torch.py": "b21b3a6c2ce1f3c9fa02e3e0fc0016729a3c66a1",
+    "container/seedvr2-c14/tests/test_runtime_preservation.py": "0b1102b8496b6d84d5c46c5b8f9f82e3526e0dac",
+    "container/seedvr2-c14/tests/test_sr_only.py": "fed15a6583fdc3f8d163b47c91906df231a48b89",
+    "container/seedvr2-c14/vendor/.gitattributes": "fa1385d99a319b43c06f5309d1aae9fdd3adea46",
+    "container/seedvr2-c14/vendor/original/vllm_omni/diffusion/models/seedvr2/long_video.py": "bdd894a28cc132b231f8f8d93f195c9b5a69cf1d",
+    "container/seedvr2-c14/vendor/original/vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py": "38dad47a0e9432e85ece0f63e1556e816d9eba9d",
+    "container/seedvr2-c14/vendor/original/vllm_omni/diffusion/models/seedvr2/vae.py": "827dcbd24c733f03c500b13b5c5754f1e90864e4",
+    "container/seedvr2-c14/vendor/original/vllm_omni/diffusion/utils/media_utils.py": "a53359cc82b2f5f810c6b8e28907dbbd1f3d875f",
+    "container/seedvr2-c14/vendor/original/vllm_omni/entrypoints/openai/serving_video.py": "d4ecf20a463a404826f45ee79cf25ed167739e96",
+    "container/seedvr2-c14/vendor/original/vllm_omni/entrypoints/openai/video_api_utils.py": "43439913fdb56d4ddbae08861efc8b04866ae463",
+    "delivery/h3-experimental/01-check.cmd": "fb802390bd74cbfd36608b796038fdbd369712c4",
+    "delivery/h3-experimental/02-submit-build.cmd": "422f414872130012f24a25022498292f18dfff77",
+    "delivery/h3-experimental/03-import-image-evidence.cmd": "f56ec6efdbda93a7cca7beea2a1a05557b5a9580",
+    "delivery/h3-experimental/GATEWAY-RUNBOOK.md": "e3d2dde84f4f80f1aa9542714bc152011f404336",
+    "delivery/h3-experimental/README.md": "c93ea83d054732cda8fac0bd26cea34150aa3aaf",
+    "delivery/h3-experimental/check_local.py": "451e2c3e0005be5dab0c8ce20d9368aad8b2a096",
+    "delivery/h3-experimental/env.cmd": "a730161d07f53436b19741e87b12a565100bdc74",
+    "delivery/h3-experimental/input-seal.json": "d63976710370579bf3dbdd300773a08fb0c71ec2",
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/Cargo.toml": "23430204fc40dc91ebf7ffc3528b4e76d0784e4d",
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/LICENSE": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/METADATA": "aa056260f6cd784587f478e2741eccb329287f55",
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/oss-harmony.cyclonedx.json": "bea23001f5ffca9073c164354bf70ca042cb116b",
+    "delivery/h3-experimental/license-evidence/oss-harmony-0.0.11/source.json": "9eb7935f09ecbf728a440da448102bd83ffdf3d8",
+    "delivery/h3-experimental/ops.py": "bbb97b283227fd7662038dbbee8a644ce5a32295",
+    "delivery/h3-experimental/service-source-review.json": "6195d7facc6a67d86a77bf71baee96999e39fd1e",
+    "delivery/h3-experimental/source-lock.json": "284107dc362ccfb74e1de5b5c3877b4384ef71e0",
+    "delivery/h3-experimental/tests/test_gateway_compat.py": "babfcdfb9c36f5a7654923eb3dc952458c3ce36f",
+    "delivery/h3-experimental/tests/test_license_resolution.py": "d90a08528de1b53d12ff2b8c24ab0be5ae41d40b",
+    "delivery/h3-experimental/tests/test_ops.py": "bcee051323c836a9e5af83ca78e2931b3cfea129",
+    "delivery/h3-experimental/tests/test_staging.py": "03dee6efec809b921ec143f330b6afbb95938d78",
+    "delivery/omni-gateway-lite/.gitattributes": "f3158d18e0e1ec3f6ed529ca90d09bfdecdba9d0",
+    "delivery/omni-gateway-lite/01-check.cmd": "fb802390bd74cbfd36608b796038fdbd369712c4",
+    "delivery/omni-gateway-lite/02-submit-build.cmd": "c10d81c5424279b7d6bceeb090c4c55ac12b477d",
+    "delivery/omni-gateway-lite/03-run-build.cmd": "b5ee3eac8f9a2f417725fb4270da606e293b8732",
+    "delivery/omni-gateway-lite/04-import-image-evidence.cmd": "ca7f1ffba56307f273aeecab24076e25f10895c7",
+    "delivery/omni-gateway-lite/README.md": "fee822da03b1bd62cd388374c964d2984da7bfb9",
+    "delivery/omni-gateway-lite/check_local.py": "26a1fab9dcf304ece613810cc3f54082048e9657",
+    "delivery/omni-gateway-lite/env.cmd": "f288a71d7663d63d585e8de4e438885f1b2b0791",
+    "delivery/omni-gateway-lite/import_evidence.py": "f59af89ff221e6a0a690157dacd76e89c7e52125",
+    "delivery/omni-gateway-lite/input-seal.json": "607d90e4acbbc439ec3aa3a783c30be5fbf89a8d",
+    "delivery/omni-gateway-lite/ops.py": "1ad2fe8123c9c50845f17f3daa52ab0842b49acc",
+    "delivery/omni-gateway-lite/parent-evidence/config.json": "c70d6cc3550cee5580200e2fa4336138c593e932",
+    "delivery/omni-gateway-lite/parent-evidence/image-inputs.json": "1611d8b6139a64a31b954cca76100b4a05efbd5e",
+    "delivery/omni-gateway-lite/parent-evidence/manifest.json": "fc9fd093c626d0350528377254951d6bef7d9d91",
+    "delivery/omni-gateway-lite/parent-evidence/registry-audit.json": "ae93d82b439f2b24a425e0943ca1a3da7298b6fb",
+    "delivery/omni-gateway-lite/source-lock.json": "3396fe03b293b0ed79dde1fc58bd1019f182e981",
+    "delivery/omni-gateway-lite/tests/test_artifact_paths.py": "ec0dca95e2c9ae936c2a239290ab0ab73e2039c1",
+    "delivery/omni-gateway-lite/tests/test_submission.py": "ebbd8570ff5886fadff4c170725f62164e5e3021",
+    "delivery/seedvr2-c14/.gitattributes": "f3158d18e0e1ec3f6ed529ca90d09bfdecdba9d0",
+    "delivery/seedvr2-c14/01-check.cmd": "fb802390bd74cbfd36608b796038fdbd369712c4",
+    "delivery/seedvr2-c14/02-submit-build.cmd": "ab5e0e34835a3ff8b2eb8c1c64237b8df7e0f0ba",
+    "delivery/seedvr2-c14/03-run-build.cmd": "db97f6f1427993756a7eacd9c2dfa0d3a98a2b37",
+    "delivery/seedvr2-c14/04-import-image-evidence.cmd": "5a3f5bdaeb186d3e098eac9ab440f97ae90d450a",
+    "delivery/seedvr2-c14/OPERATIONS.md": "2c3b25564880ef4e0b047b1d066a2162958688ac",
+    "delivery/seedvr2-c14/README.md": "4d672d175a5c380d087a3527459df240a526ad8b",
+    "delivery/seedvr2-c14/REPLAY.md": "56546872975f8401ce21f07dd07bdf39eb2ad14b",
+    "delivery/seedvr2-c14/check_local.py": "6fea0d5b1692ad1844507f575556a8ffd65c461b",
+    "delivery/seedvr2-c14/env.cmd": "f288a71d7663d63d585e8de4e438885f1b2b0791",
+    "delivery/seedvr2-c14/import_evidence.py": "43fb42a3694101512098d553a516fffec15243bb",
+    "delivery/seedvr2-c14/input-seal.json": "771c6b37cd1ce8549e69f524bdc26ea9bd663128",
+    "delivery/seedvr2-c14/ops.py": "67cf372d69ab41422adf21796a5a36d5f29513fd",
+    "delivery/seedvr2-c14/parent-evidence/image-release-evidence.json": "a0dc6d896522225a38da295cf71877e3d6b51bc9",
+    "delivery/seedvr2-c14/source-lock.json": "817ddd5d4ae2827b9069a3e0ab5c624c76673888",
+    "delivery/seedvr2-c14/tests/test_artifact_paths.py": "ec0dca95e2c9ae936c2a239290ab0ab73e2039c1",
+    "delivery/seedvr2-c14/tests/test_import_evidence.py": "c63eb0c17b1b07f0154009273eb8b5803d37b944",
+    "delivery/seedvr2-c14/tests/test_submission.py": "97b0bad8a1d5a8e654ea268b00c6930544fd46d0"
+  },
+  "scope": "Exact Git delta relative to prior patch recipe; shared inputs remain fixed at that commit. Excludes seal itself."
+}

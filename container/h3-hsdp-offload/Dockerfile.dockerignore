@@ -1,0 +1,11 @@
+**
+!container/
+!container/h3-hsdp-offload/
+!container/h3-hsdp-offload/**
+!delivery/
+!delivery/h3-hsdp-offload/
+!delivery/h3-hsdp-offload/source-lock.json
+!delivery/h3-hsdp-offload/input-seal.json
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

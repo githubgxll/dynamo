@@ -1,0 +1,32 @@
+{
+  "schema": "h3-hsdp-torch-native-contract/1",
+  "version": "2.13.0+cu130",
+  "reference_tag": "v2.13.0",
+  "methods": [
+    {
+      "module": "torch.nn.modules.module",
+      "class": "Module",
+      "method": "_apply",
+      "ast_sha256": "e1b50250f5d3b8e5f8b08cac6f97a03b2b2794d4ab8b98eb51b8205e284c71e3",
+      "reference_file_sha256": "341153e4099444f923f5b0766e8e41b45fbe909b87f4737cb28c828f297b7baa",
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/module.py"
+    },
+    {
+      "module": "torch.distributed.fsdp._fully_shard._fully_shard",
+      "class": "FSDPModule",
+      "method": "_apply",
+      "ast_sha256": "d2445abe09c170ddb9a90a774dcb5da5ec2c1213ceea15a1c07387d9c7e7e462",
+      "reference_file_sha256": "4536abc84dc343d83fb6f9c73272589772c17bacf340e83a5e071e24ff7b1c5e",
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fully_shard.py"
+    },
+    {
+      "module": "torch.distributed.fsdp._fully_shard._fsdp_param",
+      "class": "FSDPParam",
+      "method": "reset_sharded_param",
+      "ast_sha256": "46b9e1b69eacb440fb3c8b2a1f019844617d644c0715b3c565e0c4ac95d24059",
+      "reference_file_sha256": "320fdccc0083854ed29dab7fce168083b3a343b49cf31494a1c1b3ad467088f6",
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fsdp_param.py"
+    }
+  ],
+  "scope": "Exact method AST identity only; actual wheel sources archived during image build; no Torch patches."
+}
