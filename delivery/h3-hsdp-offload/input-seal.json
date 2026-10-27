@@ -35,7 +35,7 @@
     },
     "container/h3-hsdp-offload/NOTICE": {
       "mode": "100644",
-      "blob": "d7208ce703dfb8ef6cbf8f16bd95adef716728bd",
+      "blob": "bc1a28deb4b5be2bbf1f0d7ba7291717924d42d3",
       "status": "A"
     },
     "container/h3-hsdp-offload/cpu_smoke.py": {
@@ -73,14 +73,19 @@
       "blob": "69962f7ad6f86e45d9b6167e0090ddc430f3cadd",
       "status": "A"
     },
+    "container/h3-hsdp-offload/tests/test_torch_contract.py": {
+      "mode": "100644",
+      "blob": "73f7308fad98dfe9ba584b73f0881601988b1f08",
+      "status": "A"
+    },
     "container/h3-hsdp-offload/torch-contract.json": {
       "mode": "100644",
-      "blob": "fccba8679b284d2397d72b0a06c999ece1af7a15",
+      "blob": "ba98cc732f97f6acab58e35dc3259bfec6cac24d",
       "status": "A"
     },
     "container/h3-hsdp-offload/torch_contract.py": {
       "mode": "100644",
-      "blob": "f517195558dad7ae3080952204dbf7211cf86e3e",
+      "blob": "d44c623f65faa0e899a728dc2fd0aca7e64b24cb",
       "status": "A"
     },
     "container/h3-hsdp-offload/vendor/original/vllm_omni/diffusion/distributed/hsdp.py": {
@@ -96,6 +101,26 @@
     "container/h3-hsdp-offload/vendor/original/vllm_omni/diffusion/offloader/sequential_backend.py": {
       "mode": "100644",
       "blob": "b03be36876a0b9f24ed5296ab8194f4b8f109530",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/torch-reference/FSDPModule._apply.py.txt": {
+      "mode": "100644",
+      "blob": "395673b2fd8b0b556a2b43be56ba766e01a746af",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/torch-reference/FSDPParam.reset_sharded_param.py.txt": {
+      "mode": "100644",
+      "blob": "7f0606997be11cca3e7e62fc46575ac82802722f",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/torch-reference/LICENSE": {
+      "mode": "100644",
+      "blob": "c23172f7aff0254e4f0f163fb2e6e355cbaec5f4",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/vendor/torch-reference/Module._apply.py.txt": {
+      "mode": "100644",
+      "blob": "1a2ec28fd71030600796eb59beb8eec4e8e5a892",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/.gitattributes": {
@@ -130,7 +155,12 @@
     },
     "delivery/h3-hsdp-offload/README.md": {
       "mode": "100644",
-      "blob": "407fc8fc62dfa3acc097ca9ff6627216a24cf9c2",
+      "blob": "dcb324c3036b7895e729260b6a6f217844ba2c7c",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/TORCH-CONTRACT-FIX-20261027.md": {
+      "mode": "100644",
+      "blob": "bf49d79b35c64c7129de1e39cf6ddb23413a3a17",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/base-review-20261027.json": {

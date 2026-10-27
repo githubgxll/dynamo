@@ -4,6 +4,8 @@
 
 **构建成功只代表候选镜像通过 CPU、来源和依赖保留检查。实际 HSDP 卸载、八卡 C02 生成、显存与质量验收尚未完成，发布证据始终记录 `gpu_validation_status=NOT_RUN`。**
 
+2026-10-27 构建中的 `Native Torch method differs` 已定位为 Python 3.12/3.14 的 AST 文本表示差异；本次改用跨版本规范指纹，保持 Torch、依赖和迁移 helper。见 [根因与修复说明](TORCH-CONTRACT-FIX-20261027.md)。请用 `02-submit-build.cmd` 提交新配方，单独运行 `03-run-build.cmd` 不会上传本次修改。
+
 2026-10-27 已按新版 skill 复核并实时核对远端分支：Gateway 仍为本镜像锁定的 `9ccee2f…`，本次无需升级 Dynamo 基础。较新的 `DingoRouter-base` 已到 ai-dingo 1.6.0，但与 Gateway 分叉，且仍没有配置 A 的 Dingo CLI 参数链。完整结论、新实验身份清单与服务接入边界见 [构建前复核](BASE-AND-SKILL-REVIEW-20261027.md)。
 
 **本配方针对原生 Omni 实验。** 同事通过 Dingo Gateway 使用配置 A 时，仍需单独增加 `diffusion_offload_config` 的解析、dataclass 与 handler 透传；本次底层迁移补丁不包含这一服务适配。

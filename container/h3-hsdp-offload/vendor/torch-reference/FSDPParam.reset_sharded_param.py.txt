@@ -1,0 +1,66 @@
+def reset_sharded_param(self):
+    # For ops like `nn.Module._apply` or `load_state_dict(assign=True)`
+    # that change the sharded parameter tensor, we may need to re-pad the
+    # sharded local tensor and re-save the reference.
+    module_info = self._module_info
+    new_param = getattr(module_info.module, module_info.param_name)
+    if new_param is not self.sharded_param:
+        if torch.__future__.get_swap_module_params_on_conversion():
+            raise AssertionError(
+                f"Expects swap_tensors to preserve object but got {new_param} "
+                f"instead of {self.sharded_param}"
+            )
+        self.sharded_param = new_param
+
+    local_tensor = new_param._local_tensor
+    if local_tensor.is_meta:
+        return
+    updated_local_tensor = False
+    # local_tensor can be padded twice
+    # 1st time in fully_shard(model)
+    # 2nd time in model(input) lazy_init
+    # 2nd time should be no-op if parameters remain unchanged
+    # 2nd time shouldn't be no-op if people call model.load_state_dict(...) before lazy_init
+    # this makes it possible for trainer to call `sd = model.state_dict()` before the training loop
+    # and use `sd` without calling .state_dict() per iteration
+    same_local_tensor = False
+    # TODO: need to support tensor subclass
+    if type(self._sharded_param_data) is torch.Tensor:
+        same_local_tensor = (
+            # when sharding param with shape (1, ...) over 2 ranks
+            # local_tensor on rank 1 can be size 0, data_ptr() can be 0
+            self._sharded_param_data.untyped_storage().data_ptr() > 0
+            and self._sharded_param_data.untyped_storage().data_ptr()
+            == local_tensor.untyped_storage().data_ptr()
+        )
+    padded_sharded_size = self.padded_sharded_param_size
+    shard_dim = self.fsdp_placement.dim
+    length = local_tensor.size(shard_dim) if local_tensor.numel() > 0 else 0
+    if local_tensor.size() != padded_sharded_size and not same_local_tensor:
+        if shard_dim != 0:
+            raise AssertionError(
+                f"Shard({shard_dim}) requires even sharding: {local_tensor.size()=}"
+            )
+        padded_local_tensor = local_tensor.new_zeros(padded_sharded_size)
+        padded_local_tensor.narrow(dim=shard_dim, start=0, length=length).copy_(
+            local_tensor
+        )
+        local_tensor = padded_local_tensor
+        updated_local_tensor = True
+    if self.pin_memory and not local_tensor.is_pinned():
+        local_tensor = local_tensor.cpu().pin_memory()
+        updated_local_tensor = True
+    if not same_local_tensor:
+        self._sharded_param_data = local_tensor.view(-1)
+    if not isinstance(self.sharded_param, DTensor):
+        raise AssertionError(f"Expected DTensor, got {type(self.sharded_param)}")
+    if updated_local_tensor:
+        # Only change the local tensor object if needed
+        self.sharded_param._local_tensor = local_tensor.narrow(
+            dim=shard_dim, start=0, length=length
+        )
+        if not self.sharded_param._local_tensor.is_contiguous():
+            raise AssertionError(
+                "Expected sharded_param._local_tensor to be contiguous"
+            )
+    self._sharding_spec = self.sharded_param._spec

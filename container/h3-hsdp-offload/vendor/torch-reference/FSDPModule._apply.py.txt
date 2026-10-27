@@ -1,0 +1,14 @@
+def _apply(self, *args: Any, **kwargs: Any) -> Any:
+    # Reshard to ensure that sharded parameters are registered
+    self.reshard()
+    ret = super()._apply(*args, **kwargs)  # type: ignore[misc]
+    state = self._get_fsdp_state()
+    if not state._fsdp_param_groups:
+        return ret
+    # TODO: Remove this padding logic once DTensor pads the local tensor:
+    # https://github.com/pytorch/pytorch/issues/113045
+    with torch.no_grad():
+        for fsdp_param_group in state._fsdp_param_groups:
+            for fsdp_param in fsdp_param_group.fsdp_params:
+                fsdp_param.reset_sharded_param()
+    return ret

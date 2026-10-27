@@ -1,5 +1,5 @@
 {
-  "schema": "h3-hsdp-torch-native-contract/1",
+  "schema": "h3-hsdp-torch-native-contract/2",
   "version": "2.13.0+cu130",
   "reference_tag": "v2.13.0",
   "methods": [
@@ -7,26 +7,45 @@
       "module": "torch.nn.modules.module",
       "class": "Module",
       "method": "_apply",
-      "ast_sha256": "e1b50250f5d3b8e5f8b08cac6f97a03b2b2794d4ab8b98eb51b8205e284c71e3",
+      "ast_sha256": "cf89ba71196c5a9f82700fb6a61822a890c1f775d7b11ccef1c4fa7482720e56",
       "reference_file_sha256": "341153e4099444f923f5b0766e8e41b45fbe909b87f4737cb28c828f297b7baa",
-      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/module.py"
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/nn/modules/module.py",
+      "reference_method_file": "vendor/torch-reference/Module._apply.py.txt",
+      "reference_method_sha256": "3ad584b1fbeed2aaea2496f366812006342f7ab9cc3e43284c5ad88eff11da6f",
+      "reference_lines": [
+        930,
+        1036
+      ]
     },
     {
       "module": "torch.distributed.fsdp._fully_shard._fully_shard",
       "class": "FSDPModule",
       "method": "_apply",
-      "ast_sha256": "d2445abe09c170ddb9a90a774dcb5da5ec2c1213ceea15a1c07387d9c7e7e462",
+      "ast_sha256": "2c7fd19c8a97558266924ed845ef7766de09bc1d160ff375775af67a286519a7",
       "reference_file_sha256": "4536abc84dc343d83fb6f9c73272589772c17bacf340e83a5e071e24ff7b1c5e",
-      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fully_shard.py"
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fully_shard.py",
+      "reference_method_file": "vendor/torch-reference/FSDPModule._apply.py.txt",
+      "reference_method_sha256": "1fcafdcec9982ba35deb42581bbb57938391e1aa1fa773fc40c59eef93512c8d",
+      "reference_lines": [
+        886,
+        899
+      ]
     },
     {
       "module": "torch.distributed.fsdp._fully_shard._fsdp_param",
       "class": "FSDPParam",
       "method": "reset_sharded_param",
-      "ast_sha256": "46b9e1b69eacb440fb3c8b2a1f019844617d644c0715b3c565e0c4ac95d24059",
+      "ast_sha256": "a6f2929b3e5bca3141a75099e13e1dfce7b76ee6caa8de1c8b9afcf977b8499f",
       "reference_file_sha256": "320fdccc0083854ed29dab7fce168083b3a343b49cf31494a1c1b3ad467088f6",
-      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fsdp_param.py"
+      "source_url": "https://github.com/pytorch/pytorch/blob/v2.13.0/torch/distributed/fsdp/_fully_shard/_fsdp_param.py",
+      "reference_method_file": "vendor/torch-reference/FSDPParam.reset_sharded_param.py.txt",
+      "reference_method_sha256": "e49f245168763826f31fd07415b5eed886e9b52a4b8bd0c58477fef5dc7e718b",
+      "reference_lines": [
+        995,
+        1060
+      ]
     }
   ],
-  "scope": "Exact method AST identity only; actual wheel sources archived during image build; no Torch patches."
+  "scope": "Exact method AST identity using complete typed fields, checked on Python 3.12 and 3.14; actual wheel sources archived during image build; no Torch patches.",
+  "fingerprint": "python-ast-fields-json/1"
 }
