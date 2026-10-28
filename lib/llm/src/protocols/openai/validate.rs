@@ -514,6 +514,7 @@ pub fn validate_messages(
 
 /// Allow malformed JSON syntax only for explicitly configured historical tool calls.
 /// Valid JSON with a non-object shape is still rejected. No input is rewritten.
+/// Orphan tool data is accepted for all models; declared calls still require pairing.
 pub fn validate_messages_with_history_policy(
     messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
     allow_invalid_history_arguments: bool,
@@ -525,15 +526,25 @@ pub fn validate_messages_with_history_policy(
     // as a JSON object string; reject bad non-empty shapes before chat-template rendering.
     // This was caught in MiniMax-M3 multi-turn tool-call tests
     let mut pending_tool_calls = std::collections::HashSet::new();
+    let mut assistant_declared_calls = false;
     for (message_index, message) in messages.iter().enumerate() {
         if let dynamo_protocols::types::ChatCompletionRequestMessage::Tool(tool) = message {
-            if !pending_tool_calls.remove(tool.tool_call_id.as_str()) {
+            let allowed_orphan = !assistant_declared_calls && !tool.tool_call_id.trim().is_empty();
+            if !pending_tool_calls.remove(tool.tool_call_id.as_str()) && !allowed_orphan {
                 anyhow::bail!(
                     "`messages[{message_index}].tool_call_id` must reference an unanswered tool call in the preceding assistant message"
                 );
             }
         } else {
             pending_tool_calls.clear();
+        }
+        // Keep the declaration across intervening user/system messages so an
+        // interrupted or already answered call cannot become an allowed orphan.
+        if let dynamo_protocols::types::ChatCompletionRequestMessage::Assistant(assistant) = message {
+            assistant_declared_calls = assistant
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty());
         }
         if let dynamo_protocols::types::ChatCompletionRequestMessage::Assistant(assistant) = message
             && let Some(tool_calls) = &assistant.tool_calls

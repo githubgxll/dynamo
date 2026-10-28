@@ -1004,7 +1004,7 @@ impl NvCreateChatCompletionRequest {
 mod tests {
 
     #[test]
-    fn tool_results_require_an_unanswered_preceding_call() {
+    fn orphan_tools_are_allowed_but_declared_calls_require_pairing() {
         use crate::engines::ValidateRequest;
         use serde_json::json;
         let assistant = json!({"role":"assistant","tool_calls":[
@@ -1014,22 +1014,42 @@ mod tests {
         let a = json!({"role":"tool","tool_call_id":"a","content":"ok"});
         let b = json!({"role":"tool","tool_call_id":"b","content":"ok"});
         let user = json!({"role":"user","content":"hello"});
-        for (messages, valid) in [
-            (json!([user, a]), false),
-            (json!([a]), false),
-            (json!([assistant, a, b]), true),
-            (json!([assistant, b, a]), true),
-            (json!([assistant, a, a]), false),
-            (json!([assistant, user, a]), false),
+        for (messages, valid, orphan) in [
+            (json!([user, a]), false, true),
+            (json!([a]), false, true),
+            (
+                json!([user, {"role":"assistant","content":"Checking weather"},
+                    {"role":"tool","tool_call_id":"call_weather_001",
+                     "content":"{\"city\":\"Beijing\",\"temp_c\":18}"}, user]),
+                false,
+                true,
+            ),
+            (
+                json!([user, {"role":"tool","tool_call_id":" ","content":"ok"}]),
+                false,
+                false,
+            ),
+            (json!([assistant, a, b]), true, false),
+            (json!([assistant, b, a]), true, false),
+            (json!([assistant, a, a]), false, false),
+            (json!([assistant, a, b, b]), false, false),
+            (json!([assistant, user, a]), false, false),
             (
                 json!([assistant, {"role":"tool","tool_call_id":"unknown","content":"ok"}]),
                 false,
+                false,
             ),
-            (json!([assistant, a, b, user, assistant, b, a]), true),
+            (json!([assistant, a, b, user, assistant, b, a]), true, false),
         ] {
-            let request: super::NvCreateChatCompletionRequest =
-                serde_json::from_value(json!({"model":"glm-5.3","messages":messages})).unwrap();
-            assert_eq!(ValidateRequest::validate(&request).is_ok(), valid);
+            for model in ["glm-5.3", "qwen3-8b-backend", "test-model"] {
+                let request: super::NvCreateChatCompletionRequest =
+                    serde_json::from_value(json!({"model":model,"messages":messages})).unwrap();
+                let before = serde_json::to_value(&request).unwrap();
+                let expected = valid || orphan;
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), expected);
+                assert_eq!(request.validate_with_history_policy(true).is_ok(), expected);
+                assert_eq!(serde_json::to_value(&request).unwrap(), before);
+            }
         }
     }
 
