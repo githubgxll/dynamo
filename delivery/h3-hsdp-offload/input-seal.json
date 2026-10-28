@@ -5,12 +5,12 @@
   "delta": {
     ".github/scripts/h3_hsdp_offload_ci.py": {
       "mode": "100644",
-      "blob": "f6fa5e10f07c1a3a339ed7777adf4e9a341e515b",
+      "blob": "3b8ec3eb1f7f1728be62585d02b8937f5e631da2",
       "status": "A"
     },
     ".github/scripts/test_h3_hsdp_offload_ci.py": {
       "mode": "100644",
-      "blob": "824c44eb8f030ffc251049a53da2946283afbcb8",
+      "blob": "cae3dd09ff3ae7ab081c913447cc6bfac11299a9",
       "status": "A"
     },
     ".github/workflows/dingo-router-ci.yml": {
@@ -20,7 +20,7 @@
     },
     "container/h3-hsdp-offload/DESIGN.md": {
       "mode": "100644",
-      "blob": "c421eed777c222458357d7c1eb9eba4b9ec9e9f7",
+      "blob": "a9f807f9789e337a202adf1f71b5f6ee1362cb03",
       "status": "A"
     },
     "container/h3-hsdp-offload/Dockerfile": {
@@ -40,12 +40,17 @@
     },
     "container/h3-hsdp-offload/cpu_smoke.py": {
       "mode": "100644",
-      "blob": "8721a4ca300ef205d49a5e01c7efa1c8346ea51a",
+      "blob": "4f0e2528299dd7e2f6f28c9e1d85ee055c1a99bc",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/dit-entry.patch": {
+      "mode": "100644",
+      "blob": "75ea70178389a22af5c5178347c54fcdb99304f7",
       "status": "A"
     },
     "container/h3-hsdp-offload/gpu_roundtrip.py": {
       "mode": "100644",
-      "blob": "10b095d4ed9c2973417c6ba724ed710e225a0d65",
+      "blob": "ddc574c742113c57126ac68115aaafe5a6ce1683",
       "status": "A"
     },
     "container/h3-hsdp-offload/hsdp_migration.py": {
@@ -55,22 +60,37 @@
     },
     "container/h3-hsdp-offload/runtime.py": {
       "mode": "100644",
-      "blob": "f6f80999ee97ce0c80409f02fe39799c40f62a66",
+      "blob": "0d1bb44f08d25885b2575952e6f5b1a7f8d0650c",
       "status": "A"
     },
     "container/h3-hsdp-offload/source-patches.lock.json": {
       "mode": "100644",
-      "blob": "b5c3d9cbf1e4ff6fdcd2f6af1af9e04ce1b01f1e",
+      "blob": "0f6a5dadb7056743d51e5180535191a50d8ab149",
       "status": "A"
     },
     "container/h3-hsdp-offload/source_patches.py": {
       "mode": "100644",
-      "blob": "81822c81f9ee8322e355928ffa754df417b05c52",
+      "blob": "ece70005f9548ef1b1151c63b87d12646af0ff06",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_dit_entry.py": {
+      "mode": "100644",
+      "blob": "64f8c9b1ae219fa82bf9e5210b14526d9e13fd7b",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_gpu_entry_contract.py": {
+      "mode": "100644",
+      "blob": "c59d3baa602c3a46bc93fbeef9d6fba6cc81e09e",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_recipe.py": {
       "mode": "100644",
-      "blob": "69962f7ad6f86e45d9b6167e0090ddc430f3cadd",
+      "blob": "58995c0afbad96ed7d6c76aa0b40bf95e963c476",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_runtime_install.py": {
+      "mode": "100644",
+      "blob": "cf45d3c905340eb17cbf8290c71040ec9869cfb3",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_torch_contract.py": {
@@ -153,9 +173,14 @@
       "blob": "abc9d67805341040eadaabdfaf33c31cf4fb0118",
       "status": "A"
     },
+    "delivery/h3-hsdp-offload/DIT-ENTRY-REPAIR-20261028.md": {
+      "mode": "100644",
+      "blob": "1763d6a085059a0d3d34325001124bd74811e062",
+      "status": "A"
+    },
     "delivery/h3-hsdp-offload/README.md": {
       "mode": "100644",
-      "blob": "dcb324c3036b7895e729260b6a6f217844ba2c7c",
+      "blob": "139d2026669dd20c240f4046c30e8cd24eb55d1b",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/TORCH-CONTRACT-FIX-20261027.md": {
@@ -180,7 +205,7 @@
     },
     "delivery/h3-hsdp-offload/import_evidence.py": {
       "mode": "100644",
-      "blob": "34e079fad2e92043a9223b2a579ecdbcd5f30de9",
+      "blob": "beec7c56c1bdb39702f8560443e3e6ef3b584dbd",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/ops.py": {
@@ -195,7 +220,7 @@
     },
     "delivery/h3-hsdp-offload/source-lock.json": {
       "mode": "100644",
-      "blob": "d68bb0c95a3c87266407cbc297d71b1b34469610",
+      "blob": "77a9300e13226d508761f70c8b3f6b64a6580580",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/tests/test_artifact_paths.py": {
@@ -205,7 +230,7 @@
     },
     "delivery/h3-hsdp-offload/tests/test_import_evidence.py": {
       "mode": "100644",
-      "blob": "5e0ee2bafd736d0624da4b29075431589dfea756",
+      "blob": "e2e39b7a531f151964ac1f4bf87eadf7bdf8e805",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/tests/test_submission.py": {

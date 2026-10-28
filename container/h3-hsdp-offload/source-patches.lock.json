@@ -1,12 +1,18 @@
 {
-  "schema": "h3-hsdp-offload-source-patch/1",
+  "schema": "h3-hsdp-offload-source-patch/2",
   "target": "vllm_omni/diffusion/offloader/sequential_backend.py",
   "helper": "vllm_omni/diffusion/offloader/hsdp_migration.py",
   "before_sha256": "2d086ea9a2872ee9ebce3a4bc8a0ad840d355a4d728d541d80bae97457c4bc6a",
   "after_sha256": "b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0",
   "helper_sha256": "1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af",
   "unchanged_reference_sha256": {
-    "vllm_omni/diffusion/distributed/hsdp.py": "7eb25d685e9ef1d50b42c06530b065ba7a4601c5cd78f213ad7ec559e001ed0a",
-    "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py": "e8d37d9e086b72930d33b419efadbf25ff695bcef295cba8f3c0c2b59edc85e0"
+    "vllm_omni/diffusion/distributed/hsdp.py": "7eb25d685e9ef1d50b42c06530b065ba7a4601c5cd78f213ad7ec559e001ed0a"
+  },
+  "pipeline": {
+    "target": "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py",
+    "before_sha256": "e8d37d9e086b72930d33b419efadbf25ff695bcef295cba8f3c0c2b59edc85e0",
+    "after_sha256": "9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024",
+    "patch_file": "dit-entry.patch",
+    "patch_sha256": "fb25c7b745528f0bb7a76a005b3e34ad291f2c9c18f1e21bf11c38436027f18d"
   }
 }

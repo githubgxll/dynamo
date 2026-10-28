@@ -1,8 +1,10 @@
 # H3 八卡 HSDP CPU 卸载候选镜像
 
-结论：这次需要修改 Omni 的卸载实现。交接包记录的是 CPU/CUDA 参数存储设备不一致，发生于文本编码前切换组件，不是 OOM。这里从已经成功发布的 C14 轻量镜像生成独立候选镜像，保留 vLLM 0.31.0、vLLM-Omni 0.31.0rc1、PyTorch 2.13.0+cu130、Cache-DiT 1.5.0、现有 video-gateway 与 SeedVR2 补丁；不重新安装依赖或下载权重。
+结论：2026-10-28 本次修复在上一版 HSDP 镜像内容上补齐 **H3 DiT 的激活入口**。上一版 `4a5d1340…` / `18e218…` 已通过八卡合成迁移，真实 C02 仍在首个 DiT 前向报 CPU/CUDA 混合驻留。现在将整个 DiT 的恢复提前到 FSDP 原生前向钩子之前，并包住整个去噪循环；保留上一版 FSDP-aware 迁移实现、参数身份保护、vLLM 0.31.0、vLLM-Omni 0.31.0rc1、Torch 2.13.0+cu130、Cache-DiT 1.5.0、video-gateway 和 SeedVR2 修复。
 
-**构建成功只代表候选镜像通过 CPU、来源和依赖保留检查。实际 HSDP 卸载、八卡 C02 生成、显存与质量验收尚未完成，发布证据始终记录 `gpu_validation_status=NOT_RUN`。**
+构建继续使用同一配方，从固定 C14 父层 `873650…` 重放原迁移补丁并增加本次 pipeline 补丁。这样保留上一版内容，又遵守一次性安装规则；**不能把 `FROM` 直接改成已经打过补丁的 `18e218…` 后重复运行旧 `apply`**。本次不安装依赖、不下载权重、不升级 Dynamo，也不新增分支。详细身份、哈希和部署交接见 [DiT 入口修复说明](DIT-ENTRY-REPAIR-20261028.md)。
+
+**新配方的构建、GPU 与真实 C02 验收需分别执行。** 上一版合成迁移 PASS 不能转移为新入口或真实 H3 PASS；本配方发布证据仍记录 `gpu_validation_status=NOT_RUN`，显存收益和媒体质量不得从本地检查推定。
 
 2026-10-27 构建中的 `Native Torch method differs` 已定位为 Python 3.12/3.14 的 AST 文本表示差异；本次改用跨版本规范指纹，保持 Torch、依赖和迁移 helper。见 [根因与修复说明](TORCH-CONTRACT-FIX-20261027.md)。请用 `02-submit-build.cmd` 提交新配方，单独运行 `03-run-build.cmd` 不会上传本次修改。
 
@@ -58,7 +60,7 @@ registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm:omni031rc1-gateway-hsdp-
 
 1. 从父镜像实际安装目录导出 `sequential_backend.py`、`distributed/hsdp.py`、H3 pipeline 以及 PyTorch FSDP 实现。核对父镜像 ID、版本及三个 Omni 文件的已知 SHA256，先保存 `parent-source/` 和 `parent-source.json` 再修改。
 2. 不访问 PyPI、Hugging Face 或 Docker Hub 前端；只拉现有 Harbor 的固定父 digest。Dockerfile 不使用额外 `# syntax=docker/dockerfile` 前端。
-3. 镜像内补丁要求固定源码和支持的 PyTorch 实现。遇到来源不匹配会停止，不能把检查改成忽略，也不能直接替换 DTensor 内部 local tensor 绕过错误。
+3. 镜像内补丁要求固定源码和支持的 PyTorch 实现。新增 pipeline 补丁的最终 SHA256 必须与用户候选 `9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024` 完全一致。pipeline 已纳入 `changed_sources`、Omni RECORD、安装验证与 CI/导入回执，不能继续列为未变更。遇到来源不匹配会停止，不能把检查改成忽略，也不能直接替换 DTensor 内部 local tensor 绕过错误。
 4. 镜像最终以原 `dynamo` 用户、无网络运行 CPU 验证。CI 再用最终镜像 ID 重跑；保留 Python 包的完整 METADATA/direct_url 和 dpkg 清单，保持镜像层、入口、命令、工作目录及环境配置。
 5. 只发布实际测试的本地镜像 ID，发布后按返回的 digest 重新拉取并核对同一镜像 ID。artifact 即使失败也保存已有证据。
 
@@ -70,9 +72,11 @@ registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm:omni031rc1-gateway-hsdp-
 
 新镜像就绪后，使用新 Pod 与新 RUN；旧失败 Run、日志、state 与下载包保持不变。当前运行控制器在首次失败后 `generation_blocked=true`，`/health=200` 或 Pod Ready 不能证明生成可继续。不要修改旧 state 文件或复用已阻断的进程。
 
-新实验包必须保留父层 `H3_EXPERIMENTAL_SOURCE_COMMIT` / `H3_C14_SOURCE_COMMIT`，并核对新增 `H3_HSDP_SOURCE_COMMIT` / `H3_HSDP_PARENT_IMAGE`，同时检查实际加载的 `sequential_backend.py` 和 `hsdp_migration.py`。旧控制器的来源清单未包含这两个文件，不能只替换旧 YAML 的 image。具体值和来源见 [新实验身份清单](BASE-AND-SKILL-REVIEW-20261027.md#3-新实验包必须采用的身份与来源检查)。
+新实验包必须保留父层 `H3_EXPERIMENTAL_SOURCE_COMMIT` / `H3_C14_SOURCE_COMMIT`，核对本次新的 `H3_HSDP_SOURCE_COMMIT` / `H3_HSDP_PARENT_IMAGE`，同时核验实际加载的 `sequential_backend.py`、`hsdp_migration.py` 和新 `pipeline_minimax_h3.py`。旧 `image-repair-lock.json` 锁定的是 `18e218…` 及旧 pipeline，运行器还可能锁定旧 `runtime.py`、`gpu_roundtrip.py` 与配方文件；必须依据新发布证据同步，不能只换 image 字符串。当前更新清单见 [新镜像部署交接](DIT-ENTRY-REPAIR-20261028.md#新镜像部署交接)；2026-10-27 身份文档保留为历史记录。
 
-1. 在相同 PyTorch/GPU 环境先做真实多卡参数往返、forward、reshard、再次卸载验证。必须核对 Parameter 身份、FSDP 持有引用、global/local device、全 rank 完成，不能只凭 mock 或 CPU 测试。
+旧 `repair_gate.py` 还固定要求17个GPU阶段；新脚本三轮时为18阶段，增加冷态H3入口检查。新实验包须同步阶段清单及逐rank的冷态结果验证，否则会在镜像来源正确后继续被旧预检拒绝。
+
+1. 先执行更新后的八卡合成测试。保留旧 warm 迁移检查，新增独立冷态 fixture：首次 FSDP forward 前就启用 CPU parking，通过实际安装的 `MiniMaxH3Pipeline.diffuse()` 和组件上下文进入 50 步循环，至少三轮。核对 Parameter 身份、FSDP 持有引用、global/local device、全 rank 完成，以及每轮只有一次 DiT H2D、步间无重复搬运。合成输入/去噪循环与 Cache-DiT refresh 仍为替身，不等于完整 H3 或真实 Cache-DiT 已验收。
 2. 新 Run 先执行固定输入的 C02 cold，再 warm、连续重复。保持 8×H100、U8、HSDP8、TE TP8、BF16、Base50 与 Cache-DiT，SR 首先仍关闭。原权重只读挂载不改。
 3. 记录各阶段峰值显存、CPU 内存、卸载/恢复耗时、完整生成与可解码音视频。确认文本编码前 DiT 在 CPU、去噪阶段 DiT 一直驻 GPU；不要把逐层搬运冒充该策略。
 4. 同一新镜像跑关闭卸载的同输入 baseline，才能比较节省多少显存及增加多少延迟。失败 HTTP 请求的耗时不能当生成性能数据。
@@ -86,7 +90,7 @@ python3 -m torch.distributed.run --standalone --nproc-per-node=8 \
   --output-dir /tmp/h3-hsdp-gpu-gate --cycles 3
 ```
 
-该工具先校验镜像实际安装源码和原生 Torch 方法，再检查真实 HSDP 参数迁移。将全部 `rank*.json`、`summary.json` 和标准输出归档到持久证据目录后，再结束 Pod。它不下载权重、不启动 H3，不能代替第二项真实 C02 生成。Windows 提交脚本和 CPU CI 不会自动执行此命令。
+该工具先校验镜像实际安装源码和原生 Torch 方法，再检查真实 HSDP 参数迁移及新冷态入口。新脚本自身提供 vLLM `VllmConfig` 的 TP8 上下文，覆盖构造、forward 和销毁；不得继续用只接受旧脚本哈希的 ConfigMap wrapper 强行调用。将全部 `rank*.json`、`summary.json` 和标准输出归档到持久证据目录后，再结束 Pod。它不下载权重、不启动完整 H3 模型，不能代替第二项真实 C02 生成。Windows 提交脚本和 CPU CI 不会自动执行此命令。
 
 本交付没有启动、停止、删除集群 Pod，也没有自动清理 Runner 或构建缓存。
 
@@ -94,6 +98,7 @@ python3 -m torch.distributed.run --standalone --nproc-per-node=8 \
 
 | 现象 | 处理 |
 |---|---|
+| `Component must have homogeneous original residency; got cpu, cuda:N`，发生在首次 DiT forward | 确认新 pipeline 的实际加载路径/SHA、外层组件激活和冷态测试证据；不放宽 mixed/active-FSDP 保护，不在旧 blocked worker 上重试。 |
 | HSDP 实际 Torch 内部结构与已审核的实现不同 | 保留 `parent-source/`，停止构建/启用，重新审查；不能通过升级或跳过检查掩盖差异。 |
 | GPU 卸载后没有明显显存下降 | 检查通信缓存、未释放的全量参数及 CUDA allocator，区分 allocated/reserved；不代表 CPU/mock 成功即有收益。 |
 | CPU 内存峰值或 pinned memory 超额 | 用八卡真实峰值校准 Pod 内存，预留转换/搬运瞬时副本和文本编码内存；不要把 GPU 显存削减视为总内存下降。 |
@@ -103,4 +108,4 @@ python3 -m torch.distributed.run --standalone --nproc-per-node=8 \
 | `uv` 无权限写入缓存 | 本镜像不重装包；检查验证工具是否仍使用无缓存或可写的临时目录，不能更改生产缓存权限来掩盖检查问题。 |
 | 新源文件通过本地检查，但模型路径仍失败 | 本地检查不覆盖 CUDA/FSDP 状态与媒体结果，保留完整首错日志和所有 rank 状态，按阶段拒绝继续。 |
 
-证据基础：用户交接包 `Ref2VA8_HSDP_Offload_Failure_20261027.zip` 及固定父镜像发布 artifact。交接包中的 GPU 失败是已观察事实；候选补丁的 GPU 有效性必须由上述新实验验证。
+证据基础：2026-10-27 原存储迁移交接与固定 C14 父镜像发布 artifact；2026-10-28 的 `C02-MIXED-RESIDENCY-20261028.md`、失败 ZIP 与用户 `dit-entry-20261028` 候选。两次失败属于不同生命周期位置；本次候选的 GPU 有效性必须由上述新实验验证。

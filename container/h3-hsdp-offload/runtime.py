@@ -19,6 +19,7 @@ PARENT = "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:8736507
 PARENT_COMMIT = "0b11a41b083facf74d3387696a72893d0d3e40e1"
 TARGET = "vllm_omni/diffusion/offloader/sequential_backend.py"
 HELPER = "vllm_omni/diffusion/offloader/hsdp_migration.py"
+PIPELINE = "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py"
 
 
 def read(path):
@@ -73,10 +74,13 @@ def source_expected():
     patch = read(HERE / "source-patches.lock.json")
     if expected.get(TARGET) != patch["before_sha256"] or HELPER in expected:
         raise ValueError("Patch must extend exact successful C14 sources")
+    if patch["pipeline"]["target"] != PIPELINE or expected.get(PIPELINE) != patch["pipeline"]["before_sha256"]:
+        raise ValueError("H3 pipeline patch must extend the original parent source")
     if digest((HERE / "hsdp_migration.py").read_bytes()) != patch["helper_sha256"]:
         raise ValueError("Helper bytes changed")
     expected[TARGET] = patch["after_sha256"]
     expected[HELPER] = patch["helper_sha256"]
+    expected[PIPELINE] = patch["pipeline"]["after_sha256"]
     return expected
 
 
@@ -91,6 +95,8 @@ def verify_installed():
     receipt = read(INFO / "application.json")
     if receipt.get("status") != "PASS" or digest(record.read_bytes()) != receipt["omni_record_after_sha256"]:
         raise ValueError("HSDP application receipt/RECORD differs")
+    if receipt.get("changed_sources") != [TARGET, PIPELINE] or receipt.get("added_sources") != [HELPER]:
+        raise ValueError("Application receipt is missing the exact migration and DiT entry changes")
     if digest((INFO / "omni-RECORD.before.csv").read_bytes()) != receipt["omni_record_before_sha256"]:
         raise ValueError("Parent RECORD evidence changed")
     _, dingo_root = lite.installed_root("ai-dingo")
@@ -99,7 +105,8 @@ def verify_installed():
         raise ValueError("Inherited Dingo build identity changed")
     return {"status": "PASS", "parent_image": PARENT, "package_file_count": len(actual),
             "source_sha256": actual, "source_manifest_sha256": digest(json.dumps(actual, sort_keys=True, separators=(",", ":")).encode()),
-            "changed_sources": [TARGET], "added_sources": [HELPER], "gateway_commit": c14.GATEWAY,
+            "changed_sources": [TARGET, PIPELINE], "added_sources": [HELPER], "gateway_commit": c14.GATEWAY,
+            "dit_entry_status": "PASS",
             "rmsnorm_preserved_sha256": actual[c14.NADIT]}
 
 
@@ -130,8 +137,9 @@ def apply(output):
     native = verify()
     snapshot = snapshot_environment()
     dist, root = lite.installed_root("vllm-omni")
-    from source_patches import locked_changes
+    from source_patches import locked_changes, locked_pipeline_change
     relative, before, after, helper = locked_changes(root)
+    pipeline_relative, pipeline_before, pipeline_after = locked_pipeline_change(root)
     source_expected()
     compile(helper, HELPER, "exec")
     if (root / HELPER).exists():
@@ -139,6 +147,7 @@ def apply(output):
     record = lite.distribution_record(dist)
     record_before = record.read_bytes()
     record_after = lite.update_record(record_before, relative, before, after)
+    record_after = lite.update_record(record_after, pipeline_relative, pipeline_before, pipeline_after)
     record_after = c14.add_record(lite, record_after, HELPER, helper)
     output.mkdir()
     dump(output / "parent-snapshot.json", snapshot)
@@ -146,16 +155,18 @@ def apply(output):
     dump(output / "torch-contract.json", native)
     archive_parent(output, root)
     (output / "omni-RECORD.before.csv").write_bytes(record_before)
-    lite.atomic_write(lite.safe_file(root, relative), after)
-    for cached in (root / relative).parent.joinpath("__pycache__").glob("sequential_backend.*.pyc"):
-        cached.unlink()
+    for name, body in ((relative, after), (pipeline_relative, pipeline_after)):
+        lite.atomic_write(lite.safe_file(root, name), body)
+        for cached in (root / name).parent.joinpath("__pycache__").glob(Path(name).stem + ".*.pyc"):
+            cached.unlink()
     with (root / HELPER).open("xb") as stream:
         stream.write(helper)
     (root / HELPER).chmod(0o644)
     lite.atomic_write(record, record_after)
     receipt = {"schema": "h3-hsdp-offload-application/1", "status": "PASS", "parent_image": PARENT,
         "source_commit": os.environ["H3_HSDP_SOURCE_COMMIT"], "omni_record_before_sha256": digest(record_before),
-        "omni_record_after_sha256": digest(record_after), "changed_sources": [relative], "added_sources": [HELPER],
+        "omni_record_after_sha256": digest(record_after), "changed_sources": [relative, pipeline_relative], "added_sources": [HELPER],
+        "dit_entry_status": "PASS",
         "gpu_validation_status": "NOT_RUN"}
     dump(output / "application.json", receipt)
     dump(output / "source-verification.json", verify_installed())
@@ -175,7 +186,7 @@ def validate(output):
     from torch_contract import verify
     dump(output / "torch-contract.json", verify())
     _, root = lite.installed_root("vllm-omni")
-    for name in (TARGET, HELPER):
+    for name in (TARGET, HELPER, PIPELINE):
         module = importlib.import_module(name[:-3].replace("/", "."))
         if Path(module.__file__).resolve() != (root / name).resolve():
             raise ValueError("Patched installed module is shadowed: " + name)
@@ -206,6 +217,7 @@ def validate(output):
     result = {"schema": "h3-hsdp-offload-runtime/1", "status": "PASS_CPU_ONLY", "euid": 1000,
         "parent_image": PARENT, "source_commit": os.environ["H3_HSDP_SOURCE_COMMIT"], "gpu_validation_status": "NOT_RUN",
         "source_manifest_sha256": proof["source_manifest_sha256"], "retained_packages_unchanged": True,
+        "dit_entry_status": "PASS",
         "scope": "Installed imports/native method identity/CPU regressions; real HSDP roundtrip and H3 media NOT_RUN"}
     dump(output / "runtime-validation.json", result)
     return result

@@ -7,14 +7,18 @@ CPU-only execution and fewer than eight ranks are failures, never skips.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import os
 from pathlib import Path
 import sys
 import traceback
+from types import FunctionType, MethodType, SimpleNamespace
+from unittest import mock
 import uuid
 
 
@@ -45,6 +49,46 @@ def slots(root):
             for name, tensor in collection.items():
                 if tensor is not None:
                     yield (kind, f"{path}.{name}".lstrip(".")), tensor
+
+
+def bind_installed_diffuse(pipeline_type, shell, denoise_loop):
+    """Use installed H3 control flow with a synthetic numerical workload only.
+
+    Copy the function globals instead of mutating the imported model module.
+    Component activation, task selection and DLO contexts remain the actual
+    installed methods. This deliberately does not exercise H3 denoise maths.
+    """
+    original = inspect.unwrap(pipeline_type.diffuse)
+    if "minimax_h3_denoise_loop" not in original.__globals__:
+        raise RuntimeError("Unexpected installed H3 diffuse globals")
+    namespace = {**original.__globals__, "minimax_h3_denoise_loop": denoise_loop}
+    copied = FunctionType(original.__code__, namespace, original.__name__,
+                          original.__defaults__, original.__closure__)
+    copied.__kwdefaults__ = original.__kwdefaults__
+    for name in ("_component_on_device", "_transformer_for_task", "_resident_dit_layers_on_device"):
+        setattr(shell, name, MethodType(getattr(pipeline_type, name), shell))
+    return MethodType(copied, shell)
+
+
+def run_with_vllm_config(args, report):
+    """Provide the same external-launcher context as the validated Pod wrapper."""
+    import torch
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+    if int(os.environ.get("WORLD_SIZE", "-1")) != 8 or not 0 <= local_rank < 8:
+        raise RuntimeError("Context launcher requires eight torchrun CUDA ranks")
+    if not torch.cuda.is_available() or torch.cuda.device_count() != 8:
+        raise RuntimeError("Eight visible CUDA devices are required")
+    torch.cuda.set_device(local_rank)
+    from vllm.config import ParallelConfig, VllmConfig, get_current_vllm_config, set_current_vllm_config
+    config = VllmConfig(parallel_config=ParallelConfig(
+        tensor_parallel_size=8, distributed_executor_backend="external_launcher"))
+    if config.model_config is not None:
+        raise RuntimeError("Synthetic gate must not construct a model configuration")
+    with set_current_vllm_config(config, check_compile=False):
+        if get_current_vllm_config() is not config:
+            raise RuntimeError("vLLM config context did not activate")
+        report["vllm_context"] = {"tensor_parallel_size": 8, "executor": "external_launcher", "model_config": None}
+        run(args, report)
 
 
 def run(args, report):
@@ -360,12 +404,204 @@ def run(args, report):
         phase(f"cycle-{cycle}-resident-forwards-reshard-and-offload", denoising)
 
     phase("remove-hooks", lambda: backend.remove_sequential_offload([model, encoder]))
+
+    def cold_installed_pipeline_entry():
+        from vllm_omni.diffusion.models.minimax_h3 import pipeline_minimax_h3 as h3
+
+        # These objects are independent of the already-warm migration fixture.
+        # Equal construction seeds give equal weights without warming the cold
+        # candidate or ever calling its forward to obtain a reference result.
+        def fresh_model():
+            torch.manual_seed(20261028)
+            torch.cuda.manual_seed_all(20261028)
+            value = Model().eval().requires_grad_(False)
+            for block in value.blocks:
+                fully_shard(block, mesh=mesh, reshard_after_forward=True, mp_policy=policy)
+            fully_shard(value, mesh=mesh, reshard_after_forward=True, mp_policy=policy,
+                        ignored_params={value.ignored_scale})
+            return value
+
+        reference = fresh_model()
+        cold = fresh_model()
+        cold_units = [unit for _, unit in module_graph(cold) if isinstance(unit, FSDPModule)]
+        if len(cold_units) != 3:
+            raise AssertionError("Cold fixture requires root and two child FSDP units")
+        reference_units = [unit for _, unit in module_graph(reference) if isinstance(unit, FSDPModule)]
+        with torch.no_grad():
+            independent_reference = reference(inputs).detach().cpu().clone()
+        for unit in reference_units:
+            unit.reshard()
+        # Named-module traversal deduplicates this cycle during first FSDP lazy
+        # init. No .train(), .to(), or warm forward is performed on cold after it.
+        cold.cache_backref = nn.Module()
+        cold.cache_backref.transformer = cold
+        cold_encoder = nn.Linear(width, width, bias=False, device=device,
+                                 dtype=torch.bfloat16).eval().requires_grad_(False)
+        cold_encoder.weight = ModelWeightParameter(data=cold_encoder.weight.detach(), input_dim=1, output_dim=0,
+                                                   weight_loader=fixture_weight_loader)
+        cold_encoder.weight.requires_grad_(False)
+        cold_encoder.weight.hsdp_test_marker = {"component": "cold-encoder", "rank": rank}
+        cold_encoder.register_parameter("weight_alias", cold_encoder.weight)
+        if cold_encoder.weight.tp_size != 8 or cold_encoder.weight.tp_rank != rank:
+            raise AssertionError("Cold encoder must retain the actual vLLM TP8 parameter context")
+        with torch.no_grad():
+            cold_encoder_reference = cold_encoder(inputs).detach().cpu().clone()
+        expected_cold, expected_cold_encoder = capture(cold), capture(cold_encoder)
+
+        def assert_cold():
+            if any(unit._get_fsdp_state()._is_root is not None for unit in cold_units):
+                raise AssertionError("Candidate was warmed before initial CPU parking/outer activation")
+
+        def backing_addresses():
+            return {key: (str(local(value).device), local(value).untyped_storage().data_ptr())
+                    for key, value in slots(cold)}
+
+        def residency_metadata(component):
+            # Bounded, read-only metadata if native pre-forward still fails.
+            samples = []
+            for (kind, name), value in slots(component):
+                samples.append({"kind": kind, "name": name, "shape": list(value.shape),
+                                "dtype": str(value.dtype), "device": str(value.device),
+                                "local_device": str(local(value).device)})
+                if len(samples) == 12:
+                    break
+            groups = []
+            for name, unit in module_graph(component):
+                if isinstance(unit, FSDPModule):
+                    state = unit._get_fsdp_state()
+                    groups.extend({"module": name, "is_root": state._is_root,
+                                   "training_state": str(group._training_state),
+                                   "is_sharded": group.is_sharded,
+                                   "pending_all_gather": group._all_gather_result is not None}
+                                  for group in state._fsdp_param_groups)
+            return {"tensor_sample_limit": 12, "tensors": samples, "groups": groups[:8]}
+
+        moves, steps, refreshes = [], [], []
+        current_cycle = -1
+        original_move = backend.SequentialOffloadHook._move_params
+
+        def observed_move(component, target, **kwargs):
+            source_devices = sorted({str(local(value).device) for _, value in slots(component)})
+            try:
+                changed = original_move(component, target, **kwargs)
+            except Exception:
+                cold_report["migration_failure"] = residency_metadata(component)
+                raise
+            if changed:
+                moves.append({"cycle": current_cycle,
+                              "component": "dit" if component is cold else "encoder",
+                              "source_devices": source_devices, "target_device": str(target)})
+            return changed
+
+        @contextmanager
+        def progress(*, total):
+            if total != 50:
+                raise AssertionError("Cold entry must cover the entire 50-step component scope")
+            progress_steps = []
+            yield SimpleNamespace(update=lambda: progress_steps.append(1))
+            if len(progress_steps) != 50:
+                raise AssertionError("Installed H3 progress callback did not span all synthetic forwards")
+
+        def build_inputs(**kwargs):
+            return {"branch": None, "sampler": kwargs["sampler"], "video_rows": inputs, "audio_rows": inputs,
+                    "cond_anchor": None, "audio_anchor": None, "sigmas_video": list(range(51)),
+                    "sigmas_audio": list(range(51)), "video_edit": None, "audio_edit": None}
+
+        def synthetic_denoise(**kwargs):
+            if kwargs["model"] is not cold:
+                raise AssertionError("Installed task selection did not choose the Ref2VA transformer")
+            if current_cycle == 0:
+                assert_cold()  # outer load must not substitute a hidden warmup
+            verify(cold, expected_cold, device)
+            verify(cold_encoder, expected_cold_encoder, cpu)
+            addresses = backing_addresses()
+            move_count_at_entry = len(moves)
+            for step in range(len(kwargs["sigmas_video"]) - 1):
+                # Actual root/child FSDP pre-forward and real Omni inner hook
+                # run here. Their component loads must now be genuine no-ops.
+                try:
+                    with torch.no_grad():
+                        actual = cold(inputs).detach().cpu().clone()
+                except Exception:
+                    cold_report["forward_failure"] = residency_metadata(cold)
+                    raise
+                for unit in cold_units:
+                    unit.reshard()
+                torch.testing.assert_close(actual, independent_reference, rtol=0, atol=0)
+                if len(moves) != move_count_at_entry or backing_addresses() != addresses:
+                    raise AssertionError("Denoising step performed component migration or replaced shard backing")
+                steps.append({"cycle": current_cycle, "step": step,
+                              "component_moves_during_forward": len(moves) - move_count_at_entry})
+                kwargs["on_step"](step, actual, actual)
+            verify(cold, expected_cold, device)
+            return actual, actual
+
+        shell = SimpleNamespace(
+            # Distinct main placeholder makes the actual Ref2VA selector and
+            # DLO enabled=False branch meaningful without loading H3 weights.
+            transformer=nn.Identity(), transformers_ref=cold, device=device,
+            _model_cpu_offload_modules=[cold, cold_encoder],
+            _build_denoise_inputs=build_inputs, progress_bar=progress,
+            _unpack_denoised_rows=lambda branch, video, audio, **kwargs: (video, audio),
+            _cache_dit_runtime=SimpleNamespace(refresh=lambda count: refreshes.append(count)))
+        diffuse = bind_installed_diffuse(h3.MiniMaxH3Pipeline, shell, synthetic_denoise)
+        actual_method = inspect.unwrap(h3.MiniMaxH3Pipeline.diffuse)
+        if Path(actual_method.__code__.co_filename).resolve() != Path(h3.__file__).resolve():
+            raise AssertionError("Diffuse code is not from the installed H3 pipeline")
+        cold_report = {"status": "RUNNING", "task": "ref2va", "cold_before_first_fsdp_forward": True,
+                       "pipeline_path": str(Path(h3.__file__).resolve()),
+                       "pipeline_sha256": hashlib.sha256(Path(h3.__file__).read_bytes()).hexdigest(),
+                       "diffuse_first_line": actual_method.__code__.co_firstlineno,
+                       "component_moves": moves, "steps": steps,
+                       "scope": "Installed H3 diffuse/component contexts with real synthetic FSDP and TP8; synthetic inputs/denoise and Cache-DiT refresh stub"}
+        report["cold_pipeline_entry"] = cold_report
+        assert_cold()
+        with mock.patch.object(backend.SequentialOffloadHook, "_move_params", staticmethod(observed_move)):
+            backend.apply_sequential_offload([cold], [cold_encoder], device, pin_memory=True,
+                                            use_hsdp=True, offload_initial_dits=True)
+            assert_cold()
+            verify(cold, expected_cold, cpu)
+            # Only positive cold execution lives in this instance. The old
+            # failing direct-forward path belongs to a separate diagnostic run.
+            for cycle in range(args.cycles):
+                current_cycle = cycle
+                with torch.no_grad():
+                    torch.testing.assert_close(cold_encoder(inputs).detach().cpu(), cold_encoder_reference,
+                                               rtol=0, atol=0)
+                verify(cold, expected_cold, cpu)
+                result, _ = diffuse(task="ref2va", text_embeddings=None, text_tags=None, seed=0,
+                                    latent_t=1, latent_h=2, latent_w=2, audio_t=1, num_frames=5,
+                                    num_steps=50, video_shift=12, audio_shift=3, base_schedule=None,
+                                    visual_condition=None, visual_condition_shape=None,
+                                    audio_condition=None, ref_audio_t=None)
+                torch.testing.assert_close(result, independent_reference, rtol=0, atol=0)
+                verify(cold, expected_cold, cpu)
+                verify(cold_encoder, expected_cold_encoder, cpu)
+                h2d = [event for event in moves if event["cycle"] == cycle and event["component"] == "dit"
+                       and event["target_device"] == str(device)]
+                d2h = [event for event in moves if event["cycle"] == cycle and event["component"] == "dit"
+                       and event["target_device"] == "cpu"]
+                if len(h2d) != 1 or len(d2h) != 1 or h2d[0]["source_devices"] != ["cpu"]:
+                    raise AssertionError("Each installed diffuse scope must load/release DiT exactly once")
+                if cold.cache_backref.transformer is not cold:
+                    raise AssertionError("Cold Cache-DiT-style cycle was altered")
+            backend.remove_sequential_offload([cold, cold_encoder])
+        if refreshes != [50] * args.cycles or len(steps) != 50 * args.cycles:
+            raise AssertionError("Incomplete cold-entry schedule")
+        cold_report.update(status="PASS_SYNTHETIC_INSTALLED_DIFFUSE_ENTRY_ONLY",
+                           cycles=args.cycles, forwards=len(steps), step_component_h2d_transitions=0,
+                           h2d_counter_scope="Real component mover changed=True and stable shard backing; not a hardware DMA profiler",
+                           negative_direct_forward="NOT_RUN_IN_POSITIVE_WORKER")
+
+    phase("cold-installed-h3-diffuse-before-native-fsdp-prehook", cold_installed_pipeline_entry)
     from vllm.distributed.parallel_state import destroy_model_parallel
     phase("destroy-vllm-fixture-model-parallel", destroy_model_parallel)
     report.update(status="PASS_SYNTHETIC_8GPU_HSDP_ROUNDTRIP_ONLY", mesh=[1, 8],
                   nested_fsdp_units=len(units), parameter_buffer_slots=len(expected_model),
                   forward_comparison="bitwise identical to resident BF16 reference",
                   boundaries=["No full H3 model or media generation", "No production peak-memory claim",
+                              "Cold entry uses actual H3 control flow with synthetic denoise inputs and Cache-DiT refresh",
+                              "Old direct-forward failure is not run in the positive worker",
                               "No video-gateway service acceptance", "No deployment mutation"])
     save(destination, report)
     completed = [None] * world
@@ -391,7 +627,7 @@ def main():
         parser.error("At least three complete offload cycles are required")
     report = {"status": "RUNNING", "scope": "Real synthetic FSDP2 GPU gate, not H3 media acceptance"}
     try:
-        run(args, report)
+        run_with_vllm_config(args, report)
     except Exception:
         report.update(status="FAIL", traceback=traceback.format_exc())
         directory = Path(report.get("evidence_directory", args.output_dir / "startup-failures"))

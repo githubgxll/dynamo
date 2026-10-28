@@ -31,6 +31,13 @@ def sha(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def validate_repair_reports(ci, root, record, commit):
+    """Use the same source-content gate for import and registry publication."""
+    ci.validate_candidate_reports(root, commit)
+    if record.get("dit_entry_status") != "PASS" or record.get("patched_source_sha256") != ci.PATCHED_SOURCE_SHA256:
+        raise ValueError("Publication does not identify the reviewed HSDP and DiT entry repair")
+
+
 def import_archive(archive):
     ops.check_seal(committed=True)
     archive = archive.resolve(strict=True)
@@ -95,8 +102,7 @@ def import_archive(archive):
     spec = importlib.util.spec_from_file_location("srnorm_ci_import", ops.ROOT / ".github/scripts/h3_hsdp_offload_ci.py")
     ci = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ci)
-    ci.validate_reports(root / "build", commit)
-    ci.validate_reports(root / "final", commit)
+    validate_repair_reports(ci, root, record, commit)
     inputs = ci.read(root / "inputs.json")
     for key, expected in {"source_commit": commit, "parent_image": lock["parent_image"],
                           "run_id": record["run_id"], "run_attempt": record["run_attempt"],
@@ -106,7 +112,8 @@ def import_archive(archive):
     verified = ci.read(root / "candidate-verified.json")
     for key, expected in {"status": "PASS_CANDIDATE_CPU_ONLY", "source_commit": commit,
                           "parent_image": lock["parent_image"], "image_id": record["image_id"],
-                          "candidate_image": inputs["candidate_image"], "gpu_validation_status": "NOT_RUN"}.items():
+                          "candidate_image": inputs["candidate_image"], "gpu_validation_status": "NOT_RUN",
+                          "dit_entry_status": "PASS", "patched_source_sha256": ci.PATCHED_SOURCE_SHA256}.items():
         if verified.get(key) != expected:
             raise ValueError("Verified candidate differs: " + key)
     inheritance = ci.read(root / "inheritance.json")
@@ -136,6 +143,7 @@ def import_archive(archive):
         if relative not in hashes or sha(root / relative) != entry["sha256"]:
             raise ValueError("Actual parent source evidence differs: " + name)
     result = {"gpu_validation_status":"NOT_RUN", "status": "PASS_IMPORTED_PUBLICATION_EVIDENCE_ONLY", "deployment_image": record["deployment_image"],
+              "dit_entry_status":"PASS", "patched_source_sha256":ci.PATCHED_SOURCE_SHA256,
               "image_tag": record["image"], "source_commit": commit, "actions_url": record["actions_url"],
               "artifact_zip": str(archive), "artifact_zip_sha256": sha(archive), "evidence_directory": str(root),
               "not_run_locally": ["registry pull", "CUDA", "H100 generation", "visual A/B"]}

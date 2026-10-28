@@ -1,12 +1,13 @@
 # 修复范围与验证边界
 
-本补丁是固定 vLLM-Omni 0.31.0rc1 / Torch 2.13.0+cu130 的组件卸载候选实现，尚未通过真实 H3 八卡验收。它修复的目标是 CPU/CUDA 存储不一致，不能提前承诺节省多少显存或提高吞吐。
+本配方保留固定 vLLM-Omni 0.31.0rc1 / Torch 2.13.0+cu130 的组件迁移补丁，并于 2026-10-28 增加 H3 DiT 前向入口修复。上一版八卡合成迁移通过，真实 C02 却在首次 DiT 前向报混合驻留；新的入口补丁尚待镜像、八卡与媒体分层验收，不能提前承诺显存收益或吞吐。
 
 ## 修改范围
 
-- 从已成功发布的 C14 轻量镜像 `87365073...` 派生。
-- 只修改安装包中的 `diffusion/offloader/sequential_backend.py`，新增 `hsdp_migration.py`；完整原文件来自成功镜像来源回执，逐文件校验 SHA256。
-- 组件选择、H3 pipeline、HSDP 包装、Cache-DiT 配置、SeedVR2/RMSNorm、video-gateway、框架与依赖版本均沿用父镜像。
+- 复用上一版 `4a5d1340…` / `18e218…` 的内容与同一构建配方，从相同 C14 固定父镜像 `87365073…` 重放原补丁，再加入 pipeline 改动。不会在已打补丁的 `18e218…` 上重复执行旧 create-once 安装。
+- 安装包仍修改 `diffusion/offloader/sequential_backend.py` 并新增 `hsdp_migration.py`；两文件与上一版分别保持 SHA256 `b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0`、`1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af`。
+- 新增 `models/minimax_h3/pipeline_minimax_h3.py::diffuse()` 外层组件上下文，最终文件 SHA256 精确为用户候选的 `9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024`。pipeline 从 unchanged 移至 changed_sources，同步安装来源、Omni RECORD、CI 与导入回执。
+- 组件选择、HSDP 包装、Cache-DiT 配置、SeedVR2/RMSNorm、video-gateway、框架与依赖版本保留；除 `diffuse()` 之外的 H3 pipeline AST 不变。
 - 原始源文件、Torch FSDP 参数管理源码、原 RECORD、改后 RECORD 摘要与所有验证结果随镜像/CI artifact 保存。旧 C14 验证器保持原样，新源码使用独立完整来源验证器。
 
 ## 为什么要改迁移生命周期
@@ -26,16 +27,26 @@ CPU 上暂存 CUDA mesh 的分片不是 CPU 推理；组件必须恢复至原执
 
 普通参数转换沿用 PyTorch 的兼容 shallow-copy 分支，DTensor 则由 PyTorch 自己走 swap 分支。转换策略只在串行迁移作用域内调整并恢复；同一个 worker 内不能同时从另一线程执行模型转换或推理。
 
+## 为什么还需要修正 DiT 入口
+
+上一版 helper 已要求空闲组件在 forward 前完整恢复；旧合成测试显式先进入 `sequential_offload_component(model)`，所以能够验证迁移。真实 H3 `diffuse()` 原来只进入管理 DLO 的 `_resident_dit_layers_on_device()`，直到 `forward` 内部 Omni hook 才请求恢复。PyTorch 的原生 FSDP pre-forward 更早运行，可能已进入 FORWARD 并将 root 参数 unshard 到 CUDA；子 block/ignored 参数仍在 CPU，helper 此时拒绝混合驻留是必要保护。
+
+新增上下文只在 `_model_cpu_offload_modules` 启用时调用 `self._component_on_device(transformer)`，使用本次任务选择的 transformer，先于原 DLO 上下文进入并包住整个去噪循环。它提前释放选中的 encoder 并恢复整个 DiT；50 步间保持 DiT 驻 GPU，退出时依已有 `offload_after_context` 处理。未启用 module offload 的 baseline/DLO 使用 `nullcontext()`；TE-only 不会因此卸载未被选中的 DiT。保留 mixed/active-FSDP/pending-all-gather 保护，绝不增加常规 `allow_mixed=True`。
+
+新增 CPU 契约使用真实方法 AST 和模拟生命周期，覆盖50步只激活一次、FL/Ref选择、baseline/DLO、TE-only、DiT-only及异常清理。测试用仓库内相对源码，不依赖移交目录的 Windows 路径；临时产物写可写临时目录，不能假设镜像 `/opt` 对 `dynamo` 可写。这些测试不运行真实 FSDP。
+
 ## 测试层次
 
 | 层次 | 能证明的内容 | 不能证明的内容 |
 |---|---|---|
 | Windows 本地 | 补丁精确性、固定来源、提交/发布脚本、语法与负向回归 | 已安装 Torch 行为、CUDA、H3 生成 |
 | Linux 镜像 CPU | 实际模块导入、Torch 方法身份、CPU 对象/别名检查、保留的依赖与六组 RMSNorm 数值回归 | 分片 CPU↔GPU 转换正确性、节省显存 |
-| `gpu_roundtrip.py` | 真正八卡 BF16 嵌套 FSDP2、至少三轮完整往返、重复 forward/reshard、所有 rank 参数/存储/数值检查 | 完整 H3、真实 Cache-DiT 状态、视频质量、生产并发 |
+| `gpu_roundtrip.py` | 真正八卡 BF16 嵌套 FSDP2；保留原 warm 迁移并新增冷态实际安装 `diffuse()` 入口；每轮50步、至少三轮往返；全部 rank 参数/存储/数值和搬运次数检查 | 完整 H3、真实 Cache-DiT 状态、视频质量、生产并发 |
 | 独立 H3 Run | 同一输入 C02 cold/warm/repeat、A 策略阶段驻留、各 rank 峰值显存/CPU 内存、可解码音视频 | 未测配置与未测负载的效果 |
 
 只有八卡合成测试通过后才执行新 H3 Run；C02 完整通过后才执行 Ref7。无卸载 baseline 也应使用同一候选镜像。旧失败 Run 和 blocked 状态原样保留。
+
+GPU 测试现在由脚本自身提供 TP8 `VllmConfig`，构造及整个测试期间保持上下文。独立冷态模型不得先跑隐藏 warmup；其组件激活发生在首次 FSDP lazy-init/forward 之前。正向 fixture 不复用负向失败后的 FSDP 状态。实际安装 `diffuse()`/组件上下文执行，但输入打包、去噪控制与 Cache-DiT refresh 是合成替身；即使该测试通过，也必须继续真实 H3+Cache-DiT 的 C02 cold/repeat 验收。
 
 ## 必须保留的限制
 

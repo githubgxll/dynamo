@@ -2,8 +2,11 @@
 """Required real-image CPU checks. HSDP/CUDA remains a separate acceptance."""
 import argparse
 import importlib
+import importlib.util
+import inspect
 import json
 from pathlib import Path
+import types
 import unittest
 from unittest import mock
 
@@ -60,6 +63,32 @@ class InstalledCPU(unittest.TestCase):
     def test_native_torch_conversion_contract(self):
         from torch_contract import verify
         self.assertEqual(verify()["status"], "PASS")
+
+    def test_actual_installed_diffuse_entry_control_flow(self):
+        # Execute the installed method, while keeping model work and migration
+        # simulated here. Real nested FSDP cold-start execution is a GPU gate.
+        module = importlib.import_module("vllm_omni.diffusion.models.minimax_h3.pipeline_minimax_h3")
+        installed = inspect.unwrap(module.MiniMaxH3Pipeline.diffuse)
+        spec = importlib.util.spec_from_file_location("_image_dit_entry_contract", HERE / "tests/test_dit_entry.py")
+        fixture_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture_module)
+        for selected in (None, {"dit", "text_encoder"}, {"text_encoder"}, {"dit"}):
+            for task, target in (("fl2va", "transformer"), ("ref2va", "transformers_ref")):
+                with self.subTest(selected=selected, task=task):
+                    fixture = fixture_module.Fixture(selected=selected)
+                    scope = dict(installed.__globals__, minimax_h3_denoise_loop=fixture.denoise)
+                    method = types.FunctionType(installed.__code__, scope, installed.__name__,
+                                                installed.__defaults__, installed.__closure__)
+                    method.__kwdefaults__ = installed.__kwdefaults__
+                    fixture.pipeline.diffuse = types.MethodType(method, fixture.pipeline)
+                    self.assertEqual(fixture.run(task), ("finished-video", "finished-audio"))
+                    self.assertEqual(fixture.events.count(("forward", target)), 50)
+                    enters = fixture.events.count(("component-enter", target))
+                    self.assertEqual(enters, int(selected is not None))
+                    if selected is not None and "dit" in selected:
+                        self.assertEqual(fixture.events.count(("move", target, "cuda:0")), 1)
+                        self.assertLess(fixture.events.index(("move", target, "cuda:0")),
+                                        fixture.events.index(("native-pre", target)))
 
     def test_actual_vllm_parameter_metadata_and_noop(self):
         from vllm.model_executor import parameter

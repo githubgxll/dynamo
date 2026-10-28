@@ -66,10 +66,14 @@ class ExactSourcePatch(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.patch.transform(self.patch.transform(self.original))
 
-    def test_h3_and_hsdp_are_original_references(self):
+    def test_unchanged_hsdp_reference_and_original_pipeline_are_retained(self):
         locked = json.loads((HERE / "source-patches.lock.json").read_text())
         for relative, sha in locked["unchanged_reference_sha256"].items():
             self.assertEqual(hashlib.sha256((HERE / "vendor/original" / relative).read_bytes()).hexdigest(), sha)
+        relative, before, after = self.patch.locked_pipeline_change(HERE / "vendor/original")
+        self.assertNotIn(relative, locked["unchanged_reference_sha256"])
+        self.assertEqual(hashlib.sha256(before).hexdigest(), locked["pipeline"]["before_sha256"])
+        self.assertEqual(hashlib.sha256(after).hexdigest(), locked["pipeline"]["after_sha256"])
 
     def test_no_install_or_external_frontend_in_dockerfile(self):
         text = (HERE / "Dockerfile").read_text()

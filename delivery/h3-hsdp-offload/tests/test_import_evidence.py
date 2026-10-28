@@ -16,8 +16,57 @@ try:
 finally:
     sys.path.pop(0)
 
+fixture_spec = importlib.util.spec_from_file_location("hsdp_ci_report_fixtures",
+    HERE.parents[1] / ".github/scripts/test_h3_hsdp_offload_ci.py")
+fixtures = importlib.util.module_from_spec(fixture_spec)
+fixture_spec.loader.exec_module(fixtures)
+ci = fixtures.ci
+
 
 class ImportEvidenceTests(unittest.TestCase):
+    def test_current_repair_reports_use_publication_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures.reports(root / "build")
+            fixtures.reports(root / "final")
+            record = {"dit_entry_status": "PASS", "patched_source_sha256": ci.PATCHED_SOURCE_SHA256}
+            importer.validate_repair_reports(ci, root, record, fixtures.COMMIT)
+
+    def test_old_runtime_reports_cannot_be_imported_as_dit_repair(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures.reports(root / "build")
+            fixtures.reports(root / "final")
+            runtime = ci.read(root / "final/runtime-validation.json")
+            del runtime["dit_entry_status"]
+            ci.dump(root / "final/runtime-validation.json", runtime)
+            record = {"dit_entry_status": "PASS", "patched_source_sha256": ci.PATCHED_SOURCE_SHA256}
+            with self.assertRaisesRegex(ValueError, "dit_entry_status"):
+                importer.validate_repair_reports(ci, root, record, fixtures.COMMIT)
+
+    def test_missing_or_wrong_publication_repair_identity_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures.reports(root / "build")
+            fixtures.reports(root / "final")
+            for record in ({}, {"dit_entry_status": "PASS"},
+                           {"dit_entry_status": "PASS", "patched_source_sha256": {ci.PIPELINE: "f" * 64}}):
+                with self.subTest(record=record), self.assertRaisesRegex(ValueError, "Publication does not identify"):
+                    importer.validate_repair_reports(ci, root, record, fixtures.COMMIT)
+
+    def test_bad_pipeline_cannot_be_imported_with_valid_receipt_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixtures.reports(root / "build")
+            fixtures.reports(root / "final")
+            for phase in ("build", "final"):
+                sources = ci.read(root / phase / "source-verification.json")["source_sha256"]
+                sources[ci.PIPELINE] = "f" * 64
+                fixtures.rewrite_manifest(root / phase, sources)
+            record = {"dit_entry_status": "PASS", "patched_source_sha256": ci.PATCHED_SOURCE_SHA256}
+            with self.assertRaisesRegex(ValueError, "Required installed repair source"):
+                importer.validate_repair_reports(ci, root, record, fixtures.COMMIT)
+
     def test_normal_relative_evidence_path_is_preserved(self):
         self.assertEqual(str(importer.safe_name("final/rmsnorm/runtime-validation.json")),
                          "final/rmsnorm/runtime-validation.json")

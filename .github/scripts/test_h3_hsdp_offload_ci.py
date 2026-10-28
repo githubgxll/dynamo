@@ -1,6 +1,8 @@
 """Exercise publication rejection paths without registry or GPU side effects."""
 import copy
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -25,11 +27,22 @@ def inventory():
     return old,{**old,"source_commit":COMMIT}
 
 def reports(root):
-    ci.dump(root/"runtime-validation.json",{"schema":"h3-hsdp-offload-runtime/1","status":"PASS_CPU_ONLY","euid":1000,"parent_image":ci.PARENT,"source_commit":COMMIT,"gpu_validation_status":"NOT_RUN","source_manifest_sha256":"e"*64,"retained_packages_unchanged":True})
-    ci.dump(root/"source-verification.json",{"status":"PASS","source_manifest_sha256":"e"*64})
+    sources={**ci.PATCHED_SOURCE_SHA256,"vllm_omni/unchanged.py":"d"*64}
+    source_hash=hashlib.sha256(json.dumps(sources,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    ci.dump(root/"runtime-validation.json",{"schema":"h3-hsdp-offload-runtime/1","status":"PASS_CPU_ONLY","euid":1000,"parent_image":ci.PARENT,"source_commit":COMMIT,"gpu_validation_status":"NOT_RUN","source_manifest_sha256":source_hash,"retained_packages_unchanged":True,"dit_entry_status":"PASS"})
+    ci.dump(root/"source-verification.json",{"status":"PASS","source_manifest_sha256":source_hash,
+        "source_sha256":sources,"changed_sources":[ci.BACKEND,ci.PIPELINE],"added_sources":[ci.HELPER]})
     ci.dump(root/"torch-contract.json",{"status":"PASS"})
     ci.dump(root/"preservation.json",{"status":"PASS"})
     ci.dump(root/"regression.json",{"status":"PASS","tests_run":3,"failures":0,"errors":0,"skipped":0})
+
+def rewrite_manifest(root, sources):
+    proof=ci.read(root/"source-verification.json")
+    proof["source_sha256"]=sources
+    proof["source_manifest_sha256"]=hashlib.sha256(json.dumps(sources,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    ci.dump(root/"source-verification.json",proof)
+    runtime=ci.read(root/"runtime-validation.json"); runtime["source_manifest_sha256"]=proof["source_manifest_sha256"]
+    ci.dump(root/"runtime-validation.json",runtime)
 
 class Gates(unittest.TestCase):
     def test_exact_candidate_config_and_inventory_pass(self):
@@ -98,6 +111,53 @@ class Gates(unittest.TestCase):
             root=Path(temp); reports(root)
             ci.dump(root/"source-verification.json",{"status":"PASS","source_manifest_sha256":"f"*64})
             with self.assertRaises(ValueError): ci.validate_reports(root,COMMIT)
+    def test_old_hsdp_only_runtime_report_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); reports(root)
+            runtime=ci.read(root/"runtime-validation.json"); del runtime["dit_entry_status"]
+            ci.dump(root/"runtime-validation.json",runtime)
+            with self.assertRaisesRegex(ValueError,"dit_entry_status"): ci.validate_reports(root,COMMIT)
+    def test_old_delta_or_missing_helper_declaration_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for key,value in (("changed_sources",[ci.BACKEND]),("changed_sources",[ci.BACKEND,ci.PIPELINE,ci.PIPELINE]),("added_sources",[])):
+                reports(root); proof=ci.read(root/"source-verification.json"); proof[key]=value
+                ci.dump(root/"source-verification.json",proof)
+                with self.subTest(key=key,value=value),self.assertRaisesRegex(ValueError,"Source delta"):
+                    ci.validate_reports(root,COMMIT)
+    def test_all_three_required_source_hashes_are_verified(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for name in ci.PATCHED_SOURCE_SHA256:
+                reports(root); sources=ci.read(root/"source-verification.json")["source_sha256"]
+                sources[name]="f"*64; rewrite_manifest(root,sources)
+                with self.subTest(name=name),self.assertRaisesRegex(ValueError,"Required installed repair source"):
+                    ci.validate_reports(root,COMMIT)
+    def test_missing_pipeline_source_is_rejected_even_with_new_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); reports(root); sources=ci.read(root/"source-verification.json")["source_sha256"]
+            del sources[ci.PIPELINE]; rewrite_manifest(root,sources)
+            with self.assertRaisesRegex(ValueError,"Required installed repair source"): ci.validate_reports(root,COMMIT)
+    def test_forged_source_manifest_hash_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); reports(root)
+            proof=ci.read(root/"source-verification.json"); proof["source_sha256"]["vllm_omni/unchanged.py"]="f"*64
+            ci.dump(root/"source-verification.json",proof)
+            with self.assertRaisesRegex(ValueError,"digest differs from its contents"): ci.validate_reports(root,COMMIT)
+    def test_build_and_final_sources_must_agree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); reports(root/"build"); reports(root/"final")
+            ci.validate_candidate_reports(root,COMMIT)
+            sources=ci.read(root/"final/source-verification.json")["source_sha256"]
+            sources["vllm_omni/unchanged.py"]="f"*64; rewrite_manifest(root/"final",sources)
+            with self.assertRaisesRegex(ValueError,"Final container sources differ"): ci.validate_candidate_reports(root,COMMIT)
+    def test_legacy_candidate_cannot_reach_registry_publication(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(ci,"checked_inputs",return_value={"source_commit":COMMIT,"candidate_image":"candidate"}),patch.object(ci,"docker") as docker:
+            root=Path(temp)
+            ci.dump(root/"candidate-verified.json",{"status":"PASS_CANDIDATE_CPU_ONLY","source_commit":COMMIT,
+                "candidate_image":"candidate","parent_image":ci.PARENT,"gpu_validation_status":"NOT_RUN"})
+            with self.assertRaisesRegex(ValueError,"has not passed CPU validation"): ci.publish(ENV,root)
+            docker.assert_not_called()
     def test_publication_digest_is_not_archive_hash(self):
         digest="sha256:"+"c"*64
         self.assertEqual(ci.publication_digest("tag: digest: "+digest+" size: 123\n"),digest)

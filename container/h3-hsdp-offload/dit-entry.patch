@@ -1,0 +1,20 @@
+--- a/vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py
++++ b/vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py
+@@ -2108,7 +2108,16 @@
+         cache_runtime = getattr(self, "_cache_dit_runtime", None)
+         if cache_runtime is not None:
+             cache_runtime.refresh(len(inputs["sigmas_video"]) - 1)
+-        with self._resident_dit_layers_on_device(enabled=transformer is self.transformer):
++        # Restore the whole component before native FSDP forward-pre hooks run.
++        component_context = (
++            self._component_on_device(transformer)
++            if getattr(self, "_model_cpu_offload_modules", None)
++            else nullcontext()
++        )
++        with (
++            component_context,
++            self._resident_dit_layers_on_device(enabled=transformer is self.transformer),
++        ):
+             with self.progress_bar(total=len(inputs["sigmas_video"]) - 1) as progress:
+                 video_rows, audio_rows = minimax_h3_denoise_loop(
+                     sampler=inputs["sampler"],

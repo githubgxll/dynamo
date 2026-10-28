@@ -19,6 +19,16 @@ PARENT_COMMIT = "0b11a41b083facf74d3387696a72893d0d3e40e1"
 PARENT_IMAGE_ID = "sha256:c1298a2a8403e20b689bb73c380d0f9f74fec8cc698bf9461a0721361af87e99"
 GATEWAY = "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b"
 BUILD_INFO = "/opt/h3-hsdp-offload/build-info"
+BACKEND = "vllm_omni/diffusion/offloader/sequential_backend.py"
+HELPER = "vllm_omni/diffusion/offloader/hsdp_migration.py"
+PIPELINE = "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py"
+# The accepted candidate combines the previous migration fix with the DiT
+# entry fix. An old HSDP-only PASS must not authorize this publication.
+PATCHED_SOURCE_SHA256 = {
+    BACKEND: "b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0",
+    HELPER: "1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af",
+    PIPELINE: "9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024",
+}
 spec = importlib.util.spec_from_file_location("_hsdp_parent_ci", ROOT / ".github/scripts/seedvr2_c14_ci.py")
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
@@ -120,7 +130,7 @@ def validate_reports(directory, commit):
     report = read(directory / "runtime-validation.json")
     expected = {"schema":"h3-hsdp-offload-runtime/1", "status":"PASS_CPU_ONLY", "euid":1000,
         "parent_image":PARENT, "source_commit":commit, "gpu_validation_status":"NOT_RUN",
-        "retained_packages_unchanged":True}
+        "retained_packages_unchanged":True, "dit_entry_status":"PASS"}
     for key, value in expected.items():
         if report.get(key) != value:
             raise ValueError("Runtime gate failed: " + key)
@@ -132,10 +142,30 @@ def validate_reports(directory, commit):
     source_hash = source.get("source_manifest_sha256", "")
     if not re.fullmatch(r"[0-9a-f]{64}", source_hash) or report.get("source_manifest_sha256") != source_hash:
         raise ValueError("Runtime receipt not bound to installed source manifest")
+    installed = source.get("source_sha256")
+    if not isinstance(installed, dict) or not installed or any(
+            not isinstance(name, str) or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+            for name, value in installed.items()):
+        raise ValueError("Missing complete installed source manifest")
+    actual_hash = hashlib.sha256(json.dumps(installed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if actual_hash != source_hash:
+        raise ValueError("Installed source manifest digest differs from its contents")
+    if source.get("changed_sources") != [BACKEND, PIPELINE] or source.get("added_sources") != [HELPER]:
+        raise ValueError("Source delta does not include the exact HSDP and DiT entry repair")
+    for name, expected_hash in PATCHED_SOURCE_SHA256.items():
+        if installed.get(name) != expected_hash:
+            raise ValueError("Required installed repair source differs: " + name)
     regression = read(directory / "regression.json")
     if type(regression.get("tests_run")) is not int or regression["tests_run"] < 1 or any(regression.get(key) != 0 for key in ("failures","errors","skipped")):
         raise ValueError("Required CPU regression tests did not all execute")
     return report
+
+def validate_candidate_reports(directory, commit):
+    build = validate_reports(directory / "build", commit)
+    final = validate_reports(directory / "final", commit)
+    if build["source_manifest_sha256"] != final["source_manifest_sha256"]:
+        raise ValueError("Final container sources differ from the built candidate")
+    return final
 
 def candidate_tag(commit, env):
     return "h3-hsdp-offload-ci:" + commit[:12] + "-" + env["GITHUB_RUN_ID"] + "-" + env["GITHUB_RUN_ATTEMPT"]
@@ -238,21 +268,23 @@ def verify_candidate(environ, directory):
     copy_from_image(candidate["Id"],BUILD_INFO,directory / "build")
     validate_reports(directory / "build",commit)
     run_final_validation(candidate["Id"],directory)
-    validate_reports(directory / "final",commit)
+    validate_candidate_reports(directory,commit)
     dump(directory / "candidate-verified.json", {"status":"PASS_CANDIDATE_CPU_ONLY","image_id":candidate["Id"],
-        "source_commit":commit,"candidate_image":inputs["candidate_image"],"parent_image":PARENT,"gpu_validation_status":"NOT_RUN"})
+        "source_commit":commit,"candidate_image":inputs["candidate_image"],"parent_image":PARENT,"gpu_validation_status":"NOT_RUN",
+        "dit_entry_status":"PASS", "patched_source_sha256":PATCHED_SOURCE_SHA256})
 
 def publish(environ, directory, output=None):
     inputs = checked_inputs(environ,directory)
     verified = read(directory / "candidate-verified.json")
     commit = inputs["source_commit"]
-    expected = {"status":"PASS_CANDIDATE_CPU_ONLY","source_commit":commit,"candidate_image":inputs["candidate_image"],"parent_image":PARENT,"gpu_validation_status":"NOT_RUN"}
+    expected = {"status":"PASS_CANDIDATE_CPU_ONLY","source_commit":commit,"candidate_image":inputs["candidate_image"],"parent_image":PARENT,"gpu_validation_status":"NOT_RUN",
+        "dit_entry_status":"PASS", "patched_source_sha256":PATCHED_SOURCE_SHA256}
     if any(verified.get(k) != v for k,v in expected.items()):
         raise ValueError("Candidate has not passed CPU validation")
     image_id = verified["image_id"]
     if inspect(inputs["candidate_image"])["Id"] != image_id:
         raise ValueError("Candidate tag changed after verification")
-    for phase in ("build","final"): validate_reports(directory / phase,commit)
+    validate_candidate_reports(directory,commit)
     docker("tag",image_id,inputs["final_image"])
     docker("push",inputs["final_image"],log=directory / "registry-push.txt")
     digest = publication_digest((directory / "registry-push.txt").read_text(encoding="utf-8"))
@@ -262,6 +294,7 @@ def publish(environ, directory, output=None):
     if pulled["Id"] != image_id: raise ValueError("Registry image differs from tested image")
     compare_images(inspect(PARENT),pulled,commit)
     record = {"schema":"h3-hsdp-offload-publication/1","status":"PASS_PUBLISHED_AND_PULLED_CPU_VALIDATED",
+        "dit_entry_status":"PASS", "patched_source_sha256":PATCHED_SOURCE_SHA256,
         "gpu_validation_status":"NOT_RUN", "source_commit":commit,"branch":BRANCH,"image":inputs["final_image"],
         "image_id":image_id,"deployment_image":reference,"digest":digest,"parent_image":PARENT,
         "parent_source_commit":PARENT_COMMIT,"gateway_commit":GATEWAY,
