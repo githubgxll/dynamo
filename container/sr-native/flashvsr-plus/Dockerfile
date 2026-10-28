@@ -1,5 +1,5 @@
 # Built-in BuildKit frontend: avoid an extra docker/dockerfile registry fetch.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=nvidia/cuda@sha256:cb239b67719dfa32ec6b525b54c1b78559bebd51a47249dd702f6c5429372154
 FROM ${BASE_IMAGE} AS runtime
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=8 \
@@ -7,7 +7,8 @@ ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_DEFAULT_T
     VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:${PATH} \
     HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg \
     SR_NATIVE_BACKEND=flashvsr-plus SR_NATIVE_UPSTREAM=b548a2cc2c929d3d4676f2973abe27876ec4dee7
-RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --no-install-recommends \
+COPY container/sr-native/shared/install_system_packages.sh /opt/sr-native/shared/
+RUN bash /opt/sr-native/shared/install_system_packages.sh \
       python3.10 python3.10-venv python3.10-dev build-essential git ca-certificates ffmpeg \
       libglib2.0-0 libgomp1 && rm -rf /var/lib/apt/lists/* && \
     python3.10 -m venv /opt/venv && useradd --uid 1000 --create-home --shell /bin/bash sr-native

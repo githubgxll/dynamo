@@ -1,5 +1,5 @@
 # Separate official-reference stack. CUDA extensions compile without a GPU.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=nvidia/cuda@sha256:cc55d151af1e8e083f3210af753a5cfbcbc5455421531eb0459887026bb4699f
 FROM ${BASE_IMAGE} AS runtime
 ARG BASE_IMAGE
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -8,7 +8,8 @@ ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PATH=/opt/venv/bin:$PATH CUDA_HOME=/usr/local/cuda \
     TORCH_CUDA_ARCH_LIST=9.0 MAX_JOBS=4 \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 SR_NATIVE_BACKEND=seedvr2
-RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+COPY container/sr-native/shared/install_system_packages.sh /opt/sr-native/shared/
+RUN bash /opt/sr-native/shared/install_system_packages.sh \
       python3.10 python3.10-dev python3.10-venv build-essential git ca-certificates \
       ffmpeg libgl1 libglib2.0-0 && \
     python3.10 -m venv /opt/venv && rm -rf /var/lib/apt/lists/*

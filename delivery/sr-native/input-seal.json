@@ -23,7 +23,7 @@
     },
     "container/sr-native/flashvsr-plus/Dockerfile": {
       "mode": "100644",
-      "blob": "5855df8cd3d5849d663f75799e6e57f24c4a4463",
+      "blob": "5c966eae74e56d8324c93abc81e14a780842d7fa",
       "status": "A"
     },
     "container/sr-native/flashvsr-plus/README.md": {
@@ -78,7 +78,7 @@
     },
     "container/sr-native/seedvr2/Dockerfile": {
       "mode": "100644",
-      "blob": "ddb009bf6e02093dd01e05ade54d9252b2f55d65",
+      "blob": "fdc3b15efc8746f7e386d8eed5374143e4fbb6e4",
       "status": "A"
     },
     "container/sr-native/seedvr2/README.md": {
@@ -156,9 +156,19 @@
       "blob": "9771fa42661e89c9f4fd106830156f1fa8037c80",
       "status": "A"
     },
+    "container/sr-native/shared/install_system_packages.sh": {
+      "mode": "100644",
+      "blob": "ac1d7fd8a599499b17b64e23739818d9d0fa43bd",
+      "status": "A"
+    },
     "container/sr-native/shared/tests/test_downloads.py": {
       "mode": "100644",
       "blob": "66354639235cfbe78f943120281b605491375fd0",
+      "status": "A"
+    },
+    "container/sr-native/shared/tests/test_system_packages.py": {
+      "mode": "100644",
+      "blob": "dd840ea0ef93a3040f421b0cf14e85300739d057",
       "status": "A"
     },
     "delivery/sr-native/01-check.cmd": {
@@ -188,12 +198,12 @@
     },
     "delivery/sr-native/README.md": {
       "mode": "100644",
-      "blob": "01554830e76f18bd7d7f1370832c1682ce8258c2",
+      "blob": "0905ed9ab1a15876b9faea570be935c373ca536f",
       "status": "A"
     },
     "delivery/sr-native/VALIDATION.md": {
       "mode": "100644",
-      "blob": "ca7b6d1f259653ea89408053ca77ff92315bbfac",
+      "blob": "0d94b2cd87e69d13cf80d806c08d5adc4ae84193",
       "status": "A"
     },
     "delivery/sr-native/base-evidence/12.1.1-cudnn8-devel-ubuntu22.04.index.json": {

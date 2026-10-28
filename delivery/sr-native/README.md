@@ -52,6 +52,22 @@ call delivery\sr-native\03-run-build.cmd
 
 `03` 以新空提交触发同一配方，要求本地已提交、与远端一致。构筑失败时先保留失败日志；代码改动应走 `02`，不把旧 tag 当作新结果。
 
+### 首轮 APT 502 修复（2026-10-28）
+
+Actions [#301](https://github.com/githubgxll/dynamo/actions/runs/40675154119) 的两项构筑均在系统包阶段失败：SeedVR2 获取 `jammy-security/universe` 索引失败，FlashVSR+ 下载多个 `.deb` 失败，HTTP 请求均出现 `502 Bad Gateway [IP: 10.201.136.68 1080]`。这发生在 Python 包安装／CUDA 扩展编译之前，不是模型依赖冲突，也没有 Harbor 权限失败的证据。
+
+两份 Dockerfile 已共用 [install_system_packages.sh](../../container/sr-native/shared/install_system_packages.sh)：
+
+- 官方 Ubuntu archive/security 源从 HTTP 改为 HTTPS，保留原域名、Jammy suite、所有组件及签名校验；NVIDIA 源不变。父镜像必须已有 CA 证书，缺失就停止。
+- 索引更新使用 `APT::Update::Error-Mode=any`，任何索引缺失都不得继续使用旧索引安装。
+- 索引与安装包下载分别最多尝试 3 轮，内部获取重试为 3、HTTP/HTTPS 连接及数据等待超时为 60 秒，轮间等待 5／10 秒。超时是连接／数据等待限制，不是整阶段总时限。
+- 先 `--download-only` 下载完整安装包，再 `--no-download` 安装一次。下载重试期间不重新执行 update，避免容器清理钩子删掉已下载的包；不反复运行失败的安装脚本。
+- Dockerfile 的 `BASE_IMAGE` 默认值与已锁定 digest 一致，消除 `InvalidDefaultArgInFrom` 警告。该警告不是此次 502 的原因。
+
+本次不改变 Python／Torch／CUDA／上游模型代码或权重，不合并 main／Gateway，不修改代理账号。因为变更在最早的系统包层，后续层需要重新构筑；已有源码和 pip cache mount 仍可复用。**修改后的配方使用 `02-submit-build.cmd` 提交，不用 `03` 重跑旧配方。**
+
+本地回归只验证脚本流程；本机没有 Linux Docker，不能证明 Runner 出口已经恢复。若 HTTPS 下仍持续返回 502，请将新 Actions 链接、失败域名及时间交给 Runner 管理者，排查构筑容器到 Ubuntu 官方仓库的代理路径；不要删除 security/universe、关闭 TLS／签名检查或忽略 APT 失败。
+
 构筑成功后，分别下载两个 `image-evidence-sr-native-*` 制品，逐个导入：
 
 ```bat
