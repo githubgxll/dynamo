@@ -1,0 +1,24 @@
+# Official requirements at e4de8c...; torchvision/CUDA aligned with Torch.
+torch==2.3.0+cu121
+torchvision==0.18.0+cu121
+einops==0.7.0
+omegaconf==2.3.0
+opencv-python==4.9.0.80
+diffusers==0.29.1
+rotary-embedding-torch==0.5.3
+transformers==4.38.2
+mediapy==1.2.0
+# Explicit media reader and ABI compatibility constraints.
+av==12.0.0
+numpy==1.26.4
+huggingface-hub==0.25.2
+tokenizers==0.15.2
+safetensors==0.4.3
+Pillow==10.4.0
+# Build only; exact extensions added after source compilation.
+packaging==24.1
+ninja==1.11.1.1
+psutil==6.0.0
+setuptools==69.5.1
+wheel==0.43.0
+pip==24.0

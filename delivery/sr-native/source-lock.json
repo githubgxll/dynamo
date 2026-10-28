@@ -1,0 +1,30 @@
+{
+  "schema": "sr-native-source-lock/1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "recipe_base_commit": "977b1ca80a61305e1565ae0321925ba4767a8bc2",
+  "build_recipe": "sr-native",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/vllm-omni",
+  "models": {
+    "seedvr2": {
+      "base_image": "nvidia/cuda@sha256:cc55d151af1e8e083f3210af753a5cfbcbc5455421531eb0459887026bb4699f",
+      "base_tag_reviewed": "nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04",
+      "dockerfile": "container/sr-native/seedvr2/Dockerfile",
+      "tag_prefix": "sr-native-seedvr2-3b7b",
+      "models": [
+        "3b",
+        "7b"
+      ]
+    },
+    "flashvsr-plus": {
+      "base_image": "nvidia/cuda@sha256:cb239b67719dfa32ec6b525b54c1b78559bebd51a47249dd702f6c5429372154",
+      "base_tag_reviewed": "nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04",
+      "dockerfile": "container/sr-native/flashvsr-plus/Dockerfile",
+      "tag_prefix": "sr-native-flashvsr-plus-base-tc4",
+      "models": [
+        "base-tc4"
+      ]
+    }
+  },
+  "scope": "Independent official offline SR reference candidates. No H3, Omni, Gateway, adapters or model weights in these images. CPU-only CI qualification; GPU/media/quality qualification required separately."
+}

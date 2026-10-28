@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Dingo H3 experimental image recipes
-run-name: "${{ github.event_name == 'push' && (contains(github.event.head_commit.message, '[h3-hsdp-offload]') && 'h3-hsdp-offload' || contains(github.event.head_commit.message, '[seedvr2-c14]') && 'seedvr2-c14' || 'omni-gateway-lite') || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
+run-name: "${{ github.event_name == 'push' && (contains(github.event.head_commit.message, '[sr-native]') && 'sr-native-seedvr2-and-flashvsr-plus' || contains(github.event.head_commit.message, '[h3-hsdp-offload]') && 'h3-hsdp-offload' || contains(github.event.head_commit.message, '[seedvr2-c14]') && 'seedvr2-c14' || 'omni-gateway-lite') || inputs.build_recipe }} | ${{ github.ref_name }} | ${{ github.sha }}"
 
 on:
   push:
@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       build_recipe:
-        description: 'Choose successful-image repair, adapter-free Omni/Gateway, or full framework rebuild'
+        description: 'Choose native SR reference images, successful-image repair, Omni/Gateway, or full rebuild'
         type: choice
         required: true
         default: omni-gateway-lite
-        options: [h3-hsdp-offload, seedvr2-c14, seedvr2-rmsnorm, omni-gateway-lite, full]
+        options: [sr-native, h3-hsdp-offload, seedvr2-c14, seedvr2-rmsnorm, omni-gateway-lite, full]
 
 permissions:
   contents: read
@@ -329,7 +329,7 @@ jobs:
           retention-days: 30
 
   omni-gateway-lite:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[sr-native]') && !contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -415,7 +415,7 @@ jobs:
           retention-days: 30
 
   seedvr2-c14:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -501,7 +501,7 @@ jobs:
           retention-days: 30
 
   h3-hsdp-offload:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'h3-hsdp-offload'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'h3-hsdp-offload'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -584,6 +584,100 @@ jobs:
         with:
           name: image-evidence-h3-hsdp-offload-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.HSDP_EVIDENCE }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  sr-native:
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[sr-native]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'sr-native'))
+    name: Native SR reference - ${{ matrix.backend }} - GPU_NOT_RUN
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # Both stacks compile CUDA extensions. Serialize to limit shared runner RAM/disk pressure.
+      max-parallel: 1
+      matrix:
+        backend: [seedvr2, flashvsr-plus]
+    env:
+      NATIVE_BACKEND: ${{ matrix.backend }}
+      NATIVE_EVIDENCE: .h3-experimental-evidence/sr-native/ci/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.backend }}
+    steps:
+      - name: Checkout the existing experiment branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify the sealed independent native recipe
+        id: profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker buildx version
+          python3 -B -m unittest discover -s .github/scripts -p test_sr_native_ci.py
+          python3 .github/scripts/sr_native_ci.py prepare --backend "${NATIVE_BACKEND}" \
+            --directory "${NATIVE_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Log in to the existing Harbor repository
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ steps.profile.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Reuse the persistent Docker builder
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker
+
+      - name: Pull the reviewed immutable CUDA base with bounded retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sr_native_ci.py pull-base --backend "${NATIVE_BACKEND}" \
+            --directory "${NATIVE_EVIDENCE}"
+
+      - name: Build and load the native candidate without publication
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ steps.profile.outputs.dockerfile }}
+          platforms: linux/amd64
+          target: runtime
+          pull: false
+          push: false
+          load: true
+          tags: ${{ steps.profile.outputs.candidate_image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.profile.outputs.base_image }}
+            DYNAMO_COMMIT_SHA=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Verify nonroot offline imports, dependencies and package evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sr_native_ci.py verify-candidate --backend "${NATIVE_BACKEND}" \
+            --directory "${NATIVE_EVIDENCE}"
+
+      - name: Publish exactly the CPU-validated candidate and verify immutable pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sr_native_ci.py publish --backend "${NATIVE_BACKEND}" \
+            --directory "${NATIVE_EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+          echo "### Native SR ${NATIVE_BACKEND}: CPU candidate, GPU_NOT_RUN" >> "${GITHUB_STEP_SUMMARY}"
+          cat "${NATIVE_EVIDENCE}/deployment-image.txt" >> "${GITHUB_STEP_SUMMARY}"
+          echo 'Weight identity, CUDA kernels, complete 17-frame inference and media/quality acceptance remain separate. This is not a Gateway image.' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Preserve native source, dependency and publication evidence on failure too
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-sr-native-${{ matrix.backend }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_EVIDENCE }}/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30

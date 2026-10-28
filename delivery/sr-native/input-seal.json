@@ -1,0 +1,262 @@
+{
+  "schema": "sr-native-input-seal/1",
+  "recipe_base_commit": "977b1ca80a61305e1565ae0321925ba4767a8bc2",
+  "base_images": {
+    "seedvr2": "nvidia/cuda@sha256:cc55d151af1e8e083f3210af753a5cfbcbc5455421531eb0459887026bb4699f",
+    "flashvsr-plus": "nvidia/cuda@sha256:cb239b67719dfa32ec6b525b54c1b78559bebd51a47249dd702f6c5429372154"
+  },
+  "delta": {
+    ".github/scripts/sr_native_ci.py": {
+      "mode": "100644",
+      "blob": "21be93dd2573f455b938c0cfff21b53aa2d54b25",
+      "status": "A"
+    },
+    ".github/scripts/test_sr_native_ci.py": {
+      "mode": "100644",
+      "blob": "f9c454407f41092d7b023cd1144e3f47fe48756d",
+      "status": "A"
+    },
+    ".github/workflows/dingo-router-ci.yml": {
+      "mode": "100644",
+      "blob": "2fa46434fce2db0a5d3755d38beb950c11ba5f1f",
+      "status": "M"
+    },
+    "container/sr-native/flashvsr-plus/Dockerfile": {
+      "mode": "100644",
+      "blob": "5855df8cd3d5849d663f75799e6e57f24c4a4463",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/README.md": {
+      "mode": "100644",
+      "blob": "2c4a325cc77f0f8232720b89d67523a6e645a44e",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/assets.lock.json": {
+      "mode": "100644",
+      "blob": "16bc9187b3a1e3e37fe23f0c44c91794799412dd",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/audit.py": {
+      "mode": "100644",
+      "blob": "05b6608a2d26fd6efbbcb7ca378add1dec13fca6",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/requirements.in": {
+      "mode": "100644",
+      "blob": "7c36950583f9de54ed0c43d5e0918cc47a775904",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/requirements.lock": {
+      "mode": "100644",
+      "blob": "84e97b5f8e65906fe44219629a6786f0f6d1b72f",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/run.py": {
+      "mode": "100644",
+      "blob": "d21c78fc43a3a798323d7b4dc3005b0199a0780a",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/runtime_common.py": {
+      "mode": "100644",
+      "blob": "564c599a7b03a3abcc5921c1be06df44353b6014",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/source.lock.json": {
+      "mode": "100644",
+      "blob": "a1512f661200411d6764043879c47b9e50a1f9cc",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/tests/test_contract.py": {
+      "mode": "100644",
+      "blob": "4d63827472fe527fcb62f06aa61d3a488498f478",
+      "status": "A"
+    },
+    "container/sr-native/flashvsr-plus/upstream-files.json": {
+      "mode": "100644",
+      "blob": "54b6d3e0c94aceb1fc2918acddb46f71aa8a399b",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/Dockerfile": {
+      "mode": "100644",
+      "blob": "ddb009bf6e02093dd01e05ade54d9252b2f55d65",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/README.md": {
+      "mode": "100644",
+      "blob": "aa0600a680f533955b4b3805650207742d0e30d0",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/assets.lock.json": {
+      "mode": "100644",
+      "blob": "32eb2b58b0551163af0fec3c165c1aaf33ff5946",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/audit.py": {
+      "mode": "100644",
+      "blob": "dc9f05ee8ebfde77d32b42ef39e4805589fab898",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/bootstrap.lock": {
+      "mode": "100644",
+      "blob": "29f9692b87018df8ddae7a74a030f890f388ab22",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/install.sh": {
+      "mode": "100644",
+      "blob": "d4a7d6c21be4d56044bac4df498d4238bd90775e",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/qualify.py": {
+      "mode": "100644",
+      "blob": "b74afa8a97f3836f1dd2162ac71653ef7c90b850",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/requirements.in": {
+      "mode": "100644",
+      "blob": "954c34e5d8dd1b7f599eb5dde16d7eec8fe2e5bb",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/requirements.lock": {
+      "mode": "100644",
+      "blob": "4804cf57d358f6d9e2769d146e8fddc76e54f9b0",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/run.py": {
+      "mode": "100644",
+      "blob": "ca8241190657e65216e36d9b85e29e75f35088e3",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/source-tree.json": {
+      "mode": "100644",
+      "blob": "76b13dc721bae1d9eb2b92166b8ee9a3faa6b4f2",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/sources.lock.json": {
+      "mode": "100644",
+      "blob": "ebcd3a444f47415a820451fb260178db231eee2f",
+      "status": "A"
+    },
+    "container/sr-native/seedvr2/test_contract.py": {
+      "mode": "100644",
+      "blob": "f2c1df509db4e824aad479df142876c87c6448e1",
+      "status": "A"
+    },
+    "container/sr-native/shared/acquire_assets.py": {
+      "mode": "100644",
+      "blob": "0ce470d8472f2b5e2fd5777eb4a77fe402d36aeb",
+      "status": "A"
+    },
+    "container/sr-native/shared/download.py": {
+      "mode": "100644",
+      "blob": "853bcdc762d4a47d8957ee6e8c60ec9548182077",
+      "status": "A"
+    },
+    "container/sr-native/shared/fetch_source.py": {
+      "mode": "100644",
+      "blob": "9771fa42661e89c9f4fd106830156f1fa8037c80",
+      "status": "A"
+    },
+    "container/sr-native/shared/tests/test_downloads.py": {
+      "mode": "100644",
+      "blob": "66354639235cfbe78f943120281b605491375fd0",
+      "status": "A"
+    },
+    "delivery/sr-native/01-check.cmd": {
+      "mode": "100644",
+      "blob": "fb802390bd74cbfd36608b796038fdbd369712c4",
+      "status": "A"
+    },
+    "delivery/sr-native/02-submit-build.cmd": {
+      "mode": "100644",
+      "blob": "fb28963b31c1e9a62e18a27b09f3d6e8898a3520",
+      "status": "A"
+    },
+    "delivery/sr-native/03-run-build.cmd": {
+      "mode": "100644",
+      "blob": "db7a603da57e336dc93c1ab37d65ab77f34b0969",
+      "status": "A"
+    },
+    "delivery/sr-native/04-import-evidence.cmd": {
+      "mode": "100644",
+      "blob": "2a942859c7a22f9a17f1a7fc621f58fe56c4f321",
+      "status": "A"
+    },
+    "delivery/sr-native/ACCEPTANCE.md": {
+      "mode": "100644",
+      "blob": "9944f42d96de1bde9e602bbe1bbfdb302d58c86d",
+      "status": "A"
+    },
+    "delivery/sr-native/README.md": {
+      "mode": "100644",
+      "blob": "01554830e76f18bd7d7f1370832c1682ce8258c2",
+      "status": "A"
+    },
+    "delivery/sr-native/VALIDATION.md": {
+      "mode": "100644",
+      "blob": "ca7b6d1f259653ea89408053ca77ff92315bbfac",
+      "status": "A"
+    },
+    "delivery/sr-native/base-evidence/12.1.1-cudnn8-devel-ubuntu22.04.index.json": {
+      "mode": "100644",
+      "blob": "b11a938049f13e3e2074b7f638ac48c3282fa9b1",
+      "status": "A"
+    },
+    "delivery/sr-native/base-evidence/12.1.1-cudnn8-devel-ubuntu22.04.manifest.json": {
+      "mode": "100644",
+      "blob": "17b19de2b9f644565006a027c06f0b940c329c4c",
+      "status": "A"
+    },
+    "delivery/sr-native/base-evidence/12.6.3-cudnn-devel-ubuntu22.04.index.json": {
+      "mode": "100644",
+      "blob": "9657554874c878c1f3eab933966c2ccc6639357a",
+      "status": "A"
+    },
+    "delivery/sr-native/base-evidence/12.6.3-cudnn-devel-ubuntu22.04.manifest.json": {
+      "mode": "100644",
+      "blob": "13616c5eb7e24f709e28cf32c1db18037abdac7f",
+      "status": "A"
+    },
+    "delivery/sr-native/check_local.py": {
+      "mode": "100644",
+      "blob": "60e5b5f4e46af221b6838562e30dfad0a34803f2",
+      "status": "A"
+    },
+    "delivery/sr-native/env.cmd": {
+      "mode": "100644",
+      "blob": "f288a71d7663d63d585e8de4e438885f1b2b0791",
+      "status": "A"
+    },
+    "delivery/sr-native/import_evidence.py": {
+      "mode": "100644",
+      "blob": "b3f46e24392868c24918c4f7e7577ff6c61bcff2",
+      "status": "A"
+    },
+    "delivery/sr-native/ops.py": {
+      "mode": "100644",
+      "blob": "d00c33df14ac9dd5e3e3d7d27d8f2aca8636bde6",
+      "status": "A"
+    },
+    "delivery/sr-native/source-lock.json": {
+      "mode": "100644",
+      "blob": "68d7c4f73ad3e3c85526716a24612edde8417a49",
+      "status": "A"
+    },
+    "delivery/sr-native/tests/test_import.py": {
+      "mode": "100644",
+      "blob": "444a08f9ad4496e8543cf9e94bc6ac685cee87a8",
+      "status": "A"
+    },
+    "delivery/sr-native/tests/test_submission.py": {
+      "mode": "100644",
+      "blob": "4d88c3d834c31e0123e3da1c041cdb52265294c6",
+      "status": "A"
+    }
+  },
+  "shared_inputs": {
+    "delivery/h3-experimental/ops.py": "bbb97b283227fd7662038dbbee8a644ce5a32295",
+    "delivery/h3-experimental/env.cmd": "a730161d07f53436b19741e87b12a565100bdc74",
+    ".dockerignore": "d08eb89eba2879c186d80378901f4f70f2aed885",
+    ".gitattributes": "50922a9d2a4831d7b9d1b25b46096e9ffff8da97"
+  },
+  "scope": "Exact Git delta relative to prior patch recipe; shared inputs remain fixed at that commit. Excludes seal itself."
+}

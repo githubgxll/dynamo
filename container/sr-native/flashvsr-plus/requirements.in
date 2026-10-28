@@ -1,0 +1,17 @@
+# Torch/CUDA must be resolved together; torchvision is not imported by Plus.
+torch==2.7.1+cu126
+einops==0.8.1
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+Pillow==11.3.0
+safetensors==0.6.2
+tqdm==4.67.1
+huggingface-hub==0.34.4
+packaging==25.0
+psutil==7.0.0
+ninja==1.11.1.4
+setuptools==75.8.0
+wheel==0.45.1
+pip==24.3.1

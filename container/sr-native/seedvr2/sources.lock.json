@@ -1,0 +1,30 @@
+{
+  "schema": "sr-native-sources/1",
+  "sources": [
+    {
+      "name": "seedvr",
+      "url": "https://codeload.github.com/ByteDance-Seed/SeedVR/tar.gz/e4de8c24441a67e1b7df56abea10645059bb1185",
+      "sha256": "aeaed7c661f4c3804c71542bbf7ce6c45c103e5f62caf917c2d2ab6e8a29dc98",
+      "strip_components": 1,
+      "destination": "SeedVR",
+      "commit": "e4de8c24441a67e1b7df56abea10645059bb1185"
+    },
+    {
+      "name": "apex",
+      "url": "https://codeload.github.com/NVIDIA/apex/tar.gz/4138d31ff0acf4071d1dc001ccb7cd6e00800324",
+      "sha256": "a4f6f762dfc281015831ebad1cec2acde9bbc2a0665a78b4a5a6311a5986a4f7",
+      "strip_components": 1,
+      "destination": "apex",
+      "commit": "4138d31ff0acf4071d1dc001ccb7cd6e00800324"
+    },
+    {
+      "name": "flash-attn",
+      "url": "https://files.pythonhosted.org/packages/14/cd/53cbd9bd45e9bf1002f0c4de488e549501d085f4318c906807a0e50164cd/flash_attn-2.5.9.post1.tar.gz",
+      "sha256": "a92db1683a5b141a0f4371d251ae9f73e9aef629b3a58a50d0ef430266c68782",
+      "strip_components": 1,
+      "destination": "flash-attn",
+      "version": "2.5.9.post1",
+      "cutlass_in_sdist": true
+    }
+  ]
+}

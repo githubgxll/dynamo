@@ -1,0 +1,32 @@
+{
+  "schema": "sr-native-sources/1",
+  "sources": [
+    {
+      "name": "flashvsr-plus",
+      "repository": "OpenImagingLab/FlashVSR_Plus",
+      "revision": "b548a2cc2c929d3d4676f2973abe27876ec4dee7",
+      "url": "https://codeload.github.com/OpenImagingLab/FlashVSR_Plus/tar.gz/b548a2cc2c929d3d4676f2973abe27876ec4dee7",
+      "sha256": "c1e96485c2c2d5a0be49d32efd2011b8bd5d52976cfe2d49a0d7bcec05588535",
+      "strip_components": 1,
+      "destination": "flashvsr-plus"
+    },
+    {
+      "name": "block-sparse-attention",
+      "repository": "mit-han-lab/Block-Sparse-Attention",
+      "revision": "49d6c39e4dc0303442cda3bb758b3925d4399c49",
+      "url": "https://codeload.github.com/mit-han-lab/Block-Sparse-Attention/tar.gz/49d6c39e4dc0303442cda3bb758b3925d4399c49",
+      "sha256": "6b7d1480f5232f6a87767241560c1faa42654058c69e33022cb69d9906e5a91f",
+      "strip_components": 1,
+      "destination": "block-sparse-attention"
+    },
+    {
+      "name": "bsa-cutlass",
+      "repository": "NVIDIA/cutlass",
+      "revision": "a75b4ac483166189a45290783cb0a18af5ff0ea5",
+      "url": "https://codeload.github.com/NVIDIA/cutlass/tar.gz/a75b4ac483166189a45290783cb0a18af5ff0ea5",
+      "sha256": "866212a5c9e93a9a509c4b6d03484e56aa3f2d5f5db6cd2b6aaacb2b8e9404b0",
+      "strip_components": 1,
+      "destination": "block-sparse-attention/csrc/cutlass"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "sr-native-assets/1",
+  "license": "See upstream Apache-2.0 model repositories and notices",
+  "assets": [
+    {
+      "id": "ema-vae",
+      "filename": "ema_vae.pth",
+      "repo_id": "ByteDance-Seed/SeedVR2-3B",
+      "revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+      "url": "https://huggingface.co/ByteDance-Seed/SeedVR2-3B/resolve/37255ff8cccfb01071b87f635a5948ca8d53117c/ema_vae.pth",
+      "sha256": "c7df8a67e68b7f9aca3d5d2153d2ce8ab4373687741a0f9ce87cb356ace51cac",
+      "size": 1002691902
+    },
+    {
+      "id": "neg-emb",
+      "filename": "neg_emb.pt",
+      "repo_id": "ByteDance-Seed/SeedVR2-3B",
+      "revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+      "url": "https://huggingface.co/ByteDance-Seed/SeedVR2-3B/resolve/37255ff8cccfb01071b87f635a5948ca8d53117c/neg_emb.pt",
+      "sha256": "6a43e5800ef2354f1c156d27535834da055cbec8248298b8923492bba2076581",
+      "size": 656540
+    },
+    {
+      "id": "pos-emb",
+      "filename": "pos_emb.pt",
+      "repo_id": "ByteDance-Seed/SeedVR2-3B",
+      "revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+      "url": "https://huggingface.co/ByteDance-Seed/SeedVR2-3B/resolve/37255ff8cccfb01071b87f635a5948ca8d53117c/pos_emb.pt",
+      "sha256": "fa07a14844314772266b66c3b95deb0027696d8fe7065721263db5176f45d799",
+      "size": 595100
+    },
+    {
+      "id": "seedvr2-ema-3b",
+      "filename": "seedvr2_ema_3b.pth",
+      "repo_id": "ByteDance-Seed/SeedVR2-3B",
+      "revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+      "url": "https://huggingface.co/ByteDance-Seed/SeedVR2-3B/resolve/37255ff8cccfb01071b87f635a5948ca8d53117c/seedvr2_ema_3b.pth",
+      "sha256": "6bcc5ac59447e97b100477480aebb01be2ec724c8340bb83faae21f64848604b",
+      "size": 13566090228
+    },
+    {
+      "id": "seedvr2-ema-7b",
+      "filename": "seedvr2_ema_7b.pth",
+      "repo_id": "ByteDance-Seed/SeedVR2-7B",
+      "revision": "eb0c4281d41ba3767d4f14370f0e37e9e9180c16",
+      "url": "https://huggingface.co/ByteDance-Seed/SeedVR2-7B/resolve/eb0c4281d41ba3767d4f14370f0e37e9e9180c16/seedvr2_ema_7b.pth",
+      "sha256": "e1b2ae25505607e61f2a7dc7967ba778aaf3e3626d9969ce6e24c52d9ddebfcd",
+      "size": 32958774606
+    }
+  ]
+}

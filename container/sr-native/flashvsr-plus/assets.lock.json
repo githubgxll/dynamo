@@ -1,0 +1,39 @@
+{
+  "schema": "sr-native-assets/1",
+  "license": "Apache-2.0",
+  "assets": [
+    {
+      "id": "flashvsr-plus-TCDecoder-ckpt",
+      "filename": "ckpts/TCDecoder.ckpt",
+      "repo_id": "ruchangyao/FlashVSR_plus",
+      "revision": "46b79520946ac67dec94d1566490690953c7debc",
+      "url": "https://huggingface.co/ruchangyao/FlashVSR_plus/resolve/46b79520946ac67dec94d1566490690953c7debc/TCDecoder.ckpt",
+      "sha256": "e224bdcf2f52745cbf4d393ff5374c2ba09e90285d5d19062d2bf63b915b6161",
+      "size": 189018333
+    },
+    {
+      "id": "flashvsr-plus-base-dit-safetensors",
+      "filename": "ckpts/base/dit.safetensors",
+      "repo_id": "ruchangyao/FlashVSR_plus",
+      "revision": "46b79520946ac67dec94d1566490690953c7debc",
+      "url": "https://huggingface.co/ruchangyao/FlashVSR_plus/resolve/46b79520946ac67dec94d1566490690953c7debc/base/dit.safetensors",
+      "sha256": "58d64c1f1b3a559bafb69bb014f3ab2745e800c89435afdc154966eb96bc7459",
+      "size": 5676070392
+    },
+    {
+      "id": "flashvsr-plus-base-lq_proj_in-safetensors",
+      "filename": "ckpts/base/lq_proj_in.safetensors",
+      "repo_id": "ruchangyao/FlashVSR_plus",
+      "revision": "46b79520946ac67dec94d1566490690953c7debc",
+      "url": "https://huggingface.co/ruchangyao/FlashVSR_plus/resolve/46b79520946ac67dec94d1566490690953c7debc/base/lq_proj_in.safetensors",
+      "sha256": "a1fe997f19060171db8dd4d58c30debc78ddfcc357b63481798792a38a356d8d",
+      "size": 1151384272
+    }
+  ],
+  "bundled_prompt": {
+    "filename": "prompt_tensor/posi_prompt.pth",
+    "source_revision": "b548a2cc2c929d3d4676f2973abe27876ec4dee7",
+    "sha256": "4601107a11e4e11a936a6b79df579e54dbc99872132bf542151f0ffd65b4b1ef",
+    "size": 4195504
+  }
+}
