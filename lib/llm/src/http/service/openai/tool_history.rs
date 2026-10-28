@@ -32,7 +32,7 @@ fn empty_arguments(value: &str) -> bool {
 
 /// Compatibility with histories from the October 2026 GLM-5.3 empty-call bug.
 /// Remove once those client histories have expired/migrated. This is deliberately
-/// not general orphan-result repair: retain strict pairing for all other results.
+/// not general orphan-result repair: leave other results intact for validation.
 pub(super) fn repair_placeholder_results(messages: &mut Vec<ChatCompletionRequestMessage>) {
     let mut eligible_group = false;
     messages.retain_mut(|message| {
