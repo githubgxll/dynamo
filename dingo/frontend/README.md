@@ -24,13 +24,14 @@ other models retain their existing behavior. Arbitrary serving aliases do not
 activate this policy. Reasoning remains enabled, and the generation limit
 remains a fallback rather than a guarantee that every prompt will finish.
 
-With an active reasoning parser, string `stop` sequences apply after reasoning
-separation, to the non-reasoning output (including tool syntax). A match stops
-worker generation and returns `finish_reason: "stop"` (or `"tool_calls"` when
-applicable). Stops split across chunks are supported; `include_stop_str_in_output`
-controls whether the matched string is retained. EOS and `stop_token_ids` remain
-worker-side conditions. Without a reasoning parser, including requests that set
-`separate_reasoning: false`, string stops retain their worker-side behavior.
+String `stop` sequences apply to the full generated stream, including reasoning,
+regardless of whether a reasoning parser is active. They are passed to the worker;
+the frontend also matches and trims them, including with tokenizer-free workers.
+A match closes worker generation and can end it before an answer is produced.
+Stops split across chunks are supported, and GLM reasoning boundaries continue
+to use control token IDs rather than literal tag text.
+`include_stop_str_in_output` controls whether the matched string is retained.
+EOS and `stop_token_ids` also remain worker-side conditions.
 
 When no reasoning parser is explicitly configured on the frontend or in worker
 metadata, the frontend selects `glm45` for GLM-5.3 / GLM-5.3-Flash if their chat

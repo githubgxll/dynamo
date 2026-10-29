@@ -672,11 +672,6 @@ def _build_dynamo_preproc(
     elif stop is None:
         stop = []
 
-    # The worker sees the unsplit reasoning/answer stream. String stops belong
-    # to the frontend when a reasoning parser is active; token stops and EOS
-    # remain backend-owned.
-    if reasoning_parser is not None:
-        stop = []
     nvext = request.get("nvext") or {}
     routing = request.get("routing")
     nvext_routing = (
@@ -1000,9 +995,7 @@ class SglangProcessor:
             named_zero_arg_tool=named_zero_arg_tool,
             guided_json_is_content=_guided_json_is_content(dynamo_preproc),
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(
-                request, match_visible=reasoning_parser is not None
-            ),
+            stop_strings=_request_stop_strings(request, match_visible=True),
             include_stop_str_in_output=request.get("include_stop_str_in_output", False),
             min_tokens=request.get("min_tokens", 0),
             guided_decoding=guided_decoding,
