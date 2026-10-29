@@ -21,7 +21,10 @@ EVIDENCE = ROOT / ".h3-experimental-evidence/hsdp/local"
 ALLOWED_PREFIXES = ("container/h3-hsdp-offload/", "delivery/h3-hsdp-offload/")
 ALLOWED_FILES = {".github/workflows/dingo-router-ci.yml", ".github/scripts/h3_hsdp_offload_ci.py",
                  ".github/scripts/test_h3_hsdp_offload_ci.py"}
-
+SHARED_PREFIXES = ("container/h3-seedvr2-rmsnorm/", "container/h3-experimental/environment/",
+                   "container/omni-gateway-lite/", "delivery/h3-experimental/", "delivery/omni-gateway-lite/",
+                   "container/seedvr2-c14/", "delivery/seedvr2-c14/",
+                   ".github/scripts/seedvr2_c14_ci.py", ".github/scripts/omni_gateway_lite_ci.py")
 
 
 def load_legacy():
@@ -63,11 +66,27 @@ def identity(lock):
         raise ValueError("Use existing branch " + lock["remote_branch"])
     if git("remote", "get-url", "origin").rstrip("/").removesuffix(".git") != lock["repository"].removesuffix(".git"):
         raise ValueError("Unexpected origin repository")
-    git("merge-base", "--is-ancestor", lock["recipe_base_commit"], "HEAD")
+    validate_anchors(lock)
 
 
-def delta_for_tree(tree, lock):
-    fields = git("diff", "--raw", "--no-renames", "--no-abbrev", "-z", lock["recipe_base_commit"], tree,
+def working_base(lock):
+    # Older locks used one baseline for both recipe export and change scope.
+    return lock.get("working_tree_base_commit", lock["recipe_base_commit"])
+
+
+def validate_anchors(lock):
+    recipe, working = lock["recipe_base_commit"], working_base(lock)
+    for commit in dict.fromkeys((recipe, working)):
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("Recipe and working-tree anchors must be full Git commit SHA values")
+        if git("rev-parse", "--verify", commit + "^{commit}") != commit:
+            raise ValueError("Recipe and working-tree anchors must identify commits directly")
+    git("merge-base", "--is-ancestor", recipe, working)
+    git("merge-base", "--is-ancestor", working, "HEAD")
+
+
+def raw_delta(base, tree):
+    fields = git("diff", "--raw", "--no-renames", "--no-abbrev", "-z", base, tree,
                  binary=True).decode("utf-8").split("\0")
     delta = {}
     for i in range(0, len(fields) - 1, 2):
@@ -77,8 +96,24 @@ def delta_for_tree(tree, lock):
             raise ValueError("Unrecognized Git delta: " + metadata)
         if name != SEAL:
             delta[name] = {"mode": pieces[1], "blob": pieces[3], "status": pieces[4]}
-    check_scope(delta)
     return delta
+
+
+def delta_for_tree(tree, lock):
+    # This also runs for detached CI. Historical unrelated commits are not a
+    # permission to change their files in this candidate, including reverting
+    # one to the recipe baseline so that it vanishes from the cumulative diff.
+    validate_anchors(lock)
+    check_scope(raw_delta(working_base(lock), tree))
+    cumulative = raw_delta(lock["recipe_base_commit"], tree)
+    shared_changes = sorted(name for name in cumulative if any(
+        name.startswith(prefix) if prefix.endswith("/") else name == prefix
+        for prefix in SHARED_PREFIXES))
+    if shared_changes:
+        raise ValueError("Shared inputs differ from the fixed recipe baseline: " + ", ".join(shared_changes))
+    # Keep all reviewed HSDP history for the complete exported recipe, while
+    # excluding unrelated history that is unchanged since the working anchor.
+    return {name: entry for name, entry in cumulative.items() if permitted(name)}
 
 
 def prospective(lock):
@@ -103,8 +138,9 @@ def prospective(lock):
 
 def expected_seal(lock, delta):
     return {"schema": "h3-hsdp-offload-input-seal/1", "recipe_base_commit": lock["recipe_base_commit"],
+            "working_tree_base_commit": working_base(lock),
             "parent_image": lock["parent_image"], "delta": delta, "shared_inputs": shared_inputs(lock),
-            "scope": "Exact Git delta relative to prior patch recipe; shared inputs remain fixed at that commit. Excludes seal itself."}
+            "scope": "Complete allowed recipe delta from recipe_base_commit; all candidate changes from working_tree_base_commit must stay in the original scope. Unrelated history is excluded unchanged; shared inputs remain fixed at recipe_base_commit. Excludes seal itself."}
 
 
 def seal():
@@ -186,10 +222,7 @@ def shared_inputs(lock):
     # Every reused source is locked to the existing recipe baseline; no local edit
     # to shared code is accepted by this alternative's bounded submission scope.
     paths = []
-    for prefix in ("container/h3-seedvr2-rmsnorm/", "container/h3-experimental/environment/",
-                   "container/omni-gateway-lite/", "delivery/h3-experimental/", "delivery/omni-gateway-lite/",
-                   "container/seedvr2-c14/", "delivery/seedvr2-c14/",
-                   ".github/scripts/seedvr2_c14_ci.py", ".github/scripts/omni_gateway_lite_ci.py"):
+    for prefix in SHARED_PREFIXES:
         paths.extend(git("ls-tree", "-r", "--name-only", lock["recipe_base_commit"], "--", prefix).splitlines())
     return {name: git("rev-parse", lock["recipe_base_commit"] + ":" + name) for name in sorted(set(paths))}
 

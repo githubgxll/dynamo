@@ -1,11 +1,12 @@
 {
   "schema": "h3-hsdp-offload-input-seal/1",
   "recipe_base_commit": "0b11a41b083facf74d3387696a72893d0d3e40e1",
+  "working_tree_base_commit": "f78ca9ee5bfebd86186feb820a7295291a0b9cfd",
   "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:87365073cbdf95fa17ca352a24a93cb74fde144a47c96135e91011d1a03df72e",
   "delta": {
     ".github/scripts/h3_hsdp_offload_ci.py": {
       "mode": "100644",
-      "blob": "3b8ec3eb1f7f1728be62585d02b8937f5e631da2",
+      "blob": "0ef5cbdacb73597e391267be907ca6c8958eaeb8",
       "status": "A"
     },
     ".github/scripts/test_h3_hsdp_offload_ci.py": {
@@ -15,12 +16,12 @@
     },
     ".github/workflows/dingo-router-ci.yml": {
       "mode": "100644",
-      "blob": "b07fe9339595af7a0fa97ea24ab7acf2f7e1a6d5",
+      "blob": "2fa46434fce2db0a5d3755d38beb950c11ba5f1f",
       "status": "M"
     },
     "container/h3-hsdp-offload/DESIGN.md": {
       "mode": "100644",
-      "blob": "a9f807f9789e337a202adf1f71b5f6ee1362cb03",
+      "blob": "61dddf98ee5318eaad09116fb830eaa168d9bffe",
       "status": "A"
     },
     "container/h3-hsdp-offload/Dockerfile": {
@@ -40,7 +41,7 @@
     },
     "container/h3-hsdp-offload/cpu_smoke.py": {
       "mode": "100644",
-      "blob": "4f0e2528299dd7e2f6f28c9e1d85ee055c1a99bc",
+      "blob": "d92b0b5594ac620c3bdc0c66dd1a590649cbfd11",
       "status": "A"
     },
     "container/h3-hsdp-offload/dit-entry.patch": {
@@ -50,12 +51,12 @@
     },
     "container/h3-hsdp-offload/gpu_roundtrip.py": {
       "mode": "100644",
-      "blob": "ddc574c742113c57126ac68115aaafe5a6ce1683",
+      "blob": "05570b36231cd2664588695a14037d9a4f84154e",
       "status": "A"
     },
     "container/h3-hsdp-offload/hsdp_migration.py": {
       "mode": "100644",
-      "blob": "b448fb555df11af38e93a10cfac7f4694c8f310d",
+      "blob": "b7ddb65f67f0d97dc8fba7d22434f81796db707b",
       "status": "A"
     },
     "container/h3-hsdp-offload/runtime.py": {
@@ -65,12 +66,12 @@
     },
     "container/h3-hsdp-offload/source-patches.lock.json": {
       "mode": "100644",
-      "blob": "0f6a5dadb7056743d51e5180535191a50d8ab149",
+      "blob": "60679109112c013809a992a091dea1f69a609eed",
       "status": "A"
     },
     "container/h3-hsdp-offload/source_patches.py": {
       "mode": "100644",
-      "blob": "ece70005f9548ef1b1151c63b87d12646af0ff06",
+      "blob": "c7248c88e41897cd688dbd049ac1ef62d93e0ce0",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_dit_entry.py": {
@@ -80,17 +81,27 @@
     },
     "container/h3-hsdp-offload/tests/test_gpu_entry_contract.py": {
       "mode": "100644",
-      "blob": "c59d3baa602c3a46bc93fbeef9d6fba6cc81e09e",
+      "blob": "26b10ff164bc2f418ba5a579a76aa65cd614a6ed",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_offload_timing.py": {
+      "mode": "100644",
+      "blob": "491acc2d10a080eca08464a70407876ecf7cd26f",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_recipe.py": {
       "mode": "100644",
-      "blob": "58995c0afbad96ed7d6c76aa0b40bf95e963c476",
+      "blob": "731ebdf7e18b241f486b61a8d123100082059abd",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_runtime_install.py": {
       "mode": "100644",
       "blob": "cf45d3c905340eb17cbf8290c71040ec9869cfb3",
+      "status": "A"
+    },
+    "container/h3-hsdp-offload/tests/test_scope_fastpath.py": {
+      "mode": "100644",
+      "blob": "f5bd258840713b63db0095f463237d415190c6d2",
       "status": "A"
     },
     "container/h3-hsdp-offload/tests/test_torch_contract.py": {
@@ -178,9 +189,14 @@
       "blob": "1763d6a085059a0d3d34325001124bd74811e062",
       "status": "A"
     },
+    "delivery/h3-hsdp-offload/OFFLOAD-FASTPATH-TIMING-20261029.md": {
+      "mode": "100644",
+      "blob": "ce20f3e327542cfa35806c1730715f8b7caf1fcc",
+      "status": "A"
+    },
     "delivery/h3-hsdp-offload/README.md": {
       "mode": "100644",
-      "blob": "139d2026669dd20c240f4046c30e8cd24eb55d1b",
+      "blob": "88081f1244f4a88ba646a6651384df90c81a75a9",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/TORCH-CONTRACT-FIX-20261027.md": {
@@ -203,14 +219,34 @@
       "blob": "f288a71d7663d63d585e8de4e438885f1b2b0791",
       "status": "A"
     },
+    "delivery/h3-hsdp-offload/experiment-integration-local/README.md": {
+      "mode": "100644",
+      "blob": "a62ee1b2bdd4eb1c893e4feced9808f8cc4a9a18",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/experiment-integration-local/experiment.patch": {
+      "mode": "100644",
+      "blob": "fdeae10e876d8c5e85359c2d7e352ba0659e9c12",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/experiment-integration-local/integration.json": {
+      "mode": "100644",
+      "blob": "364d3759f51c788f9c20734ef984dc75afbcd6b4",
+      "status": "A"
+    },
     "delivery/h3-hsdp-offload/import_evidence.py": {
       "mode": "100644",
       "blob": "beec7c56c1bdb39702f8560443e3e6ef3b584dbd",
       "status": "A"
     },
+    "delivery/h3-hsdp-offload/integrate_experiment.py": {
+      "mode": "100644",
+      "blob": "96f5fac493fadddc7a9a0f87f33ca44358f96ede",
+      "status": "A"
+    },
     "delivery/h3-hsdp-offload/ops.py": {
       "mode": "100644",
-      "blob": "ec7b0eb291a5e4a6e8118117879288004691be9f",
+      "blob": "f5b7e9b5b51ab4883f12a4104939e076c720e41b",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/parent-evidence/image-release-evidence.json": {
@@ -220,12 +256,27 @@
     },
     "delivery/h3-hsdp-offload/source-lock.json": {
       "mode": "100644",
-      "blob": "77a9300e13226d508761f70c8b3f6b64a6580580",
+      "blob": "e03e3f1a51fc1715ad339cd01eed936d109e835f",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/summarize-offload.cmd": {
+      "mode": "100644",
+      "blob": "112facfecc147a6db8e8e9e50a81c6d60e9074dc",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/summarize_offload_timings.py": {
+      "mode": "100644",
+      "blob": "cb3c3f2ab517ac97180885290a2c86d6933ca1dc",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/tests/test_artifact_paths.py": {
       "mode": "100644",
       "blob": "ec0dca95e2c9ae936c2a239290ab0ab73e2039c1",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/tests/test_experiment_integration.py": {
+      "mode": "100644",
+      "blob": "8607b0b8310292c6c4d4db3d786103face21f217",
       "status": "A"
     },
     "delivery/h3-hsdp-offload/tests/test_import_evidence.py": {
@@ -235,7 +286,12 @@
     },
     "delivery/h3-hsdp-offload/tests/test_submission.py": {
       "mode": "100644",
-      "blob": "957155ae0c98e228fbe8192306cb50f2fade99d2",
+      "blob": "17e1e641ae7df042c0fcc0294f46b09fdc7dd2f5",
+      "status": "A"
+    },
+    "delivery/h3-hsdp-offload/tests/test_timing_report.py": {
+      "mode": "100644",
+      "blob": "625c090bbe9e1ff16d778e91b2b11a8ad5040a72",
       "status": "A"
     }
   },
@@ -396,5 +452,5 @@
     "delivery/seedvr2-c14/tests/test_import_evidence.py": "c63eb0c17b1b07f0154009273eb8b5803d37b944",
     "delivery/seedvr2-c14/tests/test_submission.py": "97b0bad8a1d5a8e654ea268b00c6930544fd46d0"
   },
-  "scope": "Exact Git delta relative to prior patch recipe; shared inputs remain fixed at that commit. Excludes seal itself."
+  "scope": "Complete allowed recipe delta from recipe_base_commit; all candidate changes from working_tree_base_commit must stay in the original scope. Unrelated history is excluded unchanged; shared inputs remain fixed at recipe_base_commit. Excludes seal itself."
 }

@@ -1,0 +1,156 @@
+--- a/resident.py
++++ b/resident.py
+@@ -100 +100 @@
+-    allowed = required | {"sr_window_frames", "sr_frame_pixels", "tiers"}
++    allowed = required | {"sr_window_frames", "sr_frame_pixels", "tiers", "offload_fastpath", "offload_timing"}
+@@ -106,0 +107,3 @@
++    for name in ("offload_fastpath", "offload_timing"):
++        if name in config:
++            require(type(config[name]) is int and config[name] in (0, 1), f"{name} must be integer 0 or 1")
+@@ -190,0 +194,5 @@
++    if stage == "h3":
++        # Only explicitly frozen controls reach H3; inherited H3_* was removed above.
++        for key, name in (("offload_fastpath", "H3_OFFLOAD_FASTPATH"), ("offload_timing", "H3_OFFLOAD_TIMING")):
++            if key in config:
++                env[name] = str(config[key])
+--- a/workflow.py
++++ b/workflow.py
+@@ -286,0 +287,7 @@
++    controls = {}
++    for key in ("offload_fastpath", "offload_timing"):
++        value = getattr(args, key, None)
++        if value is not None:
++            if type(value) is not int or value not in (0, 1):
++                raise ValueError(key + " must be integer 0 or 1")
++            controls[key] = value
+@@ -300,0 +308 @@
++    runtime.update(controls)  # Omitted controls remain absent in old-compatible configs.
+@@ -373,0 +382,2 @@
++    if controls:
++        launch["h3_offload_env"] = {"H3_" + key.upper(): str(value) for key, value in controls.items()}
+@@ -949,0 +960,2 @@
++    p.add_argument('--offload-fastpath', type=int, choices=[0, 1], default=None, help='Freeze an explicit H3-only fastpath control; requires the matching new image')
++    p.add_argument('--offload-timing', type=int, choices=[0, 1], default=None, help='Freeze H3-only CPU-wall offload telemetry; no added CUDA synchronization')
+--- /dev/null
++++ b/tests/test_offload_controls.py
+@@ -0,0 +1,120 @@
++"""Offline tests only; image binding is mocked during manifest preparation."""
++import contextlib
++import io
++import json
++import os
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++import resident
++import workflow as w
++
++
++def base_config():
++    return {
++        "variant": "ref2va", "gpus": 8, "h3_model": "/models/h3/Ref2VA",
++        "sr_model": "/opt/sr/seedvr2-3b", "work_root": "/work",
++        "image": resident.IMAGE, "source_hashes": {
++            "diffusion/models/seedvr2/" + name: "a" * 64
++            for name in ("pipeline_seedvr2.py", "long_video.py", "nadit.py", "vae.py")},
++        "package_hashes": {name: "a" * 64 for name in
++                           ("resident.py", "resident_media.py", "convert_seedvr2.py")},
++        "owner": "offline-test", "token": "offline-token",
++        "offload_profile": "a", "sr_capable": True,
++    }
++
++
++class OffloadControlTests(unittest.TestCase):
++    def test_old_configs_keep_controls_absent(self):
++        config = resident.validate_config(base_config())
++        self.assertNotIn("offload_fastpath", config)
++        self.assertNotIn("offload_timing", config)
++
++    def test_controls_accept_exact_integers_only(self):
++        for key in ("offload_fastpath", "offload_timing"):
++            for value in (0, 1):
++                self.assertEqual(resident.validate_config({**base_config(), key: value})[key], value)
++            for value in (True, False, "1", "0", None, 2, -1, 1.0):
++                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
++                    resident.validate_config({**base_config(), key: value})
++
++    def test_environment_injects_only_frozen_h3_controls(self):
++        config = resident.validate_config({**base_config(), "offload_fastpath": 0, "offload_timing": 1})
++        ambient = {"H3_OFFLOAD_FASTPATH": "1", "H3_OFFLOAD_TIMING": "0",
++                   "H3_OFFLOAD_TIMING_DIR": "/unexpected", "H3_UNRELATED": "1"}
++        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, ambient):
++            h3 = resident.environment(folder, "h3", config)
++            sr = resident.environment(folder, "sr", config)
++            old = resident.environment(folder, "h3", resident.validate_config(base_config()))
++        self.assertEqual({key: value for key, value in h3.items() if key.startswith("H3_")},
++                         {"H3_OFFLOAD_FASTPATH": "0", "H3_OFFLOAD_TIMING": "1"})
++        self.assertFalse(any(key.startswith("H3_") for key in sr))
++        self.assertFalse(any(key.startswith("H3_") for key in old))
++
++    def test_controls_do_not_change_sampling_or_sr_argv(self):
++        before = resident.validate_config(base_config())
++        after = resident.validate_config({**base_config(), "offload_fastpath": 1, "offload_timing": 1})
++        self.assertEqual(resident.build_h3(before), resident.build_h3(after))
++        self.assertEqual(resident.build_sr(before), resident.build_sr(after))
++
++    def test_prepare_parser_explicit_only(self):
++        parser = w.build_parser()
++        old = parser.parse_args(["prepare", "--id", "old"])
++        self.assertIsNone(old.offload_fastpath)
++        self.assertIsNone(old.offload_timing)
++        explicit = parser.parse_args(["prepare", "--id", "candidate", "--offload-fastpath", "0", "--offload-timing", "1"])
++        self.assertEqual((explicit.offload_fastpath, explicit.offload_timing), (0, 1))
++        for value in ("2", "true", "-1"):
++            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
++                parser.parse_args(["prepare", "--id", "bad", "--offload-fastpath", value])
++
++    def test_prepare_freezes_controls_without_pod_or_converter_env(self):
++        with tempfile.TemporaryDirectory() as folder:
++            root = Path(folder)
++            for name in w.PAYLOAD:
++                (root / name).write_text("# offline test fixture\n", encoding="utf-8")
++            with patch.object(w, "ROOT", root), patch.object(w, "require_bound", return_value={}), \
++                 patch.object(w, "kubectl", side_effect=AssertionError("No cluster calls")), \
++                 contextlib.redirect_stdout(io.StringIO()):
++                for explicit in (False, True):
++                    run = "explicit" if explicit else "legacy"
++                    args = ["prepare", "--id", run, "--sr-capable"]
++                    if explicit:
++                        args += ["--offload-fastpath", "0", "--offload-timing", "1"]
++                    w.prepare(w.build_parser().parse_args(args))
++                    directory, deployment = w.load_run(run)
++                    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
++                    cm = json.loads((directory / "configmap.yaml").read_text(encoding="utf-8"))
++                    pod = json.loads((directory / "pod.yaml").read_text(encoding="utf-8"))
++                    launch = json.loads((directory / "launch-argv.json").read_text(encoding="utf-8"))
++                    self.assertEqual(json.loads(cm["data"]["config.json"]), config)
++                    for filename, digest in deployment["files"].items():
++                        self.assertEqual(w.file_hash(directory / filename), digest)
++                    for container in pod["spec"]["containers"] + pod["spec"]["initContainers"]:
++                        self.assertFalse(any(row["name"].startswith("H3_OFFLOAD_") for row in container["env"]))
++                    if explicit:
++                        self.assertEqual((config["offload_fastpath"], config["offload_timing"]), (0, 1))
++                        self.assertEqual(launch["h3_offload_env"], {"H3_OFFLOAD_FASTPATH": "0", "H3_OFFLOAD_TIMING": "1"})
++                    else:
++                        self.assertNotIn("offload_fastpath", config)
++                        self.assertNotIn("offload_timing", config)
++                        self.assertNotIn("h3_offload_env", launch)
++
++    def test_programmatic_invalid_controls_fail_before_run_creation(self):
++        with tempfile.TemporaryDirectory() as folder, patch.object(w, "ROOT", Path(folder)), \
++             patch.object(w, "require_bound", return_value={}):
++            for key in ("offload_fastpath", "offload_timing"):
++                for value in (True, "1", 2):
++                    args = w.build_parser().parse_args(["prepare", "--id", "bad"])
++                    setattr(args, key, value)
++                    with self.subTest(key=key, value=value), self.assertRaises(ValueError):
++                        w.prepare(args)
++                    self.assertFalse((Path(folder) / "runs").exists())
++
++
++if __name__ == "__main__":
++    unittest.main()

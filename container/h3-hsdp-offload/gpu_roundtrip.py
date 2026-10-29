@@ -51,6 +51,39 @@ def slots(root):
                     yield (kind, f"{path}.{name}".lstrip(".")), tensor
 
 
+def scope_fastpath_enabled():
+    """Use the installed backend's exact switch contract, without changing it."""
+    value = os.environ.get("H3_OFFLOAD_FASTPATH", "1")
+    if value not in {"0", "1"}:
+        raise ValueError("H3_OFFLOAD_FASTPATH must be 0 or 1")
+    return value == "1"
+
+
+class BackendPlatformObserver:
+    """Count only backend platform calls; do not patch CUDA or shared platform."""
+    def __init__(self, platform, counts):
+        self._platform = platform
+        self._counts = counts
+
+    def __getattr__(self, name):
+        return getattr(self._platform, name)
+
+    def synchronize(self, *args, **kwargs):
+        self._counts["backend_synchronize_calls"] += 1
+        return self._platform.synchronize(*args, **kwargs)
+
+
+def assert_forward_admin(enabled, move_params_calls, backend_synchronize_calls):
+    """Every step must use either the optimized path or measurable control."""
+    counts = (move_params_calls, backend_synchronize_calls)
+    if any(type(value) is not int or value < 0 for value in counts):
+        raise AssertionError("Invalid per-forward offload administration counts")
+    if enabled and counts != (0, 0):
+        raise AssertionError("Active fastpath forward scanned parameters or synchronized backend")
+    if not enabled and (move_params_calls < 1 or backend_synchronize_calls < 1):
+        raise AssertionError("Disabled fastpath control did not exercise scanning and backend synchronization")
+
+
 def bind_installed_diffuse(pipeline_type, shell, denoise_loop):
     """Use installed H3 control flow with a synthetic numerical workload only.
 
@@ -477,10 +510,14 @@ def run(args, report):
             return {"tensor_sample_limit": 12, "tensors": samples, "groups": groups[:8]}
 
         moves, steps, refreshes = [], [], []
+        fastpath = scope_fastpath_enabled()
+        admin_counts = {"move_params_calls": 0, "backend_synchronize_calls": 0}
         current_cycle = -1
         original_move = backend.SequentialOffloadHook._move_params
+        platform_observer = BackendPlatformObserver(backend.current_omni_platform, admin_counts)
 
         def observed_move(component, target, **kwargs):
+            admin_counts["move_params_calls"] += 1
             source_devices = sorted({str(local(value).device) for _, value in slots(component)})
             try:
                 changed = original_move(component, target, **kwargs)
@@ -518,7 +555,9 @@ def run(args, report):
             move_count_at_entry = len(moves)
             for step in range(len(kwargs["sigmas_video"]) - 1):
                 # Actual root/child FSDP pre-forward and real Omni inner hook
-                # run here. Their component loads must now be genuine no-ops.
+                # run here. Enabled scope fastpath must avoid even no-op
+                # parameter scans and backend synchronization inside forward.
+                admin_at_entry = dict(admin_counts)
                 try:
                     with torch.no_grad():
                         actual = cold(inputs).detach().cpu().clone()
@@ -530,8 +569,11 @@ def run(args, report):
                 torch.testing.assert_close(actual, independent_reference, rtol=0, atol=0)
                 if len(moves) != move_count_at_entry or backing_addresses() != addresses:
                     raise AssertionError("Denoising step performed component migration or replaced shard backing")
+                forward_counts = {key: value - admin_at_entry[key] for key, value in admin_counts.items()}
+                assert_forward_admin(fastpath, **forward_counts)
                 steps.append({"cycle": current_cycle, "step": step,
-                              "component_moves_during_forward": len(moves) - move_count_at_entry})
+                              "component_moves_during_forward": len(moves) - move_count_at_entry,
+                              **forward_counts})
                 kwargs["on_step"](step, actual, actual)
             verify(cold, expected_cold, device)
             return actual, actual
@@ -553,10 +595,14 @@ def run(args, report):
                        "pipeline_sha256": hashlib.sha256(Path(h3.__file__).read_bytes()).hexdigest(),
                        "diffuse_first_line": actual_method.__code__.co_firstlineno,
                        "component_moves": moves, "steps": steps,
+                       "scope_fastpath": {"enabled": fastpath, "environment": "H3_OFFLOAD_FASTPATH",
+                                          "status": "RUNNING", "forward_counts": "per step",
+                                          "counter_scope": "Backend _move_params invocation and backend platform synchronize; excludes Torch/FSDP/testing synchronization"},
                        "scope": "Installed H3 diffuse/component contexts with real synthetic FSDP and TP8; synthetic inputs/denoise and Cache-DiT refresh stub"}
         report["cold_pipeline_entry"] = cold_report
         assert_cold()
-        with mock.patch.object(backend.SequentialOffloadHook, "_move_params", staticmethod(observed_move)):
+        with mock.patch.object(backend.SequentialOffloadHook, "_move_params", staticmethod(observed_move)), \
+             mock.patch.object(backend, "current_omni_platform", platform_observer):
             backend.apply_sequential_offload([cold], [cold_encoder], device, pin_memory=True,
                                             use_hsdp=True, offload_initial_dits=True)
             assert_cold()
@@ -588,6 +634,12 @@ def run(args, report):
             backend.remove_sequential_offload([cold, cold_encoder])
         if refreshes != [50] * args.cycles or len(steps) != 50 * args.cycles:
             raise AssertionError("Incomplete cold-entry schedule")
+        cold_report["scope_fastpath"].update(
+            status="PASS_SYNTHETIC_FASTPATH" if fastpath else "PASS_SYNTHETIC_SLOWPATH_CONTROL",
+            forwards=len(steps),
+            forward_move_params_calls=sum(step["move_params_calls"] for step in steps),
+            forward_backend_synchronize_calls=sum(step["backend_synchronize_calls"] for step in steps),
+            all_scope_admin_counts=dict(admin_counts))
         cold_report.update(status="PASS_SYNTHETIC_INSTALLED_DIFFUSE_ENTRY_ONLY",
                            cycles=args.cycles, forwards=len(steps), step_component_h2d_transitions=0,
                            h2d_counter_scope="Real component mover changed=True and stable shard backing; not a hardware DMA profiler",
@@ -605,13 +657,20 @@ def run(args, report):
                               "No video-gateway service acceptance", "No deployment mutation"])
     save(destination, report)
     completed = [None] * world
-    dist.all_gather_object(completed, {"rank": rank, "status": report["status"], "file": destination.name})
+    dist.all_gather_object(completed, {"rank": rank, "status": report["status"], "file": destination.name,
+                                      "scope_fastpath": report["cold_pipeline_entry"]["scope_fastpath"]})
     if rank == 0:
         if {item["rank"] for item in completed} != set(range(8)) or any(
                 item["status"] != report["status"] for item in completed):
             raise AssertionError("Cannot issue aggregate PASS without eight passing ranks")
+        expected_fastpath = report["cold_pipeline_entry"]["scope_fastpath"]["enabled"]
+        expected_status = "PASS_SYNTHETIC_FASTPATH" if expected_fastpath else "PASS_SYNTHETIC_SLOWPATH_CONTROL"
+        if any(item["scope_fastpath"]["enabled"] is not expected_fastpath or
+               item["scope_fastpath"]["status"] != expected_status for item in completed):
+            raise AssertionError("All eight ranks must validate the same fastpath control mode")
         save(directory / "summary.json", {"status": report["status"], "run_id": token[0],
                                          "cycles": args.cycles, "ranks": completed,
+                                         "scope_fastpath": {"enabled": expected_fastpath, "status": expected_status},
                                          "boundaries": report["boundaries"]})
         print(json.dumps({"status": report["status"], "evidence_directory": str(directory)}, indent=2))
     dist.barrier()

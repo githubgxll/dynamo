@@ -5,7 +5,9 @@ import importlib
 import importlib.util
 import inspect
 import json
+import os
 from pathlib import Path
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -117,6 +119,83 @@ class InstalledCPU(unittest.TestCase):
         self.assertEqual(weight.__dict__.keys(), before.keys())
         for key, value in before.items():
             self.assertIs(weight.__dict__[key], value)
+
+    def _installed_scope_forward(self, mode, *, fail=False):
+        # Real installed HookRegistry, torch module forwards, helper no-op
+        # traversal and telemetry wiring. This does not exercise CUDA or FSDP.
+        torch, backend = self.torch, self.sequential
+        dit = torch.nn.Linear(4, 4, bias=False).requires_grad_(False)
+        encoder = torch.nn.Linear(4, 4, bias=False).requires_grad_(False)
+        values = torch.arange(4, dtype=torch.float32).reshape(1, 4)
+        weight = dit.weight
+        with torch.no_grad():
+            expected = dit(values).clone()
+        platform = types.SimpleNamespace(
+            is_xpu=lambda: False,
+            synchronize=mock.Mock(),
+            empty_cache=mock.Mock(),
+            get_free_memory=mock.Mock(side_effect=AssertionError("Unexpected memory query")),
+        )
+        failure = RuntimeError("installed CPU scope body fixture")
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.dict(os.environ, {"H3_OFFLOAD_FASTPATH": mode,
+                                         "H3_OFFLOAD_TIMING": "1",
+                                         "H3_OFFLOAD_TIMING_DIR": directory}), \
+             mock.patch.object(backend, "current_omni_platform", platform), \
+             mock.patch.object(backend.logger, "isEnabledFor", return_value=False), \
+             mock.patch.object(backend, "move_component", wraps=self.migration.move_component) as moves, \
+             torch.no_grad():
+            self.assertIsNone(backend._ACTIVE_DIT_SCOPE)
+            self.assertIsNone(self.migration._OFFLOAD_PROFILE.get())
+            backend.apply_sequential_offload([dit], [encoder], torch.device("cpu"),
+                                             pin_memory=False, use_hsdp=True)
+            try:
+                try:
+                    with backend.sequential_offload_component(dit):
+                        self.assertEqual(moves.call_count, 2)
+                        for _ in range(50):
+                            self.assertTrue(torch.equal(dit(values), expected))
+                            self.assertIs(dit.weight, weight)
+                        self.assertEqual(moves.call_count, 2 if mode == "1" else 102)
+                        if fail:
+                            raise failure
+                except RuntimeError as error:
+                    if not fail:
+                        raise
+                    self.assertIs(error, failure)
+                else:
+                    self.assertFalse(fail, "The body exception was swallowed")
+                self.assertIsNone(backend._ACTIVE_DIT_SCOPE)
+                self.assertIsNone(self.migration._OFFLOAD_PROFILE.get())
+                self.assertEqual(moves.call_count, 3 if mode == "1" else 103)
+                self.assertEqual(platform.synchronize.call_count, 1 if mode == "1" else 51)
+                platform.empty_cache.assert_not_called()
+                platform.get_free_memory.assert_not_called()
+                records = list(Path(directory).rglob("*.json"))
+                self.assertEqual(len(records), 1)
+                self.assertEqual(list(Path(directory).rglob("*.tmp")), [])
+                record = json.loads(records[0].read_text(encoding="utf-8"))
+                self.assertEqual(record["schema"], "h3-offload-timing/1")
+                self.assertEqual(record["label"], "component:Linear")
+                self.assertEqual(record["fastpath_env"], mode)
+                self.assertEqual(record["status"], "failed" if fail else "succeeded")
+                if fail:
+                    self.assertEqual(record["error_type"], "RuntimeError")
+                self.assertEqual(record["counts"].get("hook_fastpath", 0), 50 if mode == "1" else 0)
+                self.assertEqual(record["counts"]["hook_slowpath"], 1 if mode == "1" else 51)
+                self.assertEqual(record["counts"]["hook_synchronize_calls"], 1 if mode == "1" else 51)
+                self.assertEqual(record["counts"]["component_body_calls"], 1)
+                self.assertGreaterEqual(record["seconds"]["component_body"], 0)
+            finally:
+                backend.remove_sequential_offload([dit, encoder])
+
+    def test_installed_scope_hook_and_profile_wiring_for_both_modes(self):
+        for mode in ("1", "0"):
+            with self.subTest(fastpath=mode):
+                self._installed_scope_forward(mode)
+
+    def test_installed_scope_exception_clears_lease_and_profile(self):
+        self._installed_scope_forward("1", fail=True)
 
     def test_conversion_future_flags_restored_after_exception(self):
         future = self.torch.__future__

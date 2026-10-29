@@ -32,7 +32,7 @@ class ExactSourcePatch(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertEqual(helper, (HERE / "hsdp_migration.py").read_bytes())
 
-    def test_only_migration_and_snapshot_functions_change(self):
+    def test_only_migration_and_scoped_hook_functions_change(self):
         def definitions(body):
             tree = ast.parse(body)
             found = {}
@@ -47,7 +47,13 @@ class ExactSourcePatch(unittest.TestCase):
         before = definitions(self.original)
         after = definitions(self.patch.transform(self.original))
         changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
-        self.assertEqual(changed, {"_capture_tensor_devices", "_restore_tensor_devices", "SequentialOffloadHook._move_params"})
+        self.assertEqual(changed, {
+            "_capture_tensor_devices", "_restore_tensor_devices", "_scope_signature",
+            "_check_dit_scope", "_dit_scope_lease", "SequentialOffloadHook.__init__",
+            "SequentialOffloadHook._move_params", "SequentialOffloadHook._to_cpu",
+            "SequentialOffloadHook._to_gpu", "SequentialOffloadHook.pre_forward",
+            "apply_sequential_offload", "remove_sequential_offload", "sequential_offload_component",
+        })
 
     def test_hook_still_controls_full_components(self):
         after = self.patch.transform(self.original).decode()
@@ -104,6 +110,8 @@ def isolated_function(name, scope=None):
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     body = ast.fix_missing_locations(ast.Module(body=[future, node], type_ignores=[]))
     namespace = {} if scope is None else scope
+    namespace.setdefault("timed_offload", lambda *args: nullcontext())
+    namespace.setdefault("count_offload", lambda *args: None)
     exec(compile(body, "isolated-control-flow", "exec"), namespace)
     return namespace[name]
 

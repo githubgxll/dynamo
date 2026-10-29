@@ -129,6 +129,52 @@ class VllmLauncherContext(unittest.TestCase):
             self.assertEqual(events, [])
 
 
+class ScopeFastpathEvidence(unittest.TestCase):
+    def test_environment_control_is_exact_and_defaults_enabled(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(gpu.scope_fastpath_enabled())
+        for value, expected in (("0", False), ("1", True)):
+            with mock.patch.dict(os.environ, {"H3_OFFLOAD_FASTPATH": value}):
+                self.assertIs(gpu.scope_fastpath_enabled(), expected)
+        for value in ("", "true", "2"):
+            with mock.patch.dict(os.environ, {"H3_OFFLOAD_FASTPATH": value}), \
+                 self.assertRaisesRegex(ValueError, "must be 0 or 1"):
+                gpu.scope_fastpath_enabled()
+
+    def test_zero_migrations_alone_cannot_pass_fastpath_when_scans_or_sync_remain(self):
+        gpu.assert_forward_admin(True, 0, 0)
+        for scans, sync in ((1, 0), (0, 1), (2, 1)):
+            with self.subTest(scans=scans, sync=sync), self.assertRaisesRegex(AssertionError, "scanned parameters"):
+                gpu.assert_forward_admin(True, scans, sync)
+
+    def test_disabled_control_must_prove_scans_and_sync_are_exercised(self):
+        gpu.assert_forward_admin(False, 2, 1)
+        for scans, sync in ((0, 0), (1, 0), (0, 1)):
+            with self.subTest(scans=scans, sync=sync), self.assertRaisesRegex(AssertionError, "Disabled fastpath"):
+                gpu.assert_forward_admin(False, scans, sync)
+
+    def test_invalid_or_regressed_counters_are_rejected(self):
+        for scans, sync in ((-1, 0), (0, -1), (True, 0), (0, 0.0)):
+            with self.subTest(scans=scans, sync=sync), self.assertRaisesRegex(AssertionError, "Invalid per-forward"):
+                gpu.assert_forward_admin(True, scans, sync)
+
+    def test_observer_does_not_patch_shared_platform_or_count_external_sync(self):
+        calls = []
+        def synchronize(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "synchronized"
+        platform = SimpleNamespace(synchronize=synchronize, marker=object())
+        counts = {"backend_synchronize_calls": 0}
+        observer = gpu.BackendPlatformObserver(platform, counts)
+        self.assertEqual(observer.synchronize("device", option=True), "synchronized")
+        self.assertEqual(counts["backend_synchronize_calls"], 1)
+        self.assertEqual(calls, [(("device",), {"option": True})])
+        self.assertIs(observer.marker, platform.marker)
+        self.assertIs(platform.synchronize, synchronize)
+        platform.synchronize()
+        self.assertEqual(counts["backend_synchronize_calls"], 1)
+
+
 class GateSourceContract(unittest.TestCase):
     def test_main_uses_context_launcher_and_requires_three_cycles(self):
         tree = ast.parse((ROOT / "gpu_roundtrip.py").read_text(encoding="utf-8"))
@@ -146,8 +192,20 @@ class GateSourceContract(unittest.TestCase):
         step_loop = next(node for node in denoise.body if isinstance(node, ast.For))
         self.assertIn("backing_addresses() != addresses", ast.unparse(step_loop))
         self.assertIn("len(moves) != move_count_at_entry", ast.unparse(step_loop))
+        self.assertIn("admin_at_entry = dict(admin_counts)", ast.unparse(step_loop))
+        self.assertIn("assert_forward_admin(fastpath, **forward_counts)", ast.unparse(step_loop))
         self.assertIn("reference = fresh_model()", ast.unparse(cold))
         self.assertIn("cold = fresh_model()", ast.unparse(cold))
+
+    def test_cold_gate_observes_backend_variable_not_shared_platform_method(self):
+        tree = ast.parse((ROOT / "gpu_roundtrip.py").read_text(encoding="utf-8"))
+        cold = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                    and node.name == "cold_installed_pipeline_entry")
+        source = ast.unparse(cold)
+        self.assertIn("mock.patch.object(backend, 'current_omni_platform', platform_observer)", source)
+        self.assertNotIn("mock.patch.object(backend.current_omni_platform", source)
+        self.assertIn("forward_move_params_calls=sum(", source)
+        self.assertIn("forward_backend_synchronize_calls=sum(", source)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,30 @@
+{
+  "schema": "h3-offload-experiment-integration/1",
+  "status": "LOCAL_PATCH_TESTED_NOT_DEPLOYABLE",
+  "source_package": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\experiments\\ref2va8-offload-dit-entry-20261028",
+  "source_sha256": {
+    "resident.py": "b021237adbe418576ac4772e3d774741dab30019f9cf12d70a8ada46391664e5",
+    "workflow.py": "ec7813f14d7140a96c5f21e83aa9c4ccd6929150434d8cdd78631242f7b976b6"
+  },
+  "candidate_sha256": {
+    "resident.py": "43eeacbc7a4f3db03525fb4661b6d6cb48e4a4ac65843f981564012b461f3c65",
+    "workflow.py": "0c5353a61c8a8dc20f5349481ca3b2605e65d3ff0157ec001a4e8effde854019",
+    "tests/test_offload_controls.py": "b8ccbdb4648d6a9f6404d958c75864bfc67ebfb562f561aa1c898910f2ddaecb"
+  },
+  "patch_sha256": "5c4bfde525c4366d7536b5032d911b5f357f7648165bff0cd96aada649e746b4",
+  "cluster_calls": 0,
+  "source_modified": false,
+  "new_image_bound": false,
+  "unchanged_contracts": [
+    "H3 and SR argv",
+    "load_run",
+    "Pod environment contract",
+    "admission validation"
+  ],
+  "required_before_deployment": [
+    "Publish the matching repaired image and bind its full digest",
+    "Refresh installed-source locks, repair-gate hashes and image recipe identity from the published build",
+    "Apply this patch only to a new code-only package and regenerate its package seal",
+    "Use new RUN/BATCH IDs; never reuse or edit existing frozen configs"
+  ]
+}

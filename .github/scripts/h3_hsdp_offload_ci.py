@@ -25,8 +25,8 @@ PIPELINE = "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py"
 # The accepted candidate combines the previous migration fix with the DiT
 # entry fix. An old HSDP-only PASS must not authorize this publication.
 PATCHED_SOURCE_SHA256 = {
-    BACKEND: "b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0",
-    HELPER: "1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af",
+    BACKEND: "17c3ea33434e924b78eea98d28f3a75032c73e9e175af46a625b0980557e1e08",
+    HELPER: "b1656d629dd27d1fc7295f320ba2bfd5aea9178b0a6a16a52089f6565f0da12a",
     PIPELINE: "9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024",
 }
 spec = importlib.util.spec_from_file_location("_hsdp_parent_ci", ROOT / ".github/scripts/seedvr2_c14_ci.py")

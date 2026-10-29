@@ -1,10 +1,10 @@
 # H3 八卡 HSDP CPU 卸载候选镜像
 
-结论：2026-10-28 本次修复在上一版 HSDP 镜像内容上补齐 **H3 DiT 的激活入口**。上一版 `4a5d1340…` / `18e218…` 已通过八卡合成迁移，真实 C02 仍在首个 DiT 前向报 CPU/CUDA 混合驻留。现在将整个 DiT 的恢复提前到 FSDP 原生前向钩子之前，并包住整个去噪循环；保留上一版 FSDP-aware 迁移实现、参数身份保护、vLLM 0.31.0、vLLM-Omni 0.31.0rc1、Torch 2.13.0+cu130、Cache-DiT 1.5.0、video-gateway 和 SeedVR2 修复。
+2026-10-29 更新：已完成 **DiT 驻留作用域快速路径＋卸载分项计时** 的本地实现。已有 `c053e525…` 镜像的 Ref7 已成功生成，但相对历史无卸载配置，七例 H3 HTTP 增加约233秒，其中约224秒落在 `diffuse` 内。当前候选针对每步重复扫描／同步做优化；实际搬运、FSDP安全检查、精度与模型配置保留。尚未构筑或进行新候选GPU性能验收。
 
-构建继续使用同一配方，从固定 C14 父层 `873650…` 重放原迁移补丁并增加本次 pipeline 补丁。这样保留上一版内容，又遵守一次性安装规则；**不能把 `FROM` 直接改成已经打过补丁的 `18e218…` 后重复运行旧 `apply`**。本次不安装依赖、不下载权重、不升级 Dynamo，也不新增分支。详细身份、哈希和部署交接见 [DiT 入口修复说明](DIT-ENTRY-REPAIR-20261028.md)。
+**当前入口：[耗时优化、计时与构筑交接](OFFLOAD-FASTPATH-TIMING-20261029.md)**。`H3_OFFLOAD_FASTPATH=0/1` 用于同镜像对照，`H3_OFFLOAD_TIMING=1` 开启每rank分项计时。现有实验启动器会清除 `H3_*`，必须按交接同步新实验代码；只改Pod环境或本地CMD环境不会自动生效。
 
-**新配方的构建、GPU 与真实 C02 验收需分别执行。** 上一版合成迁移 PASS 不能转移为新入口或真实 H3 PASS；本配方发布证据仍记录 `gpu_validation_status=NOT_RUN`，显存收益和媒体质量不得从本地检查推定。
+构筑仍从固定 C14 父层 `873650…` 重放全部定向补丁，不在已打补丁的 `c053…` 上重复安装。vLLM 0.31.0、vLLM-Omni 0.31.0rc1、Torch 2.13.0+cu130、Cache-DiT 1.5.0、Gateway和SeedVR2保持原版本。历史 [DiT入口修复](DIT-ENTRY-REPAIR-20261028.md) 留档；当前来源以 `source-lock.json` 和 `source-patches.lock.json` 为准。
 
 2026-10-27 构建中的 `Native Torch method differs` 已定位为 Python 3.12/3.14 的 AST 文本表示差异；本次改用跨版本规范指纹，保持 Torch、依赖和迁移 helper。见 [根因与修复说明](TORCH-CONTRACT-FIX-20261027.md)。请用 `02-submit-build.cmd` 提交新配方，单独运行 `03-run-build.cmd` 不会上传本次修改。
 
@@ -72,9 +72,9 @@ registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm:omni031rc1-gateway-hsdp-
 
 新镜像就绪后，使用新 Pod 与新 RUN；旧失败 Run、日志、state 与下载包保持不变。当前运行控制器在首次失败后 `generation_blocked=true`，`/health=200` 或 Pod Ready 不能证明生成可继续。不要修改旧 state 文件或复用已阻断的进程。
 
-新实验包必须保留父层 `H3_EXPERIMENTAL_SOURCE_COMMIT` / `H3_C14_SOURCE_COMMIT`，核对本次新的 `H3_HSDP_SOURCE_COMMIT` / `H3_HSDP_PARENT_IMAGE`，同时核验实际加载的 `sequential_backend.py`、`hsdp_migration.py` 和新 `pipeline_minimax_h3.py`。旧 `image-repair-lock.json` 锁定的是 `18e218…` 及旧 pipeline，运行器还可能锁定旧 `runtime.py`、`gpu_roundtrip.py` 与配方文件；必须依据新发布证据同步，不能只换 image 字符串。当前更新清单见 [新镜像部署交接](DIT-ENTRY-REPAIR-20261028.md#新镜像部署交接)；2026-10-27 身份文档保留为历史记录。
+新实验包必须保留父层 `H3_EXPERIMENTAL_SOURCE_COMMIT` / `H3_C14_SOURCE_COMMIT`，核对本次新的 `H3_HSDP_SOURCE_COMMIT` / `H3_HSDP_PARENT_IMAGE`，同时核验实际加载的 `sequential_backend.py`、`hsdp_migration.py` 和新 `pipeline_minimax_h3.py`。现有 DiT-entry 实验包锁定的是 `c053…` 与旧backend/helper；必须同步新镜像来源、源码哈希、`gpu_roundtrip.py`及配方快照。当前更新清单见 [耗时优化交接](OFFLOAD-FASTPATH-TIMING-20261029.md)；历史身份文档保持原样。
 
-旧 `repair_gate.py` 还固定要求17个GPU阶段；新脚本三轮时为18阶段，增加冷态H3入口检查。新实验包须同步阶段清单及逐rank的冷态结果验证，否则会在镜像来源正确后继续被旧预检拒绝。
+当前GPU门禁保留18阶段和冷态入口，新增每rank `scope_fastpath` 检查：开启时forward内重复扫描/同步必须为0，关闭时必须实际执行。更早17阶段脚本不能复用，新实验包还须校验这组计数。
 
 1. 先执行更新后的八卡合成测试。保留旧 warm 迁移检查，新增独立冷态 fixture：首次 FSDP forward 前就启用 CPU parking，通过实际安装的 `MiniMaxH3Pipeline.diffuse()` 和组件上下文进入 50 步循环，至少三轮。核对 Parameter 身份、FSDP 持有引用、global/local device、全 rank 完成，以及每轮只有一次 DiT H2D、步间无重复搬运。合成输入/去噪循环与 Cache-DiT refresh 仍为替身，不等于完整 H3 或真实 Cache-DiT 已验收。
 2. 新 Run 先执行固定输入的 C02 cold，再 warm、连续重复。保持 8×H100、U8、HSDP8、TE TP8、BF16、Base50 与 Cache-DiT，SR 首先仍关闭。原权重只读挂载不改。

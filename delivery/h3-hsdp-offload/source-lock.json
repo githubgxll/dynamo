@@ -1,6 +1,6 @@
 {
   "schema": "h3-hsdp-offload-source-lock/1",
-  "reviewed_date": "2026-10-28",
+  "reviewed_date": "2026-10-29",
   "repository": "https://github.com/githubgxll/dynamo.git",
   "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
   "platform": "linux/amd64",
@@ -24,8 +24,9 @@
     "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py": "e8d37d9e086b72930d33b419efadbf25ff695bcef295cba8f3c0c2b59edc85e0"
   },
   "gpu_validation_status": "NOT_RUN",
-  "scope": "Rebuild the prior HSDP candidate recipe over the same immutable C14 parent, preserving the native migration delta and adding whole-DiT activation before native FSDP forward. No dependency, weight, adapter, Gateway or SR upgrade. GPU/media acceptance remains separate.",
-  "repair_revision": "dit-entry-20261028",
-  "previous_candidate_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:18e218d394345c57bf837d627b7a97b6d9e1ee80c9b068583e82280398c4a5b1",
-  "previous_candidate_commit": "4a5d1340cf496aeec11cc33c11416b58fe125808"
+  "scope": "Replay the verified DiT-entry and native migration recipe over the same immutable C14 parent. Add a DiT residency-scope fast path and opt-in inclusive CPU-wall offload timing, keeping actual migration safety checks and framework, model, Gateway and SR configuration unchanged. New image and GPU performance acceptance remain pending.",
+  "repair_revision": "scope-fastpath-timing-20261029",
+  "previous_candidate_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c053e525f3ba120beb1f50910891b6f0d2d977083eb56382b88641e9fec2a2f0",
+  "previous_candidate_commit": "977b1ca80a61305e1565ae0321925ba4767a8bc2",
+  "working_tree_base_commit": "f78ca9ee5bfebd86186feb820a7295291a0b9cfd"
 }

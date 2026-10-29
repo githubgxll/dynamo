@@ -1,6 +1,7 @@
 """Exercise real Git indices, ignored tracked inputs, seals and bounded staging."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -29,6 +30,7 @@ class SubmissionTests(unittest.TestCase):
         self.git("config", "user.email", "local-test@example.invalid")
         self.git("config", "core.autocrlf", "false")
         self.git("config", "core.filemode", "false")
+        self.git("config", "core.symlinks", "false")
         self.git("remote", "add", "origin", "https://github.com/githubgxll/dynamo.git")
         self.put("CLAUDE.md", "inherited ignored tracked file\n")
         self.git("add", "CLAUDE.md")
@@ -82,6 +84,136 @@ class SubmissionTests(unittest.TestCase):
         (self.root / "container/h3-hsdp-offload/example.py").unlink()
         with self.assertRaisesRegex(ValueError, "seal"):
             ops.check_seal()
+
+    def historical_scope_fixture(self):
+        # Build A/M/D/T and executable-mode history in this disposable repo.
+        # Symlink mode is written into the index without OS symlink privileges.
+        for name in ("modified", "deleted", "type", "mode"):
+            self.put("outside/" + name, "before\n")
+        self.git("add", "outside")
+        self.git("commit", "-m", "recipe base with unrelated files")
+        self.lock["recipe_base_commit"] = self.git("rev-parse", "HEAD")
+        self.put("outside/added", "history addition\n")
+        self.put("outside/modified", "history modification\n")
+        self.put("outside/type", "link-target\n")
+        self.git("add", "outside/added", "outside/modified", "outside/type")
+        self.git("rm", "outside/deleted")
+        self.git("update-index", "--chmod=+x", "outside/mode")
+        blob = self.git("hash-object", "-w", "outside/type")
+        self.git("update-index", "--cacheinfo", "120000", blob, "outside/type")
+        self.put("container/h3-hsdp-offload/earlier.py", "old_recipe = True\n")
+        self.git("add", "container/h3-hsdp-offload/earlier.py")
+        self.git("commit", "-m", "already committed unrelated history and prior HSDP recipe")
+        self.lock["working_tree_base_commit"] = self.git("rev-parse", "HEAD")
+        self.put("delivery/h3-hsdp-offload/source-lock.json", json.dumps(self.lock) + "\n")
+
+    def tree_with_restored_recipe_path(self, name):
+        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
+            env = dict(os.environ, GIT_INDEX_FILE=str(Path(temporary) / "index"))
+            ops.git("read-tree", self.lock["working_tree_base_commit"], env=env)
+            original = self.git("ls-tree", self.lock["recipe_base_commit"], "--", name)
+            if original:
+                mode, kind, rest = original.split(" ", 2)
+                blob, path = rest.split("\t", 1)
+                ops.git("update-index", "--add", "--cacheinfo", mode, blob, path, env=env)
+            else:
+                ops.git("update-index", "--force-remove", name, env=env)
+            return ops.git("write-tree", env=env)
+
+    def test_committed_unrelated_history_is_excluded_but_full_hsdp_recipe_exports(self):
+        self.historical_scope_fixture()
+        index = (self.root / ".git/index").read_bytes()
+        ops.seal()
+        _, tree = ops.check_seal()
+        self.assertEqual(index, (self.root / ".git/index").read_bytes())
+        sealed = json.loads((self.root / ops.SEAL).read_text(encoding="utf-8"))
+        self.assertEqual(sealed["working_tree_base_commit"], self.lock["working_tree_base_commit"])
+        self.assertIn("container/h3-hsdp-offload/earlier.py", sealed["delta"])
+        self.assertIn("container/h3-hsdp-offload/example.py", sealed["delta"])
+        self.assertFalse(any(name.startswith("outside/") for name in sealed["delta"]))
+        ops.LEGACY.stage_validated_tree(tree)
+        self.git("commit", "-m", "reviewed candidate")
+        with tempfile.TemporaryDirectory(dir=ops.EVIDENCE) as destination:
+            ops.export_recipe(Path(destination))
+            self.assertTrue((Path(destination) / "container/h3-hsdp-offload/earlier.py").is_file())
+            self.assertTrue((Path(destination) / "container/h3-hsdp-offload/example.py").is_file())
+            self.assertFalse((Path(destination) / "outside").exists())
+
+    def test_historical_reverts_cannot_escape_when_cumulative_delta_disappears(self):
+        self.historical_scope_fixture()
+        original = ops.raw_delta(self.lock["recipe_base_commit"], self.lock["working_tree_base_commit"])
+        expected = {"added": "A", "modified": "M", "deleted": "D", "type": "T", "mode": "M"}
+        for suffix, status in expected.items():
+            name = "outside/" + suffix
+            with self.subTest(name=name, historical_status=status):
+                self.assertEqual(original[name]["status"], status)
+                candidate = self.tree_with_restored_recipe_path(name)
+                self.assertNotIn(name, ops.raw_delta(self.lock["recipe_base_commit"], candidate))
+                with self.assertRaisesRegex(ValueError, "Unrelated"):
+                    ops.delta_for_tree(candidate, self.lock)
+
+    def test_new_unrelated_commit_after_working_anchor_is_rejected(self):
+        self.historical_scope_fixture()
+        self.put("outside/added", "new unreviewed edit\n")
+        self.git("add", "outside/added")
+        self.git("commit", "-m", "unrelated new change")
+        with self.assertRaisesRegex(ValueError, "Unrelated"):
+            ops.delta_for_tree(self.git("rev-parse", "HEAD^{tree}"), self.lock)
+
+    def test_historical_shared_input_blob_or_mode_drift_is_rejected(self):
+        for mode_only in (False, True):
+            with self.subTest(mode_only=mode_only):
+                name = "container/seedvr2-c14/shared-" + str(mode_only) + ".py"
+                self.put(name, "shared = 1\n")
+                self.git("add", name)
+                self.git("commit", "-m", "shared recipe input")
+                lock = dict(self.lock, recipe_base_commit=self.git("rev-parse", "HEAD"))
+                if mode_only:
+                    self.git("update-index", "--chmod=+x", name)
+                else:
+                    self.put(name, "shared = 2\n")
+                    self.git("add", name)
+                self.git("commit", "-m", "historical shared drift")
+                lock["working_tree_base_commit"] = self.git("rev-parse", "HEAD")
+                with self.assertRaisesRegex(ValueError, "Shared inputs"):
+                    ops.delta_for_tree(self.git("rev-parse", "HEAD^{tree}"), lock)
+
+    def test_anchor_order_and_head_ancestry_are_required(self):
+        self.historical_scope_fixture()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        sibling = self.git("commit-tree", tree, "-p", self.lock["recipe_base_commit"], "-m", "sibling anchor")
+        invalid_locks = [
+            dict(self.lock, working_tree_base_commit=sibling),
+            dict(self.lock, recipe_base_commit=self.lock["working_tree_base_commit"],
+                 working_tree_base_commit=self.lock["recipe_base_commit"]),
+            dict(self.lock, working_tree_base_commit="HEAD"),
+            dict(self.lock, working_tree_base_commit=self.lock["working_tree_base_commit"][:12]),
+            dict(self.lock, working_tree_base_commit=tree),
+        ]
+        for lock in invalid_locks:
+            with self.subTest(recipe=lock["recipe_base_commit"], working=lock["working_tree_base_commit"]):
+                with self.assertRaises((ValueError, RuntimeError)):
+                    ops.delta_for_tree(tree, lock)
+
+    def test_detached_committed_check_still_checks_anchors(self):
+        self.historical_scope_fixture()
+        ops.seal()
+        _, tree = ops.check_seal()
+        ops.LEGACY.stage_validated_tree(tree)
+        self.git("commit", "-m", "reviewed candidate")
+        self.git("checkout", "--detach", "HEAD")
+        self.assertEqual(tree, ops.check_seal(committed=True)[1])
+        sibling = self.git("commit-tree", tree, "-p", self.lock["recipe_base_commit"], "-m", "bad CI anchor")
+        with mock.patch.object(ops, "load_lock", return_value=dict(self.lock, working_tree_base_commit=sibling)):
+            with self.assertRaisesRegex(RuntimeError, "merge-base"):
+                ops.check_seal(committed=True)
+
+    def test_legacy_lock_keeps_recipe_anchor_scope(self):
+        self.assertNotIn("working_tree_base_commit", self.lock)
+        ops.seal()
+        sealed = json.loads((self.root / ops.SEAL).read_text(encoding="utf-8"))
+        self.assertEqual(sealed["working_tree_base_commit"], self.lock["recipe_base_commit"])
+        ops.check_seal()
 
     def test_stage_validated_tree_only(self):
         ops.seal()

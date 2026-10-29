@@ -1,14 +1,21 @@
 # 修复范围与验证边界
 
-本配方保留固定 vLLM-Omni 0.31.0rc1 / Torch 2.13.0+cu130 的组件迁移补丁，并于 2026-10-28 增加 H3 DiT 前向入口修复。上一版八卡合成迁移通过，真实 C02 却在首次 DiT 前向报混合驻留；新的入口补丁尚待镜像、八卡与媒体分层验收，不能提前承诺显存收益或吞吐。
+本配方固定 vLLM-Omni 0.31.0rc1 / Torch 2.13.0+cu130。2026-10-28 的 DiT 入口修复已在 `c053…` 完成用户 Ref7；2026-10-29 在此基础上加入驻留作用域快速路径和分项计时，尚未做新镜像GPU验收。
 
-## 修改范围
+## 本次修改
 
-- 复用上一版 `4a5d1340…` / `18e218…` 的内容与同一构建配方，从相同 C14 固定父镜像 `87365073…` 重放原补丁，再加入 pipeline 改动。不会在已打补丁的 `18e218…` 上重复执行旧 create-once 安装。
-- 安装包仍修改 `diffusion/offloader/sequential_backend.py` 并新增 `hsdp_migration.py`；两文件与上一版分别保持 SHA256 `b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0`、`1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af`。
-- 新增 `models/minimax_h3/pipeline_minimax_h3.py::diffuse()` 外层组件上下文，最终文件 SHA256 精确为用户候选的 `9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024`。pipeline 从 unchanged 移至 changed_sources，同步安装来源、Omni RECORD、CI 与导入回执。
-- 组件选择、HSDP 包装、Cache-DiT 配置、SeedVR2/RMSNorm、video-gateway、框架与依赖版本保留；除 `diffuse()` 之外的 H3 pipeline AST 不变。
-- 原始源文件、Torch FSDP 参数管理源码、原 RECORD、改后 RECORD 摘要与所有验证结果随镜像/CI artifact 保存。旧 C14 验证器保持原样，新源码使用独立完整来源验证器。
+- 构筑从相同 C14 父层 `87365073…` 重放累计补丁，不重复对已修复镜像执行 create-once 安装。
+- `sequential_backend.py` 增加仅限DiT的驻留lease。入口先完整卸载选中encoder并恢复DiT，成功后才标记ready；50步内部复用ready，跳过重复参数图遍历与显式同步。退出仍通过原生迁移路径释放DiT。
+- `H3_OFFLOAD_FASTPATH=0` 保留原逐步检查用于同镜像对照；默认1。跨线程、跨组件、配置变化、作用域内直接迁移或删除hook均拒绝；嵌套同一作用域不重复加载／提前卸载。异常保留首错并清除lease，不把清除lease等同于故障组件已成功搬回CPU。
+- `hsdp_migration.py` 增加 `H3_OFFLOAD_TIMING=1` 可选计时。记录CPU墙钟区间、调用数和rank；不添加CUDA同步，不把数值解释为纯GPU kernel时间。默认每个外层作用域一行结构化日志，可选写独立JSON。
+- 本次pipeline仍为原DiT-entry输出，SHA256 `9a2b75e9989a4fdb3dcd09094250f82a39d8cc9956c6773481e3c9cf969c0024`。backend/helper当前哈希以同目录 `source-patches.lock.json` 为准。
+- 组件选择、实际H2D/D2H、reshard/native `_apply`、参数身份检查、HSDP、Cache-DiT、SeedVR2、Gateway和依赖保持原策略。未增加异步DTensor搬运或修改Torch私有分片存储。
+
+## 快速路径的证明范围
+
+lease是进程级、线程归属受限的状态，使用重入锁保护进入/退出和迁移。它证明的是已审阅框架路径内，整个DiT在同一串行GPU动作中已经恢复；不能允许外部代码绕开hook直接 `.to()` 或同时使用同一模型。pipeline外的普通hook入口仍走完整检查。本轮只支持现有串行请求与H3/SR串行GPU计算。
+
+实际迁移保留阻塞语义。去掉的是已驻留时每步重复执行的检查和同步，不是将一次请求必要的CPU↔GPU搬运消除。若最终剩余耗时主要来自真实拷贝，需下一轮单独评估更细驻留策略或传输优化；不能据本地测试预先声称回收全部约32秒/例损失。
 
 ## 为什么要改迁移生命周期
 
@@ -55,3 +62,9 @@ GPU 测试现在由脚本自身提供 TP8 `VllmConfig`，构造及整个测试�
 `_apply`/FSDP 内部读取受版本约束，因此不能换 Torch 后直接沿用本补丁。对未来版本应重新审核实际源码与参数类型。
 
 本次没有添加少步蒸馏适配器或修改 Ref8 比例；原始 Base 权重仍使用现有只读挂载。普通 SeedVR2 推理源码保留；旧 C14 `sr_only.py` 是绑定旧来源的诊断工具，应继续在原镜像执行，不能把新镜像冒充旧 C14 发布身份。
+
+## 计时边界
+
+`component_body` 包含去噪调用及其内部hook；`hook_pre_forward`包含其迁移与同步；`migration_total`包含图检查、FSDP检查、源同步、reshard、元数据准备、native_apply与后验校验；`native_apply`包含tensor_to/pin_memory。父子区间不能相加，各rank不能相加作为E2E。所有指标是CPU墙钟，原调用的阻塞会计入，但未主动等待CUDA的调用可能在设备完成前返回。
+
+每次成功/失败作用域结束输出一次记录；硬终止或计时写入失败可能没有完整记录，缺失不能填0。日志汇总工具位于 `delivery/h3-hsdp-offload/summarize_offload_timings.py`，对累计日志按scope_id去重，可限定完整的请求时间窗口。

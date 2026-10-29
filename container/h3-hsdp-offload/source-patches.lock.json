@@ -3,8 +3,8 @@
   "target": "vllm_omni/diffusion/offloader/sequential_backend.py",
   "helper": "vllm_omni/diffusion/offloader/hsdp_migration.py",
   "before_sha256": "2d086ea9a2872ee9ebce3a4bc8a0ad840d355a4d728d541d80bae97457c4bc6a",
-  "after_sha256": "b7f65e771d755f6f897ac4c8fd6753153ba0d114b5bc03578b3259ff4e987ed0",
-  "helper_sha256": "1bec61bb616e797aee598f49a9ba0b4fe400d6cc41e2cf069bf599723ef587af",
+  "after_sha256": "17c3ea33434e924b78eea98d28f3a75032c73e9e175af46a625b0980557e1e08",
+  "helper_sha256": "b1656d629dd27d1fc7295f320ba2bfd5aea9178b0a6a16a52089f6565f0da12a",
   "unchanged_reference_sha256": {
     "vllm_omni/diffusion/distributed/hsdp.py": "7eb25d685e9ef1d50b42c06530b065ba7a4601c5cd78f213ad7ec559e001ed0a"
   },

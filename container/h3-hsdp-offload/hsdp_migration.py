@@ -13,18 +13,144 @@ No direct Parameter.data or DTensor._local_tensor assignment is used here.
 
 from __future__ import annotations
 
+import datetime
+import json
+import os
+from pathlib import Path
 import threading
+import time
+import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule
 from torch.distributed.tensor import DTensor
+from vllm.logger import init_logger
 
 
 _CONVERSION_LOCK = threading.RLock()
+_OFFLOAD_PROFILE: ContextVar[dict | None] = ContextVar("h3_offload_profile", default=None)
+_TIMING_LOGGER = init_logger(__name__)
+
+
+def _offload_rank() -> int:
+    # get_rank is local metadata, not a collective. vLLM's mp workers need not
+    # populate RANK, so prefer an initialized process group's rank.
+    try:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return int(torch.distributed.get_rank())
+    except (AttributeError, RuntimeError):
+        pass
+    for name in ("RANK", "LOCAL_RANK"):
+        try:
+            return int(os.environ[name])
+        except (KeyError, ValueError):
+            continue
+    return -1
+
+
+def _publish_offload_profile(record: dict) -> None:
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    directory = os.environ.get("H3_OFFLOAD_TIMING_DIR")
+    if not directory:
+        _TIMING_LOGGER.info("H3_OFFLOAD_TIMING %s", payload)
+        return
+    destination = Path(directory) / f"rank-{record['rank']}-pid-{record['pid']}"
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / (record["scope_id"] + ".json")
+    temporary = target.with_suffix(".json.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload + "\n")
+        os.replace(temporary, target)
+    finally:
+        # A telemetry failure must not leave something that looks published.
+        # Unique UUID names mean this can only remove our own temporary file.
+        if temporary.exists():
+            temporary.unlink()
+
+
+@contextmanager
+def offload_profile_scope(label: str):
+    """Aggregate one residency operation without adding device synchronization.
+
+    Timings are inclusive CPU wall intervals, including any blocking calls the
+    original implementation already made. Nested intervals MUST NOT be added
+    together or interpreted as CUDA kernel time. Existing outer scopes collect
+    nested operations, so there is no per-forward/per-tensor logging.
+    """
+    current = _OFFLOAD_PROFILE.get()
+    if current is not None:
+        yield current
+        return
+    if os.environ.get("H3_OFFLOAD_TIMING", "0") != "1":
+        yield None
+        return
+    record = {
+        "schema": "h3-offload-timing/1", "scope_id": uuid.uuid4().hex,
+        "label": label, "rank": _offload_rank(), "pid": os.getpid(),
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "status": "running", "counts": {}, "seconds": {},
+        "fastpath_env": os.environ.get("H3_OFFLOAD_FASTPATH", "1"),
+        "timing_scope": "inclusive CPU wall seconds; no added CUDA synchronization; nested intervals are not additive",
+        "timing_includes": {
+            "native_apply": ["tensor_to", "pin_memory"],
+            "migration_total": ["graph_preflight", "fsdp_preflight", "source_sync", "reshard",
+                                "metadata_prepare", "native_apply", "post_validate"],
+        },
+        "direction_note": "migration_to_cpu/cuda include preflight and no-op calls; movement counters count only successful real moves",
+    }
+    token = _OFFLOAD_PROFILE.set(record)
+    started = time.perf_counter()
+    try:
+        yield record
+    except BaseException as error:
+        record["status"] = "failed"
+        record["error_type"] = type(error).__name__
+        raise
+    else:
+        record["status"] = "succeeded"
+    finally:
+        record["wall_seconds"] = time.perf_counter() - started
+        record["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        _OFFLOAD_PROFILE.reset(token)
+        try:
+            _publish_offload_profile(record)
+        except Exception as error:
+            # Do not turn successful inference into a retryable-looking model
+            # failure, and never replace the original migration exception.
+            try:
+                _TIMING_LOGGER.warning("H3_OFFLOAD_TIMING_WRITE_FAILED scope=%s type=%s",
+                                       record["scope_id"], type(error).__name__)
+            except Exception:
+                # Even an unavailable logging sink cannot replace model state.
+                pass
+
+
+@contextmanager
+def timed_offload(name: str):
+    record = _OFFLOAD_PROFILE.get()
+    if record is None:
+        yield
+        return
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - started
+        record["seconds"][name] = record["seconds"].get(name, 0.0) + elapsed
+        calls = name + "_calls"
+        record["counts"][calls] = record["counts"].get(calls, 0) + 1
+
+
+def count_offload(name: str, amount: int = 1) -> None:
+    record = _OFFLOAD_PROFILE.get()
+    if record is not None:
+        record["counts"][name] = record["counts"].get(name, 0) + amount
 
 
 @dataclass(frozen=True)
@@ -170,47 +296,56 @@ def _preserve_parameter_identity():
 
 def _move_component(module: nn.Module, target_device: torch.device, *,
                     non_blocking: bool, pin_memory: bool, allow_mixed: bool) -> bool:
+    count_offload("migration_calls")
     target = torch.device(target_device)
     if target.type == "cuda" and target.index is None:
         target = torch.device("cuda", torch.cuda.current_device())
     if target.type not in {"cpu", "cuda"}:
         raise RuntimeError(f"Unsupported target device: {target}")
-    nodes = _postorder(module)
-    devices = _validate(nodes, allow_mixed=allow_mixed)
+    with timed_offload("graph_preflight"):
+        nodes = _postorder(module)
+        devices = _validate(nodes, allow_mixed=allow_mixed)
     if not devices or devices == {target}:
         # Native FSDP pre-forward can already be FORWARD when the sequential
         # wrapper asks to load an already-resident component. A no-op performs
         # no reshard/conversion and must not reject that valid hook ordering.
+        count_offload("migration_noops")
         return False
-    units = _fsdp_units(nodes, target)
+    with timed_offload("fsdp_preflight"):
+        units = _fsdp_units(nodes, target)
 
     # Synchronize the source CUDA execution stream before freeing or moving its
     # shard backing storage. HSDP movement is always blocking, independent of the
     # caller's non_blocking flag. No distributed collective is introduced here.
-    for device in sorted((d for d in devices if d.type == "cuda"), key=str):
-        torch.cuda.synchronize(device)
+    with timed_offload("source_sync"):
+        for device in sorted((d for d in devices if d.type == "cuda"), key=str):
+            torch.cuda.synchronize(device)
+            count_offload("source_sync_devices")
     if units:
         non_blocking = False
 
     # Mandatory first pass: native _apply starts with reshard, but doing that
     # only in postorder would let unwrapped children move UNSHARDED parameters
     # that the owning FSDP parent subsequently discards/re-registers.
-    for _, unit in units:
-        unit.reshard()
-    nodes = _postorder(module)
-    _validate(nodes, allow_mixed=allow_mixed)
-    _check_storage_aliases(nodes)
+    with timed_offload("reshard"):
+        for _, unit in units:
+            unit.reshard()
+            count_offload("reshard_units")
+    with timed_offload("metadata_prepare"):
+        nodes = _postorder(module)
+        _validate(nodes, allow_mixed=allow_mixed)
+        _check_storage_aliases(nodes)
 
-    parameter_slots = [(owner, key, tensor, name)
-                       for kind, name, owner, key, tensor in _slots(nodes) if kind == "parameter"]
-    parameter_types = {id(tensor): type(tensor) for _, _, tensor, _ in parameter_slots}
-    parameter_attributes = {id(tensor): dict(tensor.__dict__)
-                            for _, _, tensor, _ in parameter_slots if not isinstance(tensor, DTensor)}
-    buffer_ids = {id(tensor) for kind, _, _, _, tensor in _slots(nodes) if kind == "buffer"}
-    parameter_ids = {id(tensor) for _, _, tensor, _ in parameter_slots}
-    tensor_names = {id(tensor): name for _, name, _, _, tensor in _slots(nodes)}
-    if buffer_ids & parameter_ids:
-        raise RuntimeError("One tensor is registered as both parameter and buffer; unsupported")
+        parameter_slots = [(owner, key, tensor, name)
+                           for kind, name, owner, key, tensor in _slots(nodes) if kind == "parameter"]
+        parameter_types = {id(tensor): type(tensor) for _, _, tensor, _ in parameter_slots}
+        parameter_attributes = {id(tensor): dict(tensor.__dict__)
+                                for _, _, tensor, _ in parameter_slots if not isinstance(tensor, DTensor)}
+        buffer_ids = {id(tensor) for kind, _, _, _, tensor in _slots(nodes) if kind == "buffer"}
+        parameter_ids = {id(tensor) for _, _, tensor, _ in parameter_slots}
+        tensor_names = {id(tensor): name for _, name, _, _, tensor in _slots(nodes)}
+        if buffer_ids & parameter_ids:
+            raise RuntimeError("One tensor is registered as both parameter and buffer; unsupported")
     buffer_memo: dict[int, torch.Tensor] = {}
     current_name = "<component>"
 
@@ -218,10 +353,14 @@ def _move_component(module: nn.Module, target_device: torch.device, *,
         if id(tensor) in buffer_memo:
             return buffer_memo[id(tensor)]
         try:
-            moved = tensor.to(target, non_blocking=non_blocking)
-            if pin_memory and target.type == "cpu" and not isinstance(moved, DTensor):
-                if not moved.is_pinned():
-                    moved = moved.pin_memory()
+            with timed_offload("tensor_to"):
+                moved = tensor.to(target, non_blocking=non_blocking)
+            if pin_memory and target.type == "cpu":
+                if isinstance(moved, DTensor):
+                    count_offload("dtensor_pin_skipped")
+                elif not moved.is_pinned():
+                    with timed_offload("pin_memory"):
+                        moved = moved.pin_memory()
             if id(tensor) in parameter_ids and not isinstance(tensor, DTensor):
                 if not torch._has_compatible_shallow_copy_type(tensor, moved):
                     raise RuntimeError("Native dense conversion cannot preserve Parameter identity")
@@ -232,43 +371,47 @@ def _move_component(module: nn.Module, target_device: torch.device, *,
             raise RuntimeError("Tensor migration failed at " + _describe(tensor_names.get(id(tensor), current_name), tensor)
                                + f", target={target}") from exc
 
-    with torch.no_grad(), _preserve_parameter_identity():
+    with timed_offload("native_apply"), torch.no_grad(), _preserve_parameter_identity():
         for name, child in nodes:
             current_name = name or "<root>"
             # Dispatch through the real FSDP override, not nn.Module._apply.
             # recurse=False avoids Cache-DiT cycles; postorder refreshes each
             # owning FSDP group's cached references after all owned slots move.
             child._apply(convert, recurse=False)
+            count_offload("native_apply_modules")
 
-    for owner, key, before, name in parameter_slots:
-        if owner._parameters[key] is not before:
-            raise RuntimeError("Native conversion changed parameter identity: " + name)
-        if type(before) is not parameter_types[id(before)]:
-            raise RuntimeError("Native conversion changed parameter class: " + name)
-        attributes = parameter_attributes.get(id(before))
-        if attributes is not None and (before.__dict__.keys() != attributes.keys() or any(
-            before.__dict__[key] is not value for key, value in attributes.items()
-        )):
-            raise RuntimeError("Native conversion changed parameter attributes: " + name)
-    final_nodes = _postorder(module)
-    if _validate(final_nodes) != {target}:
-        raise RuntimeError(f"Component migration did not reach {target}")
-    for name, unit in units:
-        for group in unit._get_fsdp_state()._fsdp_param_groups:
-            if not group.is_sharded:
-                raise RuntimeError("FSDP did not remain sharded during migration: " + name)
-            for param in group.fsdp_params:
-                info = param._module_info
-                if getattr(info.module, info.param_name) is not param.sharded_param:
-                    raise RuntimeError("FSDP lost registered parameter identity: " + name)
-                local = _local(param.sharded_param)
-                if param._sharded_param_data.device != local.device:
-                    raise RuntimeError("FSDP cached shard device differs: " + name)
-                if local.untyped_storage().nbytes() and (
-                    param._sharded_param_data.untyped_storage().data_ptr()
-                    != local.untyped_storage().data_ptr()
-                ):
-                    raise RuntimeError("FSDP cached shard storage differs: " + name)
+    with timed_offload("post_validate"):
+        for owner, key, before, name in parameter_slots:
+            if owner._parameters[key] is not before:
+                raise RuntimeError("Native conversion changed parameter identity: " + name)
+            if type(before) is not parameter_types[id(before)]:
+                raise RuntimeError("Native conversion changed parameter class: " + name)
+            attributes = parameter_attributes.get(id(before))
+            if attributes is not None and (before.__dict__.keys() != attributes.keys() or any(
+                before.__dict__[key] is not value for key, value in attributes.items()
+            )):
+                raise RuntimeError("Native conversion changed parameter attributes: " + name)
+        final_nodes = _postorder(module)
+        if _validate(final_nodes) != {target}:
+            raise RuntimeError(f"Component migration did not reach {target}")
+        for name, unit in units:
+            for group in unit._get_fsdp_state()._fsdp_param_groups:
+                if not group.is_sharded:
+                    raise RuntimeError("FSDP did not remain sharded during migration: " + name)
+                for param in group.fsdp_params:
+                    info = param._module_info
+                    if getattr(info.module, info.param_name) is not param.sharded_param:
+                        raise RuntimeError("FSDP lost registered parameter identity: " + name)
+                    local = _local(param.sharded_param)
+                    if param._sharded_param_data.device != local.device:
+                        raise RuntimeError("FSDP cached shard device differs: " + name)
+                    if local.untyped_storage().nbytes() and (
+                        param._sharded_param_data.untyped_storage().data_ptr()
+                        != local.untyped_storage().data_ptr()
+                    ):
+                        raise RuntimeError("FSDP cached shard storage differs: " + name)
+    count_offload("migration_moves")
+    count_offload("h2d_moves" if target.type == "cuda" else "d2h_moves")
     return True
 
 
@@ -281,9 +424,13 @@ failed migration must abort generation; only initialization rollback may use
 restore_components. This function does not make a partially failed worker safe
 to resume. Pinning keeps the old backend policy: ordinary CPU tensors only.
 """
-    with _CONVERSION_LOCK:
-        return _move_component(module, target_device, non_blocking=non_blocking,
-                               pin_memory=pin_memory, allow_mixed=False)
+    with offload_profile_scope("migration:" + type(module).__name__):
+        # The direction-specific interval includes preflight/no-op calls, not
+        # only copy time. Counters distinguish no-op calls from actual moves.
+        direction = "migration_to_cpu" if torch.device(target_device).type == "cpu" else "migration_to_cuda"
+        with timed_offload("migration_total"), timed_offload(direction), _CONVERSION_LOCK:
+            return _move_component(module, target_device, non_blocking=non_blocking,
+                                   pin_memory=pin_memory, allow_mixed=False)
 
 
 def capture_components(modules: Iterable[nn.Module]) -> list[ComponentPlacement]:
