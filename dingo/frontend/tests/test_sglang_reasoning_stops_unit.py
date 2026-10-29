@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -60,7 +61,7 @@ def test_infer_reasoning_parser_missing_config(tmp_path):
         ("qwen3", "qwen3", "worker"),
     ],
 )
-def test_factory_selects_parser_and_preserves_reasoning_before_stop(
+def test_factory_selects_parser_and_preserves_worker_stop_during_reasoning(
     tmp_path, monkeypatch, model_type, expected, source
 ):
     # Exercise discovery -> factory -> parser -> preprocessing/streaming.
@@ -96,8 +97,9 @@ def test_factory_selects_parser_and_preserves_reasoning_before_stop(
     )
     engine = FakeRoutedEngine(
         [
-            {"token_ids": list(map(ord, "thinking\nmore thinking\n"))},
-            {"token_ids": list(map(ord, "</think>ALPHA\nBETA"))},
+            {
+                "token_ids": list(map(ord, "thinking\nmore thinking")),
+            },
         ]
     )
 
@@ -114,7 +116,7 @@ def test_factory_selects_parser_and_preserves_reasoning_before_stop(
         preproc = _build_dynamo_preproc(
             request, [1], request["model"], None, reasoning_parser=parser
         )
-        assert preproc["stop_conditions"]["stop"] == []
+        assert preproc["stop_conditions"]["stop"] == ["\n"]
         post = SglangStreamingPostProcessor(
             tokenizer=tokenizer,
             tool_call_parser=None,
@@ -132,9 +134,9 @@ def test_factory_selects_parser_and_preserves_reasoning_before_stop(
     choices = [c for item in items for c in item.get("data", {}).get("choices", [])]
     assert (
         "".join(c["delta"].get("reasoning_content", "") for c in choices)
-        == "thinking\nmore thinking\n"
+        == "thinking"
     )
-    assert "".join(c["delta"].get("content", "") for c in choices) == "ALPHA"
+    assert not any(c["delta"].get("content") for c in choices)
     assert choices[-1]["finish_reason"] == "stop"
 
 
@@ -143,21 +145,48 @@ class TextTokenizer:
         return "".join(chr(token_id) for token_id in token_ids)
 
 
-def make_post(stops, **kwargs):
+class ControlTokenizer:
+    markers = {"<think>": 256, "</think>": 257, "<tool_call>": 258}
+    unk_token_id = -1
+
+    def convert_tokens_to_ids(self, text):
+        return self.markers.get(text, -1)
+
+    def encode(self, text):
+        ids = []
+        for part in re.split(r"(<think>|</think>|<tool_call>)", text):
+            ids.extend([self.markers[part]] if part in self.markers else part.encode())
+        return ids
+
+    def decode(self, token_ids, *, skip_special_tokens):
+        markers = {v: k.encode() for k, v in self.markers.items()}
+        return b"".join(
+            markers[token] if token in markers else bytes([token])
+            for token in token_ids
+        ).decode("utf-8", errors="replace")
+
+
+def make_post(stops, *, token_aware=False, **kwargs):
     return SglangStreamingPostProcessor(
-        tokenizer=TextTokenizer(),
+        tokenizer=ControlTokenizer() if token_aware else TextTokenizer(),
         tool_call_parser=None,
         reasoning_parser=ReasoningParser(
             model_type="glm45", stream_reasoning=True, force_reasoning=True
         ),
+        reasoning_parser_name="glm45" if token_aware else None,
         stop_strings=set(stops),
         **kwargs,
     )
 
 
 def feed(post, text, finish=None):
+    ids = (
+        post.tokenizer.encode(text)
+        if isinstance(post.tokenizer, ControlTokenizer)
+        else list(map(ord, text))
+    )
     return post.process_output(
-        {"token_ids": list(map(ord, text)), "finish_reason": finish}
+        {"token_ids": ids, "finish_reason": finish}
     )
 
 
@@ -213,85 +242,159 @@ def test_message_field_does_not_become_sampling_option():
     assert result["sampling_options"]["frequency_penalty"] == 0.0
 
 
-def test_only_string_stops_move_to_reasoning_frontend():
-    request = {"stop": ["\n"], "stop_token_ids": [2]}
+@pytest.mark.parametrize("reasoning_parser", [None, object()])
+@pytest.mark.parametrize("stop", ["\n", ["\n", "END"]])
+@pytest.mark.parametrize("include", [False, True])
+def test_string_and_token_stops_remain_worker_owned(reasoning_parser, stop, include):
+    request = {
+        "stop": stop,
+        "stop_token_ids": [2],
+        "include_stop_str_in_output": include,
+        "min_tokens": 150,
+    }
     result = _build_dynamo_preproc(
-        request, [1], "glm-5.3", [3], reasoning_parser=object()
+        request, [1], "glm-5.3", [3], reasoning_parser=reasoning_parser
     )
-    assert result["stop_conditions"]["stop"] == []
+    assert result["stop_conditions"]["stop"] == (
+        [stop] if isinstance(stop, str) else stop
+    )
     assert result["stop_conditions"]["stop_token_ids"] == [2]
     assert result["eos_token_ids"] == [3]
-    assert request["stop"] == ["\n"]
-    plain = _build_dynamo_preproc(request, [1], "glm-5.3", [3])
-    assert plain["stop_conditions"]["stop"] == ["\n"]
+    assert result["sampling_options"]["include_stop_str_in_output"] is include
+    assert result["stop_conditions"]["min_tokens"] == 150
+    assert request["stop"] == stop
 
 
+@pytest.mark.parametrize("token_aware", [False, True])
 @pytest.mark.parametrize("include", [False, True])
-def test_reasoning_newline_does_not_stop_answer_newline_does(include):
+def test_stop_finishes_during_reasoning_without_worker_matching(include, token_aware):
     request = {"stop": "\n", "include_stop_str_in_output": include}
     post = make_post(
         _request_stop_strings(request, match_visible=True),
+        token_aware=token_aware,
         include_stop_str_in_output=include,
     )
-    thought = feed(post, "thinking\nmore thinking\n")
-    assert thought["delta"]["reasoning_content"] == "thinking\nmore thinking\n"
-    assert thought["finish_reason"] is None
-    answer = feed(post, "</think>ALPHA\nBETA")
-    assert answer["delta"]["content"] == ("ALPHA\n" if include else "ALPHA")
-    assert answer["finish_reason"] == "stop"
-    assert post.matched_stop == "\n"
-    assert feed(post, "must not appear") is None
+    thought = feed(post, "thinking\nmore thinking</think>answer")
+    assert thought["delta"]["reasoning_content"] == (
+        "thinking\n" if include else "thinking"
+    )
+    assert not thought["delta"].get("content")
+    assert thought["finish_reason"] == "stop"
+    assert post.locally_finished
+    assert post.local_stop_reason == "\n"
+    assert feed(post, "ignored") is None
 
 
+@pytest.mark.parametrize("token_aware", [False, True])
+def test_min_tokens_keeps_early_stops_and_matches_later_stop(token_aware):
+    post = make_post(["\n"], token_aware=token_aware, min_tokens=100)
+    thought = feed(post, "thinking\n</think>")
+    assert thought["delta"]["reasoning_content"] == "thinking\n"
+    answer = feed(post, "answer\n")
+    assert answer["delta"]["content"] == "answer\n"
+    assert answer["finish_reason"] is None
+    assert not post.has_pending_stop_text
+    end = feed(post, "x" * 100 + "\nignored")
+    assert end["delta"]["content"] == "x" * 100
+    assert end["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize("token_aware", [False, True])
 @pytest.mark.parametrize("split", range(1, 5))
-def test_stop_across_chunks(split):
-    post = make_post(["<END>"])
-    feed(post, "thinking\n</think>")
+@pytest.mark.parametrize("in_reasoning", [False, True])
+def test_stop_across_chunks(token_aware, split, in_reasoning):
+    post = make_post(["<END>"], token_aware=token_aware)
+    if not in_reasoning:
+        feed(post, "thinking</think>")
     first = feed(post, "hello<END>"[: 5 + split])
     second = feed(post, "<END>"[split:] + "ignored")
-    assert first["delta"]["content"] == "hello"
+    field = "reasoning_content" if in_reasoning else "content"
+    assert first["delta"][field] == "hello"
     assert first["finish_reason"] is None
     assert second["finish_reason"] == "stop"
-    assert not second["delta"].get("content")
+    assert not second["delta"].get(field)
 
 
-def test_partial_stop_flushed_on_length_and_reasoning_only_length():
-    post = make_post(["<END>"])
+@pytest.mark.parametrize("token_aware", [False, True])
+@pytest.mark.parametrize("include", [False, True])
+def test_engine_reported_answer_stop_is_trimmed(token_aware, include):
+    post = make_post(
+        ["END"], token_aware=token_aware, include_stop_str_in_output=include
+    )
     feed(post, "thinking</think>")
-    feed(post, "hello<EN")
+    ids = list(map(ord, "answerEND"))
+    choice = post.process_output(
+        {"token_ids": ids, "finish_reason": "stop", "stop_reason": "END"}
+    )
+    assert choice["delta"]["content"] == ("answerEND" if include else "answer")
+    assert choice["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize("token_aware", [False, True])
+def test_partial_stop_flushed_on_length(token_aware):
+    post = make_post(["<END>"], token_aware=token_aware)
+    feed(post, "thinking</think>")
+    assert feed(post, "hello<EN")["delta"]["content"] == "hello"
     end = feed(post, "", "length")
     assert end["delta"]["content"] == "<EN"
     assert end["finish_reason"] == "length"
-    post = make_post(["\n"])
-    end = feed(post, "thinking\n" * 20, "length")
-    assert end["finish_reason"] == "length"
-    assert "content" not in end["delta"]
-    assert end["delta"]["reasoning_content"].count("\n") == 20
 
 
-def test_first_match_and_min_tokens():
-    post = make_post(["END", "STOP"])
-    end = feed(post, "thinking</think>answerSTOPdiscardEND")
-    assert end["delta"]["content"] == "answer"
-    assert post.matched_stop == "STOP"
-    post = make_post(["\n"], min_tokens=150)
-    assert feed(post, "thinking</think>a\n")["finish_reason"] is None
-    end = feed(post, "x" * 160 + "\nignored")
+def test_glm_pending_prefix_keeps_original_channel_across_control_token():
+    post = make_post(["x</think>END"], token_aware=True)
+    assert feed(post, "thoughtx")["delta"]["reasoning_content"] == "thought"
+    assert feed(post, "</think>") is None
+    choice = feed(post, "other", "length")
+    assert choice["delta"]["reasoning_content"] == "x"
+    assert choice["delta"]["content"] == "other"
+    assert choice["finish_reason"] == "length"
+
+
+def test_glm_stop_can_span_reasoning_control_token():
+    post = make_post(["x</think>END"], token_aware=True)
+    assert feed(post, "thoughtx")["delta"]["reasoning_content"] == "thought"
+    assert feed(post, "</think>") is None
+    end = feed(post, "ENDignored")
     assert end["finish_reason"] == "stop"
+    assert not end["delta"].get("content")
+    assert not end["delta"].get("reasoning_content")
+
+
+def test_glm_literal_think_tags_do_not_change_channel_with_stops_enabled():
+    post = make_post(["END"], token_aware=True)
+    choice = post.process_output(
+        {"token_ids": list(b"literal </think> still reasoningENDignored")}
+    )
+    assert choice["delta"]["reasoning_content"] == "literal </think> still reasoning"
+    assert not choice["delta"].get("content")
+    assert choice["finish_reason"] == "stop"
+
+
+def test_glm_utf8_stop_split_across_tokens():
+    post = make_post(["停止"], token_aware=True)
+    text = "思考停止忽略".encode()
+    choices = []
+    for token in text:
+        choice = post.process_output({"token_ids": [token]})
+        if choice:
+            choices.append(choice)
+    assert "".join(c["delta"].get("reasoning_content", "") for c in choices) == "思考"
+    assert choices[-1]["finish_reason"] == "stop"
 
 
 @pytest.mark.parametrize("interval", [1, 20])
 @pytest.mark.parametrize("continuous", [False, True])
 @pytest.mark.parametrize("native_stream", [False, True])
+@pytest.mark.parametrize("token_aware", [None, False, True])
 def test_local_stop_closes_generation_and_emits_terminal_usage(
-    interval, continuous, native_stream
+    interval, continuous, native_stream, token_aware
 ):
     class Engine:
         closed = False
         consumed = 0
 
         async def generate(self, request, **kwargs):
-            texts = ["thinking\n", "</think>ALPHA\nBETAignored", "never read"]
+            texts = ["ALPHA\nBETAignored", "never read"]
 
             # Native AsyncResponseStream has no aclose method: dropping its
             # last reference closes the receiver and stops child generation.
@@ -329,9 +432,20 @@ def test_local_stop_closes_generation_and_emits_terminal_usage(
         tokenizer=TextTokenizer(),
         routed_engine=engine,
         tool_call_parser_name=None,
-        reasoning_parser_name="glm45",
+        reasoning_parser_name=None,
         eos_token_ids=None,
         stream_interval=interval,
+    )
+
+    post = (
+        SglangStreamingPostProcessor(
+            tokenizer=TextTokenizer(),
+            tool_call_parser=None,
+            reasoning_parser=None,
+            stop_strings={"\n"},
+        )
+        if token_aware is None
+        else make_post(["\n"], token_aware=token_aware)
     )
 
     async def collect():
@@ -345,7 +459,7 @@ def test_local_stop_closes_generation_and_emits_terminal_usage(
             },
             {},
             [1, 2],
-            make_post(["\n"]),
+            post,
         ):
             items.append(item)
             choices = item.get("data", {}).get("choices", [])
@@ -354,11 +468,12 @@ def test_local_stop_closes_generation_and_emits_terminal_usage(
         return items
 
     items = asyncio.run(collect())
-    assert engine.consumed == 2
+    assert engine.consumed == 1
     terminal = items[-1]["data"]
     assert terminal["choices"][0]["finish_reason"] == "stop"
-    assert terminal["choices"][0]["delta"]["content"] == "ALPHA"
-    generated = len("thinking\n</think>ALPHA\nBETAignored")
+    field = "content" if token_aware is None else "reasoning_content"
+    assert terminal["choices"][0]["delta"][field] == "ALPHA"
+    generated = len("ALPHA\nBETAignored")
     assert terminal["usage"]["completion_tokens"] == generated
     assert terminal["usage"]["total_tokens"] == generated + 2
     assert terminal["nvext"]["stop_reason"] == "\n"
