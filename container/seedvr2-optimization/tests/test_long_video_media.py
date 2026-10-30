@@ -17,6 +17,7 @@ import time
 import types
 import unittest
 from unittest.mock import patch
+from contextlib import contextmanager
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -245,6 +246,152 @@ class LongVideoMedia(unittest.TestCase):
         self.assertTrue(finished.is_set())
         self.assertFalse((self.job / "result.json").exists())
         self.assertFalse((self.job / "output.mp4").exists())
+
+    def cancel_request(self):
+        with patch.object(self.module, "_job_dir", return_value=self.job):
+            return asyncio.run(self.module.cancel_long_video(self.job.name))
+
+    def assert_cancelled_not_published(self):
+        self.assertFalse((self.job / "result.json").exists())
+        self.assertFalse((self.job / "output.mp4").exists())
+        self.assertEqual(list(self.job.glob(".output-*.tmp")), [])
+        self.assertNotEqual(json.loads((self.job / "status.json").read_text())["status"], "completed")
+        with patch.object(self.module, "_job_dir", return_value=self.job):
+            for api in (self.module.get_long_video_manifest, self.module.download_long_video):
+                with self.assertRaises(self.module.HTTPException) as failure:
+                    asyncio.run(api(self.job.name))
+                self.assertEqual(failure.exception.status_code, 404)
+
+    def test_delete_during_media_validation_prevents_terminal_publication(self):
+        original = self.module._support.ServerMetrics.stage
+        replies = []
+        @contextmanager
+        def observed(metrics, name, **extra):
+            with original(metrics, name, **extra):
+                if name == "media_validate":
+                    replies.append(self.cancel_request())
+                yield
+        with patch.object(self.module._support.ServerMetrics, "stage", observed), self.assertRaises(self.module.JobCancelledError):
+            self.invoke(self.module._support.options())
+        self.assertEqual(replies, [{"id": self.job.name, "status": "cancelling"}])
+        self.assert_cancelled_not_published()
+
+    def test_delete_during_hash_prevents_terminal_publication(self):
+        original = self.module.hashlib.sha256
+        replies = []
+        def hasher(*args, **kwargs):
+            replies.append(self.cancel_request())
+            return original(*args, **kwargs)
+        with patch.object(self.module.hashlib, "sha256", side_effect=hasher), self.assertRaises(self.module.JobCancelledError):
+            self.invoke(self.module._support.options())
+        self.assertEqual(replies, [{"id": self.job.name, "status": "cancelling"}])
+        self.assert_cancelled_not_published()
+
+    def test_delete_during_large_copy_is_not_blocked_and_cleans_staging(self):
+        original = self.module.shutil.move
+        replies = []
+        def copied(*args, **kwargs):
+            result = original(*args, **kwargs)
+            replies.append(self.cancel_request())
+            return result
+        with patch.object(self.module.shutil, "move", side_effect=copied), self.assertRaises(self.module.JobCancelledError):
+            self.invoke(self.module._support.options())
+        self.assertEqual(replies, [{"id": self.job.name, "status": "cancelling"}])
+        self.assert_cancelled_not_published()
+
+    def test_delete_during_audio_mux_prevents_terminal_publication(self):
+        self.source(20)
+        source = self.job / "input.mp4"
+        audio_source = self.root / "audio-source.mp4"
+        subprocess.run([self.module.imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-y", "-v", "error",
+            "-i", str(source), "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-t", str(20 / 24),
+            str(audio_source)], check=True, capture_output=True)
+        audio_source.replace(source)
+        original = self.module._c14.run_mux
+        replies = []
+        def muxed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            replies.append(self.cancel_request())
+            return result
+        with patch.object(self.module, "_restore", side_effect=self.fake_restore), \
+             patch.object(self.module._c14, "run_mux", side_effect=muxed), self.assertRaises(self.module.JobCancelledError):
+            self.module._restore_to(self.job, self.scratch, 17, 80, 48, 20, False, 7723, "lab", 8000, "", self.module._support.options())
+        self.assertEqual(replies, [{"id": self.job.name, "status": "cancelling"}])
+        self.assert_cancelled_not_published()
+
+    def test_commit_wins_race_delete_rejects_and_manifest_waits(self):
+        self.module._status(self.job, "running", 20)
+        staged = self.job / ".output-race.tmp"
+        staged.write_bytes(b"synthetic completed media")
+        entered, release, cancel_started, manifest_started = (threading.Event() for _ in range(4))
+        original = self.module._support.atomic_json
+        errors, cancelled, manifests = [], [], []
+        def atomic(path, value):
+            if Path(path) == self.job / "result.json":
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError("test did not release commit")
+            return original(path, value)
+        def commit():
+            try:
+                self.module._commit_result(self.job, staged, {"frames": 20}, 20)
+            except BaseException as error:
+                errors.append(error)
+        def cancel():
+            cancel_started.set()
+            try:
+                self.cancel_request()
+            except self.module.HTTPException as error:
+                cancelled.append(error.status_code)
+        def manifest():
+            manifest_started.set()
+            try:
+                manifests.append(asyncio.run(self.module.get_long_video_manifest(self.job.name)))
+            except BaseException as error:
+                errors.append(error)
+        with patch.object(self.module._support, "atomic_json", side_effect=atomic), \
+             patch.object(self.module, "_job_dir", return_value=self.job):
+            publisher = threading.Thread(target=commit)
+            publisher.start()
+            self.assertTrue(entered.wait(3))
+            deleter, reader = threading.Thread(target=cancel), threading.Thread(target=manifest)
+            deleter.start()
+            reader.start()
+            self.assertTrue(cancel_started.wait(3) and manifest_started.wait(3))
+            try:
+                time.sleep(.03)
+                self.assertTrue(deleter.is_alive() and reader.is_alive())
+                self.assertFalse((self.job / "status.json").read_text().find('"completed"') >= 0)
+            finally:
+                release.set()
+                for thread in (publisher, deleter, reader):
+                    thread.join(3)
+                    self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(cancelled, [409])
+        self.assertEqual(manifests, [{"frames": 20}])
+        self.assertFalse((self.job / "cancel").exists())
+        self.assertEqual(json.loads((self.job / "status.json").read_text())["status"], "completed")
+
+    def test_failed_commit_rolls_back_owned_files_and_remnants_stay_private(self):
+        self.module._status(self.job, "running", 20)
+        staged = self.job / ".output-failed.tmp"
+        staged.write_bytes(b"synthetic media")
+        with patch.object(self.module._support, "atomic_json", side_effect=OSError("synthetic metadata failure")), \
+             self.assertRaisesRegex(OSError, "synthetic metadata failure"):
+            self.module._commit_result(self.job, staged, {}, 20)
+        self.assertFalse(staged.exists())
+        self.assert_cancelled_not_published()
+        # Even stale files left by an interrupted old process are not public
+        # merely because their names exist.
+        (self.job / "result.json").write_text('{"frames":20}')
+        (self.job / "output.mp4").write_bytes(b"private remnant")
+        self.module._status(self.job, "cancelled", 20)
+        with patch.object(self.module, "_job_dir", return_value=self.job):
+            for api in (self.module.get_long_video_manifest, self.module.download_long_video):
+                with self.assertRaises(self.module.HTTPException):
+                    asyncio.run(api(self.job.name))
 
     def test_model_failure_does_not_publish_media(self):
         def failed(*args):

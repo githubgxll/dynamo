@@ -41,7 +41,7 @@ def parent_runtime():
     return sys.modules[name]
 
 
-def contract():
+def contract(*, require_default_observations=False):
     parent = parent_runtime()
     c14, lite, lock = parent.contract()
     source = read(HERE / "inputs/source-lock.json")
@@ -51,7 +51,7 @@ def contract():
         raise ValueError("Unexpected inherited/derived recipe identity")
     if not re.fullmatch(r"[a-f0-9]{40}", os.environ.get("SEEDVR2_OPT_SOURCE_COMMIT", "")):
         raise ValueError("Missing source commit")
-    if os.environ.get("SEEDVR2_C14_PROFILE") or os.environ.get("SEEDVR2_METRICS_DIR"):
+    if require_default_observations and (os.environ.get("SEEDVR2_C14_PROFILE") or os.environ.get("SEEDVR2_METRICS_DIR")):
         raise ValueError("Image cannot enable experimental observations by default")
     return parent, c14, lite, lock
 
@@ -93,7 +93,7 @@ def verify_installed():
 def apply(output):
     if os.geteuid() != 0 or output.resolve() != INFO.resolve() or INFO.exists():
         raise ValueError("Apply is a create-once root build operation")
-    parent, c14, lite, _ = contract()
+    parent, c14, lite, _ = contract(require_default_observations=True)
     parent_proof = parent.verify_installed()
     parent_report = read(PARENT_DIR / "build-info/runtime-validation.json")
     if parent_report.get("status") != "PASS_CPU_ONLY" or parent_report.get("source_commit") != PARENT_COMMIT:
@@ -144,7 +144,7 @@ def apply(output):
 def validate(output):
     if os.geteuid() != 1000:
         raise ValueError("Validate final installed runtime as UID1000")
-    parent, c14, lite, _ = contract()
+    parent, c14, lite, _ = contract(require_default_observations=True)
     output.mkdir(parents=True, exist_ok=True)
     baseline = read(INFO / "parent-snapshot.json")
     c14.assert_snapshot(baseline, snapshot(), output, "before-validation")

@@ -7,7 +7,7 @@
     },
     "vllm_omni/diffusion/models/seedvr2/long_video.py": {
       "before_sha256": "526345dca3930384417f075f2dc8fde6bf34ec9c0ff3241fbf2540baf701d480",
-      "after_sha256": "568c5525fb4c600032e52156330ceac125c430df059c2e03f3587224ee675785"
+      "after_sha256": "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05"
     }
   },
   "additions": {

@@ -26,12 +26,17 @@
     },
     "container/seedvr2-optimization/cpu_smoke.py": {
       "mode": "100644",
-      "blob": "7859c0ec4b43267fb1877f438828739e025b7765",
+      "blob": "35bfa3e02a139c908e5967d5f21f958b18eadd67",
+      "status": "A"
+    },
+    "container/seedvr2-optimization/gpu_roundtrip.py": {
+      "mode": "100644",
+      "blob": "2b9119acc08ee675c9bd4a9449d63b96e561755a",
       "status": "A"
     },
     "container/seedvr2-optimization/long_video_patch.py": {
       "mode": "100644",
-      "blob": "96fb3657c4782486d1ebf6d1cc2b375828eb1311",
+      "blob": "e97fd4752de0ddad373845b2a2307e75614b97cd",
       "status": "A"
     },
     "container/seedvr2-optimization/long_video_support.py": {
@@ -46,12 +51,12 @@
     },
     "container/seedvr2-optimization/runtime.py": {
       "mode": "100644",
-      "blob": "f65bcd087cb66c5d2c374eaf74d88b64d7ad29f1",
+      "blob": "519921377693fb4e77f1b99bcc8ff8e9c5cbf539",
       "status": "A"
     },
     "container/seedvr2-optimization/source-patches.lock.json": {
       "mode": "100644",
-      "blob": "c6d9dd681f16284e0d01aceec4cb27fc02b3dd7b",
+      "blob": "7560480c345456d443919406b940ad4f8d53032d",
       "status": "A"
     },
     "container/seedvr2-optimization/source_patches.py": {
@@ -64,6 +69,11 @@
       "blob": "5de1a55564643fe2fcaabbf2459d447acc969167",
       "status": "A"
     },
+    "container/seedvr2-optimization/tests/test_gate_adapter.py": {
+      "mode": "100644",
+      "blob": "53a3c3f3058482727854127744f45fff09c6392e",
+      "status": "A"
+    },
     "container/seedvr2-optimization/tests/test_long_video_contract.py": {
       "mode": "100644",
       "blob": "8febb756330bbeb2c62c1644b125f0a3810e81ed",
@@ -71,12 +81,17 @@
     },
     "container/seedvr2-optimization/tests/test_long_video_media.py": {
       "mode": "100644",
-      "blob": "27cbb5c37d229cbd42abb40ab6e5020a11d4798b",
+      "blob": "f059cab68f96a7aa251a2b90d85cf54b0248a42b",
       "status": "A"
     },
     "container/seedvr2-optimization/tests/test_pipeline_patch.py": {
       "mode": "100644",
       "blob": "bc042d741a822c4369a2173c2b6df267de038163",
+      "status": "A"
+    },
+    "container/seedvr2-optimization/tests/test_runtime_contract.py": {
+      "mode": "100644",
+      "blob": "793adfd1933c9bca2e5e622ac6e10fd71efa2dcd",
       "status": "A"
     },
     "container/seedvr2-optimization/tests/test_telemetry.py": {
@@ -101,7 +116,7 @@
     },
     "delivery/seedvr2-optimization/README.md": {
       "mode": "100644",
-      "blob": "6ae1b9da1efdc630a2272d15f61fc63181c14e16",
+      "blob": "b0249cd91517180dc1126e7ef0712db5317f0492",
       "status": "A"
     },
     "delivery/seedvr2-optimization/check_local.py": {
@@ -121,7 +136,7 @@
     },
     "delivery/seedvr2-optimization/source-lock.json": {
       "mode": "100644",
-      "blob": "2f432cdf804adceef2acf6679301330bc0a7f0c1",
+      "blob": "c2f99b630faef057fba417bcdacc2c7a842bdfcf",
       "status": "A"
     },
     "delivery/seedvr2-optimization/tests/test_submission.py": {

@@ -75,3 +75,7 @@ CI重新运行最终容器验收后，仅发布同一个已测imageID，并按�
 Runner的`less than 100GiB available after GC`发生在仓库步骤前。本配方不绕过门槛、不prune共享缓存、不修改管理员脚本；若被阻塞，保留运行URL／日志，交管理员恢复容量。
 
 本轮技术合同和机器交接位于 `D:\AI\H3_experiments_H100_HBM3_20261012\delivery\SeedVR2_Optimization_Ablation_20261030` 的00／02／03／04／06。GPU门禁、off/basic扰动、17→33→65容量阶梯、同源两档媒体与Ref7人工质量另行完成。本文的设计和本地测试不等于这些验收已通过。
+
+## 子镜像H3 GPU门禁入口
+
+父门禁内部会调用父runtime整包清单，不能直接用它核验已经增加SR文件的子镜像。新入口为 `/opt/seedvr2-optimization/gpu_roundtrip.py`：核对父门禁固定SHA，加载原文件的全部测试，仅将身份验证器显式绑定到子镜像完整清单。八rank、3cycles、fastpath0/1的数值／迁移断言不变。K8S新包应修改torchrun入口与源码锁，不能跳过GPU门禁，也不能放宽旧父清单。

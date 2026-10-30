@@ -53,11 +53,49 @@ RESTORE = '''def _restore(
 '''
 
 
+COMMIT = '''def _commit_result(job: Path, staged: Path, result: dict, frames: int) -> None:
+    # DELETE and terminal publication share a short commit lock. Large media
+    # copies, hashing, decoding, muxing and GPU work occur before acquiring it.
+    published_output = published_result = False
+    with _publication_lock:
+        try:
+            if (job / "cancel").exists():
+                raise JobCancelledError("SeedVR2 long-video job was cancelled")
+            if (job / "output.mp4").exists() or (job / "result.json").exists():
+                raise JobError("SeedVR2 output publication already exists")
+            published_output = True
+            staged.replace(job / "output.mp4")
+            published_result = True
+            _support.atomic_json(job / "result.json", result)
+            _status(job, "completed", frames)
+        except BaseException:
+            if published_result:
+                (job / "result.json").unlink(missing_ok=True)
+            if published_output:
+                (job / "output.mp4").unlink(missing_ok=True)
+            raise
+        finally:
+            staged.unlink(missing_ok=True)
+
+
+def _committed_result(job: Path) -> dict:
+    # Callers hold _publication_lock until the manifest has been read.
+    status, result = job / "status.json", job / "result.json"
+    if (not status.is_file() or not result.is_file() or not (job / "output.mp4").is_file() or (job / "cancel").exists()
+            or json.loads(status.read_text())["status"] != "completed"):
+        raise HTTPException(404, "SeedVR2 long-video output is not ready")
+    return json.loads(result.read_text(encoding="utf-8"))
+
+
+'''
+
+
 def transform(data):
     source = data.decode("utf-8")
     source = once(source, "from vllm_omni.diffusion.models.seedvr2 import config as envs\n",
                   "from vllm_omni.diffusion.models.seedvr2 import long_video_support as _support\n"
                   "from vllm_omni.diffusion.models.seedvr2 import config as envs\n")
+    source = once(source, "job_lock = asyncio.Lock()\n", "job_lock = asyncio.Lock()\n_publication_lock = threading.Lock()\n")
     # C14 hooks are a required parent contract, not silently reapplied here.
     if "c14_context=None" not in source or "_c14.fused_frame(job, written, array)" not in source:
         raise ValueError("Expected the existing C14 long-video patch")
@@ -185,8 +223,14 @@ def transform(data):
         "window_output_lossless_encode_count": len(metrics.windows),
         "original_audio_copy_required_in_controller": True})'''
     source = once(source, before, after)
+    source = once(source, '    staged = job / "output.mp4.tmp"\n',
+                  '    staged = job / (".output-" + uuid4().hex + ".tmp")\n')
+    source = once(source, '    staged.replace(job / "output.mp4")\n', '')
+    source = once(source, '    _support.atomic_json(job / "result.json", {\n', '    result = {\n')
+    source = once(source, '        "original_audio_copy_required_in_controller": True})\n',
+                  '        "original_audio_copy_required_in_controller": True}\n')
     source = once(source, '    _status(job, "completed", target)\n',
-                  '    _status(job, "completed", target)\n    metrics.finish("completed")\n')
+                  '    _commit_result(job, staged, result, target)\n    metrics.finish("completed")\n')
     publish_start = source.index('    with output.open("rb") as content:', source.index('def _restore_to('))
     publish_end = source.index('    metrics.finish("completed")\n', publish_start)
     publish = source[publish_start:publish_end]
@@ -197,12 +241,15 @@ def transform(data):
     body_start = source.index('    written = 0\n', source.index('def _restore_to('))
     body_end = source.index('\n\ndef _background(', body_start)
     body = source[body_start:body_end]
-    source = source[:body_start] + '    try:\n' + "".join("    " + line if line.strip() else line for line in body.splitlines(keepends=True)) + '''    except BaseException as error:
+    source = source[:body_start] + '    staged = None\n    try:\n' + "".join("    " + line if line.strip() else line for line in body.splitlines(keepends=True)) + '''    except BaseException as error:
         metrics.finish("cancelled" if isinstance(error, JobCancelledError) else "failed", type(error).__name__)
         raise
     finally:
         source_frames.close()
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 ''' + source[body_end:]
+    source = once(source, '\n\ndef _background(', '\n\n' + COMMIT + 'def _background(')
     source = once(source,
                   "        _run(job, width, height, target, loop, seed, color_correction_method, port, authorization)\n",
                   "        _run(job, width, height, target, loop, seed, color_correction_method, port, authorization, optimization)\n")
@@ -241,6 +288,20 @@ def transform(data):
                   '    return {"id": job_id, "status": "queued", "max_frames": MAX_FRAMES,\n'
                   '            "sr_request_id": job_id, "encoding_mode": encoding_mode,\n'
                   '            "measurement_schema": _support.SCHEMA}\n')
+    source = once(source,
+                  '    if not (job / "result.json").exists():\n'
+                  '        raise HTTPException(404, "SeedVR2 long-video output is not ready")\n',
+                  '    with _publication_lock:\n        _committed_result(job)\n')
+    source = once(source,
+                  '    record = json.loads(status.read_text())\n'
+                  '    if record["status"] not in {"queued", "running"}:\n'
+                  '        raise HTTPException(409, f"SeedVR2 long-video job already {record[\'status\']}")\n'
+                  '    (job / "cancel").touch()\n',
+                  '    with _publication_lock:\n'
+                  '        record = json.loads(status.read_text())\n'
+                  '        if record["status"] not in {"queued", "running"}:\n'
+                  '            raise HTTPException(409, f"SeedVR2 long-video job already {record[\'status\']}")\n'
+                  '        (job / "cancel").touch()\n')
     # Small JSON retrieval avoids downloading media for performance-only runs.
     source = once(source, '\n\n@router.delete("/v1/seedvr2/restore-long/{job_id}", status_code=202)', '''
 
@@ -257,10 +318,9 @@ async def get_long_video_metrics(job_id: str):
 
 @router.get("/v1/seedvr2/restore-long/{job_id}/manifest")
 async def get_long_video_manifest(job_id: str):
-    result = _job_dir(job_id) / "result.json"
-    if not result.is_file():
-        raise HTTPException(404, "SeedVR2 long-video output is not ready")
-    return json.loads(result.read_text(encoding="utf-8"))
+    job = _job_dir(job_id)
+    with _publication_lock:
+        return _committed_result(job)
 
 
 @router.delete("/v1/seedvr2/restore-long/{job_id}", status_code=202)''')

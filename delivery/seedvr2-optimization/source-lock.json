@@ -22,5 +22,7 @@
   "metrics_schema": "sr-timing-memory/1",
   "scope": "Source-only child preserving H3 HSDP/DiT entry/fastpath, RMSNorm and C14. Add opt-in SeedVR2 timing, explicit 17/33/65 windows and single final delivery encoding. No framework, model, weight, topology or numerical algorithm changes.",
   "parent_image_id": "sha256:ab6a70a452c011c04827decf6fe289177bac651538b422370a2718efb81844ed",
-  "parent_build_url": "https://github.com/githubgxll/dynamo/actions/runs/40827996676"
+  "parent_build_url": "https://github.com/githubgxll/dynamo/actions/runs/40827996676",
+  "parent_gpu_gate_sha256": "e611fff462b6fbaa80a67872973e0032754be9a47845a308380a38594f9d5a61",
+  "parent_torch_contract_sha256": "57f96f29e51f5145aa059c8d29b3209c9fcde793f64443d14eda7c1f16ca4952"
 }

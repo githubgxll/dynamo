@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,20 @@ class InstalledIdentity(unittest.TestCase):
         module = importlib.import_module("vllm_omni.diffusion.models.seedvr2.sr_telemetry")
         self.assertFalse(module.window(SimpleNamespace(sampling_params=SimpleNamespace(extra_args={})), "cpu").enabled)
         self.assertNotIn("SEEDVR2_METRICS_DIR", os.environ)
+
+    def test_child_gpu_adapter_resolves_exact_inherited_gate(self):
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location("_cpu_sr_gpu_adapter", HERE / "gpu_roundtrip.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.dict(sys.modules), patch.object(sys, "path", list(sys.path)):
+            sys.modules.pop("runtime", None)
+            gate = module.resolve_gate()
+            self.assertEqual(Path(gate.main.__code__.co_filename).resolve(), Path("/opt/h3-hsdp-offload/gpu_roundtrip.py"))
+            self.assertEqual(Path(sys.modules["runtime"].__file__).resolve(), HERE / "runtime.py")
+            self.assertEqual(Path(sys.modules["torch_contract"].__file__).resolve(), Path("/opt/h3-hsdp-offload/torch_contract.py"))
+            with patch.dict(os.environ, SEEDVR2_METRICS_DIR="/tmp/sr-gate-observations"):
+                self.assertEqual(sys.modules["runtime"].verify_installed()["status"], "PASS")
 
 
 def main():
