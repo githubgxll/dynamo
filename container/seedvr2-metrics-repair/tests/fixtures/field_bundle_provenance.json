@@ -1,0 +1,8 @@
+{
+  "schema": "field-fixture-provenance/1",
+  "source_metadata": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\experiments\\seedvr2-optimization-ablation-20261030\\runs\\sr-opt-1030-a\\batches\\media-a\\metadata\\a-3955c3fa2c954d1bb92d6f9a7650277c.json",
+  "source_metadata_sha256": "77a91fb200b8cb6a83ec7398b879d32fbe4341e87a553201f5be942665349a44",
+  "embedded_member": "recollections/sr-metrics-1793341407216662352.json",
+  "embedded_member_sha256": "b9cf64a3de2b2cb06087e3c908bfa862d5335545c6004656a587b8460548b79d",
+  "purpose": "Unchanged real /1 bundle: 80 rank records and 10 API CPU postprocess failures. Synthetic /2 observations used in tests are separate in-memory fixtures, never claimed as GPU evidence."
+}

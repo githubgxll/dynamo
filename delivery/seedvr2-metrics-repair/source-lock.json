@@ -1,0 +1,29 @@
+{
+  "schema": "seedvr2-metrics-repair-source-lock/1",
+  "reviewed_date": "2026-10-30",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:9547a5e924383dcaba4cdb8cc4fc9c5b5b3b80c24a5290edbd64e4cf96992d69",
+  "parent_source_commit": "bd3f34bd37d6b82c52a5af0c2a7aa2349285a0bc",
+  "recipe_base_commit": "bd3f34bd37d6b82c52a5af0c2a7aa2349285a0bc",
+  "working_tree_base_commit": "bd3f34bd37d6b82c52a5af0c2a7aa2349285a0bc",
+  "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "build_recipe": "seedvr2-metrics-repair",
+  "tag_prefix": "omni031rc1-gateway-sr-metrics-repair",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0"
+  },
+  "gpu_validation_status": "NOT_RUN",
+  "metrics_schema": "sr-timing-memory/2",
+  "scope": "Source-only repair of CPU API versus real worker D2H telemetry. Preserve framework, model numerics, original transfer calls/streams/synchronization, windowing, encoder, H3 and old evidence. No old /1 acceptance relaxation.",
+  "parent_image_id": "sha256:62671b8a4097a41d57ebd6aac79c6513fa40f3b34fc393e5ff17a340a6730272",
+  "parent_build_url": "https://github.com/githubgxll/dynamo/actions/runs/41004290220",
+  "parent_gpu_gate_sha256": "e611fff462b6fbaa80a67872973e0032754be9a47845a308380a38594f9d5a61",
+  "parent_torch_contract_sha256": "57f96f29e51f5145aa059c8d29b3209c9fcde793f64443d14eda7c1f16ca4952",
+  "parent_source_manifest_sha256": "387886a6f99ac514aa6977419100e28c9b5ad18061a0225ddf91c7de3bdf5ceb"
+}

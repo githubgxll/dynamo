@@ -1,0 +1,18 @@
+{
+  "schema": "seedvr2-metrics-repair-source-patches/1",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py": {
+      "before_sha256": "6212a0f7524440b07eca2ae421ca0ee4968b073b2d018b19f85ca377f71d62c9",
+      "after_sha256": "d9d6716c9c5176156b0a0e7293c6dd554df423c7bf145dd11150ce4e46bf1de1"
+    },
+    "vllm_omni/diffusion/ipc.py": {
+      "before_sha256": "0beaf7ff3f728891133c25784599221093d373bf8a60e177bf190b5db4fa8a85",
+      "after_sha256": "b1c54d5d9c781056dfe238bf12cfa289aedee182d1778476909333b79338c9b3"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video_support.py": {
+      "before_sha256": "db14071e1e8e41ba98bb40842b70e104dd580d91ceb45cb36a33fc24b038d786",
+      "after_sha256": "5274483328e74fbfc64714803a9618dec5bfe1a5aa3def19449bf817a39597ad"
+    }
+  },
+  "additions": {}
+}
