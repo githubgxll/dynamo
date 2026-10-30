@@ -51,10 +51,25 @@ def synthetic_repaired_bundle():
     """Keep the eighty observed GPU records; construct explicit test-only new receipts.
 
     These invented CPU/D2H times and tensor addresses are fixtures, not corrected
-    field evidence or claimed GPU acceptance of the repair image.
+    field evidence or claimed GPU acceptance of the repair image. The required
+    third critical IPC source hash is explicitly synthesized for /2 test data;
+    the original /1 fixture remains byte-for-byte unchanged.
     """
     result = schema_two(field_bundle())
     files = result["files"]
+    def test_only_ipc_identity(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "source_hashes":
+                    item["diffusion/ipc.py"] = "c" * 64
+                elif key == "actual_source_hashes":
+                    item["ipc.py"] = "c" * 64
+                else:
+                    test_only_ipc_identity(item)
+        elif isinstance(value, list):
+            for item in value:
+                test_only_ipc_identity(item)
+    test_only_ipc_identity(files)
     for name, record in files.items():
         if name.startswith("windows/") and "/rank-" in name:
             record["video_payload_path"] = "payload.video"
@@ -265,6 +280,42 @@ class Completeness(unittest.TestCase):
         bundle = synthetic_repaired_bundle()
         bundle["files"]["windows/0/transfer-rank-0.json"]["actual_source_hashes"] = {"sr_telemetry.py": "a" * 64}
         self.assertEqual(self.validate(bundle)["metrics_status"], "METRICS_INCOMPLETE")
+
+    def test_three_critical_actual_sources_need_unique_exact_frozen_matches(self):
+        actual = {"sr_telemetry.py": "a" * 64, "pipeline_seedvr2.py": "b" * 64, "ipc.py": "c" * 64}
+        frozen = {"diffusion/models/seedvr2/sr_telemetry.py": "a" * 64,
+                  "diffusion/models/seedvr2/pipeline_seedvr2.py": "b" * 64, "diffusion/ipc.py": "c" * 64}
+        self.assertTrue(self.support._v2_sources({"actual_source_hashes": actual}, {"source_hashes": frozen}))
+        cases = [({}, frozen), ({"unrelated.py": "a" * 64}, frozen),
+                 ({key: value for key, value in actual.items() if key != "ipc.py"}, frozen),
+                 ({**actual, "unrelated.py": "d" * 64}, frozen), (actual, {}),
+                 (actual, {"unrelated.py": "a" * 64}),
+                 (actual, {key: value for key, value in frozen.items() if not key.endswith("ipc.py")}),
+                 (actual, {**frozen, "ipc.py": "c" * 64}),
+                 (actual, {**frozen, "other/ipc.py": "c" * 64}),
+                 (actual, {**frozen, "diffusion/ipc.py": "bad-hash"}),
+                 ({**actual, "ipc.py": int("1" * 64)}, {**frozen, "diffusion/ipc.py": int("1" * 64)})]
+        for observed, expected in cases:
+            with self.subTest(observed=observed, expected=expected):
+                self.assertFalse(self.support._v2_sources({"actual_source_hashes": observed}, {"source_hashes": expected}))
+        bundle = synthetic_repaired_bundle()
+        del bundle["files"]["windows/0/rank-7.json"]["actual_source_hashes"]["ipc.py"]
+        self.assertEqual(self.validate(bundle)["metrics_status"], "METRICS_INCOMPLETE")
+
+    def test_rank_pid_start_time_gpu_binding_must_stay_fixed_across_windows(self):
+        for field in ("pid", "start_time", "gpu_uuid"):
+            bundle = synthetic_repaired_bundle()
+            rank = bundle["files"]["windows/1/rank-3.json"]
+            if field == "pid":
+                rank["pid"] += 100000
+            elif field == "start_time":
+                rank["process_start_time"]["value"] += 1
+            else:
+                rank["gpu_uuid"] = "GPU-replaced-during-request"
+            result = self.validate(bundle)
+            with self.subTest(field=field):
+                self.assertEqual(result["metrics_status"], "METRICS_INCOMPLETE")
+                self.assertTrue(any("changed across windows" in error["reason"] for error in result["inconsistent_rank_records"]))
 
     def test_exact_parent_source_guard_preserves_all_other_helper_defaults(self):
         spec = importlib.util.spec_from_file_location("_support_delta_guard_test", HERE / "support_patch.py")

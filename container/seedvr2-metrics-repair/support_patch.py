@@ -46,14 +46,19 @@ def _v2_process(record):
 
 def _v2_sources(record, expected):
     actual = record.get("actual_source_hashes")
-    if not isinstance(actual, dict) or not actual or any(
-            not isinstance(name, str) or not re.fullmatch(r"[0-9a-f]{64}", str(value))
+    critical = {"sr_telemetry.py", "pipeline_seedvr2.py", "ipc.py"}
+    if not isinstance(actual, dict) or set(actual) != critical or any(
+            not isinstance(name, str) or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
             for name, value in actual.items()):
         return False
-    declared = expected.get("source_hashes", {})
+    declared = expected.get("source_hashes")
+    if not isinstance(declared, dict) or not declared or any(
+            not isinstance(name, str) or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+            for name, value in declared.items()):
+        return False
     for name, value in actual.items():
         matches = [candidate for key, candidate in declared.items() if key == name or key.endswith("/" + name)]
-        if matches and any(candidate != value for candidate in matches):
+        if len(matches) != 1 or matches[0] != value:
             return False
     return True
 
@@ -133,7 +138,7 @@ def validate_bundle(job_id, files):
                     or (permitted_na and (row.get("cpu_wall_ms") is not None or not row.get("reason")))
                     or row.get("status") in {"failed", "cancelled"}):
                 bad("server-stages.jsonl", "service stage has mismatched identity, scope or missing timing", "server_stages")
-    seen_model_ids, expected_files = set(), set()
+    seen_model_ids, expected_files, stable_rank_bindings = set(), set(), {}
     previous, total_new = None, 0
     for position, item in enumerate(windows):
         if not isinstance(item, dict):
@@ -203,6 +208,12 @@ def validate_bundle(job_id, files):
                 bad(key, "rank schema, correlated identities, process, seven GPU stages or allocator evidence is incomplete", "rank_pipeline")
             if _v2_process(record):
                 rank_bindings.append((record["pid"], record["process_start_time"]["value"]))
+                if isinstance(record.get("gpu_uuid"), str) and record["gpu_uuid"]:
+                    binding = (record["pid"], record["process_start_time"]["value"], record["gpu_uuid"])
+                    if rank in stable_rank_bindings and stable_rank_bindings[rank] != binding:
+                        bad(key, "rank process start/PID/GPU binding changed across windows", "rank_pipeline")
+                    else:
+                        stable_rank_bindings.setdefault(rank, binding)
             if isinstance(record.get("gpu_uuid"), str):
                 rank_gpu_ids.append(record["gpu_uuid"])
         if len(set(rank_bindings)) != 8 or len(set(rank_gpu_ids)) != 8:

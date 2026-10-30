@@ -46,3 +46,7 @@ Linux最终容器以UID1000检查：实际CPU张量与原安装postprocess，CPU
 独立交接目录：`D:\AI\H3_experiments_H100_HBM3_20261012\delivery\SeedVR2_Optimization_Ablation_20261030\08_Metrics_Repair_20261030`，旧06不覆盖。新包需新增IPC源码锁，更新3个源SHA／镜像身份、metrics_schema与launcher。metadata原`SEEDVR2_OPT_SOURCE_COMMIT`属于父bd3，不改写；本次标记为`SEEDVR2_METRICS_REPAIR_SOURCE_COMMIT`。
 
 首次新GPU验收：独立RUN固定同源C08/S17/1080 single_encode，确认10窗×8rank、10份唯一真实rank0transfer和10份CPU后处理完整；核验video/音轨和off/basic扰动，再开展同一新digest的正式矩阵。旧媒体成功可保留，但旧缺失D2H不能被事后推算填补，正式80矩阵统一重立新镜像基线。镜像构筑不操作Pod或旧RUN。
+
+### 最终冻结身份补充
+
+/2实际收据`actual_source_hashes`必须恰含sr_telemetry.py、pipeline_seedvr2.py、ipc.py三个64位SHA；请求source_hashes中各需唯一冻结匹配，空清单、缺项、无关项或多个后缀匹配均拒绝。rank→PID／Linux启动ticks／GPU UUID需跨窗口稳定。K8S新包保留相同跨窗检查。阶段commit a4d77的构筑用于阶段证据，最终部署以独立08中的最终digest和source_commit为准。
