@@ -1,0 +1,17 @@
+{
+  "schema": "seedvr2-optimization-source-patches/1",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py": {
+      "before_sha256": "0c7ec81816daa4978697c1cbe69817c772b8a1e42a7acf607f9420a0c02760b1",
+      "after_sha256": "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video.py": {
+      "before_sha256": "526345dca3930384417f075f2dc8fde6bf34ec9c0ff3241fbf2540baf701d480",
+      "after_sha256": "568c5525fb4c600032e52156330ceac125c430df059c2e03f3587224ee675785"
+    }
+  },
+  "additions": {
+    "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py": "6212a0f7524440b07eca2ae421ca0ee4968b073b2d018b19f85ca377f71d62c9",
+    "vllm_omni/diffusion/models/seedvr2/long_video_support.py": "db14071e1e8e41ba98bb40842b70e104dd580d91ceb45cb36a33fc24b038d786"
+  }
+}

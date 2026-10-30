@@ -1,0 +1,26 @@
+{
+  "schema": "seedvr2-optimization-source-lock/1",
+  "reviewed_date": "2026-10-30",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:45b3ec519faec85ac4a40ff8766e033704bc92623f97fda16610efdc85e71e0f",
+  "parent_source_commit": "430c62be0e38179535b4a6a1aa38dc67e8367d00",
+  "recipe_base_commit": "430c62be0e38179535b4a6a1aa38dc67e8367d00",
+  "working_tree_base_commit": "430c62be0e38179535b4a6a1aa38dc67e8367d00",
+  "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "build_recipe": "seedvr2-optimization",
+  "tag_prefix": "omni031rc1-gateway-sr-optimization",
+  "versions": {
+    "vllm": "0.31.0",
+    "vllm-omni": "0.31.0rc1",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0"
+  },
+  "gpu_validation_status": "NOT_RUN",
+  "metrics_schema": "sr-timing-memory/1",
+  "scope": "Source-only child preserving H3 HSDP/DiT entry/fastpath, RMSNorm and C14. Add opt-in SeedVR2 timing, explicit 17/33/65 windows and single final delivery encoding. No framework, model, weight, topology or numerical algorithm changes.",
+  "parent_image_id": "sha256:ab6a70a452c011c04827decf6fe289177bac651538b422370a2718efb81844ed",
+  "parent_build_url": "https://github.com/githubgxll/dynamo/actions/runs/40827996676"
+}
