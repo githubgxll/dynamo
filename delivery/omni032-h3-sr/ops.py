@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded local review/freeze and one-shot submission; no build retry command."""
+"""Submit reviewed work sequentially after the prior outcome is known."""
 from __future__ import annotations
 
 import argparse
@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -24,6 +26,7 @@ CONTRACT = Path(r"D:\AI\H3_experiments_H100_HBM3_20261012\delivery\H3_SR_NextSta
 MARKER = "[omni032-h3-sr]"
 ALLOWED_PREFIXES = ("container/omni032-h3-sr/", "delivery/omni032-h3-sr/")
 ALLOWED_FILES = {".github/scripts/omni032_h3_sr_ci.py", ".github/scripts/test_omni032_h3_sr_ci.py",
+                 ".github/scripts/test_omni032_retry_ci.py", ".github/scripts/test_omni032_submission_ci.py",
                  ".github/workflows/omni032-h3-sr.yml", ".github/workflows/dingo-router-ci.yml"}
 SHARED_PREFIXES = ("container/h3-experimental/environment/", "container/omni-gateway-lite/",
                    "container/seedvr2-c14/", "container/h3-hsdp-offload/",
@@ -73,12 +76,16 @@ def identity(value):
         raise ValueError("Use the designated existing branch")
     if git("remote", "get-url", "origin").rstrip("/").removesuffix(".git") != value["repository"].removesuffix(".git"):
         raise ValueError("Unexpected origin repository")
-    base = value["working_tree_base_commit"]
-    if not re.fullmatch(r"[0-9a-f]{40}", base) or git("rev-parse", "--verify", base + "^{commit}") != base:
-        raise ValueError("Working baseline must be a full existing commit")
-    git("merge-base", "--is-ancestor", base, "HEAD")
-    if value["recipe_base_commit"] != base:
-        raise ValueError("This upgrade requires one common working/recipe baseline")
+    validate_anchors(value)
+
+
+def validate_anchors(value):
+    recipe, working = value["recipe_base_commit"], value["working_tree_base_commit"]
+    for commit in dict.fromkeys((recipe, working)):
+        if not re.fullmatch(r"[0-9a-f]{40}", commit) or git("rev-parse", "--verify", commit + "^{commit}") != commit:
+            raise ValueError("Recipe and working baselines must be full existing commits")
+    git("merge-base", "--is-ancestor", recipe, working)
+    git("merge-base", "--is-ancestor", working, "HEAD")
 
 
 def raw_delta(base, tree):
@@ -116,6 +123,8 @@ def valid_request_message(message):
 
 
 def recipe_identity(value, full_tree):
+    validate_anchors(value)
+    raw_delta(value["working_tree_base_commit"], full_tree)
     delta = {name: item for name, item in raw_delta(value["recipe_base_commit"], full_tree).items() if name not in AUXILIARY}
     if not delta:
         raise ValueError("An empty recipe cannot request an image build")
@@ -222,8 +231,12 @@ def review_contract(contract, value, recipe):
             raise ValueError("Review contract differs: " + key)
     if contract.get("sole_online_submitter_thread") != "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1":
         raise ValueError("Wrong designated online submitter")
-    if type(contract.get("build_request_count")) is not int or contract["build_request_count"] != 0:
-        raise ValueError("A build was already requested; no automatic retry")
+    count = contract.get("build_request_count")
+    if type(count) is not int or count < 0:
+        raise ValueError("Submission history count must be a nonnegative integer")
+    if count:
+        validate_previous_result(contract.get("previous_build_result"), value,
+                                 expected_commit=contract.get("submitted_commit"))
     reviews = contract.get("reviews", {})
     if set(reviews) != {"image", "k8s", "independent_audit"} or any(
             not isinstance(item, dict) or item.get("status") != "PASS" for item in reviews.values()):
@@ -231,6 +244,114 @@ def review_contract(contract, value, recipe):
     if contract.get("freeze") != {"recipe_sha256": recipe["recipe_sha256"], "tree": recipe["tree"]}:
         raise ValueError("Shared reviews do not approve this exact frozen recipe")
     return contract
+
+
+def validate_previous_result(result, value, *, expected_commit):
+    if not isinstance(result, dict):
+        raise ValueError("The previous build result is unknown; inspect it before submitting again")
+    if (result.get("repository") != value["repository"] or result.get("branch") != value["remote_branch"]
+            or result.get("workflow_path") != ".github/workflows/omni032-h3-sr.yml"
+            or result.get("commit") != expected_commit or not re.fullmatch(r"[0-9a-f]{40}", str(expected_commit))
+            or type(result.get("run_id")) is not int or result["run_id"] <= 0
+            or type(result.get("run_attempt")) is not int or result["run_attempt"] <= 0):
+        raise ValueError("Prior result does not identify the previous repository/commit/run/attempt")
+    if result.get("status") != "completed" or result.get("conclusion") not in {"failure", "skipped", "cancelled", "timed_out", "startup_failure"}:
+        raise ValueError("Prior request is active, successful or unknown; do not submit another build")
+    if result.get("publication_status") != "not_started":
+        raise ValueError("Prior publication exists or is unknown; verify/reuse the original image")
+    return result
+
+
+def github_json(endpoint):
+    """Read only this repository using existing auth; never print/store tokens."""
+    if not endpoint.startswith("/") or ".." in endpoint or endpoint.startswith("//"):
+        raise ValueError("Unsafe GitHub read endpoint")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never")
+        result = subprocess.run([LEGACY.GIT, "-C", str(ROOT), "-c", "safe.directory=" + ROOT.as_posix(),
+            "-c", "credential.interactive=never", "credential", "fill"],
+            input=b"url=https://github.com/githubgxll/dynamo.git\n\n", capture_output=True, env=env, timeout=30)
+        if result.returncode:
+            raise RuntimeError("Existing repository authentication helper failed; prior run status remains unknown")
+        token = dict(line.split("=", 1) for line in result.stdout.decode().splitlines() if "=" in line).get("password")
+    if not token:
+        raise RuntimeError("No existing repository API authentication; prior run status remains unknown")
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    handlers = [NoRedirect()]
+    if os.name == "nt":
+        handlers.append(urllib.request.ProxyHandler({"https": LEGACY.PROXY}))
+    opener = urllib.request.build_opener(*handlers)
+    request = urllib.request.Request("https://api.github.com/repos/githubgxll/dynamo" + endpoint,
+        headers={"Authorization": "Bearer " + token, "User-Agent": "Omni032-prior-result-read-only",
+                 "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+    try:
+        with opener.open(request, timeout=30) as response:
+            return json.load(response)
+    except (OSError, urllib.error.HTTPError, ValueError) as error:
+        raise RuntimeError("Cannot confirm original run outcome: " + type(error).__name__
+                           + "; no additional request was sent") from None
+
+
+def observe_run(run_id, getter=None):
+    getter = getter or github_json
+    if type(run_id) is not int or run_id <= 0:
+        raise ValueError("A positive original run ID is required")
+    run = getter(f"/actions/runs/{run_id}")
+    attempt = run.get("run_attempt")
+    if run.get("id") != run_id or type(attempt) is not int or attempt <= 0:
+        raise ValueError("Original run identity is missing or malformed")
+    history = []
+    for number in range(1, attempt + 1):
+        jobs = getter(f"/actions/runs/{run_id}/attempts/{number}/jobs?per_page=100")
+        entries = jobs.get("jobs")
+        if not isinstance(entries, list) or jobs.get("total_count") != len(entries):
+            raise ValueError("Incomplete original-attempt job inventory")
+        if any(j.get("run_id") != run_id or j.get("run_attempt") != number
+               or j.get("head_sha") != run.get("head_sha") for j in entries):
+            raise ValueError("Original jobs belong to a different run, attempt or commit")
+        publication = "unknown"
+        if entries and all(j.get("status") == "completed" for j in entries):
+            publish = [step for j in entries for step in (j.get("steps") or [])
+                       if step.get("name") == "Publish the validated image once and verify its pull digest"]
+            setup_only = all(j.get("conclusion") == "skipped" or
+                             (len(j.get("steps") or []) == 1 and j["steps"][0].get("name") == "Set up job"
+                              and j["steps"][0].get("conclusion") != "success") for j in entries)
+            if publish and all(step.get("conclusion") == "skipped" for step in publish):
+                publication = "not_started"
+            elif not publish and setup_only:
+                publication = "not_started"
+            elif any(step.get("conclusion") == "success" for step in publish):
+                publication = "published"
+        history.append({"run_attempt": number, "publication_status": publication, "jobs": entries})
+    latest = getter(f"/actions/runs/{run_id}")
+    if any(latest.get(key) != run.get(key) for key in
+           ("id", "run_attempt", "status", "conclusion", "head_sha", "head_branch", "path", "updated_at")):
+        raise ValueError("Original run changed during observation; inspect its latest result first")
+    states = {item["publication_status"] for item in history}
+    publication = "published" if "published" in states else "not_started" if states == {"not_started"} else "unknown"
+    return {"schema": "omni032-prior-result/1", "repository": "https://github.com/githubgxll/dynamo.git",
+            "branch": run.get("head_branch"), "workflow_path": run.get("path"), "commit": run.get("head_sha"),
+            "run_id": run_id, "run_attempt": attempt, "status": run.get("status"),
+            "conclusion": run.get("conclusion"), "publication_status": publication,
+            "observed_at": datetime.now(timezone.utc).isoformat(), "jobs": history[-1]["jobs"],
+            "attempt_history": history,
+            "run_url": run.get("html_url")}
+
+
+def observe_previous(run_id):
+    journal = read(EVIDENCE / "one-build-journal.json")
+    result = observe_run(run_id)
+    validate_previous_result(result, lock(), expected_commit=journal["commit"])
+    bind_journal_result(journal, result, allow_discovery=True)
+    output = EVIDENCE / "observations" / f"{run_id}-{result['run_attempt']}.json"
+    dump(output, result)
+    dump(EVIDENCE / "one-build-journal.json", {**journal, "status": "CONFIRMED_TERMINAL_UNPUBLISHED",
+         "run_id": run_id, "run_attempt": result["run_attempt"], "confirmed_result": result})
+    print(json.dumps({"status": "CONFIRMED_TERMINAL_UNPUBLISHED", "evidence": str(output),
+                      "run_id": run_id, "run_attempt": result["run_attempt"]}, indent=2))
 
 
 def seal():
@@ -290,11 +411,60 @@ def claim_request(path, record):
         os.fsync(stream.fileno())
 
 
+def bind_journal_result(journal, result, *, allow_discovery=False):
+    known_run = journal.get("run_id")
+    confirmed = journal.get("confirmed_result") or {}
+    nested_run = confirmed.get("run_id")
+    if known_run is not None and nested_run is not None and known_run != nested_run:
+        raise ValueError("Original journal and confirmed-result run IDs conflict")
+    if known_run is None:
+        known_run = nested_run
+    if known_run is None:
+        if not allow_discovery:
+            raise ValueError("Original run is not yet bound to the journal; observe and confirm it first")
+        # A lost push response must not be resolved by selecting a convenient
+        # skipped run while another matching request is active or unknown.
+        matches = github_json("/actions/workflows/omni032-h3-sr.yml/runs?event=push&head_sha="
+                              + result["commit"] + "&per_page=100")
+        runs = matches.get("workflow_runs")
+        if (not isinstance(runs, list) or matches.get("total_count") != 1
+                or len(runs) != 1 or runs[0].get("id") != result["run_id"]):
+            raise ValueError("Original push has ambiguous matching runs; resolve the original request before submitting")
+    elif type(known_run) is not int or known_run != result["run_id"]:
+        raise ValueError("Observed run does not match the original journal run ID")
+    attempts = (journal.get("run_attempt", 0), confirmed.get("run_attempt", 0))
+    if any(type(number) is not int or number < 0 for number in attempts) or result["run_attempt"] < max(attempts):
+        raise ValueError("Observed attempt cannot move the original journal backwards")
+
+
+def prior_request(value, contract, journal, getter=None):
+    """Require the latest terminal, definitely unpublished result, not a count cap."""
+    count = contract["build_request_count"]
+    if not count:
+        if journal is not None:
+            raise ValueError("An existing request is missing from shared history; inspect it first")
+        return None
+    if (journal is None or journal.get("request_count") != count
+            or journal.get("commit") != contract.get("submitted_commit")):
+        raise ValueError("Shared history and local submission journal disagree")
+    reviewed = validate_previous_result(contract.get("previous_build_result"), value,
+                                        expected_commit=journal["commit"])
+    bind_journal_result(journal, reviewed)
+    latest = observe_run(reviewed["run_id"], getter)
+    validate_previous_result(latest, value, expected_commit=journal["commit"])
+    if latest["run_attempt"] != reviewed["run_attempt"]:
+        raise ValueError("A newer attempt exists; update the observed result before another submission")
+    return latest
+
+
 def submit(confirmed):
     journal = EVIDENCE / "one-build-journal.json"
-    if not confirmed or journal.exists():
-        raise ValueError("Explicit one-shot submission required; existing journal forbids automatic retry")
+    if not confirmed:
+        raise ValueError("Explicit build and publication submission is required")
     value, tree, recipe = check()
+    contract = read(CONTRACT)
+    previous = read(journal) if journal.exists() else None
+    prior = prior_request(value, contract, previous)
     remote = LEGACY.remote_head(value["remote_branch"])
     if remote != value["working_tree_base_commit"]:
         raise ValueError("Remote changed from the reviewed baseline; stop before push")
@@ -306,20 +476,40 @@ def submit(confirmed):
     if not valid_request_message(git("log", "-1", "--format=%B")):
         raise ValueError("Existing commit lacks the unique marker; no empty request commit is created")
     commit = git("rev-parse", "HEAD")
+    if previous is not None and commit == previous["commit"]:
+        raise ValueError("This exact commit was already submitted; inspect that run instead of pushing it again")
     if git("rev-parse", "HEAD^{tree}") != tree or git("status", "--porcelain"):
         raise ValueError("Checkout changed while committing")
     check_seal(committed=True, external=True)
-    record = {"schema": "omni032-h3-sr-one-build/1", "status": "REQUESTED", "commit": commit,
-              "tree": tree, "recipe_sha256": recipe["recipe_sha256"], "request_count": 1,
+    # Query again immediately before claiming/pushing; a manual rerun could have
+    # started while local checks or commit creation were running.
+    if prior is not None:
+        prior = prior_request(value, contract, previous)
+    sequence = contract["build_request_count"] + 1
+    record = {"schema": "omni032-h3-sr-sequential-build/2", "status": "REQUESTED", "commit": commit,
+              "tree": tree, "recipe_sha256": recipe["recipe_sha256"], "request_count": sequence,
+              "count_scope": "Controlled submit invocations, not GitHub run_attempt or Action download attempts",
+              "previous_result": prior,
               "created_at": datetime.now(timezone.utc).isoformat()}
-    claim_request(journal, record)
+    if previous is not None:
+        archive = EVIDENCE / "requests" / f"request-{sequence - 1:04d}.json"
+        if not archive.exists():
+            claim_request(archive, previous)
+    # One exclusive file per local sequence prevents competing submitters from
+    # pushing different commits for the same next request. Preserve it on error.
+    claim = EVIDENCE / "requests" / f"request-{sequence:04d}.json"
+    claim_request(claim, record)
+    dump(journal, record)
     try:
-        git("push", "origin", f"HEAD:refs/heads/{value['remote_branch']}", network=True)
+        git("push", "origin", f"{commit}:refs/heads/{value['remote_branch']}", network=True)
     except BaseException:
-        dump(journal, {**record, "status": "UNKNOWN", "reason": "Push failed or response interrupted; preserve original request and investigate, never automatically push again"})
+        failed = {**record, "status": "UNKNOWN", "reason": "Push failed or response interrupted; inspect the original request before another submission"}
+        dump(journal, failed)
+        dump(claim, failed)
         raise
     dump(journal, {**record, "push_completed": True})
-    print("One build request submitted for " + commit + "; preserve its Actions run. No rerun/dispatch/empty-commit command exists.")
+    dump(claim, {**record, "push_completed": True})
+    print("Build request " + str(sequence) + " submitted for " + commit + "; follow its result before any additional request.")
 
 
 def main():
@@ -329,6 +519,8 @@ def main():
     commands.add_parser("freeze")
     commands.add_parser("check")
     commands.add_parser("verify-export")
+    observe = commands.add_parser("observe-previous")
+    observe.add_argument("--run-id", required=True, type=int)
     verify = commands.add_parser("check-seal")
     verify.add_argument("--committed", action="store_true")
     publish = commands.add_parser("submit")
@@ -338,6 +530,7 @@ def main():
     elif args.command == "freeze": freeze()
     elif args.command == "check": check()
     elif args.command == "verify-export": print(json.dumps(check_export(), indent=2))
+    elif args.command == "observe-previous": observe_previous(args.run_id)
     elif args.command == "check-seal": check_seal(args.committed)
     else: submit(args.confirm_build_and_publish)
 

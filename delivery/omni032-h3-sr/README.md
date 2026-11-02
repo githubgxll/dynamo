@@ -1,4 +1,4 @@
-# H3＋SeedVR2：正式 Omni 0.32.0 单次升级配方
+# H3＋SeedVR2：正式 Omni 0.32.0 升级配方
 
 本配方继承已验收的 b315 镜像，联合升级正式 vLLM／Omni 0.32.0，并把 H3 卸载和 SR 优化／v2 指标补丁迁到新源文件。不重打旧工作树 Dingo wheel，不下载权重，不更改模型精度或实验拓扑。
 
@@ -22,7 +22,7 @@ call delivery\omni032-h3-sr\01-check.cmd
 
 镜像内部实际验收另包含：完整默认依赖和递归 extras、安装 origin／RECORD、实际原生和服务字节、全 Omni 源码、UID1000 禁网、六组 RMSNorm 数值、真实 CPU IPC／媒体及实际 0.32 parser 完整参数解析。模拟 CUDA 控制回归不代替 GPU 验收。
 
-## 冻结与唯一构筑
+## 冻结与顺序提交
 
 仅本轮唯一线上提交者执行。image／K8S／独立审计必须对同一最终配方给出 PASS，再按以下顺序操作；共享合同尚未完成时 freeze／submit 应被拒绝。
 
@@ -35,9 +35,17 @@ call delivery\omni032-h3-sr\02-submit-build.cmd
 
 `freeze.tree` 排除 seal／approval 两个辅助文件，避免自引用；完整 prospective tree 单独记录。全部实际配方、共享输入和父 digest 仍由 recipe SHA 覆盖。任何实际修改使旧审核失效，必须先在本地重审。不要把上面的注释行当作已批准。
 
-提交前创建独占 `one-build-journal.json`，一次 push 请求一次构建。新 workflow 不支持 dispatch，拒绝 run_attempt>1 和空提交；旧 workflow 对本轮 marker 不构建。最终 tag 只在本机构建一次并 load，同一个 imageID 禁网验收后 push 一次，再按 digest 拉回核对。没有上传阶段 candidate 或换 tag 补构建。
+提交记录保存在 `one-build-journal.json` 和独占的 `requests/request-NNNN.json`，历史不删除。`request_count` 只计本地受控提交序号；GitHub `run_attempt` 与 Action 下载重试另记，均不固定为 1。新 workflow 接受正整数 attempt，不支持 dispatch、空提交或仅改审批文件的请求；旧 workflow 对本轮 marker 不构建。推送固定已审核完整 commit SHA，避免并行会话移动 HEAD。最终 tag 构建并 load，同一个 imageID 禁网验收后 push 一次，再按 digest 拉回核对。
 
-失败、未知或发现遗漏时保留原 journal／run／日志并报告，未经用户后续明确指示不再次构筑。不要删除 journal 来重试，不运行旧 `03-run-build.cmd`、rerun、dispatch 或空提交。构建机启动钩子的磁盘准入也属于应报告的失败，不能通过新请求绕过。
+取得上一轮确切结果前不追加请求。运行中、失联或发布结果 UNKNOWN 时先查原 run／Harbor；明确终态失败且没有发布时，可由唯一提交者在当前用户授权内修复、复核、重新冻结后顺序提交，不需要反复泛泛确认。成功后复用已有 digest；push 已成功而 pull 验证失败也不能当成没有发布。构建机准入、网络等基础条件持续失败且诊断无进展时报告原因，不无限请求。
+
+再次提交前可用以下只读操作核实原 run 最新 attempt，保存结果并同步到共享合同。提交脚本还会在 push 前复查；若有人在期间手动重跑，状态变化会阻止新请求。
+
+```bat
+"%H3_EXPERIMENT_PY%" -B -X utf8 delivery\omni032-h3-sr\ops.py observe-previous --run-id 41388420551
+```
+
+CI 在 Harbor 登录后、构建前检查同 commit 的最终 tag：已存在就停止并复用／核验 digest；只有明确 manifest 不存在才继续，TLS、鉴权等异常按 UNKNOWN 停止。证据目录按 `run_id-run_attempt` 隔离，各阶段记录同一身份，不能复制旧 attempt 的 PASS。2026-11-02 首次 run 的 attempt1 在 Action 下载阶段 SSL 失败，attempt2 被旧条件跳过，均未进入 Docker；保留两条历史，不把三次 Action 下载误写成三次镜像构筑。
 
 ## 发布结果与后续功能验收
 

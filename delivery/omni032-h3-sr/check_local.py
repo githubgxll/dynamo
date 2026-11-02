@@ -34,7 +34,9 @@ def main():
     output.mkdir(parents=True)
     before_export = export_check(output / "export-bytes-before.json")
     suites = {"framework-patches": ["-m", "unittest", "discover", "-s", "container/omni032-h3-sr/tests", "-p", "test*.py"],
-              "submission-and-publication": ["-m", "unittest", "discover", "-s", ".github/scripts", "-p", "test_omni032_h3_sr_ci.py"]}
+              "submission-and-publication": ["-m", "unittest", "discover", "-s", ".github/scripts", "-p", "test_omni032_h3_sr_ci.py"],
+              "retry-attempt-and-publication": ["-m", "unittest", "discover", "-s", ".github/scripts", "-p", "test_omni032_retry_ci.py"],
+              "sequential-submission": ["-m", "unittest", "discover", "-s", ".github/scripts", "-p", "test_omni032_submission_ci.py"]}
     counts = {}
     for name, arguments in suites.items():
         result = subprocess.run([sys.executable, "-B", "-X", "utf8", *arguments], cwd=ROOT,
@@ -47,7 +49,8 @@ def main():
         counts[name] = int(match.group(1))
         print("PASS " + name)
     python_files = list((ROOT / "container/omni032-h3-sr").rglob("*.py")) + list(HERE.glob("*.py"))
-    python_files += [ROOT / ".github/scripts/omni032_h3_sr_ci.py", ROOT / ".github/scripts/test_omni032_h3_sr_ci.py"]
+    python_files += [ROOT / ".github/scripts" / name for name in (
+        "omni032_h3_sr_ci.py", "test_omni032_h3_sr_ci.py", "test_omni032_retry_ci.py", "test_omni032_submission_ci.py")]
     for path in python_files:
         target_python = (3, 12) if path.is_relative_to(ROOT / "container") else (3, 10)
         ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path), feature_version=target_python)

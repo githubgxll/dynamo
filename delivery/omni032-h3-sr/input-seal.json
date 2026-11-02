@@ -5,12 +5,22 @@
   "delta": {
     ".github/scripts/omni032_h3_sr_ci.py": {
       "mode": "100644",
-      "blob": "d84e10cf8696054b7333bd7bbccc3685cbc41d90",
+      "blob": "f00183ae2eaba74dd9bc723731f7cba937d35d44",
       "status": "A"
     },
     ".github/scripts/test_omni032_h3_sr_ci.py": {
       "mode": "100644",
-      "blob": "d0cfcc518115a2adadd878924049ea3023aee2bc",
+      "blob": "ca80b8abbc6d8cdf91684800adaaa83bd3613792",
+      "status": "A"
+    },
+    ".github/scripts/test_omni032_retry_ci.py": {
+      "mode": "100644",
+      "blob": "d0a5c6478ebdf6d26978e9a049fc1cbff0511e6e",
+      "status": "A"
+    },
+    ".github/scripts/test_omni032_submission_ci.py": {
+      "mode": "100644",
+      "blob": "60f5fc4893b79493d0ed103bd82bd11ab3bddb47",
       "status": "A"
     },
     ".github/workflows/dingo-router-ci.yml": {
@@ -20,7 +30,7 @@
     },
     ".github/workflows/omni032-h3-sr.yml": {
       "mode": "100644",
-      "blob": "3e5bcec553bb8f2df199c0437963f25d9f8bd2a3",
+      "blob": "9d134b9488451051e3a78da7457cf68426848c40",
       "status": "A"
     },
     "container/omni032-h3-sr/.gitattributes": {
@@ -235,12 +245,12 @@
     },
     "delivery/omni032-h3-sr/README.md": {
       "mode": "100644",
-      "blob": "b8db54032358591528b2fde073c278d2e4bcfa27",
+      "blob": "fd887f92b7ee2cf98bee28ad1e302339b9c155a1",
       "status": "A"
     },
     "delivery/omni032-h3-sr/check_local.py": {
       "mode": "100644",
-      "blob": "b87ff26552f93ce344d69df5f74c36ffc82c61cc",
+      "blob": "7ae0c8570238dafe649b521d4bc9244566ee048c",
       "status": "A"
     },
     "delivery/omni032-h3-sr/env.cmd": {
@@ -255,7 +265,7 @@
     },
     "delivery/omni032-h3-sr/ops.py": {
       "mode": "100644",
-      "blob": "d74411d1ba5fdf63fff10e82d5763e70cc5c2ba5",
+      "blob": "26b61a3a05b8a53fb83be622e0308d406a3f840e",
       "status": "A"
     },
     "delivery/omni032-h3-sr/parent-source-manifest.json": {
@@ -265,7 +275,7 @@
     },
     "delivery/omni032-h3-sr/source-lock.json": {
       "mode": "100644",
-      "blob": "55b1baa88e98ea78f91603a7e8189fe821bf8356",
+      "blob": "b33f511198709395342a7240678ed521f88fb859",
       "status": "A"
     }
   },
@@ -533,6 +543,6 @@
     "container/seedvr2-optimization/tests/test_runtime_contract.py": "793adfd1933c9bca2e5e622ac6e10fd71efa2dcd",
     "container/seedvr2-optimization/tests/test_telemetry.py": "edda5933efd8f32804ce1ea79a39a66997027951"
   },
-  "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
-  "tree": "13d8659bb0f3f1497b2e35c5264bf3b6a1493921"
+  "recipe_sha256": "8e4891ef1c4b7bf818321b19e0b1a30199c700011b0730f86d1f09e360696871",
+  "tree": "8a8d60993efeb9fdea68e8e1d4e3e378a662486a"
 }

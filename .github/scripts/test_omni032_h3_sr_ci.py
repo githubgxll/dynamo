@@ -99,12 +99,23 @@ class ReviewAndSubmission(unittest.TestCase):
             changed["freeze"][key] = "0" * len(changed["freeze"][key])
             with self.subTest(key=key), self.assertRaises(ValueError): ops.review_contract(changed, lock(), recipe)
 
-    def test_already_requested_and_noninteger_request_counts_rejected(self):
+    def test_nonnegative_request_history_requires_terminal_unpublished_result(self):
         recipe = {"recipe_sha256": "c" * 64, "tree": "d" * 40}
-        for count in (1, -1, False, 0.0, "0", None):
+        for count in (-1, False, 0.0, "0", None):
             value = contract(recipe)
             value["build_request_count"] = count
             with self.subTest(count=count), self.assertRaises(ValueError): ops.review_contract(value, lock(), recipe)
+        previous = {"repository": lock()["repository"], "branch": ci.BRANCH,
+                    "workflow_path": ".github/workflows/omni032-h3-sr.yml", "commit": COMMIT,
+                    "run_id": 123, "run_attempt": 2, "status": "completed", "conclusion": "failure",
+                    "publication_status": "not_started"}
+        for count in (1, 3, 17):
+            value = {**contract(recipe), "build_request_count": count, "submitted_commit": COMMIT,
+                     "previous_build_result": previous}
+            with self.subTest(count=count):
+                self.assertEqual(ops.review_contract(value, lock(), recipe), value)
+        value = {**contract(recipe), "build_request_count": 1, "submitted_commit": COMMIT}
+        with self.assertRaises(ValueError): ops.review_contract(value, lock(), recipe)
 
     def test_atomic_journal_never_overwrites_existing_request(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,17 +125,27 @@ class ReviewAndSubmission(unittest.TestCase):
             with self.assertRaises(FileExistsError): ops.claim_request(path, {"status": "REQUESTED_AGAIN"})
             self.assertEqual(path.read_bytes(), before)
 
-    def test_existing_journal_stops_before_checks_or_network(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ops, "EVIDENCE", Path(tmp)), mock.patch.object(ops, "check") as check:
-            ops.dump(Path(tmp) / "one-build-journal.json", {"status": "UNKNOWN"})
-            with self.assertRaises(ValueError): ops.submit(True)
-            check.assert_not_called()
+    def test_unaccounted_existing_journal_stops_before_any_network(self):
+        recipe = {"recipe_sha256": "c" * 64, "tree": "d" * 40}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared = root / "shared-contract.json"
+            ops.dump(shared, contract(recipe))
+            ops.dump(root / "one-build-journal.json", {"status": "UNKNOWN"})
+            with mock.patch.object(ops, "EVIDENCE", root), mock.patch.object(ops, "CONTRACT", shared), \
+                 mock.patch.object(ops, "check", return_value=(lock(), "full-tree", recipe)), \
+                 mock.patch.object(ops.LEGACY, "remote_head") as remote, mock.patch.object(ops, "observe_run") as observe:
+                with self.assertRaises(ValueError): ops.submit(True)
+                remote.assert_not_called()
+                observe.assert_not_called()
 
     def test_ambiguous_push_is_claimed_once_and_never_automatically_retried(self):
         recipe = {"recipe_sha256": "c" * 64, "tree": "d" * 40}
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
             journal = Path(tmp) / "one-build-journal.json"
+            shared = Path(tmp) / "shared-contract.json"
+            ops.dump(shared, contract(recipe))
             def git(*arguments, **kwargs):
                 calls.append(arguments)
                 if arguments[0] == "push":
@@ -136,6 +157,7 @@ class ReviewAndSubmission(unittest.TestCase):
                 if arguments[:2] == ("rev-parse", "HEAD"): return COMMIT
                 raise AssertionError(arguments)
             with mock.patch.object(ops, "EVIDENCE", Path(tmp)), \
+                 mock.patch.object(ops, "CONTRACT", shared), \
                  mock.patch.object(ops, "check", return_value=(lock(), "reviewed-full-tree", recipe)), \
                  mock.patch.object(ops.LEGACY, "remote_head", return_value=ci.BASE_COMMIT), \
                  mock.patch.object(ops, "prospective", return_value=("reviewed-full-tree", recipe)), \
@@ -284,10 +306,11 @@ class Publication(unittest.TestCase):
         return {"GITHUB_SHA": COMMIT, "GITHUB_REF_NAME": ci.BRANCH, "GITHUB_EVENT_NAME": "push",
                 "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}
 
-    def test_first_push_run_only(self):
+    def test_positive_attempts_on_the_designated_push_branch(self):
         value = self.environment()
-        self.assertEqual(ci.identity(value), COMMIT)
-        for key, changed in (("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+        for attempt in ("1", "2", "3"):
+            self.assertEqual(ci.identity({**value, "GITHUB_RUN_ATTEMPT": attempt}), COMMIT)
+        for key, changed in (("GITHUB_RUN_ATTEMPT", "0"), ("GITHUB_EVENT_NAME", "workflow_dispatch"),
                              ("GITHUB_REF_NAME", "main"), ("GITHUB_SHA", "short")):
             with self.subTest(key=key), self.assertRaises(ValueError): ci.identity({**value, key: changed})
 
@@ -307,7 +330,7 @@ class Publication(unittest.TestCase):
     def test_parent_and_framework_lock(self):
         ci.validate_lock(lock())
         for key, changed in (("parent_image", "nvidia/cuda:latest"), ("runtime_base_image", "new-base"),
-                             ("working_tree_base_commit", "0" * 40), ("tag_prefix", "../../other")):
+                             ("working_tree_base_commit", "short"), ("tag_prefix", "../../other")):
             with self.subTest(key=key), self.assertRaises(ValueError): ci.validate_lock({**lock(), key: changed})
         value = lock()
         value["versions"]["torch"] = "2.14.0"
@@ -456,7 +479,8 @@ class Publication(unittest.TestCase):
             image_id = "sha256:" + "c" * 64
             digest = "sha256:" + "e" * 64
             ci.dump(directory / "candidate.json", {"status": "PASS_CPU_ONLY", "commit": COMMIT, "image": image,
-                    "image_id": image_id, "source_manifest_sha256": ci.hash_value(FILES)})
+                    "image_id": image_id, "source_manifest_sha256": ci.hash_value(FILES),
+                    "run_id": self.environment()["GITHUB_RUN_ID"], "run_attempt": int(self.environment()["GITHUB_RUN_ATTEMPT"])})
             def docker(*args, **kwargs):
                 return "digest: " + digest if args[0] == "push" else "pulled"
             with mock.patch.object(ci, "inspect", return_value={"Id": image_id}), mock.patch.object(ci, "docker", side_effect=docker) as tool:
@@ -470,7 +494,8 @@ class Publication(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(ci.os.environ, self.environment()):
             directory = Path(tmp)
             ci.dump(directory / "candidate.json", {"status": "PASS_CPU_ONLY", "commit": COMMIT,
-                    "image": "tag", "image_id": "old"})
+                    "image": "tag", "image_id": "old", "run_id": self.environment()["GITHUB_RUN_ID"],
+                    "run_attempt": int(self.environment()["GITHUB_RUN_ATTEMPT"])})
             with mock.patch.object(ci, "inspect", return_value={"Id": "different"}), mock.patch.object(ci, "docker") as tool:
                 with self.assertRaises(ValueError): ci.publish(directory)
                 tool.assert_not_called()
@@ -487,7 +512,7 @@ class Publication(unittest.TestCase):
         self.assertEqual(len(builds), 1)
         self.assertEqual(builds[0]["with"]["push"], "false")
         self.assertEqual(builds[0]["with"]["load"], "true")
-        self.assertIn("github.run_attempt == 1", workflow["jobs"]["reviewed-image"]["if"])
+        self.assertNotIn("github.run_attempt == 1", workflow["jobs"]["reviewed-image"]["if"])
         legacy = yaml.load((ROOT / ".github/workflows/dingo-router-ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         push_jobs = [job for job in legacy["jobs"].values() if "github.event_name == 'push'" in job.get("if", "")]
         self.assertEqual(len(push_jobs), 6)

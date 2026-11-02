@@ -34,12 +34,17 @@ spec.loader.exec_module(ops)
 read, dump, hash_value = ops.read, ops.dump, ops.hash_value
 
 
-def execute(arguments, log=None):
+def command_result(arguments, log=None):
     result = subprocess.run(arguments, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if log is not None:
         log = Path(log)
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(result.stdout + result.stderr, encoding="utf-8")
+    return result
+
+
+def execute(arguments, log=None):
+    result = command_result(arguments, log=log)
     if result.returncode:
         raise RuntimeError("Command failed: " + arguments[0] + "\n" + result.stdout[-8000:] + result.stderr[-8000:])
     return result.stdout
@@ -58,24 +63,74 @@ def inspect(image):
 
 def identity(environ):
     commit = environ.get("GITHUB_SHA", "")
+    attempt = environ.get("GITHUB_RUN_ATTEMPT", "")
     if (not re.fullmatch(r"[0-9a-f]{40}", commit)
             or environ.get("GITHUB_REF_NAME") != BRANCH
             or environ.get("GITHUB_EVENT_NAME") != "push"
-            or environ.get("GITHUB_RUN_ATTEMPT") != "1"
+            or not isinstance(attempt, str) or not re.fullmatch(r"[1-9][0-9]*", attempt)
             or not re.fullmatch(r"[1-9][0-9]*", environ.get("GITHUB_RUN_ID", ""))):
-        raise ValueError("Only the first push-triggered run on the designated branch may build")
+        raise ValueError("Use a push-triggered run on the designated branch with a positive Actions run/attempt identity")
     return commit
+
+
+def current_run():
+    return {"run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])}
+
+
+def require_current_attempt(record):
+    current = current_run()
+    if (record.get("run_id") != current["run_id"] or type(record.get("run_attempt")) is not int
+            or record["run_attempt"] != current["run_attempt"]):
+        raise ValueError("Evidence belongs to another Actions run/attempt; do not reuse previous-attempt PASS files")
+
+
+def classify_manifest_lookup(result):
+    if result.returncode == 0:
+        return "EXISTS"
+    if result.returncode != 1:
+        return "UNKNOWN"
+    detail = (result.stdout + "\n" + result.stderr).casefold()
+    missing = "manifest unknown" in detail or "no such manifest" in detail
+    uncertain = any(marker in detail for marker in (
+        "unauthorized", "authentication", "authorization", "failed to authorize", "failed to fetch", "forbidden", "denied",
+        "x509", "certificate", "tls", "ssl", "eof", "timeout", "timed out", "connection",
+        "no such host", "network", "dial tcp", "proxyconnect", "lookup", "bad gateway", "service unavailable", "unexpected status",
+        "toomanyrequests", "too many requests", "rate limit", "ratelimit", "internal server error"))
+    http_errors = re.findall(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:\s+code)?)\s*[:=]?\s*([45][0-9]{2})\b", detail)
+    uncertain = uncertain or any(status != "404" for status in http_errors)
+    return "ABSENT_CONFIRMED" if missing and not uncertain else "UNKNOWN"
+
+
+def confirm_tag_absent(image, directory):
+    """Read the stable tag after Harbor login, before any image build.
+
+    Only Docker's explicit manifest-missing diagnostic permits construction.
+    Transport/authentication ambiguity always stops the job without rebuilding.
+    """
+    result = command_result(["docker", "manifest", "inspect", image], log=directory / "tag-inspect.txt")
+    status = classify_manifest_lookup(result)
+    record = {"schema": "omni032-stable-tag-inspection/1", "status": status, "image": image,
+              "exit_code": result.returncode, **current_run()}
+    dump(directory / "tag-inspection.json", record)
+    if status == "EXISTS":
+        raise ValueError("Final image tag already exists; stop before building and reuse or verify its immutable digest: " + image)
+    if status != "ABSENT_CONFIRMED":
+        raise RuntimeError("Final tag lookup is UNKNOWN, not a confirmed missing manifest; check tag-inspect.txt before any new build")
+    return record
 
 
 def validate_lock(value):
     expected = {"repository": "https://github.com/githubgxll/dynamo.git", "remote_branch": BRANCH,
                 "harbor_repository": REPOSITORY, "parent_image": PARENT,
                 "parent_source_commit": BASE_COMMIT, "recipe_base_commit": BASE_COMMIT,
-                "working_tree_base_commit": BASE_COMMIT, "platform": "linux/amd64",
+                "platform": "linux/amd64",
                 "omni_release_commit": "5917730a4b02aedb44d374173cdc1b10484ccd52"}
     for key, item in expected.items():
         if value.get(key) != item:
             raise ValueError("Unexpected reviewed source lock: " + key)
+    working = value.get("working_tree_base_commit")
+    if not isinstance(working, str) or not re.fullmatch(r"[0-9a-f]{40}", working):
+        raise ValueError("Working-tree anchor must be a full Git SHA; ancestry is checked by the frozen recipe verifier")
     if value.get("runtime_base_image", PARENT) != PARENT:
         raise ValueError("Actual parent must remain the reviewed functional image")
     for name, version in {"vllm": "0.32.0", "vllm-omni": "0.32.0", "torch": "2.13.0+cu130", "cache-dit": "1.5.0"}.items():
@@ -100,15 +155,16 @@ def prepare(directory, github_output=None):
     directory.mkdir(parents=True, exist_ok=True)
     if (directory / "preparation.json").exists():
         raise ValueError("This job preparation was already requested")
+    tag = REPOSITORY + ":" + value["tag_prefix"] + "-" + commit[:12]
+    tag_inspection = confirm_tag_absent(tag, directory)
     docker("pull", PARENT, log=directory / "parent-pull.txt")
     parent = inspect(PARENT)
     if parent.get("Id") != PARENT_ID or parent.get("Os") != "linux" or parent.get("Architecture") != "amd64":
         raise ValueError("Actual parent differs from the successful functional image")
     dump(directory / "parent-inspect.json", parent)
-    tag = REPOSITORY + ":" + value["tag_prefix"] + "-" + commit[:12]
     record = {"schema": "omni032-ci-preparation/1", "status": "PASS", "commit": commit,
               "recipe_sha256": recipe["recipe_sha256"], "reviewed_tree": recipe["tree"],
-              "parent_image": PARENT, "image": tag, "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": 1}
+              "parent_image": PARENT, "image": tag, "tag_inspection": tag_inspection["status"], **current_run()}
     dump(directory / "preparation.json", record)
     if github_output:
         with Path(github_output).open("a", encoding="utf-8", newline="\n") as stream:
@@ -257,6 +313,7 @@ def validate(directory):
     preparation = read(directory / "preparation.json")
     if preparation.get("commit") != commit:
         raise ValueError("Wrong preparation source commit")
+    require_current_attempt(preparation)
     child = inspect(preparation["image"])
     config = compare_config(read(directory / "parent-inspect.json"), child, commit)
     image_id = child["Id"]
@@ -278,7 +335,8 @@ def validate(directory):
         raise ValueError("Final actual-image validation differs from build-time evidence")
     result = {"schema": "omni032-ci-candidate/1", "status": "PASS_CPU_ONLY", "commit": commit,
               "image_id": image_id, "image": preparation["image"], "recipe_sha256": preparation["recipe_sha256"],
-              "source_manifest_sha256": checked["source_manifest_sha256"], "config": config, "gpu_validation_status": "NOT_RUN"}
+              "source_manifest_sha256": checked["source_manifest_sha256"], "config": config,
+              "gpu_validation_status": "NOT_RUN", **current_run()}
     dump(directory / "candidate.json", result)
     return result
 
@@ -295,6 +353,7 @@ def publish(directory):
     candidate = read(directory / "candidate.json")
     if candidate.get("status") != "PASS_CPU_ONLY" or candidate.get("commit") != commit:
         raise ValueError("No validated exact-image candidate")
+    require_current_attempt(candidate)
     if inspect(candidate["image"]).get("Id") != candidate["image_id"]:
         raise ValueError("Final tag changed after validation")
     checked = validate_reports(directory / "final", commit)
@@ -302,7 +361,7 @@ def publish(directory):
         raise ValueError("Final source evidence changed")
     # Publication request is create-once even if the push response is lost.
     ops.claim_request(directory / "publication-request.json", {"status": "REQUESTED", "commit": commit,
-                      "image_id": candidate["image_id"], "image": candidate["image"], "request_count": 1})
+                      "image_id": candidate["image_id"], "image": candidate["image"], "request_count": 1, **current_run()})
     output = docker("push", candidate["image"], log=directory / "push.txt")
     (directory / "push.txt").write_text(output, encoding="utf-8")
     digest = digest_from_push(output)
@@ -314,7 +373,7 @@ def publish(directory):
     receipt = {**candidate, "schema": "omni032-image-publication/1", "status": "PUBLISHED_CPU_VALIDATED_GPU_PENDING",
                "published_image": reference, "digest": digest,
                "run_url": f"https://github.com/githubgxll/dynamo/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-               "push_count": 1, "gpu_validation_status": "NOT_RUN"}
+               "push_count": 1, "gpu_validation_status": "NOT_RUN", **current_run()}
     dump(directory / "publication.json", receipt)
     return receipt
 

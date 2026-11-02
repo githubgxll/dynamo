@@ -1,5 +1,5 @@
 name: Omni 0.32 H3 SR reviewed single build
-run-name: "omni032-h3-sr | ${{ github.ref_name }} | ${{ github.sha }}"
+run-name: "omni032-h3-sr | ${{ github.ref_name }} | ${{ github.sha }} | attempt ${{ github.run_attempt }}"
 
 on:
   push:
@@ -14,11 +14,11 @@ concurrency:
 
 jobs:
   reviewed-image:
-    if: github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[omni032-h3-sr]') && github.run_attempt == 1
+    if: github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[omni032-h3-sr]')
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 180
     env:
-      EVIDENCE: .h3-experimental-evidence/omni032-h3-sr/ci
+      EVIDENCE: .h3-experimental-evidence/omni032-h3-sr/ci/${{ github.run_id }}-${{ github.run_attempt }}
       PIP_INDEX_URL: https://pypi.org/simple
       UV_DEFAULT_INDEX: https://pypi.org/simple
     steps:
@@ -81,6 +81,6 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: omni032-h3-sr-${{ github.sha }}-${{ github.run_id }}-attempt${{ github.run_attempt }}
-          path: .h3-experimental-evidence/omni032-h3-sr/ci
+          path: ${{ env.EVIDENCE }}
           if-no-files-found: warn
           retention-days: 30
