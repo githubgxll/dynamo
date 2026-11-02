@@ -66,6 +66,19 @@ class ImageTests(unittest.TestCase):
                     self.assertTrue(image.startswith(f"{HOST}/openclaw/"))
                     self.assertEqual(platform, "linux/amd64")
                     text = (out / filename).read_text()
+                    self.assertNotIn("--extra-index-url https://pypi.org/simple", text)
+                    self.assertNotIn("https://static.rust-lang.org/rustup/archive/", text)
+                    if "rustup-init" in text:
+                        self.assertIn("https://rsproxy.cn/rustup/archive/1.28.1/${RUSTARCH}/rustup-init", text)
+                        self.assertIn("RUST_VERSION=1.96.1", text)
+                    for instruction in re.split(r"(?=^[A-Z]+\b)", text, flags=re.M):
+                        if not instruction.startswith("RUN "):
+                            continue
+                        code = re.sub(r"(?m)^[ \t]*#[^\n]*$", "", instruction)
+                        if re.search(r"\bapt(?:-get)?\s", code):
+                            self.assertIn("for source in /etc/apt/sources.list", instruction)
+                        if re.search(r"\b(?:cargo|maturin)\b", code):
+                            self.assertIn("id=cargo-config,target=/usr/local/cargo/config.toml,required=true", instruction)
                     stages = set(re.findall(r"^FROM .*? AS (\S+)", text, re.M | re.I)) | {"scratch"}
                     args = dict(re.findall(r"^ARG (\w+)=(.*)$", text, re.M))
                     refs = re.findall(r"^FROM (?:--platform=\S+ )?(\S+)", text, re.M)
@@ -82,6 +95,38 @@ class ImageTests(unittest.TestCase):
                             ref = "docker.io/" + ref
                         self.assertIn(ref, mapped, f"Unmirrored source in {filename}: {ref}")
 
+    def test_package_policy_preserves_specialized_sources_and_shell_syntax(self):
+        original = ('RUN --mount=type=cache,target=/tmp/cache \\\n    '
+                    'apt-get update && printf done\n'
+                    'RUN uv pip install torch --extra-index-url https://download.pytorch.org/whl/cu130\n'
+                    'RUN wget https://github.com/org/project/archive/v1.2.3.tar.gz\n')
+        generated = prepare.apply_package_mirrors(original)
+        self.assertIn(original.splitlines()[-2], generated)
+        self.assertIn(original.splitlines()[-1], generated)
+        self.assertTrue(generated.startswith('RUN --mount=type=cache,target=/tmp/cache \\\n    for source'))
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'ubuntu.sources'
+            source.write_text(
+                'URIs: http://archive.ubuntu.com/ubuntu\nSuites: noble noble-updates\n'
+                'URIs: https://security.ubuntu.com/ubuntu/\n'
+                'deb http://deb.debian.org/debian bookworm main\n'
+                'deb https://deb.debian.org/debian-security bookworm-security main\n'
+                'deb https://security.debian.org/debian-security bookworm-security main\n'
+                'URIs: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/\n')
+            setup = generated.split('    ', 1)[1].split(' && apt-get update', 1)[0]
+            setup = setup.replace('/etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources',
+                                  str(source))
+            # BSD/macOS sed needs an explicit suffix; Linux CI uses GNU sed.
+            setup = setup.replace('sed -i ', 'sed -i.bak ')
+            result = subprocess.run(['sh', '-c', setup], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            content = source.read_text()
+            self.assertNotIn('ubuntu.com', content)
+            self.assertNotIn('debian.org', content)
+            self.assertIn('https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security', content)
+            self.assertIn('Suites: noble noble-updates', content)
+            self.assertIn('https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/', content)
+
     def test_build_records_exporter_digest_and_cleans_auth(self):
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)
@@ -93,6 +138,8 @@ class ImageTests(unittest.TestCase):
             stub = work / "buildctl"
             stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$TEST_LOG"\n'
                             'printf "%s\\n" "$DOCKER_CONFIG" > "$TEST_AUTH_PATH"\n'
+                            'cp "$DOCKER_CONFIG/cargo-config.toml" "$TEST_LOG.cargo"\n'
+                            'printf "%s\\n" "$PIP_INDEX_URL" "$UV_DEFAULT_INDEX" > "$TEST_LOG.indexes"\n'
                             'while [ "$#" -gt 0 ]; do\n'
                             '  if [ "$1" = --metadata-file ]; then shift; '
                             'printf \'{"containerimage.digest": "%s"}\\n\' "$TEST_DIGEST" > "$1"; fi\n'
@@ -110,6 +157,10 @@ class ImageTests(unittest.TestCase):
             calls = (work / "calls").read_text()
             self.assertIn("--addr unix:///run/buildkit/buildkitd.sock", calls)
             self.assertIn("--source-policy-file .gitlab-render/source-policy.json", calls)
+            self.assertIn("--secret id=cargo-config,src=", calls)
+            self.assertIn('replace-with = "build-mirror"', (work / 'calls.cargo').read_text())
+            self.assertIn('sparse+https://rsproxy.cn/index/', (work / 'calls.cargo').read_text())
+            self.assertEqual((work / 'calls.indexes').read_text(), 'https://index.invalid/simple\n' * 2)
             self.assertNotIn("--export-cache", calls)
             self.assertNotIn("not-a-real-secret", calls + result.stdout + result.stderr)
             self.assertFalse(Path((work / "auth-path").read_text().strip()).exists())

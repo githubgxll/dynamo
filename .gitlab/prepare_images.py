@@ -20,6 +20,62 @@ def load_module(name, path):
     return module
 
 
+# CI-only policy: upstream Dockerfiles/templates remain unchanged. Keep paths,
+# suites, architectures and version pins; never rewrite arbitrary download URLs.
+APT_MIRRORS = {
+    "archive.ubuntu.com/ubuntu": "mirrors.tuna.tsinghua.edu.cn/ubuntu",
+    "security.ubuntu.com/ubuntu": "mirrors.tuna.tsinghua.edu.cn/ubuntu",
+    "deb.debian.org/debian": "mirrors.tuna.tsinghua.edu.cn/debian",
+    "deb.debian.org/debian-security": "mirrors.tuna.tsinghua.edu.cn/debian-security",
+    "security.debian.org/debian-security": "mirrors.tuna.tsinghua.edu.cn/debian-security",
+}
+
+
+def apply_package_mirrors(text):
+    # Source lists are inherited from external bases, including deb822 .sources.
+    # Run immediately before each apt command, not before USER/ARG initialization.
+    sed_rules = " ".join(
+        f"-e 's#https?://{re.escape(source)}([/ ]|$)#https://{target}\\1#g'"
+        for source, target in APT_MIRRORS.items()
+    )
+    apt_setup = (
+        "for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
+        "/etc/apt/sources.list.d/*.sources; do "
+        '[ ! -f "$source" ] || sed -i -E ' + sed_rules + ' "$source" || exit 1; done && '
+    )
+    instructions = re.split(r"(?=^[A-Z]+\b)", text, flags=re.MULTILINE)
+    for index, instruction in enumerate(instructions):
+        if not instruction.startswith("RUN "):
+            continue
+        code = re.sub(r"(?m)^[ \t]*#[^\n]*$", "", instruction)
+        prefix = ""
+        mounts = ""
+        if re.search(r"\bapt(?:-get)?\s", code):
+            prefix += apt_setup
+            # Also cover sources explicitly created inside this RUN.
+            for source, target in APT_MIRRORS.items():
+                instruction = re.sub(r"https?://" + re.escape(source) + r"(?=[/ '\"])",
+                                     "https://" + target, instruction)
+        if re.search(r"\b(?:cargo|maturin)\b", code):
+            # Both homes occur in upstream stages; mounts don't persist in images.
+            mounts += ("--mount=type=secret,id=cargo-config,target=/usr/local/cargo/config.toml,required=true \\\n    "
+                       "--mount=type=secret,id=cargo-config,target=/root/.cargo/config.toml,required=true \\\n    ")
+        if "rustup-init" in code:
+            instruction = instruction.replace(
+                "https://static.rust-lang.org/rustup/archive/1.28.1/",
+                "https://rsproxy.cn/rustup/archive/1.28.1/")
+            prefix += "export RUSTUP_DIST_SERVER=https://rsproxy.cn RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup && "
+        # Explicit extra indexes bypass the default-index secret. This one is
+        # redundant PyPI, not the specialized CUDA wheel index (which stays).
+        instruction = instruction.replace("--extra-index-url https://pypi.org/simple", "")
+        instructions[index] = re.sub(
+            r"^RUN (?P<mounts>(?:(?:--mount=[^\n]*\\|#[^\n]*)\n[ \t]+)*)",
+            lambda match: "RUN " + mounts + match.group("mounts") + prefix,
+            instruction, count=1,
+        )
+    return "".join(instructions)
+
+
 def main():
     matrix = load_module("image_matrix", ROOT / ".github/scripts/prepare_dingo_image_matrix.py")
     renderer = load_module("renderer", ROOT / "container/render.py")
@@ -62,6 +118,7 @@ def main():
         template = renderer._make_jinja_env(ROOT / "container").get_template("Dockerfile.template")
         text = template.render(context=context, **renderer._render_context(args, context))
         text = renderer._inject_python_index_mounts(re.sub(r"\n{3,}", "\n\n", text))
+        text = apply_package_mirrors(text)
         filename = f'{framework}-{image["docker_target"]}.Dockerfile'
         (OUT / filename).write_text(text)
         syntax = re.search(r"^# syntax=(\S+)", text).group(1)

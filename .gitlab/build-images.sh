@@ -16,6 +16,9 @@ export HTTP_PROXY="$CI_BUILD_PROXY_URL" HTTPS_PROXY="$CI_BUILD_PROXY_URL" NO_PRO
 export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY" no_proxy="$NO_PROXY"
 # render.py mounts indexes as secrets; build args alone are shadowed.
 export PIP_INDEX_URL="$CI_BUILD_PIP_INDEX" UV_DEFAULT_INDEX="$CI_BUILD_PIP_INDEX"
+# Cargo source replacement also changes crate downloads (an index override alone
+# can leave static.crates.io downloads). BuildKit mounts this only during RUN.
+printf '[source.crates-io]\nreplace-with = "build-mirror"\n[source.build-mirror]\nregistry = "sparse+https://rsproxy.cn/index/"\n' > "$DOCKER_CONFIG/cargo-config.toml"
 mkdir -p .gitlab-published
 : > .gitlab-published/images.tsv
 while IFS="$(printf '\t')" read -r image dockerfile target platform frontend; do
@@ -34,6 +37,7 @@ while IFS="$(printf '\t')" read -r image dockerfile target platform frontend; do
         --opt "build-arg:https_proxy=$https_proxy" --opt "build-arg:no_proxy=$no_proxy" \
         --secret id=pip-index-url,env=PIP_INDEX_URL \
         --secret id=uv-default-index,env=UV_DEFAULT_INDEX \
+        --secret "id=cargo-config,src=$DOCKER_CONFIG/cargo-config.toml" \
         --metadata-file "$metadata" --output "type=image,name=$image,push=true"
     # BuildKit emits a top-level string for containerimage.digest, not a tag lookup.
     digest="$(grep '"containerimage.digest":' "$metadata" | cut -d '"' -f 4)"

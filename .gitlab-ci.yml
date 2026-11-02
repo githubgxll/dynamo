@@ -19,7 +19,7 @@ variables:
   CI_BUILD_KIT_IMAGE: "registry.xb-01.alayanew.com:8443/openclaw/ci/buildkit:v0.32.2-rootful@sha256:040d34121c27906c4ff9ac152a30d52bf2c5d328d3bb748916bb3d2743c02528"
   CI_SYNC_IMAGE: "registry.xb-01.alayanew.com:8443/openclaw/ci/skopeo:v1.17.0-amd64@sha256:a5032a59f55ac82e2b5c9e9a8223a5249a31e82ae51f74d63ff356ccbed1adee"
   CI_BUILD_PROXY_URL: "http://10.201.106.68:1080"
-  CI_BUILD_NO_PROXY: "localhost,127.0.0.1,::1,.svc,.cluster.local,.datacanvas.com,.zetyun.cn,.alayanew.com,mirrors.aliyun.com,mirrors.tuna.tsinghua.edu.cn,pypi.tuna.tsinghua.edu.cn,mirrors.huaweicloud.com,mirror.sjtu.edu.cn,s3.jcloud.sjtu.edu.cn,rsproxy.cn,.rsproxy.cn,pypi.org,files.pythonhosted.org,download.pytorch.org,.download.pytorch.org,10.0.0.0/8,172.16.0.0/12"
+  CI_BUILD_NO_PROXY: "localhost,127.0.0.1,::1,.svc,.cluster.local,.datacanvas.com,.zetyun.cn,.alayanew.com,mirrors.aliyun.com,mirrors.tuna.tsinghua.edu.cn,pypi.tuna.tsinghua.edu.cn,mirrors.huaweicloud.com,repo.huaweicloud.com,mirror.sjtu.edu.cn,s3.jcloud.sjtu.edu.cn,rsproxy.cn,.rsproxy.cn,pypi.org,files.pythonhosted.org,download.pytorch.org,.download.pytorch.org,10.0.0.0/8,172.16.0.0/12"
   CI_BUILD_PIP_INDEX: "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
 
 prepare:images:
