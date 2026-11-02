@@ -95,9 +95,9 @@ dynamo:
 vllm:
   cuda13.0:
     base_image: nvcr.io/nvidia/cuda-dl-base
-    runtime_image: registry.hd-04.alayanew.com:8443/openclaw/vllm-openai
+    runtime_image: registry.xb-01.alayanew.com:8443/openclaw/vllm-openai
     base_image_tag: 25.11-cuda13.0-devel-ubuntu24.04
-    runtime_image_tag: alaya-dev-c344861e
+    runtime_image_tag: alaya-develop-epd-7f9000c6
     # Keep using the existing CUDA 13.0.2 compliance corpus for this Dingo CI
     # image update. Refreshing the corpus for the vLLM 0.29 runtime base is
     # intentionally deferred because this workflow does not publish SBOM or
