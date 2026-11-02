@@ -1,0 +1,88 @@
+{
+  "schema": "omni032-sr-source-patches/1",
+  "upstream_version": "0.32.0",
+  "upstream_commit": "5917730a4b02aedb44d374173cdc1b10484ccd52",
+  "scope": "Exact source-only SR migration on official 0.32; preserves upstream API/IPC behavior; no numerical, checkpoint, precision or topology change",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py": {
+      "before_sha256": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+      "after_sha256": "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048"
+    },
+    "vllm_omni/diffusion/models/seedvr2/vae.py": {
+      "before_sha256": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3",
+      "after_sha256": "06a2ffa2df5aaac83c1fab78086d8429e2ff02e0c676a3115e793c76ce28a1f3"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video.py": {
+      "before_sha256": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
+      "after_sha256": "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05"
+    },
+    "vllm_omni/entrypoints/openai/serving_video.py": {
+      "before_sha256": "c4f5ea1c144d389c9d25b026b44005aa5c1364ba1478a9a1c80a4a0ecfa47570",
+      "after_sha256": "88693bfb34602a1f84d694f46e75911c31725ced214e2f07d581e83a62410187"
+    },
+    "vllm_omni/entrypoints/openai/video_api_utils.py": {
+      "before_sha256": "84bbe2778eb94844262c999e951ba397bbc54db7361d28d0e789a5959d3d6407",
+      "after_sha256": "191a75a57fcfcb2b3a42a4ad02d9913d011db2392c38dc5279a49bf092e1e106"
+    },
+    "vllm_omni/diffusion/utils/media_utils.py": {
+      "before_sha256": "045cf1819eb88d8aaa3b0c7e4c21b3c7dfbc81954c6188605e7e8fec632c3380",
+      "after_sha256": "ee1d98e748819c214fa46dbc915e3a72be2b55ee5bcb1cb51cc0935a2e5df6e6"
+    },
+    "vllm_omni/diffusion/ipc.py": {
+      "before_sha256": "f64589f32a0e792a38afe30682a7e25f0f51ba0602a43fd150eb20dcdf74c33e",
+      "after_sha256": "eda648854822bc739e678c165b6193b3c2c26273c73bd00283b829a27f214781"
+    }
+  },
+  "additions": {
+    "vllm_omni/diffusion/models/seedvr2/c14_capture.py": "7de785d45d4a1ff01b7c2fec235a5d09b16a29cc33d8a11104fce62ea6375620",
+    "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py": "d9d6716c9c5176156b0a0e7293c6dd554df423c7bf145dd11150ce4e46bf1de1",
+    "vllm_omni/diffusion/models/seedvr2/long_video_support.py": "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1"
+  },
+  "absorbed": {
+    "vllm_omni/diffusion/models/seedvr2/nadit.py": {
+      "sha256": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+      "upstream_pr": 8767,
+      "action": "verify_only_keep_six_numerical_regressions"
+    }
+  },
+  "generator_sha256": {
+    "seedvr2-c14/source_patches.py": "d151536920fd9324c88ffc67a8d646d08e18968cc8ed9763ce62c0b8b3433e41",
+    "seedvr2-c14/c14_capture.py": "7de785d45d4a1ff01b7c2fec235a5d09b16a29cc33d8a11104fce62ea6375620",
+    "seedvr2-optimization/pipeline_patch.py": "a90f380af9f67736a109f2921011257d1b4a4c05308df4967a4c56dcdfb933bc",
+    "seedvr2-optimization/long_video_patch.py": "940845110453d05ab77ffaa2c50234b9e37e1bd9d8b9c775e7377cf6886b529e",
+    "seedvr2-optimization/long_video_support.py": "db14071e1e8e41ba98bb40842b70e104dd580d91ceb45cb36a33fc24b038d786",
+    "seedvr2-metrics-repair/transfer_patch.py": "ed4f22d51c582aa842e9fad21ab81ec1743a5ca62b49782e7d34d49e58306400",
+    "seedvr2-metrics-repair/support_patch.py": "642ce346357f6c8a1021f831bdb11cfdce852438b92d6670f64612ca8ed83db3",
+    "seedvr2-metrics-repair/telemetry.py": "d9d6716c9c5176156b0a0e7293c6dd554df423c7bf145dd11150ce4e46bf1de1"
+  },
+  "upstream_fixture_origin": {
+    "repository": "https://github.com/vllm-project/vllm-omni",
+    "ref": "v0.32.0",
+    "commit": "5917730a4b02aedb44d374173cdc1b10484ccd52",
+    "wheel_byte_comparison_status": "PASS_ALL_8_FIXTURES_BYTE_IDENTICAL",
+    "wheel_filename": "vllm_omni-0.32.0-py3-none-any.whl",
+    "wheel_sha256": "242b94e64b359d3cd6d1ebf1b9d6b43ae854a4f97c780fd5e2121dab06cb68e6",
+    "wheel_size": 9668735
+  },
+  "source_baseline_preserved": {
+    "base_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:b3150072a8b917e643ceae5fd2b278e736df09fc76397b749b3ca4531cbe8bf3",
+    "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+    "gateway_lock_sha256": "c0b0a7b9d3f325e53551a59ba137395d94d8c64decae44b776624949033ac21b",
+    "full_dingo_source_manifest_sha256": "c50748751183b2ce8db08a963790de97be3a27ed02abc7f5f3635be9b98090a9",
+    "full_dingo_source_manifest_entries": 619,
+    "full_dingo_source_manifest_reference": "../omni-gateway-lite/gateway.lock.json:source_after_sha256",
+    "evidence_snapshot_relative": ".h3-experimental-evidence/sr-metrics-repair/final-ci-evidence/build/parent-snapshot.json",
+    "evidence_snapshot_sha256": "e584a69d983a964949daf3899a6c19b3b6ddbc096bcde643e640ce9ede44477a",
+    "evidence_scope": "Successful b315 build preserved this exact gateway lock; runtime verifier checked installed gateway against its complete source_after_sha256. New framework migration must recheck actual imports.",
+    "dingo_sources_sha256": {
+      "dingo/vllm/omni/output_formatter.py": "9fafcb12a52f7403aa1fbad9ed65e214ddc015763d0f06be4907ddb140c576fb",
+      "dingo/vllm/omni/base_handler.py": "11f0c1804e6d9f2b88f8f3644dc82ef7abe02e9309b3db79cde435cb1ed19261",
+      "dingo/vllm/omni/stage_config_compat.py": "8ebebd152bcba6770af7a6a42f2d0020886fa99f4ce61751766c40afcf549ecf",
+      "dingo/vllm/omni/detached_tasks.py": "c2af72a7c4460373f98d7727966323cc1d19ebea0db9a493fe0487982d5ad21f",
+      "dingo/vllm/omni/minimax_h3_timings.py": "41026fe87e37968eb93ec5e6cc2082d9153c23ac10433a07c319ea31a8c93f92",
+      "dingo/video_gateway/dispatcher.py": "70015030dab19fdd4398111533adb6b28b093dd842bc223626e1ebf8a60e43d2",
+      "dingo/video_gateway/artifact_store.py": "05d43a39809b98c1eb8be92cad6c9347450d7f779eb5ffe59f60d720aab3576e",
+      "dingo/video_gateway/task_store.py": "46f64ec3b8d0f0e71a04054a9eda3c3e02edd52f28e9f56273810ea129de96fb"
+    }
+  }
+}

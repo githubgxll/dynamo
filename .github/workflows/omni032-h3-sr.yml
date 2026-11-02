@@ -1,0 +1,86 @@
+name: Omni 0.32 H3 SR reviewed single build
+run-name: "omni032-h3-sr | ${{ github.ref_name }} | ${{ github.sha }}"
+
+on:
+  push:
+    branches: [Dingorouter-H3-vllm-omni-jirx]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dingo-runtime-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reviewed-image:
+    if: github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[omni032-h3-sr]') && github.run_attempt == 1
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 180
+    env:
+      EVIDENCE: .h3-experimental-evidence/omni032-h3-sr/ci
+      PIP_INDEX_URL: https://pypi.org/simple
+      UV_DEFAULT_INDEX: https://pypi.org/simple
+    steps:
+      - name: Checkout the requested immutable source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Log in with the existing controlled Harbor credentials
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: registry.hd-04.alayanew.com:8443
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Verify all reviews, frozen inputs and immutable parent
+        id: recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/omni032_h3_sr_ci.py prepare --directory "${EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Reuse the persistent group builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+
+      - name: Build the single final image without publication
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: container/omni032-h3-sr/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.recipe.outputs.image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.recipe.outputs.base_image }}
+            OMNI032_H3_SR_SOURCE_COMMIT=${{ github.sha }}
+          secret-envs: |
+            pip-index-url=PIP_INDEX_URL
+            uv-default-index=UV_DEFAULT_INDEX
+          provenance: false
+          sbom: false
+
+      - name: Validate this exact imageID offline as the final UID1000 user
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/omni032_h3_sr_ci.py validate --directory "${EVIDENCE}"
+
+      - name: Publish the validated image once and verify its pull digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/omni032_h3_sr_ci.py publish --directory "${EVIDENCE}"
+
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: omni032-h3-sr-${{ github.sha }}-${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: .h3-experimental-evidence/omni032-h3-sr/ci
+          if-no-files-found: warn
+          retention-days: 30

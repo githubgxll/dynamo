@@ -1,0 +1,25 @@
+{
+  "schema": "h3-omni032-environment-policy/1",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:b3150072a8b917e643ceae5fd2b278e736df09fc76397b749b3ca4531cbe8bf3",
+  "inherited_vllm_base": "vllm/vllm-openai:v0.31.0-ubuntu2404@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+  "python_minor": "3.12",
+  "parent_versions": {"vllm": "0.31.0", "vllm-omni": "0.31.0rc1", "torch": "2.13.0+cu130", "ai-dingo": "1.3.0", "ai-dingo-runtime": "1.3.0", "gpu-memory-service": "0.9.0"},
+  "target_versions": {
+    "vllm": "0.32.0", "vllm-omni": "0.32.0", "transformers": "5.16.1", "tokenizers": "0.23.2",
+    "xgrammar": "0.2.8", "instanttensor": "0.2.2", "tokenspeed-mla": "0.2.15", "humming-kernels": "0.1.17",
+    "nvidia-cutlass-dsl": "4.8.0", "nvidia-cutlass-dsl-libs-base": "4.8.0", "nvidia-cutlass-dsl-libs-core": "4.8.0",
+    "nvidia-cutlass-dsl-libs-cu12": "4.8.0", "nvidia-cutlass-dsl-libs-cu13": "4.8.0"
+  },
+  "preserved_versions": {"torch": "2.13.0+cu130", "torchvision": "0.28.0+cu130", "torchaudio": "2.11.0+cu130", "triton": "3.7.1", "nvidia-nccl-cu13": "2.30.7", "lmcache": "0.5.5", "av": "16.1.0", "soxr": "1.1.0", "torchcodec": "0.14.0", "opencv-python": "4.13.0.92", "opencv-python-headless": "4.13.0.92", "cache-dit": "1.5.0", "ai-dingo": "1.3.0", "ai-dingo-runtime": "1.3.0", "gpu-memory-service": "0.9.0"},
+  "native_names": ["torch", "torchvision", "torchaudio", "triton", "numpy", "msgspec", "ai-dingo", "ai-dingo-runtime", "gpu-memory-service", "lmcache", "nixl", "nixl-cu12", "nixl-cu13", "apache-tvm-ffi", "tilelang", "quack-kernels", "fastsafetensors", "numba", "llvmlite", "mooncake-transfer-engine-cuda13", "pynvvideocodec", "torchcodec", "cache-dit", "fa3-fwd", "deep-ep", "torch-c-dlpack-ext", "tokenspeed-triton", "cupy-cuda13x"],
+  "native_prefixes": ["nvidia-", "cuda-", "flashinfer-"],
+  "mutable_native_prefixes": ["nvidia-cutlass-dsl"],
+  "forbidden_components": ["kvbm", "modelexpress"],
+  "root_extras": {"ai-dingo": ["video-gateway"]},
+  "reviewed_orphans": ["opentelemetry-exporter-otlp-common"],
+  "wheel_artifacts": {
+    "vllm": {"version": "0.32.0", "filename": "vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl", "size_bytes": 326518482, "sha256": "5e2ecdc5b0baf72921c288486417ca82778456a448e4fe60b62ee43c0dfc8611", "url": "https://files.pythonhosted.org/packages/a5/0d/0b15fda9a56ac485ebb607e466f0e3386c8c115bafeced6514298bd325b5/vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl"},
+    "vllm-omni": {"version": "0.32.0", "filename": "vllm_omni-0.32.0-py3-none-any.whl", "size_bytes": 9668735, "sha256": "242b94e64b359d3cd6d1ebf1b9d6b43ae854a4f97c780fd5e2121dab06cb68e6", "url": "https://files.pythonhosted.org/packages/72/e9/9f8b93e0c59ba91a39530e55d5573edd544fdafaadaec48abe0950096e75/vllm_omni-0.32.0-py3-none-any.whl"}
+  },
+  "scope": "Release-paired vLLM/Omni upgrade on the verified b315 service image, preserving the actual Torch/CUDA/Dingo bytes. Full installed default metadata and requested extras are audited; this policy is not a GPU or quality acceptance claim."
+}

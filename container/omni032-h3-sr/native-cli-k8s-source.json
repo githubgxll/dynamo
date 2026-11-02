@@ -1,0 +1,210 @@
+{
+  "schema": "h3-sr-omni032-k8s-argv-request/1",
+  "status": "LOCAL_ARGUMENT_CONTRACT_READY_IMAGE_NOT_PUBLISHED",
+  "scope": "Exact function-package argv; native parser validation must not launch models",
+  "packet": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\experiments\\h3-sr-omni032-functional-20261102",
+  "h3_argv": [
+    "vllm-omni",
+    "serve",
+    "/models/h3/Ref2VA",
+    "--omni",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8123",
+    "--served-model-name",
+    "minimax-h3-ref2va",
+    "--task-type",
+    "ref2va",
+    "--dtype",
+    "bfloat16",
+    "--trust-remote-code",
+    "--num-gpus",
+    "8",
+    "--tensor-parallel-size",
+    "1",
+    "--ulysses-degree",
+    "8",
+    "--max-num-seqs",
+    "1",
+    "--ring-degree",
+    "1",
+    "--cfg-parallel-size",
+    "1",
+    "--allgather-degree",
+    "1",
+    "--ulysses-mode",
+    "strict",
+    "--use-hsdp",
+    "--hsdp-shard-size",
+    "8",
+    "--hsdp-replicate-size",
+    "1",
+    "--text-encoder-tp-size",
+    "8",
+    "--vae-patch-parallel-size",
+    "8",
+    "--vae-parallel-mode",
+    "tile",
+    "--vae-use-tiling",
+    "--diffusion-attention-backend",
+    "FLASH_ATTN",
+    "--enforce-eager",
+    "--cache-backend",
+    "cache_dit",
+    "--no-ulysses-a2a-permute",
+    "--enable-diffusion-pipeline-profiler",
+    "--request-batch-max-wait-ms",
+    "0",
+    "--init-timeout",
+    "10800",
+    "--stage-init-timeout",
+    "10800",
+    "--cache-config",
+    "{\"Fn_compute_blocks\":1,\"Bn_compute_blocks\":0,\"max_warmup_steps\":8,\"residual_diff_threshold\":0.12,\"max_continuous_cached_steps\":2,\"enable_taylorseer\":false,\"scm_steps_mask_policy\":null}",
+    "--enable-cache-dit-summary",
+    "--diffusion-offload-config",
+    "{\"mode\":\"module\",\"components\":[\"dit\",\"text_encoder\"],\"pin_memory\":true}"
+  ],
+  "sr_argv": [
+    "vllm-omni",
+    "serve",
+    "/opt/sr/seedvr2-3b",
+    "--omni",
+    "--model-class-name",
+    "SeedVR2Pipeline",
+    "--dtype",
+    "float16",
+    "--enforce-eager",
+    "--cache-backend",
+    "none",
+    "--num-gpus",
+    "8",
+    "--distributed-executor-backend",
+    "mp",
+    "--vae-use-tiling",
+    "--stage-overrides",
+    "{\"0\":{\"ulysses_degree\":8,\"vae_patch_parallel_size\":8,\"vae_parallel_mode\":\"spatial_shard_height\"}}",
+    "--api-server-count",
+    "1",
+    "--tensor-parallel-size",
+    "1",
+    "--ring-degree",
+    "1",
+    "--cfg-parallel-size",
+    "1",
+    "--allgather-degree",
+    "1",
+    "--text-encoder-tp-size",
+    "1",
+    "--ulysses-mode",
+    "strict",
+    "--no-ulysses-a2a-permute",
+    "--max-num-seqs",
+    "1",
+    "--request-batch-max-wait-ms",
+    "0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8124",
+    "--init-timeout",
+    "10800",
+    "--stage-init-timeout",
+    "10800"
+  ],
+  "h3_cache_config": {
+    "Fn_compute_blocks": 1,
+    "Bn_compute_blocks": 0,
+    "max_warmup_steps": 8,
+    "residual_diff_threshold": 0.12,
+    "max_continuous_cached_steps": 2,
+    "enable_taylorseer": false,
+    "scm_steps_mask_policy": null
+  },
+  "h3_module_offload": {
+    "mode": "module",
+    "components": [
+      "dit",
+      "text_encoder"
+    ],
+    "pin_memory": true
+  },
+  "h3_environment": {
+    "H3_OFFLOAD_FASTPATH": "1",
+    "H3_OFFLOAD_TIMING": "1",
+    "H3_OFFLOAD_TIMING_DIR": "/work/offload-timings/h3"
+  },
+  "profiler": {
+    "explicit_profiler_config": null,
+    "h3_enable_diffusion_pipeline_profiler": true,
+    "sr_enable_diffusion_pipeline_profiler": false
+  },
+  "sr_stage_overrides": {
+    "0": {
+      "ulysses_degree": 8,
+      "vae_patch_parallel_size": 8,
+      "vae_parallel_mode": "spatial_shard_height"
+    }
+  },
+  "h3_route": "/v1/videos/sync",
+  "h3_wire_fields": {
+    "model": "minimax-h3-ref2va",
+    "prompt": "subject_definitions:\n<Subject 1> is the adult female dancer in <Picture 1>, whose visible facial identity, dark updo, silver hair ornament, and yellow-green clothing with gold trim define the target performer.\n<Subject 2> is the pink-and-white folding fan held by the dancer in <Picture 1>, providing its color, shape, ribs, and handle. The image provides appearance references rather than a mandatory first frame. Only the foreground adult is the target; ignore the other people behind her. Clothing below the visible crop is newly completed plausibly and is not a source-identity constraint.\n\nsummary:\n[reference generation] Generate a six-second, two-shot live-action performance by <Subject 1>, using <Subject 2> throughout. Preserve the referenced dancer and fan while newly generating fast footwork, turns, a running leap, a visible landing, and a final open-fan pose. The two brief Japanese lines belong to the target performance and do not come from an audio reference.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - retain the defined identity, hairstyle, outfit, and body proportions; the dance, poses, lighting, and stage are newly generated rather than copied from the still photograph.\n<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - keep the same pink-and-white fan and its structure as it moves between closed and open states.\n\ndetailed_description:\nThe target video is a photorealistic live-action stage performance in a 5:3 landscape composition, lasting six seconds. An amber-lit wooden stage is backed by plain black curtains and narrow white light beams. There is only one principal performer, no written signage, and no subtitles. The remaining stage stays empty throughout both shots.\n[Shot 1] A medium-wide view establishes <Subject 1>, the adult dancer whose face, hair, dark updo, silver hair ornament, and yellow-green clothing with gold trim follow <Picture 1>. She holds <Subject 2>, the same pink-and-white folding fan, closed in one hand. Her feet and the fan are visible together, with enough room around her body to follow the movement. <Subject 1> (S1) turns her attention toward the audience and says sharply, <d>[Japanese] 始めます!</d> She immediately begins quick percussive footwork. Her weight transfers visibly from foot to foot, and the sole contacting the wooden floor produces the corresponding short footfall. She sweeps the closed fan across her body while keeping a firm, anatomically consistent grip. She completes two compact turns and advances diagonally toward stage right. The camera tracks backward rapidly and arcs to keep her centered; the stage remains spatially coherent rather than changing around her.\n[Shot 2] At 00:03.100, the camera cuts to a low three-quarter view of <Subject 1> on the same stage, retaining the same identity, clothing, and <Subject 2>. It tracks beside her as she takes a running step and makes a brief turning leap. Her feet leave the floor, her body rotates, and she lands with one knee bent, visibly absorbing her weight. The impact produces a distinct low thump. After landing, she snaps <Subject 2> open above her head with a crisp mechanical fan sound; its ribs remain connected to the handle. The gold-trimmed costume fabric follow her motion with natural delayed swishes. She rises through one final sharp turn, presents the open fan toward the lens without releasing it, and says breathlessly, <d>[Japanese] これで終わりです!</d> The camera settles into her extended-arm finishing pose, the last spoken sound completes before the clip ends, and the stage lights tighten around her. No extra performers or duplicate fans appear.\n\noverall_soundscape:\nQuiet theater ventilation remains beneath the rapid footfalls, fabric swishes, a short fan-opening snap, and a heavier landing thump. These physical sounds follow the corresponding visible actions. Natural breathing becomes audible during the demanding movement; no reference audio is supplied or copied.\n\nnon_diegetic_music:\nN/A\n",
+    "seconds": 6,
+    "size": "1280x768",
+    "width": 1280,
+    "height": 768,
+    "fps": 24,
+    "aspect_ratio": "16:9",
+    "num_inference_steps": 50,
+    "num_outputs_per_prompt": 1,
+    "guidance_scale": 1,
+    "flow_shift": 12,
+    "seed": 0,
+    "return_stage_metrics": "true",
+    "extra_params": "{\"task\":\"ref2va\",\"audio_flow_shift\":3}"
+  },
+  "sr_route": "/v1/seedvr2/restore-long",
+  "sr_profiles": {
+    "seed": 7723,
+    "color_correction_method": "lab",
+    "encoding_mode": "single_encode",
+    "measurement_mode": "basic",
+    "profiles": {
+      "1080": {
+        "window_frames": 33,
+        "model_size": [
+          1840,
+          1104
+        ],
+        "delivery_size": [
+          1800,
+          1080
+        ]
+      },
+      "1440": {
+        "window_frames": 65,
+        "model_size": [
+          2400,
+          1440
+        ],
+        "delivery_size": [
+          2400,
+          1440
+        ]
+      }
+    }
+  },
+  "single_case_request_contract_sha256": "3605dc23935f90e9a0f24849f6091516e0229683f5f6ad80676b405f131724d8",
+  "no_performance_matrix": true,
+  "repeat_generation_count": 0,
+  "file_hashes": {
+    "resident.py": "3963e0410a49418b2598dadecf4e3f3f612763f3c4a6af857813bea6277809f8",
+    "resident_media.py": "149c5fb4a735bafaa4cad1960572190c9a7cb9f04c2463ae5a1a3ac1a928c58a",
+    "workflow.py": "1b1ad1561a2724484ff4789b5c49b5ab4db80cc404c6e1676019693bf9b3d928",
+    "smoke.py": "5c4826cc31b480c463f2ba09a5d16c4998b729b0c54e690026eb557de48dbaf1",
+    "smoke_remote.py": "a9b4b24580d763bb64d52d7bf8f0c717834b9185232a996d7eaaf906915f153e",
+    "single-case-lock.json": "ce03b8911cfec1efacb08689da12f7a2bce1726df0dbb6191bc0aa34538db238"
+  }
+}

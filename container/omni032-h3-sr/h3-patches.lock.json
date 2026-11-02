@@ -1,0 +1,21 @@
+{
+  "schema": "omni032-h3-patches/1",
+  "upstream_commit": "5917730a4b02aedb44d374173cdc1b10484ccd52",
+  "changes": {
+    "vllm_omni/diffusion/offloader/sequential_backend.py": {
+      "before_sha256": "d542935b656a0d9dced78de8fb086b8e1c5aade26fac6cee5316b32a49f0d569",
+      "after_sha256": "b359a5d1edeb54fb38919da3e5ca9d21d88ca307df336f25cf325e60f1a05b6e"
+    },
+    "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py": {
+      "before_sha256": "8ba5e0353fa6e7ea5124bf5eb73ad19b21cc95878b1370251f657958eae79e5e",
+      "after_sha256": "3fd84ea51c514c6c758e94f1f5393f5a59b300c9aeecac61edb001e7d356efa0"
+    }
+  },
+  "additions": {
+    "vllm_omni/diffusion/offloader/hsdp_migration.py": "b1656d629dd27d1fc7295f320ba2bfd5aea9178b0a6a16a52089f6565f0da12a"
+  },
+  "unchanged_reference_sha256": {
+    "vllm_omni/diffusion/distributed/hsdp.py": "7eb25d685e9ef1d50b42c06530b065ba7a4601c5cd78f213ad7ec559e001ed0a"
+  },
+  "scope": "HSDP component ownership, component-before-FSDP entry and scoped fastpath; persistent staging preserved and does not receive fastpath; no distilled schedule or Torch modifications"
+}

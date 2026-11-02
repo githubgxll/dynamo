@@ -1,0 +1,155 @@
+{
+  "schema": "h3-sr-omni032-upgrade/1",
+  "date": "2026-11-02",
+  "status": "LOCAL_REVIEWS_COMPLETE_READY_TO_FREEZE_SINGLE_BUILD",
+  "sole_online_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "branch": "Dingorouter-H3-vllm-omni-jirx",
+  "working_base_commit": "aacb23c7a7443efcf178d2375a00b686a4d96bda",
+  "functional_parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:b3150072a8b917e643ceae5fd2b278e736df09fc76397b749b3ca4531cbe8bf3",
+  "functional_parent_image_id": "sha256:4c762dc81077fc52594e874f366324d48993c2c201de49e3223b4b0a93f30b62",
+  "functional_parent_source_manifest_sha256": "04a5d4ec2dc6b7f858bd37be4a484f1d125a27a5af05ab6571960f1536150128",
+  "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "target_versions": {
+    "vllm": "0.32.0",
+    "vllm-omni": "0.32.0"
+  },
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "prospective_tree": null,
+  "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
+  "build_request_count": 0,
+  "build_run": null,
+  "published_image": null,
+  "gpu_validation": "NOT_RUN",
+  "online_authority": "One build and publication only after all reviews and local checks are complete and the same recipe is frozen; no automatic retry after failure, unknown state, or late findings.",
+  "review_details": {
+    "dependencies": "REAL_METADATA_GRAPH_PASS_INSTALLATION_PENDING",
+    "h3_migration": "LOCAL_SOURCE_REVIEW_PASS",
+    "sr_migration": "LOCAL_SOURCE_REVIEW_PASS",
+    "k8s_interface": "BLOCKED_FROZEN_GIT_BYTES_DIFFER_FROM_RAW_SHA_CONTRACTS",
+    "independent_migration": "REVIEW_IN_PROGRESS",
+    "coordinator": "PENDING"
+  },
+  "reviews": {
+    "image": {
+      "status": "PASS",
+      "scope": "LOCAL_RECIPE_AND_ACTUAL_GIT_EXPORT_ONLY_INSTALLATION_GPU_PENDING",
+      "evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z\\summary.json",
+      "sha256": "d8e51cdc84522084c26dc2696b49cb8fb26b4409a859ab9abc015daaac1f9d6e",
+      "export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z\\linux-git-export-cli-contract.json",
+      "export_contract_sha256": "bc13b277a52f54ad0cce88b9595033fc956628f1ce28c0701b73df3469114a67",
+      "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
+      "tree": "13d8659bb0f3f1497b2e35c5264bf3b6a1493921",
+      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\image-d8e51cdc84522084c26dc2696b49cb8fb26b4409a859ab9abc015daaac1f9d6e.json"
+    },
+    "k8s": {
+      "status": "PASS",
+      "scope": "LOCAL_PREBUILD_K8S_INTERFACE_ONLY_INSTALLATION_GPU_PENDING",
+      "tree": "13d8659bb0f3f1497b2e35c5264bf3b6a1493921",
+      "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
+      "interface_fingerprint": "a96e2ece6cc36afafd35ccc50e9392b239a814abf5b345ea210d417c12d51797",
+      "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\032-k8s-prebuild-lf-review.json",
+      "sha256": "f5f4a791f979f4c1d6221ce29c78078a54a817d6e08ececa2e66a65d900175c6",
+      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\k8s-f5f4a791f979f4c1d6221ce29c78078a54a817d6e08ececa2e66a65d900175c6.json"
+    },
+    "independent_audit": {
+      "status": "PASS",
+      "scope": "PASS_PREBUILD_LOCAL_RECIPE_ONLY_ACTUAL_GIT_BLOBS_VERIFIED_INSTALLATION_GPU_MEDIA_PENDING",
+      "report": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\reports\\H3_SR_Colocation_20261102\\analysis\\migration_independent_review.md",
+      "sha256": "cb0b0db10d67703aaeebc462b1033be2b8e674841060a9deeb7675a46c46fff1",
+      "tree": "13d8659bb0f3f1497b2e35c5264bf3b6a1493921",
+      "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
+      "prebuild_interface_fingerprint": "a96e2ece6cc36afafd35ccc50e9392b239a814abf5b345ea210d417c12d51797",
+      "reviewed_handoff_sha256": "a38dcaeab7e65705aae52bb04db4661c07e4c21f2671e5a148a9931d9062a221",
+      "actual_git_blob_inputs_verified": 315,
+      "input_count_scope": "53 sealed delta + 262 shared; local 316-input check additionally includes auxiliary input-seal.json",
+      "verified": [
+        "Read-only in-memory base and final review Git tree plus recipe reconstruction",
+        "315 sealed raw/export byte identities and 18 GPU recipe SHA256 locks",
+        "Actual released wheel: 9 transformations, 4 helpers and exact 2037-file source map",
+        "11 selected and 5 parser source hashes, 8 pure-generator locks",
+        "Actual Git-byte native_cli_smoke.contract() and shared K8S snapshot/argv contract",
+        "Same-recipe 128 local regressions, zero skipped; 33 syntax, 3 workflow shell, 1 installer shell receipts",
+        "IR01 through IR04 closed for this final LF recipe only"
+      ],
+      "local_checks_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z\\summary.json",
+      "local_checks_sha256": "d8e51cdc84522084c26dc2696b49cb8fb26b4409a859ab9abc015daaac1f9d6e",
+      "export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z\\linux-git-export-cli-contract.json",
+      "export_contract_sha256": "bc13b277a52f54ad0cce88b9595033fc956628f1ce28c0701b73df3469114a67",
+      "not_run": [
+        "Linux installation and ABI",
+        "Installed native parser and UID1000 offline validation",
+        "Docker build",
+        "Harbor push/pull",
+        "CUDA/HSDP eight-rank roundtrip",
+        "Ref2VA/SR generation and media validation",
+        "Human quality and load acceptance"
+      ],
+      "online_action_taken": false,
+      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\independent_audit-cb0b0db10d67703aaeebc462b1033be2b8e674841060a9deeb7675a46c46fff1.md"
+    }
+  },
+  "freeze": {
+    "tree": "13d8659bb0f3f1497b2e35c5264bf3b6a1493921",
+    "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc"
+  },
+  "target_release": {
+    "omni_tag": "v0.32.0",
+    "omni_commit": "5917730a4b02aedb44d374173cdc1b10484ccd52",
+    "omni_wheel_sha256": "242b94e64b359d3cd6d1ebf1b9d6b43ae854a4f97c780fd5e2121dab06cb68e6",
+    "vllm_wheel_sha256": "5e2ecdc5b0baf72921c288486417ca82778456a448e4fe60b62ee43c0dfc8611"
+  },
+  "expected_source_manifest": {
+    "status": "STATIC_EXPECTATION_NOT_INSTALLED_PROOF",
+    "files": 2037,
+    "sha256": "6de9b4fe3db09914d4d497e888e2554265843e36af717d5e0e19d1f940109c69",
+    "path": "D:/AI/dynamo-h3-experimental031/delivery/omni032-h3-sr/expected-source-manifest.json"
+  },
+  "runtime_provenance": {
+    "entrypoint": "/opt/omni032-h3-sr/runtime.py",
+    "verify_action": "verify",
+    "import_function": "verify_installed",
+    "source_commit_environment": "OMNI032_H3_SR_SOURCE_COMMIT",
+    "parent_image_environment": "OMNI032_H3_SR_PARENT_IMAGE",
+    "gpu_gate": "/opt/omni032-h3-sr/gpu_roundtrip.py"
+  },
+  "local_checks": {
+    "status": "PASS_LOCAL_IMPLEMENTATION_ONLY_NOT_FROZEN",
+    "regression_counts": {
+      "framework-patches": 99,
+      "submission-and-publication": 29
+    },
+    "tests_run": 128,
+    "skipped": 0,
+    "python_syntax_files": 33,
+    "workflow_shell_blocks": 3,
+    "packaged_shell_files": 1,
+    "evidence_directory": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z",
+    "recipe_sha256": "933e67c6721a2ad3b8be88e5b1764a3731ce4d1a28c25d7ed55eac3b407d22fc",
+    "git_export_checked_inputs": 316,
+    "not_run": [
+      "Linux image/package installation",
+      "Docker build",
+      "Harbor push/pull",
+      "CUDA",
+      "Ref2VA media"
+    ]
+  },
+  "remaining_before_freeze": [
+    "Create local approval snapshot",
+    "Verify current full prospective including seal and approval",
+    "One authorized commit and push only"
+  ],
+  "proposed_image_handoff": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\01_镜像预发布接口.json",
+  "proposed_image_handoff_sha256": "a38dcaeab7e65705aae52bb04db4661c07e4c21f2671e5a148a9931d9062a221",
+  "prebuild_interface_fingerprint": "a96e2ece6cc36afafd35ccc50e9392b239a814abf5b345ea210d417c12d51797",
+  "withdrawn_recipe": {
+    "tree": "3220814d60ae367a4514dec39325c9d7c4932e0a",
+    "recipe_sha256": "6425970979c15be2eed1321b9e92a563e46939423f395c48c56b7feed754e13a",
+    "reason": "Windows CRLF raw-hash versus Git/Linux LF bytes mismatch; old seal and review no longer authorize freeze."
+  },
+  "git_export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T041419.665200Z\\linux-git-export-cli-contract.json",
+  "git_export_contract_sha256": "bc13b277a52f54ad0cce88b9595033fc956628f1ce28c0701b73df3469114a67",
+  "frozen_image_handoff": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\01_镜像冻结接口.json",
+  "frozen_image_handoff_sha256": "2f508d710cba8b5f08663cd24fa1f99416111969b6809f5b82eab67836b583db"
+}

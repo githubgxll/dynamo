@@ -329,7 +329,7 @@ jobs:
           retention-days: 30
 
   omni-gateway-lite:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && !contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && !contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'omni-gateway-lite'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -415,7 +415,7 @@ jobs:
           retention-days: 30
 
   seedvr2-c14:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[seedvr2-c14]') && !contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-c14'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -501,7 +501,7 @@ jobs:
           retention-days: 30
 
   h3-hsdp-offload:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'h3-hsdp-offload'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && !contains(github.event.head_commit.message, '[sr-native]') && contains(github.event.head_commit.message, '[h3-hsdp-offload]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'h3-hsdp-offload'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -589,7 +589,7 @@ jobs:
           retention-days: 30
 
   seedvr2-optimization:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && contains(github.event.head_commit.message, '[seedvr2-optimization]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-optimization'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && contains(github.event.head_commit.message, '[seedvr2-optimization]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-optimization'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -677,7 +677,7 @@ jobs:
           retention-days: 30
 
   seedvr2-metrics-repair:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[seedvr2-metrics-repair]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-metrics-repair'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && contains(github.event.head_commit.message, '[seedvr2-metrics-repair]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'seedvr2-metrics-repair'))
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:
@@ -765,7 +765,7 @@ jobs:
           retention-days: 30
 
   sr-native:
-    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && contains(github.event.head_commit.message, '[sr-native]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'sr-native'))
+    if: github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[omni032-h3-sr]') && !contains(github.event.head_commit.message, '[seedvr2-metrics-repair]') && !contains(github.event.head_commit.message, '[seedvr2-optimization]') && contains(github.event.head_commit.message, '[sr-native]')) || (github.event_name == 'workflow_dispatch' && inputs.build_recipe == 'sr-native'))
     name: Native SR reference - ${{ matrix.backend }} - GPU_NOT_RUN
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 360

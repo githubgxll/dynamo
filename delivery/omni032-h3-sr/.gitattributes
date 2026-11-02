@@ -1,0 +1,2 @@
+# Windows CMD accepts LF; release locks must have identical Git/Linux bytes.
+* text eol=lf
