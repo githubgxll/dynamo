@@ -76,6 +76,35 @@ def apply_package_mirrors(text):
     return "".join(instructions)
 
 
+def stage_kvbm_aisimulate(text):
+    """KVBM is a sibling of runtime_wheel_builder, not its descendant.
+
+    Reuse the reviewed source-staging recipe in its own disposable checkout.
+    Do not copy only the patch config: its absolute source path and rewritten
+    lockfiles must exist together. Keep the two wheel builds independent.
+    """
+    build = "maturin build --release ${KVBM_FEATURES} --out target/wheels"
+    if build not in text:
+        return text
+    stage_header = "FROM reusable_builder_base AS wheel_builder\n"
+    if text.count(stage_header) != 1 or text.count(build) != 1:
+        raise ValueError("Unexpected KVBM stage layout")
+    before, stage = text.split(stage_header)
+    recipe = (
+        "COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json /opt/dynamo/container/deps/\n"
+        "RUN source ${VIRTUAL_ENV}/bin/activate && \\\n"
+        "    python /opt/dynamo/container/deps/stage_aisimulate.py \\\n"
+        "        --rust-source-only --output /opt/build-deps/aisimulate\n"
+    )
+    anchor = "COPY dingo/ /opt/dynamo/dingo/\n"
+    # Fail closed if upstream changes either the recipe or the KVBM copy order.
+    if recipe not in before or stage.count(anchor) != 1 or build not in stage:
+        raise ValueError("AISimulate staging recipe or KVBM checkout layout changed")
+    stage = stage.replace(anchor, anchor + "\n" + recipe, 1)
+    stage = stage.replace(build, build.replace("--release", "--release --locked"), 1)
+    return before + stage_header + stage
+
+
 def main():
     matrix = load_module("image_matrix", ROOT / ".github/scripts/prepare_dingo_image_matrix.py")
     renderer = load_module("renderer", ROOT / "container/render.py")
@@ -118,6 +147,7 @@ def main():
         template = renderer._make_jinja_env(ROOT / "container").get_template("Dockerfile.template")
         text = template.render(context=context, **renderer._render_context(args, context))
         text = renderer._inject_python_index_mounts(re.sub(r"\n{3,}", "\n\n", text))
+        text = stage_kvbm_aisimulate(text)
         text = apply_package_mirrors(text)
         filename = f'{framework}-{image["docker_target"]}.Dockerfile'
         (OUT / filename).write_text(text)
@@ -139,7 +169,12 @@ def main():
             uv = f'uv:{context["dynamo"]["uv_version"]}'
             mirror(f"ghcr.io/astral-sh/{uv}", uv)
             if framework != "dynamo":
-                mirror(f'docker.io/{device["runtime_image"]}:{device["runtime_image_tag"]}',
+                runtime = f'{device["runtime_image"]}:{device["runtime_image_tag"]}'
+                # A user-selected private backend is already fully qualified;
+                # docker.io/<private-host>/... is not its BuildKit identifier.
+                if "." not in runtime.split("/")[0] and ":" not in runtime.split("/")[0]:
+                    runtime = "docker.io/" + runtime
+                mirror(runtime,
                        f'{device["runtime_image"].split("/")[-1]}:{device["runtime_image_tag"]}',
                        backend=True)
         rows.append("\t".join((image["image"], filename, image["docker_target"], image["platform"], frontend)))
@@ -147,7 +182,7 @@ def main():
     (OUT / "images.tsv").write_text("".join(row + "\n" for row in rows))
     policy = {"rules": [{"action": "CONVERT", "selector": {"identifier": f"docker-image://{source}"},
                          "updates": {"identifier": f"docker-image://{target}"}}
-                        for source, target in sorted(mappings.items())]}
+                        for source, target in sorted(mappings.items()) if source != target]}
     (OUT / "source-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
     (OUT / "bases.tsv").write_text("".join(f"{source}\t{target}\n" for source, target in sorted(mappings.items())))
     print(f"Prepared {len(images)} configured image(s); base mirrors must already exist in XB01.")

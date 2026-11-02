@@ -49,7 +49,8 @@ class ImageTests(unittest.TestCase):
                 self.assertEqual(len(rows), 1 if selection == "configured" else 6)
                 self.assertEqual(len({row.split("\t")[0] for row in rows}), len(rows))
                 policy = json.loads((out / "source-policy.json").read_text())
-                mapped = {rule["selector"]["identifier"].removeprefix("docker-image://") for rule in policy["rules"]}
+                mapped = {line.split("\t")[0] for line in (out / "bases.tsv").read_text().splitlines()}
+                self.assertFalse(any("docker.io/registry." in source for source in mapped))
                 for rule in policy["rules"]:
                     source = rule["selector"]["identifier"]
                     destination = rule["updates"]["identifier"]
@@ -66,6 +67,19 @@ class ImageTests(unittest.TestCase):
                     self.assertTrue(image.startswith(f"{HOST}/openclaw/"))
                     self.assertEqual(platform, "linux/amd64")
                     text = (out / filename).read_text()
+                    if 'maturin build --release --locked ${KVBM_FEATURES}' in text:
+                        kvbm = text.split('FROM reusable_builder_base AS wheel_builder\n', 1)[1]
+                        self.assertLess(kvbm.index('COPY lib/'), kvbm.index('--rust-source-only'))
+                        self.assertLess(kvbm.index('COPY dingo/'), kvbm.index('--rust-source-only'))
+                        self.assertLess(kvbm.index('--rust-source-only'), kvbm.index('maturin build'))
+                        self.assertEqual(kvbm.count('--rust-source-only'), 1)
+                        with self.assertRaises(ValueError):
+                            prepare.stage_kvbm_aisimulate(text.replace('--release --locked ${KVBM_FEATURES}',
+                                                                     '--release ${KVBM_FEATURES}').replace(
+                                                                         'COPY dingo/ /opt/dynamo/dingo/',
+                                                                         'COPY changed/ /opt/dynamo/dingo/'))
+                    elif 'KVBM_FEATURES' in text:
+                        self.fail('KVBM build lost its locked source staging')
                     self.assertNotIn("--extra-index-url https://pypi.org/simple", text)
                     self.assertNotIn("https://static.rust-lang.org/rustup/archive/", text)
                     if "rustup-init" in text:
@@ -94,6 +108,63 @@ class ImageTests(unittest.TestCase):
                         elif "." not in ref.split("/")[0]:
                             ref = "docker.io/" + ref
                         self.assertIn(ref, mapped, f"Unmirrored source in {filename}: {ref}")
+
+    def test_kvbm_source_patch_resolves_missing_nightly_with_real_cargo(self):
+        # Real offline Cargo resolution, not a string-only test. The empty local
+        # replacement registry models a mirror (and upstream) missing the pin.
+        staging = prepare.load_module("stage_aisimulate", ROOT / "container/deps/stage_aisimulate.py")
+        version = "0.13.0-dev.202610060000000067"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "checkout"
+            home = Path(temporary) / "cargo-home"
+            vendor = Path(temporary) / "empty-registry"
+            for directory in (root / ".cargo", home, vendor):
+                directory.mkdir(parents=True)
+            (root / ".cargo/config.toml").write_text('[build]\nrustflags = []\n')
+            (home / "config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "build-mirror"\n'
+                '[source.build-mirror]\ndirectory = ' + json.dumps(str(vendor)) + '\n')
+            source = Path(temporary) / "reviewed-source"
+            core = source / "crates/core"
+            (core / "src").mkdir(parents=True)
+            (core / "Cargo.toml").write_text(
+                f'[package]\nname = "aisimulate-core"\nversion = "{version}"\nedition = "2021"\n')
+            (core / "src/lib.rs").write_text('pub fn fixture() {}\n')
+            workspaces = [root, root / "lib/bindings/python", root / "lib/bindings/kvbm"]
+            for index, workspace in enumerate(workspaces):
+                (workspace / "src").mkdir(parents=True)
+                (workspace / "src/lib.rs").write_text('pub fn fixture() {}\n')
+                (workspace / "Cargo.toml").write_text(
+                    f'[package]\nname = "consumer-{index}"\nversion = "1.0.0"\nedition = "2021"\n'
+                    f'[workspace]\n[workspace.dependencies]\naisimulate-core = {{ version = "={version}" }}\n'
+                    '[dependencies]\naisimulate-core = { workspace = true }\n')
+                (workspace / "Cargo.lock").write_text(
+                    f'version = 3\n\n[[package]]\nname = "aisimulate-core"\nversion = "{version}"\n'
+                    'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                    f'checksum = "{"a" * 64}"\n\n[[package]]\nname = "consumer-{index}"\n'
+                    'version = "1.0.0"\ndependencies = ["aisimulate-core"]\n')
+            env = dict(os.environ, CARGO_HOME=str(home), CARGO_NET_OFFLINE="true")
+
+            def metadata(workspace):
+                return subprocess.run(['cargo', 'metadata', '--offline', '--locked', '--format-version', '1'],
+                                      cwd=workspace, env=env, text=True, capture_output=True)
+
+            failure = metadata(workspaces[2])
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn('aisimulate-core', failure.stderr)
+            # Isolate network/stamping only; exercise the production patch and
+            # lockfile rewrite for all three independent Cargo workspaces.
+            with patch.object(staging, 'prepare_source', return_value=source):
+                staging.stage_rust_source(root, Path(temporary) / 'output')
+            for workspace in workspaces:
+                lock = (workspace / 'Cargo.lock').read_bytes()
+                result = metadata(workspace)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                package = next(p for p in json.loads(result.stdout)['packages'] if p['name'] == 'aisimulate-core')
+                self.assertEqual(package['version'], version)
+                self.assertIsNone(package['source'])
+                self.assertEqual(Path(package['manifest_path']), core / 'Cargo.toml')
+                self.assertEqual((workspace / 'Cargo.lock').read_bytes(), lock)
 
     def test_package_policy_preserves_specialized_sources_and_shell_syntax(self):
         original = ('RUN --mount=type=cache,target=/tmp/cache \\\n    '
