@@ -16,6 +16,8 @@ sboms-extract/
 plans/
 *rendered.Dockerfile
 rendered.*.Dockerfile
+/.gitlab-render/
+/.gitlab-published/
 .metrics_parity_*/
 [Bb]inlog/
 [Bb][Uu][Ii][Ll][Dd]/

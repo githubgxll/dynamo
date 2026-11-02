@@ -1,0 +1,87 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^DingoRouter-/ && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web")'
+    - when: never
+
+stages: [prepare, check, build, sync]
+
+default:
+  tags: [cicd-router-xb01]
+  interruptible: false
+  retry:
+    max: 2
+    when: always
+
+variables:
+  CI_IMAGE_REGISTRY_HOST: "registry.xb-01.alayanew.com:8443"
+  # Mirrors must be copied first; see .gitlab-render/bases.tsv in prepare artifacts.
+  CI_TOOLING_IMAGE: "registry.xb-01.alayanew.com:8443/openclaw/ci/python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c"
+  CI_BUILD_KIT_IMAGE: "registry.xb-01.alayanew.com:8443/openclaw/ci/buildkit:v0.32.2-rootful@sha256:040d34121c27906c4ff9ac152a30d52bf2c5d328d3bb748916bb3d2743c02528"
+  CI_SYNC_IMAGE: "registry.xb-01.alayanew.com:8443/openclaw/ci/skopeo:v1.17.0-amd64@sha256:a5032a59f55ac82e2b5c9e9a8223a5249a31e82ae51f74d63ff356ccbed1adee"
+  CI_BUILD_PROXY_URL: "http://10.201.106.68:1080"
+  CI_BUILD_NO_PROXY: "localhost,127.0.0.1,::1,.svc,.cluster.local,.datacanvas.com,.zetyun.cn,.alayanew.com,mirrors.aliyun.com,mirrors.tuna.tsinghua.edu.cn,pypi.tuna.tsinghua.edu.cn,mirrors.huaweicloud.com,mirror.sjtu.edu.cn,s3.jcloud.sjtu.edu.cn,rsproxy.cn,.rsproxy.cn,pypi.org,files.pythonhosted.org,download.pytorch.org,.download.pytorch.org,10.0.0.0/8,172.16.0.0/12"
+  CI_BUILD_PIP_INDEX: "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+
+prepare:images:
+  stage: prepare
+  image: "$CI_TOOLING_IMAGE"
+  timeout: 15m
+  script:
+    - python -m pip --isolated install --index-url "$CI_BUILD_PIP_INDEX" Jinja2==3.1.6 MarkupSafe==3.0.3 PyYAML==6.0.3
+    # Reuse the existing image selection, tags, platform and renderer; no new matrix.
+    - python .gitlab/prepare_images.py
+  artifacts:
+    expire_in: 7 days
+    paths: [.gitlab-render/]
+
+check:bases:
+  stage: check
+  image:
+    name: "$CI_SYNC_IMAGE"
+    entrypoint: [""]
+  timeout: 15m
+  needs: [prepare:images]
+  script:
+    - sh .gitlab/registry-images.sh check-bases
+
+build:images:
+  stage: build
+  image:
+    name: "$CI_BUILD_KIT_IMAGE"
+    entrypoint: [""]
+  timeout: 12h
+  # All branches share one 8 GiB / 4 CPU daemon and its persistent local cache.
+  resource_group: dingo-router-xb01-build
+  needs:
+    - job: prepare:images
+      artifacts: true
+    - job: check:bases
+      artifacts: false
+  script:
+    - sh .gitlab/build-images.sh
+  artifacts:
+    expire_in: 7 days
+    paths: [.gitlab-published/]
+
+.sync:images:
+  stage: sync
+  image:
+    name: "$CI_SYNC_IMAGE"
+    entrypoint: [""]
+  timeout: 4h
+  resource_group: "dingo-router-sync-${CI_SYNC_REGION}"
+  needs:
+    - job: build:images
+      artifacts: true
+  script:
+    - sh .gitlab/registry-images.sh
+
+sync:images-hd04:
+  extends: .sync:images
+  variables:
+    CI_SYNC_REGION: HD04
+
+sync:images-bj09:
+  extends: .sync:images
+  variables:
+    CI_SYNC_REGION: BJ09
