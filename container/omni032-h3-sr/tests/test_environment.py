@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parents[1]
@@ -97,6 +98,64 @@ class SolveInputs(unittest.TestCase):
 
 
 class WheelAndPreservation(unittest.TestCase):
+    def test_same_directory_then_final_audit_preserves_parent_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
+            root = Path(directory)
+            inputs, final = root / "inputs", root / "final"
+            inputs.mkdir()
+            final.mkdir()
+            native = root / "native.so"
+            native.write_bytes(b"protected original bytes")
+            version = "2.13.0+cu130"
+            dist = types.SimpleNamespace(files=[Path("native.so")], version=version,
+                                         locate_file=lambda entry: root / entry)
+            inventory = {"distributions": [record("torch", version)]}
+            policy = {**POLICY, "parent_versions": {"torch": version}, "target_versions": {},
+                      "preserved_versions": {"torch": version}, "native_names": ["torch"],
+                      "native_prefixes": [], "mutable_native_prefixes": [], "root_extras": {},
+                      "reviewed_orphans": [], "forbidden_components": [], "wheel_artifacts": {}}
+            def report(**kwargs):
+                return {"packages": {"torch": version}, "errors": [], "frameworks": {}, "known_metadata_exceptions": []}
+            def finalize(value):
+                value["status"] = "FAIL" if value["errors"] else "PASS"
+            auditor = types.SimpleNamespace(audit_dependencies=report, require_framework_versions=lambda _: None,
+                                             finalize_status=finalize)
+            for name, replacement in {
+                    "legacy_module": lambda _: types.SimpleNamespace(snapshot=lambda **kw: inventory),
+                    "dependency_auditor": lambda **kw: auditor,
+                    "nccl_evidence": lambda *args: {"verified": True},
+                    "verify_provider": lambda _: {}, "core_record_evidence": lambda: {},
+                    "helper_artifact_evidence": lambda: {}, "run_uv_check": lambda *args: None}.items():
+                patches.enter_context(patch.object(environment, name, replacement))
+            patches.enter_context(patch.object(environment.md, "distribution", side_effect={"torch": dist}.__getitem__))
+            patches.enter_context(patch.object(environment.platform, "system", return_value="Linux"))
+            patches.enter_context(patch.object(environment.platform, "machine", return_value="x86_64"))
+            patches.enter_context(patch.object(environment.platform, "python_version_tuple", return_value=("3", "12", "3")))
+            patches.enter_context(patch.object(environment.os, "geteuid", return_value=1000, create=True))
+            environment.prepare(inputs, policy)
+            expected = environment.protected_file_manifest(["torch"])
+            snapshot = next(path for path in inputs.glob("*.json") if environment.read_json(path) == expected)
+            frozen_bytes = snapshot.read_bytes()
+            self.assertEqual(environment.audit(inputs, inputs, policy)["status"], "PASS")
+            self.assertEqual(environment.audit(final, inputs, policy)["status"], "PASS")
+            self.assertEqual(snapshot.read_bytes(), frozen_bytes)
+            self.assertEqual(environment.read_json(inputs / "native-preservation.json")["status"], "PASS")
+            # Keeping the original input must still detect genuine native changes.
+            native.write_bytes(b"changed binary, same package version")
+            with self.assertRaisesRegex(RuntimeError, "environment audit failed"):
+                environment.audit(final, inputs, policy)
+            self.assertIn("native-preservation", environment.read_json(final / "environment-check.json")["errors"][0])
+            self.assertEqual(snapshot.read_bytes(), frozen_bytes)
+
+    def test_audit_receipt_cannot_be_treated_as_parent_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment.write_json(root / "parent-native-manifest.json", {"status": "PASS", "evidence": {}})
+            with patch.object(environment, "protected_file_manifest") as lookup:
+                with self.assertRaisesRegex(RuntimeError, "Invalid parent native snapshot"):
+                    environment.compare_native(root)
+                lookup.assert_not_called()
+
     def wheel_fixture(self, root):
         wheels = root / "wheels"
         wheels.mkdir()

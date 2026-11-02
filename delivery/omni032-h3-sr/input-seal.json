@@ -60,7 +60,7 @@
     },
     "container/omni032-h3-sr/environment.py": {
       "mode": "100644",
-      "blob": "2ecf9a6a887655aa370a2217fd91a691d90e0180",
+      "blob": "c74e13a22ef511a1e0fab3b82541bb30fb632ce9",
       "status": "A"
     },
     "container/omni032-h3-sr/gpu_roundtrip.py": {
@@ -200,7 +200,7 @@
     },
     "container/omni032-h3-sr/tests/test_environment.py": {
       "mode": "100644",
-      "blob": "cace02780261d18c3297111681048d5ee08dd7fe",
+      "blob": "25dff3fe7b78c283c12b340538441fe09437908e",
       "status": "A"
     },
     "container/omni032-h3-sr/tests/test_h3_patches.py": {
@@ -275,7 +275,7 @@
     },
     "delivery/omni032-h3-sr/source-lock.json": {
       "mode": "100644",
-      "blob": "581e2dc2ea6101c8152b0db2b652131861e956c1",
+      "blob": "13eaf9ed83612efd15b557078e0da8eafaa7ed6d",
       "status": "A"
     }
   },
@@ -543,6 +543,6 @@
     "container/seedvr2-optimization/tests/test_runtime_contract.py": "793adfd1933c9bca2e5e622ac6e10fd71efa2dcd",
     "container/seedvr2-optimization/tests/test_telemetry.py": "edda5933efd8f32804ce1ea79a39a66997027951"
   },
-  "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
-  "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162"
+  "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff",
+  "tree": "f664d7c62fdb96d715cc48f3593aa194456590f8"
 }

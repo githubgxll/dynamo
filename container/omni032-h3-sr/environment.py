@@ -195,7 +195,8 @@ def prepare(output, policy):
     write_json(output / "environment-input-policy.json", policy)
     write_json(output / "solve-plan.json", plan)
     write_json(output / "nccl-provenance.json", evidence)
-    write_json(output / "native-preservation.json", native)
+    # Keep frozen inputs distinct from audit receipts when output == inputs.
+    write_json(output / "parent-native-manifest.json", native)
     (output / "roots.in").write_text("\n".join(plan["roots"]) + "\n", encoding="utf-8")
     (output / "constraints.txt").write_text("\n".join(plan["constraints"]) + "\n", encoding="utf-8")
     (output / "reviewed-overrides.txt").write_text("nvidia-nccl-cu13==2.30.7\n", encoding="utf-8")
@@ -421,7 +422,11 @@ def audit(output, inputs, policy):
 
 
 def compare_native(inputs):
-    before = read_json(inputs / "native-preservation.json")
+    before = read_json(inputs / "parent-native-manifest.json")
+    if not isinstance(before, dict) or not before or any(
+            not isinstance(item, dict) or not isinstance(item.get("version"), str)
+            or not isinstance(item.get("files"), dict) or not item["files"] for item in before.values()):
+        raise RuntimeError("Invalid parent native snapshot; expected original package/file manifests, not an audit receipt")
     current = protected_file_manifest(sorted(before))
     changed = [name for name in before if before[name] != current[name]]
     if changed:

@@ -1,11 +1,11 @@
 {
   "schema": "h3-sr-omni032-upgrade/1",
   "date": "2026-11-02",
-  "status": "READY_FROZEN_AUTHORIZED_SEQUENTIAL_RETRY",
+  "status": "READY_AFFECTED_FIX_AUTHORIZED_RETRY",
   "sole_online_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
   "repository": "https://github.com/githubgxll/dynamo.git",
   "branch": "Dingorouter-H3-vllm-omni-jirx",
-  "working_base_commit": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
+  "working_base_commit": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
   "functional_parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:b3150072a8b917e643ceae5fd2b278e736df09fc76397b749b3ca4531cbe8bf3",
   "functional_parent_image_id": "sha256:4c762dc81077fc52594e874f366324d48993c2c201de49e3223b4b0a93f30b62",
   "functional_parent_source_manifest_sha256": "04a5d4ec2dc6b7f858bd37be4a484f1d125a27a5af05ab6571960f1536150128",
@@ -15,10 +15,10 @@
     "vllm-omni": "0.32.0"
   },
   "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
-  "prospective_tree": "e8737b69b1ea9439cb8a89a48c9866aad161e6c7",
-  "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
-  "build_request_count": 2,
-  "build_run": "https://github.com/githubgxll/dynamo/actions/runs/41399894696",
+  "prospective_tree": "5fa39e3bec4c622ca857164d8f999891a25b6686",
+  "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff",
+  "build_request_count": 3,
+  "build_run": "https://github.com/githubgxll/dynamo/actions/runs/41402970128",
   "published_image": null,
   "gpu_validation": "NOT_RUN",
   "online_authority": "User 2026-11-02 authorized sequential retry after confirming prior result; sole submitter, no active/unknown duplicate, no fixed attempt/count limit; successful published digest reused.",
@@ -33,14 +33,11 @@
   "reviews": {
     "image": {
       "status": "PASS",
-      "scope": "LOCAL_EXACT_HARBOR_DIAGNOSTIC_FIX_ONLY_INSTALLATION_GPU_PENDING",
-      "evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z\\summary.json",
-      "sha256": "4f3605a32dcc3b6ff3fa281a411bde1c232ae050b5405ea59d0c252547e10cd6",
-      "export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z\\linux-git-export-cli-contract.json",
-      "export_contract_sha256": "b31f45d798d7ae0a1afa6bee58d7157aeb5024c868621cfbde1b0af41ce27ac6",
-      "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
-      "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162",
-      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\harbor-image-4f3605a32dcc3b6ff3fa281a411bde1c232ae050b5405ea59d0c252547e10cd6.json"
+      "scope": "EXISTING_FAST_LOCAL_CHECKS_ONLY",
+      "tree": "f664d7c62fdb96d715cc48f3593aa194456590f8",
+      "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff",
+      "evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T071855.460178Z\\summary.json",
+      "sha256": "f7dd060598056e2839540ac29f1cae47547daea90d7c41a50ca224a7325645ed"
     },
     "k8s": {
       "status": "PASS",
@@ -50,52 +47,21 @@
       "interface_fingerprint": "fdf00f7e19591850b03fa73dcd34221d0b2dc0deab1e70a0a9f498ddebef9d95",
       "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\032-k8s-prebuild-harbor-review.json",
       "sha256": "6844682765493e2d38c1a71b65f554ffbb3e1b9f4c3ec1f7cfe162cf45530c8d",
-      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\harbor-k8s-6844682765493e2d38c1a71b65f554ffbb3e1b9f4c3ec1f7cfe162cf45530c8d.json"
+      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\harbor-k8s-6844682765493e2d38c1a71b65f554ffbb3e1b9f4c3ec1f7cfe162cf45530c8d.json",
+      "reuse_scope": "Prior PASS reused for unchanged K8S interface/model/argv/gate; original reviewed tree/hash preserved, not a fresh K8S review."
     },
     "independent_audit": {
       "status": "PASS",
-      "scope": "PASS_PREBUILD_HARBOR_MISSING_CLASSIFIER_LOCAL_ONLY_INSTALLATION_GPU_MEDIA_PENDING",
-      "report": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\reports\\H3_SR_Colocation_20261102\\analysis\\harbor_missing_classifier_review_20261102.md",
-      "sha256": "b06411dc2c167e39dd572b09700da43034798000770d27e03062e77a86263a9e",
-      "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162",
-      "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
-      "prebuild_interface_fingerprint": "fdf00f7e19591850b03fa73dcd34221d0b2dc0deab1e70a0a9f498ddebef9d95",
-      "reviewed_handoff_sha256": "9b366a183c05ba36cc447ac202c72365f17e3600e3b2c72345ddd089d1860372",
-      "actual_git_blob_inputs_verified": 317,
-      "input_count_scope": "55 sealed delta + 262 shared; local 319 includes seal and approval auxiliaries",
-      "verified": [
-        "Original run41399894696 artifact SHA256 and exact extracted raw diagnostic verified; no Docker build or publication",
-        "Final Git tree/recipe reconstructed read-only; actual raw/blob equality for 317 sealed inputs",
-        "Exactly three control files changed from prior reviewed tree; runtime, dependencies, ops, native argv and 2037 map unchanged",
-        "18 GPU recipe hashes, 11 selected source hashes, Git-byte native contract and shared interface fingerprint aligned",
-        "Actual sealed classifier: real Harbor missing diagnostic and actual query image binding",
-        "Independent negative replay: nine wrong query contexts, eight wrong diagnostics, 26 mixed auth/TLS/HTTP/DNS/timeout errors remain UNKNOWN",
-        "Same-recipe 175 local regressions, zero skipped; 35 Python syntax, three workflow and one installer shell receipts"
-      ],
-      "local_checks_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z\\summary.json",
-      "local_checks_sha256": "4f3605a32dcc3b6ff3fa281a411bde1c232ae050b5405ea59d0c252547e10cd6",
-      "export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z\\linux-git-export-cli-contract.json",
-      "export_contract_sha256": "b31f45d798d7ae0a1afa6bee58d7157aeb5024c868621cfbde1b0af41ce27ac6",
-      "failure_artifact": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\ci-41399894696\\artifact.zip",
-      "failure_artifact_sha256": "d2adc08b782299712f4e72d967c6195578c7e4696639ceb635085bae5dfed05e",
-      "previous_run_id": 41399894696,
-      "previous_run_attempt": 1,
-      "not_run": [
-        "New submission or Docker build",
-        "Linux installation and ABI",
-        "Installed UID1000 native parser",
-        "Harbor publication",
-        "CUDA/HSDP eight-rank roundtrip",
-        "Ref2VA/SR generation and media validation",
-        "Human quality and load acceptance"
-      ],
-      "online_action_taken": false,
-      "snapshot": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\frozen-reviews\\harbor-independent_audit-b06411dc2c167e39dd572b09700da43034798000770d27e03062e77a86263a9e.md"
+      "scope": "AFFECTED_NATIVE_SNAPSHOT_REVIEW_ONLY",
+      "tree": "f664d7c62fdb96d715cc48f3593aa194456590f8",
+      "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff",
+      "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\032-native-snapshot-affected-review.json",
+      "sha256": "089ecadfdf246efe0b032f6d15393e6eb8fb8c85e9034ae7612de3c963aa9516"
     }
   },
   "freeze": {
-    "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162",
-    "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e"
+    "tree": "f664d7c62fdb96d715cc48f3593aa194456590f8",
+    "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff"
   },
   "target_release": {
     "omni_tag": "v0.32.0",
@@ -120,18 +86,18 @@
   "local_checks": {
     "status": "PASS_LOCAL_IMPLEMENTATION_ONLY_NOT_FROZEN",
     "regression_counts": {
-      "framework-patches": 99,
+      "framework-patches": 101,
       "submission-and-publication": 29,
       "retry-attempt-and-publication": 20,
       "sequential-submission": 27
     },
-    "tests_run": 175,
+    "tests_run": 177,
     "skipped": 0,
     "python_syntax_files": 35,
     "workflow_shell_blocks": 3,
     "packaged_shell_files": 1,
-    "evidence_directory": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z",
-    "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
+    "evidence_directory": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T071855.460178Z",
+    "recipe_sha256": "ded04d45828ac3c5a7bdbbbe9124840e010d2196565bb20626a0042185efcaff",
     "git_export_checked_inputs": 319,
     "not_run": [
       "Linux image/package installation",
@@ -143,8 +109,8 @@
   },
   "remaining_before_freeze": [],
   "proposed_image_handoff": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\01_镜像预发布接口.json",
-  "proposed_image_handoff_sha256": "8ccc81eedfbd33949a7e5b06ac6e9d196d9c1cade19adf21b309bf364948af52",
-  "prebuild_interface_fingerprint": "fdf00f7e19591850b03fa73dcd34221d0b2dc0deab1e70a0a9f498ddebef9d95",
+  "proposed_image_handoff_sha256": "24d257d14553b4c92d1daaaf109b346821fbe1680b38382d95157812cc1c1e27",
+  "prebuild_interface_fingerprint": "a39a76c7e0e5cdd12cb65b3b344b2340e21238cb3d4aa57acc134a4b16dbd2a1",
   "withdrawn_recipe": {
     "tree": "3220814d60ae367a4514dec39325c9d7c4932e0a",
     "recipe_sha256": "6425970979c15be2eed1321b9e92a563e46939423f395c48c56b7feed754e13a",
@@ -153,47 +119,39 @@
   "git_export_contract_evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\checks-20261102T063436.556358Z\\linux-git-export-cli-contract.json",
   "git_export_contract_sha256": "b31f45d798d7ae0a1afa6bee58d7157aeb5024c868621cfbde1b0af41ce27ac6",
   "frozen_image_handoff": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\01_镜像冻结接口.json",
-  "submitted_commit": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
+  "submitted_commit": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
   "build_request_journal": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\local\\one-build-journal.json",
-  "build_run_id": 41399894696,
-  "ci_failure": {
-    "run_id": 41399894696,
-    "job_id": 125129231361,
-    "phase": "prepare stable tag existence lookup",
-    "actual_diagnostic": "unknown: artifact openclaw/ai-dingo-vllm:omni032-gateway-h3-sr-7561e2c6a4e2 not found",
-    "docker_builds_started": 0,
-    "images_published": 0
-  },
-  "next_action": "Sole submitter pushes exact frozen Harbor diagnostic correction after fresh terminal-unpublished confirmation; follow original new run to a definite result.",
+  "build_run_id": 41402970128,
+  "next_action": "Submit this minimal fix after live previous-run confirmation; no extra whole-model or three-party repeated review.",
   "previous_build_result": {
     "schema": "omni032-prior-result/1",
     "repository": "https://github.com/githubgxll/dynamo.git",
     "branch": "Dingorouter-H3-vllm-omni-jirx",
     "workflow_path": ".github/workflows/omni032-h3-sr.yml",
-    "commit": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
-    "run_id": 41399894696,
+    "commit": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+    "run_id": 41402970128,
     "run_attempt": 1,
     "status": "completed",
     "conclusion": "failure",
     "publication_status": "not_started",
-    "observed_at": "2026-11-02T06:30:13.285060+00:00",
+    "observed_at": "2026-11-02T07:15:59.016325+00:00",
     "jobs": [
       {
-        "id": 125129231361,
-        "run_id": 41399894696,
-        "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | 7561e2c6a4e29d545380ea9bd6177a9883abccb1 | attempt 1",
+        "id": 125138619545,
+        "run_id": 41402970128,
+        "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | f0e93a5b6323659dfebe2cf45fe86a5f56841177 | attempt 1",
         "head_branch": "Dingorouter-H3-vllm-omni-jirx",
-        "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41399894696",
+        "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41402970128",
         "run_attempt": 1,
-        "node_id": "CR_kwDOShhRvs8AAAAdIkiMAQ",
-        "head_sha": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
-        "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125129231361",
-        "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41399894696/job/125129231361",
+        "node_id": "CR_kwDOShhRvs8AAAAdItfMmQ",
+        "head_sha": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+        "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125138619545",
+        "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128/job/125138619545",
         "status": "completed",
         "conclusion": "failure",
-        "created_at": "2026-11-02T06:26:18Z",
-        "started_at": "2026-11-02T06:26:30Z",
-        "completed_at": "2026-11-02T06:27:04Z",
+        "created_at": "2026-11-02T06:55:23Z",
+        "started_at": "2026-11-02T06:55:26Z",
+        "completed_at": "2026-11-02T06:59:18Z",
         "name": "reviewed-image",
         "steps": [
           {
@@ -201,115 +159,131 @@
             "status": "completed",
             "conclusion": "success",
             "number": 1,
-            "started_at": "2026-11-02T06:26:36Z",
-            "completed_at": "2026-11-02T06:26:47Z"
+            "started_at": "2026-11-02T06:55:29Z",
+            "completed_at": "2026-11-02T06:55:43Z"
           },
           {
             "name": "Set up runner",
             "status": "completed",
             "conclusion": "success",
             "number": 2,
-            "started_at": "2026-11-02T06:26:47Z",
-            "completed_at": "2026-11-02T06:26:47Z"
+            "started_at": "2026-11-02T06:55:43Z",
+            "completed_at": "2026-11-02T06:55:43Z"
           },
           {
             "name": "Checkout the requested immutable source",
             "status": "completed",
             "conclusion": "success",
             "number": 3,
-            "started_at": "2026-11-02T06:26:47Z",
-            "completed_at": "2026-11-02T06:26:50Z"
+            "started_at": "2026-11-02T06:55:43Z",
+            "completed_at": "2026-11-02T06:55:48Z"
           },
           {
             "name": "Log in with the existing controlled Harbor credentials",
             "status": "completed",
             "conclusion": "success",
             "number": 4,
-            "started_at": "2026-11-02T06:26:50Z",
-            "completed_at": "2026-11-02T06:26:50Z"
+            "started_at": "2026-11-02T06:55:48Z",
+            "completed_at": "2026-11-02T06:55:48Z"
           },
           {
             "name": "Verify all reviews, frozen inputs and immutable parent",
             "status": "completed",
-            "conclusion": "failure",
+            "conclusion": "success",
             "number": 5,
-            "started_at": "2026-11-02T06:26:50Z",
-            "completed_at": "2026-11-02T06:26:51Z"
+            "started_at": "2026-11-02T06:55:48Z",
+            "completed_at": "2026-11-02T06:55:48Z"
           },
           {
             "name": "Reuse the persistent group builder",
             "status": "completed",
-            "conclusion": "skipped",
+            "conclusion": "success",
             "number": 6,
-            "started_at": "2026-11-02T06:26:51Z",
-            "completed_at": "2026-11-02T06:26:51Z"
+            "started_at": "2026-11-02T06:55:48Z",
+            "completed_at": "2026-11-02T06:55:49Z"
           },
           {
             "name": "Build the single final image without publication",
             "status": "completed",
-            "conclusion": "skipped",
+            "conclusion": "failure",
             "number": 7,
-            "started_at": "2026-11-02T06:26:51Z",
-            "completed_at": "2026-11-02T06:26:51Z"
+            "started_at": "2026-11-02T06:55:49Z",
+            "completed_at": "2026-11-02T06:58:59Z"
           },
           {
             "name": "Validate this exact imageID offline as the final UID1000 user",
             "status": "completed",
             "conclusion": "skipped",
             "number": 8,
-            "started_at": "2026-11-02T06:26:51Z",
-            "completed_at": "2026-11-02T06:26:51Z"
+            "started_at": "2026-11-02T06:58:59Z",
+            "completed_at": "2026-11-02T06:58:59Z"
           },
           {
             "name": "Publish the validated image once and verify its pull digest",
             "status": "completed",
             "conclusion": "skipped",
             "number": 9,
-            "started_at": "2026-11-02T06:26:51Z",
-            "completed_at": "2026-11-02T06:26:51Z"
+            "started_at": "2026-11-02T06:58:59Z",
+            "completed_at": "2026-11-02T06:58:59Z"
           },
           {
             "name": "Preserve evidence even on failure",
             "status": "completed",
             "conclusion": "success",
             "number": 10,
-            "started_at": "2026-11-02T06:26:51Z",
-            "completed_at": "2026-11-02T06:26:55Z"
+            "started_at": "2026-11-02T06:58:59Z",
+            "completed_at": "2026-11-02T06:59:04Z"
+          },
+          {
+            "name": "Post Build the single final image without publication",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16,
+            "started_at": "2026-11-02T06:59:04Z",
+            "completed_at": "2026-11-02T06:59:09Z"
+          },
+          {
+            "name": "Post Reuse the persistent group builder",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17,
+            "started_at": "2026-11-02T06:59:09Z",
+            "completed_at": "2026-11-02T06:59:09Z"
           },
           {
             "name": "Post Log in with the existing controlled Harbor credentials",
             "status": "completed",
             "conclusion": "success",
             "number": 18,
-            "started_at": "2026-11-02T06:26:55Z",
-            "completed_at": "2026-11-02T06:26:55Z"
+            "started_at": "2026-11-02T06:59:09Z",
+            "completed_at": "2026-11-02T06:59:09Z"
           },
           {
             "name": "Post Checkout the requested immutable source",
             "status": "completed",
             "conclusion": "success",
             "number": 19,
-            "started_at": "2026-11-02T06:26:55Z",
-            "completed_at": "2026-11-02T06:26:55Z"
+            "started_at": "2026-11-02T06:59:09Z",
+            "completed_at": "2026-11-02T06:59:09Z"
           },
           {
             "name": "Complete runner",
             "status": "completed",
             "conclusion": "success",
             "number": 20,
-            "started_at": "2026-11-02T06:26:55Z",
-            "completed_at": "2026-11-02T06:26:56Z"
+            "started_at": "2026-11-02T06:59:09Z",
+            "completed_at": "2026-11-02T06:59:14Z"
           },
           {
             "name": "Complete job",
             "status": "completed",
             "conclusion": "success",
             "number": 21,
-            "started_at": "2026-11-02T06:26:56Z",
-            "completed_at": "2026-11-02T06:26:56Z"
+            "started_at": "2026-11-02T06:59:14Z",
+            "completed_at": "2026-11-02T06:59:14Z"
           }
         ],
-        "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125129231361",
+        "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125138619545",
         "labels": [
           "self-hosted",
           "linux",
@@ -328,21 +302,21 @@
         "publication_status": "not_started",
         "jobs": [
           {
-            "id": 125129231361,
-            "run_id": 41399894696,
-            "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | 7561e2c6a4e29d545380ea9bd6177a9883abccb1 | attempt 1",
+            "id": 125138619545,
+            "run_id": 41402970128,
+            "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | f0e93a5b6323659dfebe2cf45fe86a5f56841177 | attempt 1",
             "head_branch": "Dingorouter-H3-vllm-omni-jirx",
-            "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41399894696",
+            "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41402970128",
             "run_attempt": 1,
-            "node_id": "CR_kwDOShhRvs8AAAAdIkiMAQ",
-            "head_sha": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
-            "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125129231361",
-            "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41399894696/job/125129231361",
+            "node_id": "CR_kwDOShhRvs8AAAAdItfMmQ",
+            "head_sha": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+            "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125138619545",
+            "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128/job/125138619545",
             "status": "completed",
             "conclusion": "failure",
-            "created_at": "2026-11-02T06:26:18Z",
-            "started_at": "2026-11-02T06:26:30Z",
-            "completed_at": "2026-11-02T06:27:04Z",
+            "created_at": "2026-11-02T06:55:23Z",
+            "started_at": "2026-11-02T06:55:26Z",
+            "completed_at": "2026-11-02T06:59:18Z",
             "name": "reviewed-image",
             "steps": [
               {
@@ -350,115 +324,131 @@
                 "status": "completed",
                 "conclusion": "success",
                 "number": 1,
-                "started_at": "2026-11-02T06:26:36Z",
-                "completed_at": "2026-11-02T06:26:47Z"
+                "started_at": "2026-11-02T06:55:29Z",
+                "completed_at": "2026-11-02T06:55:43Z"
               },
               {
                 "name": "Set up runner",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 2,
-                "started_at": "2026-11-02T06:26:47Z",
-                "completed_at": "2026-11-02T06:26:47Z"
+                "started_at": "2026-11-02T06:55:43Z",
+                "completed_at": "2026-11-02T06:55:43Z"
               },
               {
                 "name": "Checkout the requested immutable source",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 3,
-                "started_at": "2026-11-02T06:26:47Z",
-                "completed_at": "2026-11-02T06:26:50Z"
+                "started_at": "2026-11-02T06:55:43Z",
+                "completed_at": "2026-11-02T06:55:48Z"
               },
               {
                 "name": "Log in with the existing controlled Harbor credentials",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 4,
-                "started_at": "2026-11-02T06:26:50Z",
-                "completed_at": "2026-11-02T06:26:50Z"
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:48Z"
               },
               {
                 "name": "Verify all reviews, frozen inputs and immutable parent",
                 "status": "completed",
-                "conclusion": "failure",
+                "conclusion": "success",
                 "number": 5,
-                "started_at": "2026-11-02T06:26:50Z",
-                "completed_at": "2026-11-02T06:26:51Z"
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:48Z"
               },
               {
                 "name": "Reuse the persistent group builder",
                 "status": "completed",
-                "conclusion": "skipped",
+                "conclusion": "success",
                 "number": 6,
-                "started_at": "2026-11-02T06:26:51Z",
-                "completed_at": "2026-11-02T06:26:51Z"
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:49Z"
               },
               {
                 "name": "Build the single final image without publication",
                 "status": "completed",
-                "conclusion": "skipped",
+                "conclusion": "failure",
                 "number": 7,
-                "started_at": "2026-11-02T06:26:51Z",
-                "completed_at": "2026-11-02T06:26:51Z"
+                "started_at": "2026-11-02T06:55:49Z",
+                "completed_at": "2026-11-02T06:58:59Z"
               },
               {
                 "name": "Validate this exact imageID offline as the final UID1000 user",
                 "status": "completed",
                 "conclusion": "skipped",
                 "number": 8,
-                "started_at": "2026-11-02T06:26:51Z",
-                "completed_at": "2026-11-02T06:26:51Z"
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:58:59Z"
               },
               {
                 "name": "Publish the validated image once and verify its pull digest",
                 "status": "completed",
                 "conclusion": "skipped",
                 "number": 9,
-                "started_at": "2026-11-02T06:26:51Z",
-                "completed_at": "2026-11-02T06:26:51Z"
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:58:59Z"
               },
               {
                 "name": "Preserve evidence even on failure",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 10,
-                "started_at": "2026-11-02T06:26:51Z",
-                "completed_at": "2026-11-02T06:26:55Z"
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:59:04Z"
+              },
+              {
+                "name": "Post Build the single final image without publication",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 16,
+                "started_at": "2026-11-02T06:59:04Z",
+                "completed_at": "2026-11-02T06:59:09Z"
+              },
+              {
+                "name": "Post Reuse the persistent group builder",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 17,
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
               },
               {
                 "name": "Post Log in with the existing controlled Harbor credentials",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 18,
-                "started_at": "2026-11-02T06:26:55Z",
-                "completed_at": "2026-11-02T06:26:55Z"
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
               },
               {
                 "name": "Post Checkout the requested immutable source",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 19,
-                "started_at": "2026-11-02T06:26:55Z",
-                "completed_at": "2026-11-02T06:26:55Z"
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
               },
               {
                 "name": "Complete runner",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 20,
-                "started_at": "2026-11-02T06:26:55Z",
-                "completed_at": "2026-11-02T06:26:56Z"
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:14Z"
               },
               {
                 "name": "Complete job",
                 "status": "completed",
                 "conclusion": "success",
                 "number": 21,
-                "started_at": "2026-11-02T06:26:56Z",
-                "completed_at": "2026-11-02T06:26:56Z"
+                "started_at": "2026-11-02T06:59:14Z",
+                "completed_at": "2026-11-02T06:59:14Z"
               }
             ],
-            "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125129231361",
+            "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125138619545",
             "labels": [
               "self-hosted",
               "linux",
@@ -473,7 +463,7 @@
         ]
       }
     ],
-    "run_url": "https://github.com/githubgxll/dynamo/actions/runs/41399894696"
+    "run_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128"
   },
   "retry_history": [
     {
@@ -888,9 +878,377 @@
         "run_url": "https://github.com/githubgxll/dynamo/actions/runs/41399894696"
       },
       "failure": "Strict tag-missing classifier did not recognize the exact Harbor artifact-not-found diagnostic; Docker and publication skipped."
+    },
+    {
+      "freeze": {
+        "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162",
+        "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e"
+      },
+      "interface_fingerprint": "fdf00f7e19591850b03fa73dcd34221d0b2dc0deab1e70a0a9f498ddebef9d95",
+      "submitted_commit": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+      "committed_tree": "750b9a51d5c1fc919cd1007a2d41d7fc0af612e4",
+      "build_run_id": 41402970128,
+      "result": {
+        "schema": "omni032-prior-result/1",
+        "repository": "https://github.com/githubgxll/dynamo.git",
+        "branch": "Dingorouter-H3-vllm-omni-jirx",
+        "workflow_path": ".github/workflows/omni032-h3-sr.yml",
+        "commit": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+        "run_id": 41402970128,
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "failure",
+        "publication_status": "not_started",
+        "observed_at": "2026-11-02T07:15:59.016325+00:00",
+        "jobs": [
+          {
+            "id": 125138619545,
+            "run_id": 41402970128,
+            "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | f0e93a5b6323659dfebe2cf45fe86a5f56841177 | attempt 1",
+            "head_branch": "Dingorouter-H3-vllm-omni-jirx",
+            "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41402970128",
+            "run_attempt": 1,
+            "node_id": "CR_kwDOShhRvs8AAAAdItfMmQ",
+            "head_sha": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+            "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125138619545",
+            "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128/job/125138619545",
+            "status": "completed",
+            "conclusion": "failure",
+            "created_at": "2026-11-02T06:55:23Z",
+            "started_at": "2026-11-02T06:55:26Z",
+            "completed_at": "2026-11-02T06:59:18Z",
+            "name": "reviewed-image",
+            "steps": [
+              {
+                "name": "Set up job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 1,
+                "started_at": "2026-11-02T06:55:29Z",
+                "completed_at": "2026-11-02T06:55:43Z"
+              },
+              {
+                "name": "Set up runner",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 2,
+                "started_at": "2026-11-02T06:55:43Z",
+                "completed_at": "2026-11-02T06:55:43Z"
+              },
+              {
+                "name": "Checkout the requested immutable source",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 3,
+                "started_at": "2026-11-02T06:55:43Z",
+                "completed_at": "2026-11-02T06:55:48Z"
+              },
+              {
+                "name": "Log in with the existing controlled Harbor credentials",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 4,
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:48Z"
+              },
+              {
+                "name": "Verify all reviews, frozen inputs and immutable parent",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 5,
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:48Z"
+              },
+              {
+                "name": "Reuse the persistent group builder",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 6,
+                "started_at": "2026-11-02T06:55:48Z",
+                "completed_at": "2026-11-02T06:55:49Z"
+              },
+              {
+                "name": "Build the single final image without publication",
+                "status": "completed",
+                "conclusion": "failure",
+                "number": 7,
+                "started_at": "2026-11-02T06:55:49Z",
+                "completed_at": "2026-11-02T06:58:59Z"
+              },
+              {
+                "name": "Validate this exact imageID offline as the final UID1000 user",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 8,
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:58:59Z"
+              },
+              {
+                "name": "Publish the validated image once and verify its pull digest",
+                "status": "completed",
+                "conclusion": "skipped",
+                "number": 9,
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:58:59Z"
+              },
+              {
+                "name": "Preserve evidence even on failure",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 10,
+                "started_at": "2026-11-02T06:58:59Z",
+                "completed_at": "2026-11-02T06:59:04Z"
+              },
+              {
+                "name": "Post Build the single final image without publication",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 16,
+                "started_at": "2026-11-02T06:59:04Z",
+                "completed_at": "2026-11-02T06:59:09Z"
+              },
+              {
+                "name": "Post Reuse the persistent group builder",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 17,
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
+              },
+              {
+                "name": "Post Log in with the existing controlled Harbor credentials",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 18,
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
+              },
+              {
+                "name": "Post Checkout the requested immutable source",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 19,
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:09Z"
+              },
+              {
+                "name": "Complete runner",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 20,
+                "started_at": "2026-11-02T06:59:09Z",
+                "completed_at": "2026-11-02T06:59:14Z"
+              },
+              {
+                "name": "Complete job",
+                "status": "completed",
+                "conclusion": "success",
+                "number": 21,
+                "started_at": "2026-11-02T06:59:14Z",
+                "completed_at": "2026-11-02T06:59:14Z"
+              }
+            ],
+            "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125138619545",
+            "labels": [
+              "self-hosted",
+              "linux",
+              "x64",
+              "dingo"
+            ],
+            "runner_id": 22,
+            "runner_name": "dingo-gxl-runner",
+            "runner_group_id": 1,
+            "runner_group_name": "Default"
+          }
+        ],
+        "attempt_history": [
+          {
+            "run_attempt": 1,
+            "publication_status": "not_started",
+            "jobs": [
+              {
+                "id": 125138619545,
+                "run_id": 41402970128,
+                "workflow_name": "omni032-h3-sr | Dingorouter-H3-vllm-omni-jirx | f0e93a5b6323659dfebe2cf45fe86a5f56841177 | attempt 1",
+                "head_branch": "Dingorouter-H3-vllm-omni-jirx",
+                "run_url": "https://api.github.com/repos/githubgxll/dynamo/actions/runs/41402970128",
+                "run_attempt": 1,
+                "node_id": "CR_kwDOShhRvs8AAAAdItfMmQ",
+                "head_sha": "f0e93a5b6323659dfebe2cf45fe86a5f56841177",
+                "url": "https://api.github.com/repos/githubgxll/dynamo/actions/jobs/125138619545",
+                "html_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128/job/125138619545",
+                "status": "completed",
+                "conclusion": "failure",
+                "created_at": "2026-11-02T06:55:23Z",
+                "started_at": "2026-11-02T06:55:26Z",
+                "completed_at": "2026-11-02T06:59:18Z",
+                "name": "reviewed-image",
+                "steps": [
+                  {
+                    "name": "Set up job",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 1,
+                    "started_at": "2026-11-02T06:55:29Z",
+                    "completed_at": "2026-11-02T06:55:43Z"
+                  },
+                  {
+                    "name": "Set up runner",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 2,
+                    "started_at": "2026-11-02T06:55:43Z",
+                    "completed_at": "2026-11-02T06:55:43Z"
+                  },
+                  {
+                    "name": "Checkout the requested immutable source",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 3,
+                    "started_at": "2026-11-02T06:55:43Z",
+                    "completed_at": "2026-11-02T06:55:48Z"
+                  },
+                  {
+                    "name": "Log in with the existing controlled Harbor credentials",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 4,
+                    "started_at": "2026-11-02T06:55:48Z",
+                    "completed_at": "2026-11-02T06:55:48Z"
+                  },
+                  {
+                    "name": "Verify all reviews, frozen inputs and immutable parent",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 5,
+                    "started_at": "2026-11-02T06:55:48Z",
+                    "completed_at": "2026-11-02T06:55:48Z"
+                  },
+                  {
+                    "name": "Reuse the persistent group builder",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 6,
+                    "started_at": "2026-11-02T06:55:48Z",
+                    "completed_at": "2026-11-02T06:55:49Z"
+                  },
+                  {
+                    "name": "Build the single final image without publication",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "number": 7,
+                    "started_at": "2026-11-02T06:55:49Z",
+                    "completed_at": "2026-11-02T06:58:59Z"
+                  },
+                  {
+                    "name": "Validate this exact imageID offline as the final UID1000 user",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                    "number": 8,
+                    "started_at": "2026-11-02T06:58:59Z",
+                    "completed_at": "2026-11-02T06:58:59Z"
+                  },
+                  {
+                    "name": "Publish the validated image once and verify its pull digest",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                    "number": 9,
+                    "started_at": "2026-11-02T06:58:59Z",
+                    "completed_at": "2026-11-02T06:58:59Z"
+                  },
+                  {
+                    "name": "Preserve evidence even on failure",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 10,
+                    "started_at": "2026-11-02T06:58:59Z",
+                    "completed_at": "2026-11-02T06:59:04Z"
+                  },
+                  {
+                    "name": "Post Build the single final image without publication",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 16,
+                    "started_at": "2026-11-02T06:59:04Z",
+                    "completed_at": "2026-11-02T06:59:09Z"
+                  },
+                  {
+                    "name": "Post Reuse the persistent group builder",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 17,
+                    "started_at": "2026-11-02T06:59:09Z",
+                    "completed_at": "2026-11-02T06:59:09Z"
+                  },
+                  {
+                    "name": "Post Log in with the existing controlled Harbor credentials",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 18,
+                    "started_at": "2026-11-02T06:59:09Z",
+                    "completed_at": "2026-11-02T06:59:09Z"
+                  },
+                  {
+                    "name": "Post Checkout the requested immutable source",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 19,
+                    "started_at": "2026-11-02T06:59:09Z",
+                    "completed_at": "2026-11-02T06:59:09Z"
+                  },
+                  {
+                    "name": "Complete runner",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 20,
+                    "started_at": "2026-11-02T06:59:09Z",
+                    "completed_at": "2026-11-02T06:59:14Z"
+                  },
+                  {
+                    "name": "Complete job",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 21,
+                    "started_at": "2026-11-02T06:59:14Z",
+                    "completed_at": "2026-11-02T06:59:14Z"
+                  }
+                ],
+                "check_run_url": "https://api.github.com/repos/githubgxll/dynamo/check-runs/125138619545",
+                "labels": [
+                  "self-hosted",
+                  "linux",
+                  "x64",
+                  "dingo"
+                ],
+                "runner_id": 22,
+                "runner_name": "dingo-gxl-runner",
+                "runner_group_id": 1,
+                "runner_group_name": "Default"
+              }
+            ]
+          }
+        ],
+        "run_url": "https://github.com/githubgxll/dynamo/actions/runs/41402970128"
+      },
+      "failure": "First environment audit overwrote the raw native snapshot; second audit interpreted evidence/status as distribution names. Build failed before publication."
     }
   ],
-  "frozen_image_handoff_sha256": "8ccc81eedfbd33949a7e5b06ac6e9d196d9c1cade19adf21b309bf364948af52",
-  "interface_refreeze_receipt": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_NextStage_20261102\\032-k8s-interface-harbor-refreeze-receipt.json",
-  "interface_refreeze_receipt_sha256": "561f390ddd8e44fab0f93dd0dab19a7be1e25624276df5d341f92f0f42e0fec4"
+  "frozen_image_handoff_sha256": "24d257d14553b4c92d1daaaf109b346821fbe1680b38382d95157812cc1c1e27",
+  "previous_ci_failure": {
+    "run_id": 41399894696,
+    "job_id": 125129231361,
+    "phase": "prepare stable tag existence lookup",
+    "actual_diagnostic": "unknown: artifact openclaw/ai-dingo-vllm:omni032-gateway-h3-sr-7561e2c6a4e2 not found",
+    "docker_builds_started": 0,
+    "images_published": 0
+  },
+  "current_ci_observation": {
+    "run_id": 41402970128,
+    "job_id": 125138619545,
+    "status": "in_progress",
+    "step": "Build the single final image without publication",
+    "preparation": "PASS",
+    "publication": "NOT_STARTED",
+    "evidence": "D:\\AI\\dynamo-h3-experimental031\\.h3-experimental-evidence\\omni032-h3-sr\\ci-41402970128\\jobs-building.json"
+  }
 }
