@@ -139,9 +139,6 @@ def main():
             uv = f'uv:{context["dynamo"]["uv_version"]}'
             mirror(f"ghcr.io/astral-sh/{uv}", uv)
             if framework != "dynamo":
-                repositories = {"sglang": "lmsysorg/sglang", "vllm": "vllm/vllm-openai"}
-                if device["runtime_image"] != repositories[framework]:
-                    raise ValueError("No approved XB01 runtime mirror mapping")
                 mirror(f'docker.io/{device["runtime_image"]}:{device["runtime_image_tag"]}',
                        f'{device["runtime_image"].split("/")[-1]}:{device["runtime_image_tag"]}',
                        backend=True)
