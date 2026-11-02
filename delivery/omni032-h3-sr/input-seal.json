@@ -5,7 +5,7 @@
   "delta": {
     ".github/scripts/omni032_h3_sr_ci.py": {
       "mode": "100644",
-      "blob": "f00183ae2eaba74dd9bc723731f7cba937d35d44",
+      "blob": "3fd00cb58f2a7a7ace5955fb33a1b3b9b7d26495",
       "status": "A"
     },
     ".github/scripts/test_omni032_h3_sr_ci.py": {
@@ -15,7 +15,7 @@
     },
     ".github/scripts/test_omni032_retry_ci.py": {
       "mode": "100644",
-      "blob": "d0a5c6478ebdf6d26978e9a049fc1cbff0511e6e",
+      "blob": "89c4af48dd032516c091f03be53729dc6a1d6b9b",
       "status": "A"
     },
     ".github/scripts/test_omni032_submission_ci.py": {
@@ -275,7 +275,7 @@
     },
     "delivery/omni032-h3-sr/source-lock.json": {
       "mode": "100644",
-      "blob": "b33f511198709395342a7240678ed521f88fb859",
+      "blob": "581e2dc2ea6101c8152b0db2b652131861e956c1",
       "status": "A"
     }
   },
@@ -543,6 +543,6 @@
     "container/seedvr2-optimization/tests/test_runtime_contract.py": "793adfd1933c9bca2e5e622ac6e10fd71efa2dcd",
     "container/seedvr2-optimization/tests/test_telemetry.py": "edda5933efd8f32804ce1ea79a39a66997027951"
   },
-  "recipe_sha256": "8e4891ef1c4b7bf818321b19e0b1a30199c700011b0730f86d1f09e360696871",
-  "tree": "8a8d60993efeb9fdea68e8e1d4e3e378a662486a"
+  "recipe_sha256": "b60e3da5ffcbfba777dc767672d29ccdfeaea98c4043b501cb8db983e4764b3e",
+  "tree": "96aab134cc9ac6edb53f46363893bc2e8ecfc162"
 }

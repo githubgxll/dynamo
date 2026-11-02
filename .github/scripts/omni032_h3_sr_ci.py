@@ -84,13 +84,23 @@ def require_current_attempt(record):
         raise ValueError("Evidence belongs to another Actions run/attempt; do not reuse previous-attempt PASS files")
 
 
-def classify_manifest_lookup(result):
+def classify_manifest_lookup(result, image=None):
     if result.returncode == 0:
         return "EXISTS"
     if result.returncode != 1:
         return "UNKNOWN"
-    detail = (result.stdout + "\n" + result.stderr).casefold()
-    missing = "manifest unknown" in detail or "no such manifest" in detail
+    raw_detail = result.stdout + "\n" + result.stderr
+    detail = raw_detail.casefold()
+    harbor_missing = False
+    if isinstance(image, str) and image.startswith(REPOSITORY + ":"):
+        tag = image[len(REPOSITORY) + 1:]
+        if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):
+            # Harbor omits the registry host in this exact diagnostic. Match
+            # the actual queried repository and case-sensitive tag, never a
+            # generic "not found" or another artifact's missing response.
+            artifact = REPOSITORY.split("/", 1)[1] + ":" + tag
+            harbor_missing = raw_detail.strip() == f"unknown: artifact {artifact} not found"
+    missing = "manifest unknown" in detail or "no such manifest" in detail or harbor_missing
     uncertain = any(marker in detail for marker in (
         "unauthorized", "authentication", "authorization", "failed to authorize", "failed to fetch", "forbidden", "denied",
         "x509", "certificate", "tls", "ssl", "eof", "timeout", "timed out", "connection",
@@ -108,7 +118,7 @@ def confirm_tag_absent(image, directory):
     Transport/authentication ambiguity always stops the job without rebuilding.
     """
     result = command_result(["docker", "manifest", "inspect", image], log=directory / "tag-inspect.txt")
-    status = classify_manifest_lookup(result)
+    status = classify_manifest_lookup(result, image=image)
     record = {"schema": "omni032-stable-tag-inspection/1", "status": status, "image": image,
               "exit_code": result.returncode, **current_run()}
     dump(directory / "tag-inspection.json", record)

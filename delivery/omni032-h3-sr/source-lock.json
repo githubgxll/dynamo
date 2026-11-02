@@ -11,7 +11,7 @@
   "parent_source_commit": "aacb23c7a7443efcf178d2375a00b686a4d96bda",
   "parent_source_manifest_sha256": "04a5d4ec2dc6b7f858bd37be4a484f1d125a27a5af05ab6571960f1536150128",
   "recipe_base_commit": "aacb23c7a7443efcf178d2375a00b686a4d96bda",
-  "working_tree_base_commit": "b7c33431762291d31616c32dfa5368d9f77639e9",
+  "working_tree_base_commit": "7561e2c6a4e29d545380ea9bd6177a9883abccb1",
   "gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
   "build_recipe": "omni032-h3-sr",
   "tag_prefix": "omni032-gateway-h3-sr",

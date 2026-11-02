@@ -222,6 +222,10 @@ class StageAttemptBinding(unittest.TestCase):
 
 
 class StableTagInspection(unittest.TestCase):
+    # Exact diagnostic retained from run 41399894696, before any image build.
+    HARBOR_IMAGE = ci.REPOSITORY + ":omni032-gateway-h3-sr-7561e2c6a4e2"
+    HARBOR_SAMPLE = "unknown: artifact openclaw/ai-dingo-vllm:omni032-gateway-h3-sr-7561e2c6a4e2 not found\n"
+
     def result(self, code, stdout="", stderr=""):
         return subprocess.CompletedProcess(["docker", "manifest", "inspect", "fixture tag"], code, stdout, stderr)
 
@@ -230,6 +234,39 @@ class StableTagInspection(unittest.TestCase):
             with self.subTest(stderr=stderr):
                 self.assertEqual(ci.classify_manifest_lookup(self.result(1, stderr=stderr)), "ABSENT_CONFIRMED")
         self.assertEqual(ci.classify_manifest_lookup(self.result(0, stdout='{"schemaVersion":2}')), "EXISTS")
+
+    def test_real_harbor_sample_requires_the_exact_queried_repository_and_tag(self):
+        sample = self.result(1, stderr=self.HARBOR_SAMPLE)
+        self.assertEqual(ci.classify_manifest_lookup(sample, image=self.HARBOR_IMAGE), "ABSENT_CONFIRMED")
+        for image in (None, self.HARBOR_IMAGE + "-other", self.HARBOR_IMAGE.replace("7561e2c6a4e2", "7561E2C6A4E2"),
+                      self.HARBOR_IMAGE.replace("openclaw/ai-dingo-vllm", "openclaw/another-image"),
+                      self.HARBOR_IMAGE.replace("registry.hd-04.alayanew.com:8443", "foreign.example:8443")):
+            with self.subTest(image=image):
+                self.assertEqual(ci.classify_manifest_lookup(sample, image=image), "UNKNOWN")
+        for text in (self.HARBOR_SAMPLE.replace("ai-dingo-vllm", "foreign-image"),
+                     self.HARBOR_SAMPLE.replace("7561e2c6a4e2", "another-tag"),
+                     self.HARBOR_SAMPLE.removeprefix("unknown: "), "not found", "unknown: object not found"):
+            with self.subTest(text=text):
+                self.assertEqual(ci.classify_manifest_lookup(self.result(1, stderr=text), image=self.HARBOR_IMAGE), "UNKNOWN")
+
+    def test_harbor_missing_sample_with_auth_tls_or_http_failure_is_unknown(self):
+        for suffix in ("HTTP 401 Unauthorized", "HTTP 403 Forbidden", "HTTP 500 Internal Server Error",
+                       "HTTP/1.1 503 Service Unavailable", "TOOMANYREQUESTS: too many requests",
+                       "TLS handshake failed", "x509: certificate failed", "unexpected EOF"):
+            with self.subTest(suffix=suffix):
+                sample = self.result(1, stderr=self.HARBOR_SAMPLE + suffix)
+                self.assertEqual(ci.classify_manifest_lookup(sample, image=self.HARBOR_IMAGE), "UNKNOWN")
+
+    def test_harbor_sample_is_bound_to_the_query_in_the_actual_prepare_gate(self):
+        sample = self.result(1, stderr=self.HARBOR_SAMPLE)
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, environment("2")), \
+             mock.patch.object(ci, "command_result", return_value=sample) as command:
+            directory = Path(temporary)
+            report = ci.confirm_tag_absent(self.HARBOR_IMAGE, directory)
+            self.assertEqual(report["status"], "ABSENT_CONFIRMED")
+            self.assertEqual(report["image"], self.HARBOR_IMAGE)
+            self.assertEqual(ci.read(directory / "tag-inspection.json"), report)
+            self.assertEqual(command.call_args.args[0], ["docker", "manifest", "inspect", self.HARBOR_IMAGE])
 
     def test_auth_transport_and_generic_failures_are_unknown(self):
         for stderr in ("unauthorized: authentication required", "denied: access forbidden", "x509: certificate failed",
