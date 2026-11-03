@@ -930,8 +930,17 @@ COPY pyproject.toml README.md LICENSE Cargo.toml Cargo.lock rust-toolchain.toml 
 COPY lib/ /opt/dynamo/lib/
 COPY dingo/ /opt/dynamo/dingo/
 
-# Build kvbm wheel (with nixl linkage via auditwheel repair)
+# This stage does not inherit runtime_wheel_builder's Cargo source patch.
+# Stage the same pinned AISimulate source before KVBM runs Cargo metadata.
 ARG ENABLE_KVBM
+COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json /opt/dynamo/container/deps/
+RUN if [ "$ENABLE_KVBM" = "true" ]; then \
+        source ${VIRTUAL_ENV}/bin/activate && \
+        python /opt/dynamo/container/deps/stage_aisimulate.py \
+            --rust-source-only --output /opt/build-deps/aisimulate; \
+    fi
+
+# Build kvbm wheel (with nixl linkage via auditwheel repair)
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
     --mount=type=secret,id=actions-results-url,env=ACTIONS_RESULTS_URL \
