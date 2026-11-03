@@ -150,6 +150,26 @@ def _staging_module():
     return module
 
 
+@pytest.mark.parametrize(
+    "stage",
+    ["runtime_wheel_builder", "wheel_builder"],
+)
+def test_each_rust_builder_stages_aisimulate_before_maturin(stage):
+    template = (ROOT / "container/templates/wheel_builder.Dockerfile").read_text()
+    stages = re.split(r"^FROM .* AS ", template, flags=re.MULTILINE)
+    builder = next(part for part in stages if part.startswith(stage + "\n"))
+    copy = "COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json"
+    staging = "--rust-source-only --output /opt/build-deps/aisimulate"
+    assert builder.index("COPY lib/") < builder.index(copy)
+    assert builder.index(copy) < builder.index(staging) < builder.index("maturin build")
+    if stage == "wheel_builder":
+        assert builder.index("ARG ENABLE_KVBM") < builder.index(staging)
+        instructions = builder.replace("\\\n", "").splitlines()
+        run = next(line for line in instructions if staging in line)
+        assert run.startswith('RUN if [ "$ENABLE_KVBM" = "true" ]; then ')
+        assert run.endswith("fi")
+
+
 def test_rust_source_staging_preserves_transitive_lock(tmp_path, monkeypatch):
     staging = _staging_module()
     root = tmp_path / "build"
