@@ -1994,12 +1994,6 @@ class SglangStreamingPostProcessor:
         text = held_text + text
         self._pending_stop_text = ""
 
-        if (
-            self._generated_token_count < self._min_tokens
-            and self._matched_stop_string(stop_reason) is None
-        ):
-            return text, None
-
         match = self._find_stop_string(text, stop_reason)
         if match is not None:
             match_index, matched_stop_string = match

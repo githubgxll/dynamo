@@ -479,10 +479,19 @@ pub fn validate_messages(messages: &[ChatCompletionRequestMessage]) -> Result<()
 
 /// Allow malformed JSON syntax only for explicitly configured historical tool calls.
 /// Valid JSON with a non-object shape is still rejected. No input is rewritten.
-/// Orphan tool data is accepted for all models; declared calls still require pairing.
 pub fn validate_messages_with_history_policy(
     messages: &[ChatCompletionRequestMessage],
     allow_invalid_history_arguments: bool,
+) -> Result<(), anyhow::Error> {
+    validate_messages_with_history_compatibility(messages, allow_invalid_history_arguments, false)
+}
+
+/// GLM-5.3 accepts incomplete associations, as observed on the official API.
+/// Other models retain the existing orphan-only exception.
+pub(crate) fn validate_messages_with_history_compatibility(
+    messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
+    allow_invalid_history_arguments: bool,
+    allow_incomplete_history: bool,
 ) -> Result<(), anyhow::Error> {
     if messages.is_empty() {
         anyhow::bail!("Messages array cannot be empty");
@@ -511,7 +520,10 @@ pub fn validate_messages_with_history_policy(
         }
         if let ChatCompletionRequestMessage::Tool(tool) = message {
             let allowed_orphan = !assistant_declared_calls && !tool.tool_call_id.trim().is_empty();
-            if !pending_tool_calls.remove(tool.tool_call_id.as_str()) && !allowed_orphan {
+            if !pending_tool_calls.remove(tool.tool_call_id.as_str())
+                && !allowed_orphan
+                && !allow_incomplete_history
+            {
                 anyhow::bail!(
                     "`messages[{message_index}].tool_call_id` must reference an unanswered tool call in the preceding assistant message"
                 );
@@ -531,7 +543,7 @@ pub fn validate_messages_with_history_policy(
             && let Some(tool_calls) = &assistant.tool_calls
         {
             for (tool_call_index, tool_call) in tool_calls.iter().enumerate() {
-                if !pending_tool_calls.insert(tool_call.id.as_str()) {
+                if !pending_tool_calls.insert(tool_call.id.as_str()) && !allow_incomplete_history {
                     anyhow::bail!(
                         "`messages[{message_index}].tool_calls[{tool_call_index}].id` must be unique within the assistant message"
                     );
