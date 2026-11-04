@@ -286,17 +286,19 @@ def test_stop_finishes_during_reasoning_without_worker_matching(include, token_a
 
 
 @pytest.mark.parametrize("token_aware", [False, True])
-def test_min_tokens_keeps_early_stops_and_matches_later_stop(token_aware):
+@pytest.mark.parametrize("in_reasoning", [False, True])
+def test_min_tokens_does_not_delay_local_stop(token_aware, in_reasoning):
     post = make_post(["\n"], token_aware=token_aware, min_tokens=100)
-    thought = feed(post, "thinking\n</think>")
-    assert thought["delta"]["reasoning_content"] == "thinking\n"
-    answer = feed(post, "answer\n")
-    assert answer["delta"]["content"] == "answer\n"
-    assert answer["finish_reason"] is None
+    if not in_reasoning:
+        feed(post, "thinking</think>")
+    result = feed(post, "hello\nignored")
+    field = "reasoning_content" if in_reasoning else "content"
+    assert result["delta"][field] == "hello"
+    assert result["finish_reason"] == "stop"
+    assert post.locally_finished
+    assert post.local_stop_reason == "\n"
     assert not post.has_pending_stop_text
-    end = feed(post, "x" * 100 + "\nignored")
-    assert end["delta"]["content"] == "x" * 100
-    assert end["finish_reason"] == "stop"
+    assert feed(post, "ignored") is None
 
 
 @pytest.mark.parametrize("token_aware", [False, True])
