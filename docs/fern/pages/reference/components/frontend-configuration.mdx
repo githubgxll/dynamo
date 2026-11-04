@@ -805,6 +805,17 @@ The frontend exposes the following HTTP endpoints.
 
 #### GLM-5.3 chat completion compatibility
 
+Chat Completions normalizes `stop: []` to an omitted `stop` before validation and
+backend dispatch, matching the hosted GLM-5.3 behavior observed on 2026-11-03.
+This input normalization applies to all models on this endpoint. It preserves
+normal EOS handling, nonempty stop strings/arrays, and token-ID stops; `stop: ""`
+and `stop: [""]` retain their existing validation errors.
+
+The SGLang frontend matches string stops in reasoning and answer text even before
+`min_tokens` is reached. This local matching behavior applies to all models using
+that processor. Backend handling of `min_tokens` is unchanged; the parameter is
+not ignored throughout the serving pipeline.
+
 `POST /v1/chat/completions` accepts the root-level boolean `do_sample`, following the
 [Z.AI chat completion contract](https://docs.z.ai/api-reference/llm/chat-completion).
 Omitting it or setting it to `true` preserves the requested sampling controls. Setting it to
@@ -822,6 +833,22 @@ takes precedence and selects greedy decoding.
 If a non-streaming response exhausts its output budget while producing only reasoning,
 `message.content` is `""` and `finish_reason` remains `"length"`. Reasoning stays in
 `message.reasoning_content`; the frontend does not increase the requested token budget.
+
+For these GLM-5.3 model IDs, Chat Completions history accepts unmatched or repeated tool
+results, pending calls, and repeated historical IDs. Missing or null `tool_calls[].id`
+and tool-message `tool_call_id` are normalized to `""` at HTTP input; existing string IDs
+and tool data are preserved. This follows the November 2026 hosted GLM-5.3 input probes,
+not a general OpenAI protocol guarantee. The frontend does not fabricate calls or results.
+Exact empty-call cleanup still precedes ID normalization. Other models retain their
+existing association policy, and object/array IDs remain invalid.
+
+This input compatibility does not relax generated tool-call validation or historical
+argument validation. Malformed argument strings still require the existing deployment
+option `--glm-history-arguments-models`; valid non-object JSON remains rejected.
+The frontend owns ID normalization and association checks; the existing backend chat
+processor owns template rendering. No worker wire type or output schema changes are
+required. These changes cover Chat Completions input, not Responses input item parsing;
+new-image end-to-end inference must still be verified before claiming serving support.
 
 ### Anthropic (Experimental)
 

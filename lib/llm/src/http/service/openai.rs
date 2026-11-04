@@ -3386,8 +3386,7 @@ fn is_glm53_chat_request(value: &serde_json::Value) -> bool {
     value
         .get("model")
         .and_then(serde_json::Value::as_str)
-        .and_then(|model| model.rsplit('/').next())
-        .is_some_and(|name| name.to_ascii_lowercase().replace(['-', '_'], "") == "glm5.3")
+        .is_some_and(crate::protocols::openai::chat_completions::is_glm53_model_id)
 }
 
 /// Retry a body whose strict/lossy deserialization failed by dropping
@@ -3395,8 +3394,9 @@ fn is_glm53_chat_request(value: &serde_json::Value) -> bool {
 ///
 /// Some serving stacks emit an extra function call with no id, name, or
 /// meaningful arguments before a real call. Only that empty stub is removed;
-/// partially malformed calls may still carry useful history and must fail
-/// normal request validation instead of being silently discarded.
+/// partially malformed calls may still carry useful history and are not discarded.
+/// GLM-5.3 also accepts missing/null historical IDs: normalize those to an empty
+/// string for the request wire type, without inventing IDs or pairing results.
 fn parse_json_request_repaired_tool_calls<T>(
     endpoint: &'static str,
     body: &[u8],
@@ -3419,7 +3419,8 @@ where
     // upstream API's last-value behavior, including when empty tool call
     // stubs also need repair.
     let mut value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
-    if !is_glm53_chat_request(&value) {
+    let allow_missing_ids = is_glm53_chat_request(&value);
+    if !allow_missing_ids {
         serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body)?;
     }
 
@@ -3429,6 +3430,9 @@ where
         .and_then(|m| m.as_array_mut())
     {
         for message in messages.iter_mut() {
+            if allow_missing_ids && message.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                repaired |= normalize_missing_history_id(message, "tool_call_id");
+            }
             if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
                 continue;
             }
@@ -3441,12 +3445,19 @@ where
             let before = tool_calls.len();
             tool_calls.retain(|tool_call| !is_empty_historical_tool_call(tool_call));
             repaired |= tool_calls.len() != before;
+            // Clean exact empty stubs before normalizing IDs. Keep real calls,
+            // their names and arguments unchanged, including broken arguments.
+            if allow_missing_ids {
+                for call in tool_calls {
+                    repaired |= normalize_missing_history_id(call, "id");
+                }
+            }
         }
     }
 
     if !repaired {
         return Err(serde_json::Error::io(std::io::Error::other(
-            "no empty historical tool call stubs found to repair",
+            "no empty historical tool call stubs or missing history IDs found to repair",
         )));
     }
 
@@ -3455,9 +3466,20 @@ where
     let request = serde_json::from_slice(&repaired_body)?;
     tracing::warn!(
         endpoint,
-        "Accepted request after dropping empty historical tool call stubs"
+        "Accepted request after repairing historical tool call stubs or missing IDs"
     );
     Ok(request)
+}
+
+fn normalize_missing_history_id(value: &mut serde_json::Value, key: &str) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    if object.get(key).is_none_or(serde_json::Value::is_null) {
+        object.insert(key.to_owned(), serde_json::Value::String(String::new()));
+        return true;
+    }
+    false
 }
 
 fn is_empty_historical_tool_call(tool_call: &serde_json::Value) -> bool {
@@ -4453,6 +4475,10 @@ async fn chat_completions(
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
+
+    // Empty OpenAI stop arrays are equivalent to an omitted stop, including
+    // when a gateway also supplies the Anthropic alias below.
+    request.normalize_empty_stop();
 
     // Normalize Anthropic `stop_sequences` (forwarded verbatim by some
     // Anthropic->OpenAI gateways) into OpenAI `stop` before unsupported-field
@@ -7289,6 +7315,74 @@ mod tests {
         assert_eq!(repaired["messages"][1]["content"], "continue");
         let _: NvCreateChatCompletionRequest =
             parse_json_request("chat completions", body).expect("request should parse");
+    }
+
+    #[test]
+    fn glm53_missing_history_ids_preserve_real_calls_and_bad_arguments() {
+        for stream in [false, true] {
+            for explicit_null in [false, true] {
+                let mut body = serde_json::json!({
+                    "model": "glm-5.3", "stream": stream,
+                    "messages": [
+                        {"role":"assistant", "content":null, "tool_calls":[
+                            {"id":null,"type":"function","function":{"name":"","arguments":"{}"}},
+                            {"type":"function","function":{"name":"lookup","arguments":"\"city\":\"Beijing\"}"}},
+                            {"type":"function","function":{"name":"lookup","arguments":"{}"}}
+                        ]},
+                        {"role":"tool","content":"18C"},
+                        {"role":"user","content":"Summarize"}
+                    ]
+                });
+                if explicit_null {
+                    body["messages"][0]["tool_calls"][1]["id"] = serde_json::Value::Null;
+                    body["messages"][0]["tool_calls"][2]["id"] = serde_json::Value::Null;
+                    body["messages"][1]["tool_call_id"] = serde_json::Value::Null;
+                }
+                let request: NvCreateChatCompletionRequest =
+                    parse_json_request("chat completions", &serde_json::to_vec(&body).unwrap())
+                        .expect("missing IDs should reach the normal request path");
+                request.validate_with_history_policy(true).unwrap();
+                assert!(request.validate_with_history_policy(false).is_err());
+                let parsed = serde_json::to_value(&request).unwrap();
+                let calls = parsed["messages"][0]["tool_calls"].as_array().unwrap();
+                assert_eq!(calls.len(), 2, "only the empty stub is removed");
+                assert_eq!(calls[0]["id"], "");
+                assert_eq!(calls[1]["id"], "");
+                assert_eq!(
+                    calls[0]["function"],
+                    body["messages"][0]["tool_calls"][1]["function"]
+                );
+                assert_eq!(parsed["messages"][1]["tool_call_id"], "");
+                assert_eq!(parsed["messages"][1]["content"], "18C");
+            }
+        }
+    }
+
+    #[test]
+    fn history_id_repair_keeps_other_models_and_invalid_types_strict() {
+        for model in ["glm-5.3", "qwen3-8b-backend"] {
+            for id in [
+                None,
+                Some(serde_json::json!({})),
+                Some(serde_json::json!([])),
+            ] {
+                let mut body = serde_json::json!({
+                    "model":model,
+                    "messages":[{"role":"assistant","tool_calls":[
+                        {"type":"function","function":{"name":"lookup","arguments":"{}"}}
+                    ]}]
+                });
+                let missing = id.is_none();
+                if let Some(id) = id {
+                    body["messages"][0]["tool_calls"][0]["id"] = id;
+                }
+                let result = parse_json_request::<NvCreateChatCompletionRequest>(
+                    "chat completions",
+                    &serde_json::to_vec(&body).unwrap(),
+                );
+                assert_eq!(result.is_ok(), model == "glm-5.3" && missing);
+            }
+        }
     }
 
     #[test]

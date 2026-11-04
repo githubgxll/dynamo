@@ -194,6 +194,19 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// An empty Chat Completions stop array means no custom stop condition.
+    /// Normalize before validation and backend serialization; keep EOS defaults.
+    pub fn normalize_empty_stop(&mut self) {
+        let empty = match self.inner.stop.as_ref() {
+            Some(dynamo_protocols::types::Stop::StringArray(values)) => values.is_empty(),
+            Some(dynamo_protocols::types::Stop::TokenIdArray(values)) => values.is_empty(),
+            _ => false,
+        };
+        if empty {
+            self.inner.stop = None;
+        }
+    }
+
     /// Apply sampling controls after validating the client's original values.
     /// The resulting canonical options are shared by Rust and Python backends.
     pub fn normalize_sampling_controls(&mut self) {
@@ -431,7 +444,7 @@ enum OpenAiThinkingMode {
     Adaptive,
 }
 
-fn is_glm53_model_id(model: &str) -> bool {
+pub(crate) fn is_glm53_model_id(model: &str) -> bool {
     model.rsplit('/').next().is_some_and(|name| {
         // Compare on a normalized form so the alias-family deployed model ids
         // (`glm-5.3`, `glm5.3`, `GLM_5.3`) match; version suffix must stay
@@ -944,9 +957,10 @@ impl NvCreateChatCompletionRequest {
         validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
         validate::validate_guided_decoding(self)?;
         validate::validate_chat_template_args(self.chat_template_args.as_ref())?;
-        validate::validate_messages_with_history_policy(
+        validate::validate_messages_with_history_compatibility(
             &self.inner.messages,
             allow_invalid_history_arguments,
+            is_glm53_model_id(&self.inner.model),
         )?;
         validate::validate_model(&self.inner.model)?;
         // none for store
@@ -1004,7 +1018,7 @@ impl NvCreateChatCompletionRequest {
 mod tests {
 
     #[test]
-    fn orphan_tools_are_allowed_but_declared_calls_require_pairing() {
+    fn glm53_accepts_incomplete_history_other_models_keep_orphan_exception() {
         use crate::engines::ValidateRequest;
         use serde_json::json;
         let assistant = json!({"role":"assistant","tool_calls":[
@@ -1045,7 +1059,7 @@ mod tests {
                 let request: super::NvCreateChatCompletionRequest =
                     serde_json::from_value(json!({"model":model,"messages":messages})).unwrap();
                 let before = serde_json::to_value(&request).unwrap();
-                let expected = valid || orphan;
+                let expected = valid || orphan || model == "glm-5.3";
                 assert_eq!(ValidateRequest::validate(&request).is_ok(), expected);
                 assert_eq!(request.validate_with_history_policy(true).is_ok(), expected);
                 assert_eq!(serde_json::to_value(&request).unwrap(), before);
@@ -1568,6 +1582,51 @@ mod tests {
                 .expect("Failed to extract output options");
 
             assert_eq!(output_options.skip_special_tokens, Some(skip_value));
+        }
+    }
+
+    #[test]
+    fn empty_stop_normalizes_to_omitted_without_changing_other_stops() {
+        use crate::engines::ValidateRequest;
+
+        for stream in [false, true] {
+            for (stop, valid) in [
+                (json!([]), true),
+                (json!(null), true),
+                (json!("END"), true),
+                (json!(["END", "DONE"]), true),
+                (json!([32, 34]), true),
+                (json!(""), false),
+                (json!([""]), false),
+            ] {
+                let body = json!({
+                    "model":"glm-5.3", "stream":stream,
+                    "messages":[{"role":"user","content":"Hello"}],
+                    "stop":stop
+                });
+                let mut request: NvCreateChatCompletionRequest =
+                    serde_json::from_value(body).unwrap();
+                let before = serde_json::to_value(&request).unwrap();
+                request.normalize_empty_stop();
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), valid);
+                if stop == json!([]) || stop.is_null() {
+                    assert!(request.inner.stop.is_none());
+                    let omitted: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                        "model":"glm-5.3", "stream":stream,
+                        "messages":[{"role":"user","content":"Hello"}]
+                    }))
+                    .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&request).unwrap(),
+                        serde_json::to_value(&omitted).unwrap()
+                    );
+                    let conditions = request.extract_stop_conditions().unwrap();
+                    assert!(conditions.stop.is_none());
+                    assert!(conditions.stop_token_ids.is_none());
+                } else {
+                    assert_eq!(serde_json::to_value(&request).unwrap(), before);
+                }
+            }
         }
     }
 
