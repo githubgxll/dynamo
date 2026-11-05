@@ -22,6 +22,7 @@ from dingo.common.protocols.audio_protocol import NvAudioSpeechResponse
 from dingo.common.protocols.video_protocol import NvVideosResponse
 from dingo.common.utils.output_modalities import RequestType
 from dingo.vllm.handlers import BaseWorkerHandler, build_sampling_params
+from dingo.vllm.omni.stage_config_compat import stage_config_engine_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,15 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
             omni_kwargs["output_modalities"] = config.output_modalities
 
         if config.stage_configs_path:
-            omni_kwargs["stage_configs_path"] = config.stage_configs_path
+            omni_kwargs.update(stage_config_engine_kwargs(config.stage_configs_path))
 
+        if config.diffusion.diffusion_offload_config is not None and (
+            config.diffusion.enable_cpu_offload or config.diffusion.enable_layerwise_offload
+        ):
+            raise ValueError("explicit diffusion offload config conflicts with legacy offload flags")
         for field, value in dataclasses.asdict(config.diffusion).items():
+            if field == "layerwise_num_gpu_layers" and config.diffusion.diffusion_offload_config is not None:
+                continue  # Removed upstream ingress keyword; no layerwise policy is used.
             if value is not None:
                 omni_kwargs[field] = value
 
@@ -89,7 +96,7 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
                 tensor_parallel_size=getattr(
                     config.engine_args, "tensor_parallel_size", 1
                 ),
-                **dataclasses.asdict(config.parallel),
+                **{k: v for k, v in dataclasses.asdict(config.parallel).items() if v is not None},
             )
             omni_kwargs["parallel_config"] = parallel_config
         else:

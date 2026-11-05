@@ -43,6 +43,14 @@ try:
 except PackageNotFoundError:
     print("not-installed")'
 )"
+# The current CUDA H3/SR service uses the released 0.32 pair. Its reviewed
+# source overlay is independent of the historical 0.27 runtime bootstrap.
+if [ "${installed_vllm_version}" = "0.32.0" ] && [ "${installed_vllm_omni_version}" = "0.32.0" ]; then
+    python3 "${SRC_DIR}/h3_seedvr2_v3/apply.py" "${PYTHON_SITE_PACKAGES}" --check
+    python3 "${SRC_DIR}/h3_seedvr2_v3/apply.py" "${PYTHON_SITE_PACKAGES}"
+    exit 0
+fi
+
 if [ "${installed_vllm_version}" != "${PATCHED_VLLM_VERSION}" ] \
     || [ "${installed_vllm_omni_version}" != "${PATCHED_VLLM_OMNI_VERSION}" ]; then
     echo "SKIP: MiniMax-H3 patches apply only to vllm ${PATCHED_VLLM_VERSION} + vllm-omni ${PATCHED_VLLM_OMNI_VERSION}."

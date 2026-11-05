@@ -101,11 +101,99 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `num_outputs_per_prompt` | 否 | `1` | 当前只支持 1 |
 | `user` | 否 | 无 | 记录在规范化请求中的调用方标签；不用于认证 |
 
-输出尺寸必须同时满足：
+默认基础生成尺寸必须同时满足：
 
 - 宽和高各为 256–2048，且都是 32 的倍数；
 - 总像素不超过 `768 × 1344`；
 - 宽高比与支持的命名比例之一相差不超过 5%。
+
+### 超分尺寸契约
+
+MiniMax-H3 的超分默认关闭。启用后，`size` 或 `width`＋`height` 表示最终交付尺寸；
+没有新增 `resolution` 或 `output_short_edge` 请求字段。只支持所选策略的精确尺寸，
+不会根据比例自动推导尺寸，也不会把任意高分辨率直接交给基础模型生成。
+
+```yaml
+adapter:
+  name: minimax_h3
+  workflow: ref2va
+  super_resolution:
+    enabled: true
+    profile: minimax_h3_seedvr2.v3
+```
+
+FL2VA 可配置 `workflow: fl2va`；超分必须使用 `execution_mode: detached`，且匹配
+实际声明同一策略并已就绪的组合 Worker。下表是 v3 的完整尺寸映射，所有尺寸为宽×高：
+
+| 档位 | 最终交付尺寸 | H3 基础尺寸 | SR 内部尺寸 | 最终画幅处理 |
+| --- | --- | --- | --- | --- |
+| 1080P | 1920x1080 | 1344x768 | 2016x1152 | 裁至2016x1134，再Lanczos缩小 |
+| 2K | 2560x1440 | 1344x768 | 2576x1472 | 居中裁剪 |
+| 1080P | 2208x936 | 1504x640 | 2256x960 | 居中裁剪 |
+| 2K | 2944x1248 | 1504x640 | 3008x1280 | 居中裁剪 |
+| 1080P | 1440x1080 | 1152x864 | 1472x1104 | 居中裁剪 |
+| 2K | 1920x1440 | 1152x864 | 1920x1440 | 直接编码 |
+| 1080P | 1080x1080 | 992x992 | 1088x1088 | 居中裁剪 |
+| 2K | 1440x1440 | 992x992 | 1440x1440 | 直接编码 |
+| 1080P | 1080x1440 | 864x1152 | 1104x1472 | 居中裁剪 |
+| 2K | 1440x1920 | 864x1152 | 1440x1920 | 直接编码 |
+| 1080P | 1080x1920 | 768x1344 | 1152x2016 | 裁至1134x2016，再Lanczos缩小 |
+| 2K | 1440x2560 | 768x1344 | 1472x2576 | 居中裁剪 |
+| 1080P兼容项 | 1800x1080 | 1280x768 | 1840x1104 | 居中裁剪 |
+| 2K兼容项 | 2400x1440 | 1280x768 | 2400x1440 | 直接编码 |
+
+1080P／2K 是本项目的交付档位，21:9 档实际为92:39；两个兼容项实际为5:3。
+基础画布与比例标签也可能略有差异，例如1344x768为7:4。基础画布按32对齐、SR内部
+画布按16对齐、全部2K交付画布按32对齐；1080P交付画布不额外要求32对齐。
+
+居中裁剪每轴至少保留97%；仅1920x1080及其竖屏需要裁剪后等比缩小，全部2K无需
+额外交付缩放。裁剪及必要缩放位于窗口融合后、唯一一次最终视频有损编码前；
+Worker外层使用stream copy保留视频码流和Base音轨。v3复用同次请求的Base／Raw
+完整媒体检查结果并核对哈希，最终成品仍执行完整帧数、尺寸、音轨和时间戳校验。
+
+v1保留1890x1080、2520x1440及对应竖屏的原比例缩放策略；v2保留1800x1080和
+2400x1440。策略需显式配置，v3不会被派发给仅声明旧策略的Worker。符合基础尺寸
+规则的请求继续走无超分路径；配置超分不会自动提高所有请求的分辨率。
+
+超分能力不可用时返回503 `super_resolution_unavailable`，不静默降低分辨率。
+最终尺寸和SR计划参与幂等指纹；仅调整SR配置不会改变基础请求指纹。
+`/v1/models`的尺寸列表表示已配置的规格，实际可用性还取决于兼容Worker。
+`aspect_ratio`用于一致性校验；兼容字段`short_edge`只接受768，不计算宽高。
+
+组合Worker通过环境变量接收运维配置，以下示例针对已固定的0.32原生SR镜像：
+
+```json
+{"model":"/models/SeedVR2-3B-fp16","work_root":"/work/seedvr2","gpus":8,"engine_identity":"<pinned-image-and-model-revisions>","profile":"minimax_h3_seedvr2.v3","image_digest":"<pinned-image-digest>"}
+```
+
+变量名为`DINGO_VIDEO_SEEDVR2_CONFIG`，它不是客户端参数。还需启用detached和
+`DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1。H3和独立的loopback SeedVR2子进程
+共用整个任务的执行许可。v3的1080P／2K分别使用33／65帧窗口，4帧重叠、单步Euler、
+Lab颜色修正；H3未指定seed时继续不传seed，v2／v3的SR服务使用固定seed 7723。
+
+基础视频检查点绑定完整请求及引擎身份，只能在同一任务后续attempt中验证复用；
+不跨任务复用，也不对未确认结束的SR提交盲目重发。内部失败先暂停接单，由视频恢复
+监督机制检查引擎及设备同步状态，确认安全才恢复；进程退出或健康检查持续失败时终止
+Worker。OOM异常本身不等于进程死亡，内部原因通过诊断和日志保留，对外错误仍遵循
+Gateway错误契约。128MiB结果上限保持不变，超限不自动降质。
+
+超分任务的查询`metrics.super_resolution`提供版本1、秒单位、固定白名单的阶段耗时；
+原H3阶段保留在`metrics.model_execution`。`diagnostics.stage_durations`继续保留
+`h3_base_total_s`、`sr_service_s`、`sr_finalize_s`和后处理细分字段。SR服务总耗时包含
+排队和内部处理，不能解释成纯GPU时间；父子阶段和流水重叠阶段不能直接相加。
+
+Gateway的`/metrics`新增：
+
+- `dingo_video_super_resolution_stage_duration_seconds{pool,stage}`：Histogram，
+  采用与任务阶段相同的桶；仅在成功接受SR结果交接时记录，每阶段每次一次。
+- `dingo_video_super_resolution_requests_total{pool,tier,status}`：Counter，
+  tier为`1080p`／`2k`，status为`completed`／`failed`／`cancelled`／`expired`。
+  每个业务任务终态只计一次，内部重试不另计；进行中的请求及任务创建前的拒绝不计入。
+
+不超分请求不增加以上指标。Counter为启用SR的pool预先暴露零值；Histogram不补零。
+同其他进程内指标一样，重启会清零，采集间隔及崩溃可能造成事件丢失，不替代业务审计。
+
+### 其他兼容字段
 
 `task`、`flow_shift`、`audio_flow_shift` 和 `extra_params` 主要用于兼容底层
 vLLM-Omni 调用。普通调用建议省略，由 Gateway 按目标 pool 填充。
@@ -554,3 +642,31 @@ curl -sS -X DELETE "$GATEWAY_URL/v1/videos/$TASK_ID" | jq
 Video Gateway 当前不实现最终用户认证和授权，应由上层应用、API Gateway 或入口 LB
 完成身份校验、租户隔离和限流。调用方应忽略未知的响应字段，以便 Gateway 在滚动升级中
 增加指标和媒体元数据而不破坏客户端。
+
+
+## ContextIR 后端并发配置
+
+每个 ContextIR 后端的 `max_inflight` 默认值为 `2`，显式配置可以覆盖默认值。
+多个模型绑定到同一后端时共享容量；使用同一 etcd 任务域的多个 Gateway 也共享
+该后端的执行槽。该参数不改变视频生成 Worker 的执行容量。
+
+```yaml
+context_ir:
+  enabled: true
+  backends:
+    h3-ir:
+      url: http://context-ir:8420
+      max_inflight: 2
+  model_bindings:
+    minimax-h3: h3-ir
+    minimax-h3-ref2va: h3-ir
+```
+
+模型名应与实际 Gateway 模型池保持一致。需要提高并发时显式配置 `max_inflight`，
+升级代码不会覆盖显式配置。等待队列 `queue_limit` 默认仍为 `32`，
+素材预处理并发仍为 `2`。Gateway 的 ContextIR HTTP 连接池总上限为 `64`，
+单后端地址上限为 `32`，为编译期间的素材上传等调用保留连接余量。
+
+同一后端的多个 Gateway 应使用一致配置；后端配置修订不一致时会阻止领取任务。
+升级应安排无在途 ContextIR 任务的窗口，核对所有 Gateway 的配置一致后，
+再验证目标并发下的成功率、排队耗时和资源占用。

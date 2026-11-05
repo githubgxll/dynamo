@@ -12,7 +12,6 @@ from typing import Any, AsyncGenerator, Dict, List
 from dynamo import prometheus_names
 from dynamo.llm import ModelInput, WorkerType, register_model
 from dynamo.runtime import DistributedRuntime
-from vllm_omni.entrypoints.utils import load_and_resolve_stage_configs
 
 from dingo.common.storage import get_fs
 from dingo.common.utils.output_modalities import (
@@ -23,6 +22,7 @@ from dingo.common.utils.output_modalities import (
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.args import OmniConfig
 from dingo.vllm.omni.output_formatter import OutputFormatter
+from dingo.vllm.omni.stage_config_compat import load_and_resolve_stage_configs
 from dingo.vllm.omni.stage_worker import _resolve_model_type
 from dingo.vllm.omni.types import StageOutput
 from dingo.vllm.omni.utils import shm_deserialize

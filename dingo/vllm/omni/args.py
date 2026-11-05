@@ -62,6 +62,13 @@ class OmniDiffusionKwargs:
     passthrough in base_handler is automatic.
     """
 
+    dtype: Optional[str] = None
+    diffusion_offload_config: Optional[dict] = None
+    num_gpus: Optional[int] = None
+    task_type: Optional[str] = None
+    request_batch_max_wait_ms: Optional[int] = None
+    init_timeout: Optional[int] = None
+    stage_init_timeout: Optional[int] = None
     enable_layerwise_offload: bool = False
     layerwise_num_gpu_layers: int = 1
     vae_use_slicing: bool = False
@@ -94,6 +101,9 @@ class OmniParallelKwargs:
     Adding a new parallelism field only requires adding it here and to OmniArgGroup.
     """
 
+    ulysses_mode: Optional[str] = None
+    ulysses_a2a_permute: Optional[bool] = None
+    allgather_degree: Optional[int] = None
     ulysses_degree: int = 1
     ring_degree: int = 1
     cfg_parallel_size: int = 1
@@ -356,6 +366,20 @@ class OmniArgGroup(ArgGroup):
                 '{"method":"fp8","activation_scheme":"dynamic"}).'
             ),
         )
+
+        add_argument(g, flag_name="--dtype", env_var="DYN_OMNI_DIFFUSION_DTYPE", default=None, help="Diffusion engine dtype")
+        add_argument(g, flag_name="--diffusion-offload-config", env_var="DYN_OMNI_DIFFUSION_OFFLOAD_CONFIG", default=None, arg_type=json.loads,
+                     help="Explicit upstream diffusion offload configuration JSON.")
+        for flag, env, kind in [
+            ("num-gpus", "NUM_GPUS", int), ("task-type", "TASK_TYPE", str),
+            ("request-batch-max-wait-ms", "REQUEST_BATCH_MAX_WAIT_MS", int),
+            ("init-timeout", "INIT_TIMEOUT", int), ("stage-init-timeout", "STAGE_INIT_TIMEOUT", int)]:
+            add_argument(g, flag_name="--" + flag, env_var="DYN_OMNI_" + env,
+                         default=None, arg_type=kind, help="Explicit vLLM-Omni " + flag)
+
+        add_argument(g, flag_name="--ulysses-mode", env_var="DYN_OMNI_ULYSSES_MODE", default=None, help="Explicit Ulysses mode")
+        add_argument(g, flag_name="--allgather-degree", env_var="DYN_OMNI_ALLGATHER_DEGREE", default=None, arg_type=int, help="Explicit allgather degree")
+        add_negatable_bool_argument(g, flag_name="--ulysses-a2a-permute", env_var="DYN_OMNI_ULYSSES_A2A_PERMUTE", default=None, help="Ulysses permutation")
 
         # TTS parameters
         tts_g = parser.add_argument_group(

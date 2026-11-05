@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import random
+from dingo.common.video_worker_error import classify_worker_error
+
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, Optional, Union, cast
 
@@ -21,7 +23,7 @@ from dingo.common.utils.video_utils import compute_num_frames, parse_size
 from dynamo.llm.exceptions import EngineShutdown
 from dingo.vllm.omni.audio_handler import AudioGenerationHandler
 from dingo.vllm.omni.base_handler import BaseOmniHandler
-from dingo.vllm.omni.output_formatter import OutputFormatter
+from dingo.vllm.omni.output_formatter import OutputFormatter, get_text_request_output
 from dingo.vllm.omni.request_adapters import (
     create_request_adapter,
     request_adapter_scope,
@@ -195,7 +197,9 @@ class OmniHandler(BaseOmniHandler):
                     )
                 except Exception as e:
                     logger.warning("Failed to adapt video input reference: %s", e)
-                    yield self._error_chunk(request_id, str(e), request_type)
+                    chunk = self._error_chunk(request_id, str(e), request_type)
+                    chunk["_internal_error"] = {"schema_version": 1, "reason": "input_processing_failed", "stage": "input_processing"}
+                    yield chunk
                     return
             elif parsed_request.input_reference is not None:
                 try:
@@ -242,7 +246,9 @@ class OmniHandler(BaseOmniHandler):
             )
         except (ValueError, NotImplementedError) as e:
             logger.error(f"Invalid request {request_id}: {e}")
-            yield self._error_chunk(request_id, str(e), request_type)
+            chunk = self._error_chunk(request_id, str(e), request_type)
+            chunk["_internal_error"] = classify_worker_error(e, stage="input_processing")
+            yield chunk
             return
 
         if (
@@ -285,11 +291,10 @@ class OmniHandler(BaseOmniHandler):
                     )
                     if chunk:
                         # Track text state for streaming delta
-                        if (
-                            stage_output.final_output_type == "text"
-                            and stage_output.request_output
-                        ):
-                            previous_text = stage_output.request_output.outputs[0].text
+                        if stage_output.final_output_type == "text":
+                            text_output = get_text_request_output(stage_output)
+                            if text_output is not None and text_output.outputs:
+                                previous_text = text_output.outputs[0].text
                         yield chunk
 
             except EngineShutdown:
@@ -297,7 +302,9 @@ class OmniHandler(BaseOmniHandler):
                 raise
             except Exception as e:
                 logger.error(f"Error during generation for request {request_id}: {e}")
-                yield self._error_chunk(request_id, str(e), inputs.request_type)
+                chunk = self._error_chunk(request_id, str(e), inputs.request_type)
+                chunk["_internal_error"] = classify_worker_error(e, stage="base_generation")
+                yield chunk
 
     async def build_engine_inputs(
         self,
@@ -470,7 +477,7 @@ class OmniHandler(BaseOmniHandler):
 
         prompt = OmniTextPrompt(prompt=req.prompt)
         if nvext.negative_prompt is not None:
-            prompt.negative_prompt = nvext.negative_prompt
+            prompt["negative_prompt"] = nvext.negative_prompt
 
         if isinstance(image, list):
             if not image:

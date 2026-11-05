@@ -714,6 +714,14 @@ async def metrics(request: web.Request) -> web.Response:
             for status in TaskStatus
         )
     lines.extend(service.telemetry.render_prometheus())
+    from dingo.video_gateway.context_ir.api import KEY as CONTEXT_IR_KEY
+    compiler = request.app.get(CONTEXT_IR_KEY)
+    if compiler is not None:
+        try:
+            lines.extend(await compiler.metrics())
+        except Exception:
+            logger.exception("ContextIR metrics collection failed")
+            lines.append("dingo_context_ir_collection_available 0")
     return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
 
 

@@ -83,6 +83,64 @@ async def _one(manager: DetachedOmniTaskManager, request: dict[str, Any]):
     return [item async for item in manager.generate(request, _Context())]
 
 
+@pytest.mark.parametrize("isolate", [False, True])
+async def test_oom_with_prefetched_task_preserves_retry_boundary(tmp_path, isolate):
+    from dingo.video_gateway.errors import WorkerUnavailable, worker_execution_error
+
+    class Handler:
+        sr_ready = True
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.fail = asyncio.Event()
+            self.calls = []
+
+        async def generate(self, payload, context):
+            self.calls.append(payload["task"])
+            if payload["task"] == "A":
+                self.started.set()
+                await self.fail.wait()
+                self.sr_ready = not isolate
+                raise MemoryError("CUDA out of memory")
+            yield {"phase": "complete"}
+
+    handler = Handler()
+    manager = DetachedOmniTaskManager(
+        handler, tmp_path, execution_capacity=1, prefetch_capacity=1,
+        binary_results=False, inline_results=False, drain_timeout_s=1,
+    )
+    try:
+        for task in ("A", "B"):
+            _write_manifest(tmp_path, task)
+            ack = (await _one(manager, _request(task_id=task, payload={"task": task})))[0]
+            assert ack["state"] == "accepted"
+            if task == "A":
+                await asyncio.wait_for(handler.started.wait(), 1)
+        waiting = (await _one(manager, _request(task_id="B", op="status")))[0]
+        assert waiting["state"] == "accepted"
+        assert handler.calls == ["A"]
+        handler.fail.set()
+        statuses = {}
+        for task in ("A", "B"):
+            statuses[task] = (await _one(manager, _request(task_id=task, op="wait")))[-1]
+        a = statuses["A"]
+        assert a["state"] == "failed"
+        assert a["error"]["internal_error"]["reason"] == "resource_exhausted"
+        assert not isinstance(worker_execution_error(a["error"]), WorkerUnavailable)
+        b = statuses["B"]
+        if isolate:
+            assert handler.calls == ["A"]
+            assert b["state"] == "failed"
+            assert b["error"]["code"] == "worker_unavailable_before_execution"
+            assert isinstance(worker_execution_error(b["error"]), WorkerUnavailable)
+        else:
+            assert handler.calls == ["A", "B"]
+            assert b["state"] == "completed"
+    finally:
+        handler.fail.set()
+        await manager.shutdown()
+
+
 async def _terminal_status(manager: DetachedOmniTaskManager) -> dict[str, Any]:
     for _ in range(200):
         status = (await _one(manager, _request(op="status")))[0]

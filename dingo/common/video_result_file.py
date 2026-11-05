@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_sr_timings import normalize_sr_timings
 from dingo.common.video_timing_schemas import normalize_model_execution
 
 BINARY_RESULT_WRITER: contextvars.ContextVar[BinaryResultWriter | None] = (
@@ -88,6 +89,9 @@ def normalize_inline_result(value: Any) -> dict[str, Any]:
     model_execution = normalize_model_execution(value.get("model_execution"))
     if model_execution is not None:
         result["model_execution"] = model_execution
+    sr_timings = normalize_sr_timings(value.get("super_resolution_timings"))
+    if sr_timings is not None:
+        result["super_resolution_timings"] = sr_timings
     if len(json.dumps(result, ensure_ascii=False).encode()) > 8192:
         raise ValueError("inline Worker result exceeds metadata limit")
     return result

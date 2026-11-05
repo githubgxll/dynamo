@@ -35,6 +35,16 @@ from dingo.vllm.omni.minimax_h3_timings import extract_model_execution
 logger = logging.getLogger(__name__)
 
 
+def get_text_request_output(stage_output: Any) -> Any:
+    """Return legacy nested or 0.31 flattened RequestOutput content."""
+    request_output = getattr(stage_output, "request_output", None)
+    if request_output is not None:
+        return request_output
+    if hasattr(stage_output, "outputs"):
+        return stage_output
+    return None
+
+
 class TextFormatter:
     """Formats LLM text output as OpenAI chat completion chunks."""
 
@@ -618,10 +628,10 @@ class OutputFormatter:
         if formatter is None:
             return None
 
-        # TextFormatter is sync and takes request_output, not stage_output.
+        # Omni 0.31 is itself a RequestOutput; older versions wrap one.
         if fmt_type == "text":
-            ro = getattr(stage_output, "request_output", None)
-            if not ro:
+            ro = get_text_request_output(stage_output)
+            if ro is None:
                 return None
             return formatter.format(
                 ro, request_id, previous_text=ctx.get("previous_text", "")

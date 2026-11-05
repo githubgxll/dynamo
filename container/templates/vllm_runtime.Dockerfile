@@ -200,22 +200,10 @@ RUN --mount=type=bind,source=./container/deps/vllm/protected_packages.txt,target
     export VLLM_OMNI_TARGET_DEVICE={{ device }}; \
     bash /tmp/install_vllm_omni.sh
 
-# Apply Dingo's MiniMax-H3 vLLM-Omni patches (source overlays + runtime overlay
-# modules) to the installed vllm-omni site-packages. The install script applies
-# them only to the validated vLLM + vLLM-Omni version pair;
-# other version pairs are skipped, while pinned-file mismatches within the
-# supported pair still fail the build. The generated .pth-triggered bootstrap
-# (dingo_vllm_omni_patches.py)
-# loads runtime overlays only when DINGO_ENABLE_MINIMAX_H3_PATCHES=1. Individual
-# hooks are additionally opt-in through H3_* flags, so unrelated GLM/DeepSeek
-# model processes do not import the H3 bootstrap or mutate vLLM-Omni modules.
-#
-# Intentionally limited to CUDA builds: the source overlays replace H3
-# transformer/denoise_loop files from CUDA-specific upstream PRs (#5990/#6173),
-# and the runtime overlays (VAE regional compile, FP8+HSDP, Ref2VA FFmpeg
-# decode) depend on CUDA-only code paths.  CPU/XPU workers that later need H3
-# support must re-evaluate these overlays against their device backend before
-# enabling them.
+# Apply the source-locked CUDA H3/SR overlays matching the installed pair.
+# The 0.32 path carries the current offloader and SeedVR2 implementation.
+# The historical 0.27 path retains its environment-gated runtime bootstrap.
+# CPU/XPU backends require their own native-source validation and skip this step.
 {% if device == "cuda" %}
 RUN --mount=type=bind,source=./container/deps/vllm/install_vllm_omni_patches.sh,target=/tmp/install_vllm_omni_patches.sh \
     --mount=type=bind,source=./container/deps/vllm/patches,target=/tmp/vllm_omni_patches,readonly \

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "vllm_version": "0.32.0",
+  "vllm_omni_version": "0.32.0",
+  "omni_wheel_sha256": "242b94e64b359d3cd6d1ebf1b9d6b43ae854a4f97c780fd5e2121dab06cb68e6",
+  "tested_parent_image_digest": "sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "files": [
+    {
+      "path": "vllm_omni/diffusion/ipc.py",
+      "before_sha256": "f64589f32a0e792a38afe30682a7e25f0f51ba0602a43fd150eb20dcdf74c33e",
+      "after_sha256": "eda648854822bc739e678c165b6193b3c2c26273c73bd00283b829a27f214781"
+    },
+    {
+      "path": "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py",
+      "before_sha256": "8ba5e0353fa6e7ea5124bf5eb73ad19b21cc95878b1370251f657958eae79e5e",
+      "after_sha256": "3fd84ea51c514c6c758e94f1f5393f5a59b300c9aeecac61edb001e7d356efa0"
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/c14_capture.py",
+      "before_sha256": null,
+      "after_sha256": "7de785d45d4a1ff01b7c2fec235a5d09b16a29cc33d8a11104fce62ea6375620"
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/long_video.py",
+      "before_sha256": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
+      "after_sha256": "3e8fe4e7b705f63fbf9bf8cfa32b8e1ab0a723e9af73c3ea5aef8770f226230e",
+      "compatible_parent_sha256": [
+        "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05"
+      ]
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/long_video_support.py",
+      "before_sha256": null,
+      "after_sha256": "2cb778163bf7f36883138b9c584897422089ebaccbfd59ca10f6eb4346132650",
+      "compatible_parent_sha256": [
+        "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1"
+      ]
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py",
+      "before_sha256": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
+      "after_sha256": "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048"
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py",
+      "before_sha256": null,
+      "after_sha256": "d9d6716c9c5176156b0a0e7293c6dd554df423c7bf145dd11150ce4e46bf1de1"
+    },
+    {
+      "path": "vllm_omni/diffusion/models/seedvr2/vae.py",
+      "before_sha256": "59e6b4cbdc031edbcb6407202af17d801029c3aea157ff6ac990491e558752d3",
+      "after_sha256": "06a2ffa2df5aaac83c1fab78086d8429e2ff02e0c676a3115e793c76ce28a1f3"
+    },
+    {
+      "path": "vllm_omni/diffusion/offloader/hsdp_migration.py",
+      "before_sha256": null,
+      "after_sha256": "b1656d629dd27d1fc7295f320ba2bfd5aea9178b0a6a16a52089f6565f0da12a"
+    },
+    {
+      "path": "vllm_omni/diffusion/offloader/sequential_backend.py",
+      "before_sha256": "d542935b656a0d9dced78de8fb086b8e1c5aade26fac6cee5316b32a49f0d569",
+      "after_sha256": "b359a5d1edeb54fb38919da3e5ca9d21d88ca307df336f25cf325e60f1a05b6e"
+    },
+    {
+      "path": "vllm_omni/diffusion/utils/media_utils.py",
+      "before_sha256": "045cf1819eb88d8aaa3b0c7e4c21b3c7dfbc81954c6188605e7e8fec632c3380",
+      "after_sha256": "ee1d98e748819c214fa46dbc915e3a72be2b55ee5bcb1cb51cc0935a2e5df6e6"
+    },
+    {
+      "path": "vllm_omni/entrypoints/openai/serving_video.py",
+      "before_sha256": "c4f5ea1c144d389c9d25b026b44005aa5c1364ba1478a9a1c80a4a0ecfa47570",
+      "after_sha256": "88693bfb34602a1f84d694f46e75911c31725ced214e2f07d581e83a62410187"
+    },
+    {
+      "path": "vllm_omni/entrypoints/openai/video_api_utils.py",
+      "before_sha256": "84bbe2778eb94844262c999e951ba397bbc54db7361d28d0e789a5959d3d6407",
+      "after_sha256": "191a75a57fcfcb2b3a42a4ad02d9913d011db2392c38dc5279a49bf092e1e106"
+    }
+  ]
+}

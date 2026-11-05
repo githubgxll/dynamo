@@ -18,7 +18,8 @@ subtitle: HTTP 拉取、日志发现、动态配置、去重续采及 PostgreSQL
 采集器运行 `http_pull.py`，按手动配置的每个实例地址拉取；不读取 Kubernetes 日志，也不需要 Pod 发现 RBAC。
 这不实现实例自动发现。普通业务 LB 不能保证覆盖全部 Gateway 副本，多个副本必须分别提供可访问地址。
 
-Gateway 配置示例：
+`performance_cache` 用于控制终态性能记录的内存缓存，整段配置可以省略。
+省略时使用下面列出的全部默认值；只需要调整默认值或关闭缓存时才显式配置：
 
 ```yaml
 performance_cache:
@@ -46,8 +47,22 @@ Token 从指定环境变量读取；未配置或为空时 Gateway 正常启动�
 响应包含 `schema_version=1`、`instance_id`、`retention_s`、`oldest_seq`、`latest_seq`、
 `next_seq`、`next_cursor`、`has_more`、`gap_detected`、`instance_changed`、`source` 和 `records`。
 每条记录形如 `{"seq": 1, "event": {"log_type": "video_task_lifecycle", "performance": {}}}`；event 保留有效的任务身份、终态和性能摘要，
-不包含普通日志的任意 reason/error 文本。source 的 namespace/Pod UID 等通过 `POD_NAMESPACE`、`POD_NAME`、`POD_UID` 环境变量注入；
-`GATEWAY_IMAGE` 可提供来源镜像信息。缺少 namespace 时，采集器使用经过认证的配置目标身份；明确返回不同 namespace 或部署 ID 时拒绝该响应。
+不包含普通日志的任意 reason/error 文本。
+
+来源身份环境变量用于补充记录来自哪个 Pod 和镜像，均可省略，不影响生成接口或 HTTP 性能采集。
+省略时的行为如下：
+
+| 环境变量 | 配置后的作用 | 未配置时的行为 |
+| --- | --- | --- |
+| `POD_NAMESPACE` | 返回实际 Kubernetes namespace | Gateway 返回 `null`；采集器使用目标配置中的 `namespace` |
+| `POD_NAME` | 返回实际 Pod 名称 | 使用 `HOSTNAME`；若也未设置，则返回 `unknown` |
+| `POD_UID` | 返回 Kubernetes Pod UID | 使用性能缓存的 `instance_id`，即缓存初始化时生成的 32 位十六进制 UUID |
+| `GATEWAY_IMAGE` | 返回 Gateway 镜像版本 | 返回 `unknown` |
+
+替代 Pod UID 的 UUID 标识本次进程中的缓存实例，Gateway 进程重启后会变化，即使 Pod 没有重建。
+需要与 Kubernetes Pod UID 或镜像版本准确关联时，再显式注入对应变量。
+采集器始终需要配置目标 `namespace` 和 `deployment_id`；Gateway 明确返回不同 namespace 或部署 ID 时，采集器拒绝该响应。
+这些可选来源变量不能替代接口 Token；未配置 Token 时 HTTP 拉取仍返回 401。
 
 首次不传游标，返回现存窗口内的记录。游标绑定实例和序号，分页保留快照上界，不会因持续新增任务一直无法完成。
 读取不删除记录；超过保留期、容量淘汰和进程重启都会造成潜在漏采。`gap_detected` 表示可检测的缓存缺口，

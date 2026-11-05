@@ -32,6 +32,10 @@ HTTP 模式使用 Gateway `performance_cache`，默认开启，不依赖性能�
 但缓存过期、容量淘汰和进程重启可能漏样。它不自动发现 Gateway，多副本不能仅配置一个普通 LB。
 开启和接口协议见[HTTP 定时拉取](../../../docs/video-gateway/performance-collection.md#http-定时拉取)。
 未配置 Token 时只缓存、不允许拉取，不影响业务启动；需要禁用时设置 `performance_cache.enabled: false`。
+整段 `performance_cache` 可省略，使用上述默认值。来源身份变量也可省略：`POD_NAMESPACE`
+缺省时接口返回 `null`，采集器使用目标 namespace；`POD_NAME` 回退到 `HOSTNAME`，再回退到
+`unknown`；`POD_UID` 回退到每次进程启动生成的缓存实例 UUID；`GATEWAY_IMAGE` 回退到 `unknown`。
+这些变量用于完善来源信息，不是 HTTP 采集的必需配置；接口 Token 仍需配置。
 以下原有准备和 `render.py` 部署流程适用于 Kubernetes 日志模式。
 
 Gateway 开启 `DINGO_VIDEO_PERFORMANCE_RECORDS=1`，保留 INFO 日志；模型阶段还需要 Worker profiler。

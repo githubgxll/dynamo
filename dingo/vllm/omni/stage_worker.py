@@ -19,7 +19,6 @@ from vllm_omni.distributed.omni_connectors import initialize_orchestrator_connec
 from vllm_omni.engine.orchestrator import build_engine_core_request_from_tokens
 from vllm_omni.entrypoints.async_omni import AsyncOmni
 from vllm_omni.entrypoints.stage_utils import serialize_obj, shm_write_bytes
-from vllm_omni.entrypoints.utils import load_and_resolve_stage_configs
 from vllm_omni.inputs.data import OmniTokensPrompt
 
 from dynamo import prometheus_names
@@ -28,6 +27,10 @@ from dynamo.runtime import DistributedRuntime
 from dingo.vllm.health_check import VllmOmniHealthCheckPayload
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.args import OmniConfig
+from dingo.vllm.omni.stage_config_compat import (
+    load_and_resolve_stage_configs,
+    stage_config_engine_kwargs,
+)
 from dingo.vllm.omni.types import StageEngine, StageRequest, _int_keyed
 from dingo.vllm.omni.utils import _build_sampling_params, parse_omni_request
 
@@ -671,7 +674,7 @@ def _create_engine(model: str, stage_config: Any, stage_type: str) -> StageEngin
         tmp_path = tmp.name
 
     try:
-        return AsyncOmni(model=model, stage_configs_path=tmp_path)
+        return AsyncOmni(model=model, **stage_config_engine_kwargs(tmp_path))
     finally:
         os.unlink(tmp_path)
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import hashlib
 import logging
 import math
@@ -14,12 +15,15 @@ import random
 import secrets
 import time
 import uuid
+from dingo.common.video_sr_timings import with_sr_timings
+from dingo.common.video_worker_error import normalize_internal_error
+
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from dingo.common.video_result_file import INLINE_RESULT_FORMAT, normalize_inline_result
-from dingo.common.video_timing_schemas import with_model_execution
+from dingo.common.video_super_resolution import negotiated_sr_profiles
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
     EXECUTION_CAPACITY_CAPABILITY,
@@ -27,6 +31,7 @@ from dingo.common.video_task_protocol import (
     WAIT_TERMINAL_CAPABILITY,
     detached_envelope,
 )
+from dingo.common.video_timing_schemas import with_model_execution
 from dingo.video_gateway.adapters.base import VideoBackendAdapter
 from dingo.video_gateway.artifact_store import FileArtifactStore
 from dingo.video_gateway.config import GatewayConfig, PoolConfig
@@ -182,6 +187,8 @@ class PoolRuntime:
     # Fixed per physical registration; failed probes are retried with backoff.
     capacity_cache: dict[int, tuple[int, float]] = field(default_factory=dict)
     prefetch_instances: set[int] = field(default_factory=set)
+    sr_profiles: dict[int, frozenset[str]] = field(default_factory=dict)
+    shared_inputs: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 class VideoDispatcher:
@@ -218,6 +225,9 @@ class VideoDispatcher:
         if not 0 <= self._failed_instance_backoff_s <= 86400:
             raise ValueError("invalid failed instance backoff")
         self.telemetry = telemetry or GatewayTelemetry()
+        for pool in config.pools:
+            if pool.sr_profile is not None:
+                self.telemetry.initialize_super_resolution_requests(pool.pool_id)
         self.pools: dict[str, PoolRuntime] = {
             pool.pool_id: PoolRuntime(
                 config=pool,
@@ -756,13 +766,28 @@ class VideoDispatcher:
         }
         if hasattr(pool, "prefetch_instances"):
             pool.prefetch_instances.intersection_update(pool.instance_ids)
-        if pool.config.scheduling.worker_capacity > 1 or getattr(
-            pool.config.scheduling, "worker_prefetch_capacity", 0
+        if hasattr(pool, "sr_profiles"):
+            pool.sr_profiles = {
+                i: v for i, v in pool.sr_profiles.items() if i in pool.instance_ids
+            }
+        if (
+            getattr(pool.config, "sr_profile", None)
+            or pool.config.scheduling.worker_capacity > 1
+            or getattr(pool.config.scheduling, "worker_prefetch_capacity", 0)
         ):
             semaphore = asyncio.Semaphore(8)
 
             async def probe(instance: int) -> None:
-                if pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic():
+                # Refresh a healthy SR capability before its five-second
+                # expiry: waiting until expiry creates an admission gap on
+                # every discovery tick. Keep fail-closed expiry in _worker_slots.
+                refresh_ahead = (
+                    3.0 if getattr(pool.config, "sr_profile", None) else 0.0
+                )
+                if (
+                    pool.capacity_cache.get(instance, (0, 0))[1]
+                    > time.monotonic() + refresh_ahead
+                ):
                     return
                 async with semaphore:
                     pool.capacity_cache[instance] = await self._worker_capacity(
@@ -775,6 +800,8 @@ class VideoDispatcher:
         self, pool: PoolRuntime, instance: int
     ) -> tuple[int, float]:
         pool.prefetch_instances.discard(instance)
+        # Preserve still-valid SR evidence while the refresh RPC is in flight.
+        # A failed/negative response below explicitly invalidates it.
         context = self.context_factory(
             f"capacity-{uuid.uuid4().hex}", {"pool_id": pool.config.pool_id}
         )
@@ -799,15 +826,27 @@ class VideoDispatcher:
                 or EXECUTION_CAPACITY_CAPABILITY not in response.get("capabilities", [])
             ):
                 raise ValueError("Worker does not advertise execution capacity")
+            if hasattr(pool, "shared_inputs"):
+                pool.shared_inputs.pop(instance, None)
+                if "shared_input_files.v1" in response.get("capabilities", []) and isinstance(response.get("shared_inputs"), dict):
+                    pool.shared_inputs[instance] = response["shared_inputs"]
             capacity = response.get("execution_capacity")
             if (
                 isinstance(capacity, bool)
                 or not isinstance(capacity, int)
-                or capacity < 1
+                or capacity < 0
             ):
                 raise ValueError("invalid Worker execution capacity")
             if response.get("accepting") is not True:
+                if hasattr(pool, "sr_profiles"):
+                    pool.sr_profiles.pop(instance, None)
                 return 0
+            if capacity == 0:
+                if hasattr(pool, "sr_profiles"):
+                    pool.sr_profiles.pop(instance, None)
+                return 0
+            if hasattr(pool, "sr_profiles"):
+                pool.sr_profiles[instance] = negotiated_sr_profiles(response)
             effective = min(capacity, pool.config.scheduling.worker_capacity)
             prefetch = getattr(pool.config.scheduling, "worker_prefetch_capacity", 0)
             if (
@@ -831,29 +870,64 @@ class VideoDispatcher:
 
         try:
             capacity = await asyncio.wait_for(query(), timeout=2.0)
-            return capacity, float("inf") if capacity else time.monotonic() + 5.0
+            expires = time.monotonic() + 5.0
+            return capacity, expires
         except Exception:
+            if hasattr(pool, "shared_inputs"):
+                pool.shared_inputs.pop(instance, None)
+            if hasattr(pool, "sr_profiles"):
+                pool.sr_profiles.pop(instance, None)
             # Legacy Workers are still usable as single-slot instances. Never
             # infer N slots from the configured ceiling or a failed RPC.
+            if getattr(pool.config, "sr_profile", None):
+                logger.warning("Composite Worker %s capacity unavailable; admission disabled", instance)
+                return 0, time.monotonic() + 5.0
             logger.warning("Worker %s capacity unavailable; using one slot", instance)
             return 1, time.monotonic() + 30.0
         finally:
             context.stop_generating()
 
     @staticmethod
-    def _worker_slots(pool: PoolRuntime) -> list[tuple[int, int]]:
+    def _worker_slots(
+        pool: PoolRuntime, normalized: Mapping[str, Any] | None = None
+    ) -> list[tuple[int, int]]:
+        sr = (normalized or {}).get("super_resolution")
+        needs_sr = normalized is not None and "super_resolution" in normalized
+        required_shared = (normalized or {}).get("shared_inputs")
+        adapter_options = getattr(getattr(pool.config, "adapter", None), "options", {})
+        if normalized is None and adapter_options.get("reference_transport") == "shared_files_v1":
+            required_shared = {"storage_id": adapter_options.get("shared_storage_id")}
         ceiling = pool.config.scheduling.worker_capacity + getattr(
             pool.config.scheduling, "worker_prefetch_capacity", 0
         )
         return [
             (instance, slot)
             for instance in pool.instance_ids
+            if not required_shared or (
+                getattr(pool, "shared_inputs", {}).get(instance, {}).get("storage_id") == required_shared.get("storage_id")
+                and getattr(pool, "shared_inputs", {}).get(instance, {}).get("workflow") == pool.config.adapter.workflow
+                and pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
+            )
+            if pool.capacity_cache.get(instance, (1, 0))[0] > 0
+            if not getattr(pool.config, "sr_profile", None) or pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
+            if not needs_sr
+            or (
+                isinstance(sr, Mapping)
+                and sr.get("profile") == getattr(pool.config, "sr_profile", None)
+                and sr.get("profile")
+                in getattr(pool, "sr_profiles", {}).get(instance, ())
+                and pool.capacity_cache.get(instance, (0, 0))[0] > 0
+                and pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
+            )
             for slot in range(
                 1
                 if ceiling == 1
                 else min(ceiling, pool.capacity_cache.get(instance, (0, 0))[0])
             )
         ]
+
+    def has_sr_workers(self, pool_id: str, normalized: Mapping[str, Any]) -> bool:
+        return bool(self._worker_slots(self.pools[pool_id], normalized))
 
     async def _detached_submit_ack(self, pool, task, submit, context, validate):
         """Busy means not executed: retry admission, not the task attempt."""
@@ -1047,9 +1121,7 @@ class VideoDispatcher:
                         pool.config.pool_id,
                     )
                 try:
-                    await self._resync_lease_cache(
-                        pool, preserve_health=idle_refresh
-                    )
+                    await self._resync_lease_cache(pool, preserve_health=idle_refresh)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -1212,7 +1284,9 @@ class VideoDispatcher:
                 continue
             available = [
                 (instance, slot)
-                for instance, slot in self._worker_slots(pool)
+                for instance, slot in self._worker_slots(
+                    pool, candidate.task.normalized_request
+                )
                 if worker_key(pool.config.backend_target, instance, slot) not in leased
                 and not retry_excludes_worker(
                     candidate.task, pool.config.backend_target, instance
@@ -1635,6 +1709,17 @@ class VideoDispatcher:
                 )
                 self._payload_build_count += 1
                 self._payload_build_seconds += time.monotonic() - payload_build_started
+                if normalized.get("shared_inputs") and payload.get("input_reference"):
+                    reference = json.loads(payload["input_reference"])
+                    if reference.get("type") != "dingo_h3_shared_inputs_v1":
+                        raise ValueError("shared input descriptor missing")
+                    reference.update(attempt=task.attempt, execution_token=task.execution_token)
+                    payload["input_reference"] = json.dumps(reference, separators=(",", ":"))
+                    if len(payload["input_reference"].encode()) > 256 * 1024:
+                        raise ValueError("shared input descriptor too large")
+                    logger.info("shared_input_dispatch task=%s attempt=%s input_bytes=%s payload_json_bytes=%s",
+                                task.id, task.attempt, sum(int(e["bytes"]) for e in reference["entries"]),
+                                len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()))
             self._raise_if_heartbeat_stopped(heartbeat)
             if stored.task.status == TaskStatus.DISPATCHING:
                 before = stored
@@ -1762,9 +1847,7 @@ class VideoDispatcher:
                 # Legacy non-detached Workers do not publish an outer execution
                 # duration. Measure the complete direct call instead of treating
                 # the formatter's output-only duration as model execution.
-                worker_execution_s = max(
-                    0.0, time.monotonic() - worker_call_started
-                )
+                worker_execution_s = max(0.0, time.monotonic() - worker_call_started)
 
             # The Worker response stream is terminal. It is now safe for a new
             # task to reuse this instance while this Gateway validates and
@@ -1792,6 +1875,7 @@ class VideoDispatcher:
                 )
             inference_time_s = worker_execution_s
             model_execution = result.model_execution
+            sr_timings = result.super_resolution_timings
             stage_durations = dict(result.stage_durations or {})
             if worker_queue_wait_s is not None:
                 stage_durations["worker_queue_wait"] = worker_queue_wait_s
@@ -1818,6 +1902,7 @@ class VideoDispatcher:
                         inference_time_s,
                         stage_durations,
                         model_execution=model_execution,
+                        super_resolution_timings=sr_timings,
                     )
                 except _TaskOwnershipLost:
                     raise
@@ -1843,7 +1928,7 @@ class VideoDispatcher:
                         "inference_time_s": inference_time_s,
                         "stage_durations": stage_durations,
                         "normalized_request": with_model_execution(
-                            latest.task.normalized_request, model_execution
+                            with_sr_timings(latest.task.normalized_request, sr_timings), model_execution
                         ),
                     },
                 )
@@ -2132,6 +2217,7 @@ class VideoDispatcher:
                 task.id,
                 "worker_failed",
                 str(exc),
+                internal_error=normalize_internal_error(getattr(exc, "internal_error", None)),
                 quarantine=(
                     running_call is not None
                     and running_call.worker_accepted
@@ -2177,6 +2263,7 @@ class VideoDispatcher:
         stage_durations,
         *,
         model_execution=None,
+        super_resolution_timings=None,
     ):
         """Reconcile every uncertain write before publishing or failing a result."""
         failure_code = None
@@ -2296,7 +2383,7 @@ class VideoDispatcher:
                     "worker_lease_id": None,
                     "normalized_request": {
                         **with_model_execution(
-                            latest.task.normalized_request, model_execution
+                            with_sr_timings(latest.task.normalized_request, super_resolution_timings), model_execution
                         ),
                         HANDOFF_KEY: reference,
                     },
@@ -2698,6 +2785,10 @@ class VideoDispatcher:
                     else None
                 ),
             )
+            if payload.get("input_reference", "").lstrip().startswith('{"type":"dingo_h3_shared_inputs_v1"'):
+                logger.info("shared_input_submit task=%s attempt=%s submit_json_bytes=%s",
+                            task.id, task.attempt,
+                            len(json.dumps(submit, ensure_ascii=False, separators=(",", ":")).encode()))
             acknowledgement = await asyncio.wait_for(
                 self._detached_submit_ack(
                     pool, task, submit, context, _validate_identity
@@ -2937,6 +3028,7 @@ class VideoDispatcher:
         quarantine: bool,
         retryable: bool = False,
         expected_execution: Any | None = None,
+        internal_error: Mapping[str, Any] | None = None,
     ) -> None:
         latest = await self.store.get_task(task_id)
         if latest is None or latest.task.status in TERMINAL_STATUSES:
@@ -2967,6 +3059,11 @@ class VideoDispatcher:
             except StoreConflict:
                 pass
             return
+        diagnostic = None
+        if code == "worker_failed":
+            diagnostic = {**normalize_internal_error(internal_error), "task_id": task_id, "attempt": latest.task.attempt}
+            logger.error("video_gateway_internal_error %s", json.dumps(diagnostic, sort_keys=True))
+            self.telemetry.increment("dingo_video_worker_failures_total", labels={"pool": latest.task.pool_id, "reason": diagnostic["reason"], "stage": diagnostic["stage"]})
         safe_message = message[:1024] or code
         if code == "worker_failed":
             safe_message = "video Worker execution or result validation failed"
@@ -2981,6 +3078,7 @@ class VideoDispatcher:
                     "expires_at_ms": now_ms()
                     + int(self.config.lifecycle.failed_ttl_s * 1000),
                     "error": terminal_error(code, safe_message),
+                    "internal_error": diagnostic,
                 },
                 release_lease=True,
                 quarantine_until_ms=(
@@ -3022,7 +3120,9 @@ class VideoDispatcher:
                         if (
                             pool is not None
                             and task.configuration_revision
-                            == pool.config.configuration_revision
+                            == pool.config.request_configuration_revision(
+                                task.normalized_request
+                            )
                             and task.backend_target == pool.config.backend_target
                         ):
                             continue

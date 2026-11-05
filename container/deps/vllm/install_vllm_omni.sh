@@ -39,6 +39,19 @@ for raw_line in Path(sys.argv[1]).read_text().splitlines():
     print(f"{project_name}=={dist.version}")
 PY
 
+# Match the verified H3 0.32 service's pure-Python frontend pair while retaining
+# the compiled core versions solved by the pinned vLLM base image.
+if [ "${VLLM_OMNI_VERSION}" = "0.32.0" ]; then
+  python3 - "${PROTECTED_CONSTRAINTS}" <<'PY_CONSTRAINTS'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+lines = [line for line in p.read_text().splitlines() if line.split("==", 1)[0].lower() not in {"transformers", "tokenizers"}]
+lines += ["transformers==5.16.1", "tokenizers==0.23.2"]
+p.write_text("\n".join(lines) + "\n")
+PY_CONSTRAINTS
+fi
+
 export VLLM_OMNI_TARGET_DEVICE
 
 # Use --system flag only for CUDA (system Python), omit for CPU/XPU (venv)

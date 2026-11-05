@@ -19,13 +19,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_sr_timings import normalize_sr_timings
 from dingo.common.video_result_file import validate_descriptor
+from dingo.common.video_super_resolution import SR_PAYLOAD_KEY, H3_SR_PROFILE_V2, H3_SR_PROFILE_V3
+from dingo.common.h3_reference_order import group_references
 from dingo.common.video_timing_schemas import normalize_model_execution
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
+from dingo.video_gateway.adapters.h3_output_policy import (
+    H3_SR_BASE_SIZES,
+    H3_SR_V3_PRESETS,
+    plan_h3_output,
+)
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
     relative_ratio_error,
-    resolve_output_shape,
 )
 from dingo.video_gateway.config import PoolConfig
 from dingo.video_gateway.errors import GatewayError, worker_execution_error
@@ -279,7 +286,9 @@ def _coalesce(
     return direct if direct is not None else extra.get(key)
 
 
-def _parse_size(fields: Mapping[str, list[str]]) -> tuple[int, int]:
+def _parse_size(
+    fields: Mapping[str, list[str]], *, sr_profile: str | None = None
+) -> tuple[int, int]:
     size = _one(fields, "size")
     width = _integer(_one(fields, "width"), "width")
     height = _integer(_one(fields, "height"), "height")
@@ -314,7 +323,7 @@ def _parse_size(fields: Mapping[str, list[str]]) -> tuple[int, int]:
         )
     assert width is not None and height is not None
     try:
-        resolve_output_shape(width, height)
+        plan_h3_output(width, height, sr_profile=sr_profile)
     except ValueError as exc:
         raise GatewayError(
             400,
@@ -713,6 +722,7 @@ class _MiniMaxH3WorkerStreamConsumer:
             inference_time_s=inference_time,
             stage_durations=stage_durations,
             model_execution=normalize_model_execution(terminal.get("model_execution")),
+            super_resolution_timings=normalize_sr_timings(terminal.get("super_resolution_timings")),
         )
 
 
@@ -741,12 +751,20 @@ class MiniMaxH3VideoAdapter:
             "validate_media",
             "max_encoded_reference_bytes",
             "limits",
+            "super_resolution",
+            "reference_transport",
+            "shared_storage_id",
         }
         unknown_options = sorted(set(self.options) - supported_options)
         if unknown_options:
             raise ValueError(
                 "unknown MiniMax-H3 adapter options: " + ", ".join(unknown_options)
             )
+        transport = self.options.get("reference_transport", "inline")
+        if transport not in {"inline", "shared_files_v1"}:
+            raise ValueError("unsupported H3 reference transport")
+        if transport == "shared_files_v1" and (self.pool.execution_mode != "detached" or not isinstance(self.options.get("shared_storage_id"), str) or not 1 <= len(self.options["shared_storage_id"]) <= 160):
+            raise ValueError("shared H3 inputs require detached mode and storage identity")
         # Media-content reads can exhibit large shared-filesystem tails. Keep
         # them opt-in; descriptor/path/stat/size publication checks remain in
         # the artifact store when this is disabled.
@@ -793,7 +811,7 @@ class MiniMaxH3VideoAdapter:
 
     def capabilities(self, *, max_result_bytes: int) -> dict[str, Any]:
         supports_reference_media = self.workflow == "ref2va"
-        return {
+        capabilities = {
             "workflow": self.workflow,
             "image_formats": ["jpeg", "png", "webp"],
             "video_formats": ["mp4", "mov"] if supports_reference_media else [],
@@ -810,6 +828,13 @@ class MiniMaxH3VideoAdapter:
             "max_outputs_per_prompt": 1,
             "max_references": 2 if self.workflow == "fl2va" else 12,
         }
+        if self.pool.sr_profile:
+            capabilities["super_resolution"] = {
+                "profile": self.pool.sr_profile,
+                "output_sizes": [f"{w}x{h}" for w, h in (H3_SR_V3_PRESETS if self.pool.sr_profile == H3_SR_PROFILE_V3 else [(1800, 1080), (2400, 1440)] if self.pool.sr_profile == H3_SR_PROFILE_V2 else H3_SR_BASE_SIZES)],
+                "requires_ready_worker": True,
+            }
+        return capabilities
 
     def estimate_encoded_reference_bytes(
         self, manifest: Sequence[Mapping[str, Any]]
@@ -951,11 +976,14 @@ class MiniMaxH3VideoAdapter:
                 )
             seconds = num_frames / 24.0
 
-        width, height = _parse_size(fields)
+        width, height = _parse_size(fields, sr_profile=self.pool.sr_profile)
         aspect_ratio = _one(fields, "aspect_ratio")
         try:
-            resolved_shape = resolve_output_shape(
-                width, height, requested_aspect_ratio=aspect_ratio
+            resolved_shape = plan_h3_output(
+                width,
+                height,
+                requested_aspect_ratio=aspect_ratio,
+                sr_profile=self.pool.sr_profile,
             )
         except ValueError as exc:
             raise GatewayError(
@@ -1148,6 +1176,19 @@ class MiniMaxH3VideoAdapter:
         }
         if seed is not None:
             normalized.update(seed=seed, seed_generated=False)
+        if uploads and self.options.get("reference_transport") == "shared_files_v1":
+            normalized["shared_inputs"] = {"storage_id": self.options["shared_storage_id"], "protocol": "shared_files_v1"}
+        if resolved_shape.sr_profile:
+            normalized["super_resolution"] = {
+                "schema_version": 1,
+                "profile": resolved_shape.sr_profile,
+                "base_width": resolved_shape.base_width,
+                "base_height": resolved_shape.base_height,
+                "output_width": width,
+                "output_height": height,
+                "sr_width": resolved_shape.sr_width,
+                "sr_height": resolved_shape.sr_height,
+            }
         return normalized
 
     def _validate_references(
@@ -1258,10 +1299,32 @@ class MiniMaxH3VideoAdapter:
         manifest: Sequence[Mapping[str, Any]],
         task_root: Path,
     ) -> dict[str, Any]:
+        sr = normalized.get("super_resolution")
+        if sr is not None:
+            # Reconstruct the plan rather than trusting persisted/user fields.
+            plan = plan_h3_output(
+                normalized["width"],
+                normalized["height"],
+                sr_profile=self.pool.sr_profile,
+            )
+            expected = {
+                "schema_version": 1,
+                "profile": plan.sr_profile,
+                "base_width": plan.base_width,
+                "base_height": plan.base_height,
+                "output_width": plan.output_width,
+                "output_height": plan.output_height,
+                "sr_width": plan.sr_width,
+                "sr_height": plan.sr_height,
+            }
+            if plan.sr_profile is None or sr != expected:
+                raise ValueError("persisted SR plan does not match model output policy")
         payload: dict[str, Any] = {
             "model": normalized["backend_model"],
             "prompt": normalized["prompt"],
-            "size": f"{normalized['width']}x{normalized['height']}",
+            "size": f"{sr['base_width']}x{sr['base_height']}"
+            if sr
+            else f"{normalized['width']}x{normalized['height']}",
             "response_format": "b64_json",
             "output_format": "mp4",
             "nvext": {
@@ -1272,10 +1335,28 @@ class MiniMaxH3VideoAdapter:
         }
         if normalized.get("seed") is not None:
             payload["nvext"]["seed"] = normalized["seed"]
+        if sr is not None:
+            payload[SR_PAYLOAD_KEY] = dict(sr)
         if normalized.get("negative_prompt") is not None:
             payload["nvext"]["negative_prompt"] = normalized["negative_prompt"]
         if normalized.get("guidance_scale") is not None:
             payload["nvext"]["guidance_scale"] = normalized["guidance_scale"]
+
+        if normalized.get("shared_inputs") and manifest:
+            raw_manifest = (task_root / "input-manifest.json").read_bytes()
+            artifact = json.loads((task_root / "_artifact.json").read_bytes())
+            envelope = {
+                "type": "dingo_h3_shared_inputs_v1", "schema_version": 1,
+                "storage_id": normalized["shared_inputs"]["storage_id"],
+                "workflow": self.workflow,
+                **{key: artifact[key] for key in ("deployment_id", "pool_id", "task_id")},
+                "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+                "frame_indices": normalized.get("frame_indices"),
+                "entries": [{key: entry[key] for key in ("ordinal", "path", "content_type", "bytes", "sha256")}
+                            for entry in sorted(manifest, key=lambda e: int(e["ordinal"]))],
+            }
+            payload["input_reference"] = json.dumps(envelope, separators=(",", ":"))
+            return payload
 
         estimated_encoded_bytes = self.estimate_encoded_reference_bytes(manifest)
         if estimated_encoded_bytes > self.max_encoded_reference_bytes:
@@ -1329,18 +1410,10 @@ class MiniMaxH3VideoAdapter:
         elif len(references) == 1:
             payload["input_reference"] = references[0][1]
         elif references:
-            envelope = {
-                "type": "ref2va_mixed_v1",
-                "images": [
-                    value for mime, value in references if mime.startswith("image/")
-                ],
-                "videos": [
-                    value for mime, value in references if mime.startswith("video/")
-                ],
-                "audios": [
-                    value for mime, value in references if mime.startswith("audio/")
-                ],
-            }
+            grouped = group_references(references, lambda item: item[0].split("/", 1)[0])
+            envelope = {"type": "ref2va_mixed_v1",
+                        **{kind + "s": [value for mime, value in items]
+                           for kind, items in grouped.items()}}
             payload["input_reference"] = json.dumps(envelope, separators=(",", ":"))
         return payload
 

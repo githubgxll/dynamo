@@ -33,6 +33,8 @@ def create_app(service: VideoGatewayService) -> web.Application:
         middlewares=[error_middleware],
     )
     install_state(app, service)
+    from dingo.video_gateway.context_ir.api import KEY, register as register_context_ir
+    register_context_ir(app)
     register_routes(app)
 
     async def dispatcher_context(_app: web.Application):
@@ -41,6 +43,19 @@ def create_app(service: VideoGatewayService) -> web.Application:
         await service.dispatcher.stop()
 
     app.cleanup_ctx.append(dispatcher_context)
+    if service.config.context_ir.enabled:
+        from dingo.video_gateway.context_ir.service import ContextIRService
+        compiler = ContextIRService(service)
+        app[KEY] = compiler
+
+        async def compiler_context(_app):
+            await compiler.start()
+            try:
+                yield
+            finally:
+                await compiler.stop()
+
+        app.cleanup_ctx.append(compiler_context)
     if service.performance_cache is not None:
 
         async def expire_context(_app: web.Application):
