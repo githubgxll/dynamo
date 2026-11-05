@@ -20,7 +20,7 @@
       "--max-num-seqs": "1",
       "--output-modalities": "video"
     },
-    "gateway_deployment_values": "Namespace/component/endpoint, served model alias, DYN discovery/request/event connection settings and credentials are deployment-owned; do not store credentials in image or command file.",
+    "gateway_deployment_values": "--namespace, leaf --endpoint (for example generate), served model alias and DYN connection settings are deployment-owned. OmniConfig.component is fixed to backend; --component is not a supported CLI flag. Registration uses namespace.backend.endpoint. Do not pass a full dyn:// URI as the leaf --endpoint and do not store credentials in the image or command file.",
     "gateway_recommended_flags": [
       "--disable-log-stats",
       "--no-record-output-peak-memory",

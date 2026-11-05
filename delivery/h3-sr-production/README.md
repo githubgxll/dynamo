@@ -97,6 +97,8 @@ python -B -X utf8 delivery\h3-sr-production\ops.py record-outcome --receipt "D:\
 
 Dingo部署参数须显式包含`--output-modalities video`；其上游默认是`text`，不能只按模型别名推断视频注册类型。镜像内的真实Dingo解析检查覆盖该参数。
 
+当前Omni入口没有`--component`参数，组件固定为`backend`。部署通过`--namespace 你的命名空间 --endpoint generate`配置名称，注册目标为`命名空间.backend.generate`；`--endpoint`在该Omni入口传叶子名称，不能直接把通用帮助中的完整`dyn://...` URI代入。第一次Linux检查已拦截并纠正了错误的component样例，Harbor未产生该失败候选。
+
 本轮另修复SeedVR2 W65输入的容器时长量化误拒：65帧Matroska可能记录2709毫秒，在24FPS下估算为65.016帧。时长预检仅容忍一个容器timebase tick；逐帧解码的65帧硬限制、空间／clip预算及W33／W65配置保持不变。不能用此修复为66帧窗口或超预算画布放行。
 
 控制状态在失败、取消或未知结果后保留阻断；容器重启不会自动清空旧任务或重放。部署方确认旧任务终态后，采用明确的新Pod／epoch／工作卷恢复，并保留旧证据。

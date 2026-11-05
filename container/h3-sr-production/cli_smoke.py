@@ -25,23 +25,31 @@ def offline():
 def dingo_parser_profiles():
     """Run the actual installed Dingo parser; do not instantiate a worker."""
     args = importlib.import_module("dingo.vllm.omni.args")
+    frozen = json.loads((HERE / "gateway-cli-cases.json").read_text(encoding="utf-8"))
+    cases = frozen.get("cases", [])
+    if (frozen.get("schema") != "h3sr-k8s-generated-parser-cases/1" or len(cases) != 2
+            or {case.get("profile") for case in cases} != {"fl2va-sr", "ref2va-sr"}):
+        raise ValueError("Both reviewed K8S-generated Dingo argv cases are required")
     results = []
-    for name in ("fl2va-sr", "ref2va-sr"):
+    for case in cases:
+        name = case["profile"]
         workflow = name.removesuffix("-sr")
         path = HERE / "profiles" / (name + ".json")
-        model = json.loads(path.read_text(encoding="utf-8"))["h3"]["native_argv"][2]
-        argv = ["dingo.vllm.omni", "--model", model,
-                "--namespace", "h3sr-parser-verification", "--component", "video", "--endpoint", "generate",
-                "--h3-sr-profile", str(path), "--request-adapter", "minimax_h3",
-                "--request-adapter-workflow", workflow, "--max-num-seqs", "1",
-                "--output-modalities", "video",
-                "--disable-log-stats", "--no-record-output-peak-memory"]
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        model = profile["h3"]["native_argv"][2]
+        # Parse the actual reviewed K8S generator output, never a guessed sample.
+        profile_path = "/etc/h3-sr/profile.json"
+        argv = ["dingo.vllm.omni", *case["argv"]]
         with patch.object(sys, "argv", argv), patch.object(args, "get_model_path", side_effect=AssertionError("Parser resolved a model")):
             config = args.parse_omni_args()
-        if (config.h3_sr_profile != str(path) or config.request_adapter_workflow != workflow
+        if (config.h3_sr_profile != profile_path or config.request_adapter_workflow != workflow
                 or config.model != model or config.diffusion.max_num_seqs != 1
                 or config.diffusion.record_output_peak_memory is not False
-                or config.output_modalities != ["video"]):
+                or config.output_modalities != ["video"] or config.component != "backend"
+                or config.namespace != case["expected_namespace"]
+                or config.endpoint != case["expected_endpoint"] or config.default_video_fps != 24
+                or config.served_model_name != profile["gateway"]["request_model"]
+                or config.detached_video_task_root != "/work/gateway/detached"):
             raise ValueError("Actual Dingo parser lost the production contract")
         invalid = list(argv)
         invalid[invalid.index("--request-adapter-workflow") + 1] = "invalid-profile"

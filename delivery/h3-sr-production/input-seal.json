@@ -10,10 +10,11 @@
     ".github/workflows/omni032-h3-sr.yml": "aa7dfad839fde5cff9eca6a14e08d44e3074400bd95e18e473332303b9ceb1c9",
     "container/h3-sr-production/.gitattributes": "fd15553e0cbbeaf1497ac8690513ab0c838dc79b5a154472e970fdca8a500cfe",
     "container/h3-sr-production/Dockerfile": "c87b52e1affaeb744ac1503e76cac98a22273880042263c9ba0c2fd6210a7692",
-    "container/h3-sr-production/cli_smoke.py": "8209677c8ff0ec8f45bc929683b3a9efc9a440b09012b8b9d5c4d174db1624e9",
+    "container/h3-sr-production/cli_smoke.py": "4aec0a820af339b9c20edcc683575c17017e3f09ae570dce1177b5a43a447ff6",
     "container/h3-sr-production/cpu_smoke.py": "e6bd7bbfcedfdde5c57643b974628aa36bf17be3b76db14ce6ae540d244b24d4",
     "container/h3-sr-production/duration-patches.lock.json": "b5f9f0e706ae437b5ab7996844c0e1391716348cf377ba0f468230fa2c56254e",
     "container/h3-sr-production/duration_patch.py": "67bd3018fb0e5c0a62c2b0395c1af9eff57c7b359eb43e4146538102febb1439",
+    "container/h3-sr-production/gateway-cli-cases.json": "8002c87d0e597e18bcb94ead6a165e42d378212e8c3ea0bc8995279032f6a06a",
     "container/h3-sr-production/gateway.py": "511dff8a1e4dc4128b506a55a59920d467eeff44717866df55fe745797268d2f",
     "container/h3-sr-production/peak-local-checks.json": "e18e2bdf7dd4561c9d165b23b1fa95385e01b9a229cfdd2d4e617d5890301013",
     "container/h3-sr-production/peak-patches.lock.json": "b24f4bc21fc723a0c317b61827435f5ca17e2d031292e10476d40bfc9e8cde03",
@@ -67,7 +68,7 @@
     "container/h3-sr-production/window_headers_patch.py": "2561431a7ce17ab32ac077abe8a65acb73bd2ab628c02434a6a950fa1755d928",
     "delivery/h3-sr-production/01-check.cmd": "3d246928f6ea267ab4bdbeca46a32f2ea457bf7751346451596f8ed9154e05cb",
     "delivery/h3-sr-production/02-submit-build.cmd": "6e9fede5a881e18dc39fbe1cf7f88556841f7eeeeb337cf79a1b1413e2521046",
-    "delivery/h3-sr-production/README.md": "0e4037a42d43852e1fffc7a7fdae70d35231260ff18d1b41e98cc5e235484a4e",
+    "delivery/h3-sr-production/README.md": "54f2967c35bedae5eacdcd84513fb8821b2c3eadc0ed08a2fd6223313b0b58e1",
     "delivery/h3-sr-production/convert_seedvr2.py": "cab495159e2739c53a1578f4195fc5f4cc17df7380db08ee308b5cf1179fb6fd",
     "delivery/h3-sr-production/dingo-overlay/dingo/common/video_result_file.py": "467c11519868ff328140a638d059e5d231c9073cfc4c773dc235f7584032bf63",
     "delivery/h3-sr-production/dingo-overlay/dingo/common/video_timing_schemas.py": "a38e9dfc8d60cf5cb60e87ba8ba506a88403d4421d6294068e3b4f6425d00256",
@@ -83,7 +84,7 @@
     "delivery/h3-sr-production/expected-source-manifest.json": "8bdfae85e67013b2717d939d48de9dd5077e789259ea2c33bdf87bf83d262349",
     "delivery/h3-sr-production/ops.py": "082372679ed19e7f5a2868a2f18cfcb7a60ba93fe47a73bb5bec4f1d5e80123f",
     "delivery/h3-sr-production/parent-source-manifest.json": "b855dfcfa8efc8d66776a26fabcabd26f7c4f4a79cb0a13f65bcd14da8c6212b",
-    "delivery/h3-sr-production/runtime-contract.json": "8c12bbd9d096ad8cf43de13cd49590574f42988f032f6f94e35072f86c94162c",
+    "delivery/h3-sr-production/runtime-contract.json": "734219de0221852ff4a500a58c4876f73f6a7533f9ae175a84a485081c3943f4",
     "delivery/h3-sr-production/source-lock.json": "dd28e886745ffef4124884c73a8af5079ecf5e7f26f5f68c3608b3472e03d9fa",
     "dingo/common/video_result_file.py": "467c11519868ff328140a638d059e5d231c9073cfc4c773dc235f7584032bf63",
     "dingo/common/video_timing_schemas.py": "a38e9dfc8d60cf5cb60e87ba8ba506a88403d4421d6294068e3b4f6425d00256",
@@ -96,6 +97,6 @@
     "dingo/vllm/omni/main.py": "a705bec9ba6e8cb340cb27c6a6086bc65c41e13b2e01058497710b6acc954a8b",
     "dingo/vllm/omni/production_handler.py": "c17db5553059a612ff088110ceb197536c0b9ab4a6dbbc9452a06149ffd20b76"
   },
-  "recipe_sha256": "450610e1a033be58c2f52a3ca8ea3db4b07a0b28597b7ba14e8c9960987a5e5e",
-  "review_tree": "d0913260f2700558ef7bee6e5a4f88c97e7b6cb7"
+  "recipe_sha256": "4232f375e9577e7c3f1ae4bd811e13aa50afb8736e407540e025f65cab8e86ab",
+  "review_tree": "8ffba0018164b01154a92951ab4356ff15000cb0"
 }

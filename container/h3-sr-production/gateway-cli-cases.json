@@ -1,0 +1,71 @@
+{
+  "schema": "h3sr-k8s-generated-parser-cases/1",
+  "scope": "Synthetic parser-only namespace; no live deployment connection values",
+  "cases": [
+    {
+      "profile": "fl2va-sr",
+      "argv": [
+        "--model",
+        "/models/h3/FL2VA",
+        "--served-model-name",
+        "minimax-h3-fl2va",
+        "--h3-sr-profile",
+        "/etc/h3-sr/profile.json",
+        "--request-adapter",
+        "minimax_h3",
+        "--request-adapter-workflow",
+        "fl2va",
+        "--max-num-seqs",
+        "1",
+        "--output-modalities",
+        "video",
+        "--disable-log-stats",
+        "--no-record-output-peak-memory",
+        "--default-video-fps",
+        "24",
+        "--detached-video-task-root",
+        "/work/gateway/detached",
+        "--namespace",
+        "h3sr-parser-verification",
+        "--endpoint",
+        "generate"
+      ],
+      "expected_component": "backend",
+      "expected_namespace": "h3sr-parser-verification",
+      "expected_endpoint": "generate"
+    },
+    {
+      "profile": "ref2va-sr",
+      "argv": [
+        "--model",
+        "/models/h3/Ref2VA",
+        "--served-model-name",
+        "minimax-h3-ref2va",
+        "--h3-sr-profile",
+        "/etc/h3-sr/profile.json",
+        "--request-adapter",
+        "minimax_h3",
+        "--request-adapter-workflow",
+        "ref2va",
+        "--max-num-seqs",
+        "1",
+        "--output-modalities",
+        "video",
+        "--disable-log-stats",
+        "--no-record-output-peak-memory",
+        "--default-video-fps",
+        "24",
+        "--detached-video-task-root",
+        "/work/gateway/detached",
+        "--namespace",
+        "h3sr-parser-verification",
+        "--endpoint",
+        "generate"
+      ],
+      "expected_component": "backend",
+      "expected_namespace": "h3sr-parser-verification",
+      "expected_endpoint": "generate"
+    }
+  ],
+  "actual_linux_parser_validation": "PENDING_IMAGE_OWNER_CHECK"
+}
