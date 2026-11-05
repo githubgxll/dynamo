@@ -1,0 +1,36 @@
+{
+  "schema": "h3-sr-production-freeze/1",
+  "status": "READY_FOR_BUILD",
+  "approved_at": "2026-11-05T19:12:05.762423+08:00",
+  "recipe_sha256": "450610e1a033be58c2f52a3ca8ea3db4b07a0b28597b7ba14e8c9960987a5e5e",
+  "review_tree": "d0913260f2700558ef7bee6e5a4f88c97e7b6cb7",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "authorization": "User approved implementation on githubgxll/dynamo Dingorouter-H3-vllm-omni-jirx and image build after completion",
+  "single_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
+  "reviews": {
+    "root": {
+      "status": "PASS",
+      "scope": "92 sealed file hashes verified; 201 baseline plus affected deltas; independent 44 Gateway and 70 service tests; independent duration 11 tests; single image workflow reviewed",
+      "source": "implementation/ROOT-REVIEW.json and independent production_acceptance_audit delta review"
+    },
+    "k8s": {
+      "status": "PASS",
+      "scope": "Unified launcher, three processes, registration/ready, 22950s budget, read-only source/derived weights, explicit video modality, default monitoring off; final duration delta changes no deployment interface",
+      "source": "k8s/FINAL-CONTRACT-REVIEW.md plus 11 generator tests and 4 profile/gateway_argv combinations",
+      "original_review_tree": "1ed1d3a88f0853df212aea6d66cf6f39f6e9d2ec",
+      "carried_forward_by_root_after_delta_review": true
+    }
+  },
+  "delta_reviews": {
+    "output_modality": "Contract and installed-parser smoke now explicit video, matching K8S reviewed invocation",
+    "duration": "One rational time-base tick tolerated; hard 65 decoded frame and pixel budgets retained; 11 independent tests PASS"
+  },
+  "publication_policy": "One common image; sole submitter observes same Actions request and Harbor result before any sequential correction",
+  "not_run": [
+    "Linux actual-image CPU checks",
+    "CUDA",
+    "Kubernetes",
+    "production Gateway E2E",
+    "media quality"
+  ]
+}

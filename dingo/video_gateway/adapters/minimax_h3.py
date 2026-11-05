@@ -20,9 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from dingo.common.video_result_file import validate_descriptor
-from dingo.common.video_timing_schemas import normalize_model_execution
+from dingo.common.video_timing_schemas import normalize_model_execution, normalize_h3_sr_timing
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
 from dingo.video_gateway.adapters.h3_shape import (
+    H3Shape,
     align_frame_count,
     relative_ratio_error,
     resolve_output_shape,
@@ -152,6 +153,7 @@ _ALLOWED_FIELDS = {
     "extra_params",
     "user",
     "generate_sound",
+    "sr_tier",
 }
 _KNOWN_UNSUPPORTED_FIELDS = {
     "start_time_seconds",
@@ -279,7 +281,19 @@ def _coalesce(
     return direct if direct is not None else extra.get(key)
 
 
-def _parse_size(fields: Mapping[str, list[str]]) -> tuple[int, int]:
+def _resolve_gateway_shape(width, height, *, requested_aspect_ratio=None, allow_native_base=False):
+    # The production native reference deliberately uses explicit 1280x768 (or
+    # portrait) with the native named-aspect fallback. Keep this narrowly
+    # opt-in; generic Gateway shape validation remains unchanged.
+    if allow_native_base and (width, height) in {(1280, 768), (768, 1280)}:
+        name = "16:9" if width > height else "9:16"
+        if requested_aspect_ratio not in (None, name):
+            raise ValueError("aspect_ratio conflicts with the native Base canvas")
+        return H3Shape(width=width, height=height, aspect_ratio=name)
+    return resolve_output_shape(width, height, requested_aspect_ratio=requested_aspect_ratio)
+
+
+def _parse_size(fields: Mapping[str, list[str]], *, allow_native_base=False) -> tuple[int, int]:
     size = _one(fields, "size")
     width = _integer(_one(fields, "width"), "width")
     height = _integer(_one(fields, "height"), "height")
@@ -314,7 +328,7 @@ def _parse_size(fields: Mapping[str, list[str]]) -> tuple[int, int]:
         )
     assert width is not None and height is not None
     try:
-        resolve_output_shape(width, height)
+        _resolve_gateway_shape(width, height, allow_native_base=allow_native_base)
     except ValueError as exc:
         raise GatewayError(
             400,
@@ -713,6 +727,7 @@ class _MiniMaxH3WorkerStreamConsumer:
             inference_time_s=inference_time,
             stage_durations=stage_durations,
             model_execution=normalize_model_execution(terminal.get("model_execution")),
+            h3_sr_timing=normalize_h3_sr_timing(terminal.get("h3_sr_timing")),
         )
 
 
@@ -736,6 +751,10 @@ class MiniMaxH3VideoAdapter:
                 "missing " + ", ".join(missing_media_dependencies)
             )
         supported_options = {
+            "enable_sr",
+            "sr_frame_pixels",
+            "sr_clip_pixels",
+            "sr_max_window",
             "flow_shift",
             "audio_flow_shift",
             "validate_media",
@@ -752,6 +771,11 @@ class MiniMaxH3VideoAdapter:
         # the artifact store when this is disabled.
         if not isinstance(self.options.setdefault("validate_media", False), bool):
             raise TypeError("MiniMax-H3 validate_media must be a boolean")
+        if not isinstance(self.options.get("enable_sr", False), bool):
+            raise TypeError("MiniMax-H3 enable_sr must be a boolean")
+        for key in ("sr_frame_pixels", "sr_clip_pixels", "sr_max_window"):
+            if key in self.options and (type(self.options[key]) is not int or self.options[key] <= 0):
+                raise ValueError(key + " must be a positive integer")
         raw_limits = self.options.get("limits", {})
         if not isinstance(raw_limits, Mapping):
             raise TypeError("MiniMax-H3 adapter limits must be a mapping")
@@ -951,11 +975,12 @@ class MiniMaxH3VideoAdapter:
                 )
             seconds = num_frames / 24.0
 
-        width, height = _parse_size(fields)
+        width, height = _parse_size(fields, allow_native_base=self.options.get("enable_sr") is True)
         aspect_ratio = _one(fields, "aspect_ratio")
         try:
-            resolved_shape = resolve_output_shape(
-                width, height, requested_aspect_ratio=aspect_ratio
+            resolved_shape = _resolve_gateway_shape(
+                width, height, requested_aspect_ratio=aspect_ratio,
+                allow_native_base=self.options.get("enable_sr") is True,
             )
         except ValueError as exc:
             raise GatewayError(
@@ -1148,6 +1173,30 @@ class MiniMaxH3VideoAdapter:
         }
         if seed is not None:
             normalized.update(seed=seed, seed_generated=False)
+        sr_tier = _one(fields, "sr_tier")
+        if sr_tier is not None:
+            if self.options.get("enable_sr") is not True:
+                raise GatewayError(400, "sr_disabled", "this pool does not enable H3/SR production", "sr_tier")
+            if sr_tier not in {"1080", "1440"}:
+                raise GatewayError(400, "invalid_sr_tier", "sr_tier must be 1080 or 1440", "sr_tier")
+            # Exact source ratio, even final pixels; width/height remain the
+            # Base request geometry and publication validates this final size.
+            from math import gcd, lcm
+            from fractions import Fraction
+            common = gcd(width, height)
+            a, b = width // common, height // common
+            step = lcm(2 // gcd(a, 2), 2 // gcd(b, 2))
+            factor = int(Fraction(int(sr_tier), min(a, b)) // step) * step
+            if min(a * factor, b * factor) != int(sr_tier):
+                raise GatewayError(400, "invalid_sr_shape", "source ratio cannot produce this exact even SR tier", "sr_tier")
+            step16 = lcm(16 // gcd(a, 16), 16 // gcd(b, 16))
+            factor16 = math.ceil(Fraction(int(sr_tier), min(a, b)) / step16) * step16
+            pixels, window = a * b * factor16 * factor16, 33 if sr_tier == "1080" else 65
+            if (pixels > self.options.get("sr_frame_pixels", 3791872)
+                    or pixels * window > self.options.get("sr_clip_pixels", 246471680)
+                    or window > self.options.get("sr_max_window", 65)):
+                raise GatewayError(400, "sr_capacity_exceeded", "SR canvas/window exceeds the frozen production budget", "sr_tier")
+            normalized.update(sr_tier=sr_tier, final_width=a * factor, final_height=b * factor)
         return normalized
 
     def _validate_references(
@@ -1270,6 +1319,12 @@ class MiniMaxH3VideoAdapter:
                 "num_inference_steps": normalized["num_inference_steps"],
             },
         }
+        if self.options.get("enable_sr") is True:
+            payload["seconds"] = normalized["seconds"]
+            if normalized.get("sr_tier") is not None:
+                payload["sr_tier"] = normalized["sr_tier"]
+            if normalized.get("frame_indices") is not None:
+                payload["nvext"]["frame_indices"] = normalized["frame_indices"]
         if normalized.get("seed") is not None:
             payload["nvext"]["seed"] = normalized["seed"]
         if normalized.get("negative_prompt") is not None:
@@ -1544,7 +1599,7 @@ class MiniMaxH3VideoAdapter:
         elif audio_streams:
             raise RuntimeError("MP4 must not contain audio when generate_sound=false")
         video = video_streams[0]
-        if video.width != normalized["width"] or video.height != normalized["height"]:
+        if video.width != normalized.get("final_width", normalized["width"]) or video.height != normalized.get("final_height", normalized["height"]):
             raise RuntimeError(
                 f"MP4 dimensions {video.width}x{video.height} do not match request"
             )

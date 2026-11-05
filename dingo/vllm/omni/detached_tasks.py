@@ -231,6 +231,19 @@ class DetachedOmniTaskManager:
     ) -> AsyncGenerator[dict[str, Any], None]:
         envelope = request.get(ENVELOPE_KEY)
         if envelope is None:
+            health_payload = getattr(self.handler, "health_check_payload", None)
+            if (callable(health_payload)
+                    and request == {"_h3sr_native_health_v1": True}
+                    and request.get("_h3sr_native_health_v1") is True
+                    and request == health_payload()):
+                # Exact internal supervisor-readiness probe only. Native H3/SR
+                # health does not generate or own the GPU business semaphore.
+                async with self._lock:
+                    if not self._accepting:
+                        raise RuntimeError("detached Worker is draining")
+                async for chunk in self.handler.generate(request, context):
+                    yield chunk
+                return
             async with self._lock:
                 if not self._accepting:
                     raise RuntimeError("detached Worker is draining")

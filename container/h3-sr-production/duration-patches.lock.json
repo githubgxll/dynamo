@@ -1,0 +1,12 @@
+{
+  "schema": "h3-sr-duration-patches/1",
+  "composition_order": "independent of observation/window patches; exact c88 pipeline input",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py": {
+      "before_sha256": "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048",
+      "after_sha256": "bc25563a73707078626826cd665cf2eb7612a7212950a57c2bba32a3f9210658"
+    }
+  },
+  "scope": "Duration metadata precheck permits at most one rational container time-base tick; decoded frame/pixel admission, max_frames, window sizes, precision and model execution remain unchanged.",
+  "runtime_evidence": "Actual PyAV16.1/avformat62 65-frame Matroska duration=2709,time_base=1/1000,rate=24 is preserved separately; local PyAV version is reported by the CPU tests."
+}

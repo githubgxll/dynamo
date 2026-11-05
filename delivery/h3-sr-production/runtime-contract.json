@@ -1,0 +1,76 @@
+{
+  "schema": "h3sr-production-runtime-contract/1",
+  "status": "LOCAL_IMPLEMENTATION_AWAITING_FINAL_REVIEW",
+  "launcher": [
+    "python3",
+    "-B",
+    "/opt/h3-sr/service/launcher.py",
+    "--profile",
+    "/etc/h3-sr/profile.json",
+    "--gateway-command-file",
+    "/etc/h3-sr/gateway-command.json"
+  ],
+  "configuration": {
+    "profile": "One selected fl2va-sr/ref2va-sr JSON; mount under /etc/h3-sr, never over /opt/h3-sr",
+    "gateway-command.json": "JSON list of Dingo flags only, beginning with --model. Launcher fixes sys.executable -B -m dingo.vllm.omni; no shell string.",
+    "gateway_required_values": {
+      "--h3-sr-profile": "Same absolute selected profile path",
+      "--request-adapter": "minimax_h3",
+      "--request-adapter-workflow": "fl2va or ref2va matching selected profile",
+      "--max-num-seqs": "1",
+      "--output-modalities": "video"
+    },
+    "gateway_deployment_values": "Namespace/component/endpoint, served model alias, DYN discovery/request/event connection settings and credentials are deployment-owned; do not store credentials in image or command file.",
+    "gateway_recommended_flags": [
+      "--disable-log-stats",
+      "--no-record-output-peak-memory",
+      "--default-video-fps",
+      "24",
+      "--detached-video-task-root",
+      "/work/gateway/detached"
+    ],
+    "public_model_pool": "Enable adapter_options.enable_sr=true only for the production H3/SR model pool."
+  },
+  "startup_order": [
+    "Offline installed-source verification and converted-weight verification",
+    "H3 health at 127.0.0.1:8123",
+    "SR health at 127.0.0.1:8124",
+    "Ref only: eight-rank identity verification",
+    "Same-container Dingo worker; register_model then gateway-ready.json receipt",
+    "Supervisor verifies Gateway PID/birth, profile SHA and epoch before public Ready"
+  ],
+  "startup_budget_seconds": {
+    "preflight": 600,
+    "h3": 10800,
+    "sr": 10800,
+    "ref_identity": 150,
+    "gateway_registration": 600,
+    "maximum_total": 22950
+  },
+  "probes": {
+    "host": "127.0.0.1",
+    "port": 8125,
+    "routes": [
+      "/health",
+      "/ready",
+      "/state"
+    ],
+    "kind": "K8S exec probe inside the worker container; supervisor does not bind Pod IP",
+    "ready": "Requires native models, exact Gateway registration receipt, all three owned processes, no blocked latch."
+  },
+  "storage": {
+    "h3_base": "Read-only /models/h3/FL2VA or /models/h3/Ref2VA",
+    "sr_source": "Read-only /models/SeedVR2-3B is required by worker verify-only as well as CPU init",
+    "sr_converted": "/opt/sr/seedvr2-3b; initContainer writes UID1000, worker mounts read-only",
+    "converter": "/opt/h3-weight-init/convert_seedvr2.py",
+    "working": "Writable /work; durable control path /work/h3-sr/control; preserve old failure evidence"
+  },
+  "observability": {
+    "default": "off; business peak sampling, memory/NVML/per-PID/block hooks, offload timing, Cache-DiT summary and periodic native statistics disabled",
+    "stages": "Explicit timing only; deployment must inject actual final H3SR_IMAGE_DIGEST as repository@sha256, never substitute parent digest",
+    "timing_summary": "Native H3 header plus validated sr-timing-only/1 receipts. Nested/inclusive durations are not additive; no allocator/NVML samples."
+  },
+  "recovery": "Unknown/cancel/timeout retains active lease and blocked state. Do not clear old evidence or auto-replay. Confirm old backend completion, then perform explicit fresh Pod/epoch/workspace recovery.",
+  "public_sr": "Each request chooses zero or one sr_tier. Both output tiers from separate H3 requests have separate lineage; this image does not add same-Base two-tier generation.",
+  "acceptance_boundary": "Local CPU and actual-image CPU/source validation do not prove CUDA inference, FL new combination, Ref production-path quality, Gateway media E2E or load capacity."
+}

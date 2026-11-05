@@ -80,6 +80,9 @@ class OmniDiffusionKwargs:
     enable_diffusion_pipeline_profiler: bool = False
     diffusion_attention_backend: Optional[str] = None
     diffusion_quantization_config: Optional[dict] = None
+    diffusion_offload_config: Optional[dict] = None
+    stage_overrides: Optional[dict] = None
+    record_output_peak_memory: bool = True
     # Opt-in diffusion scheduler controls. None preserves the upstream default.
     step_execution: bool = False
     max_num_seqs: Optional[int] = None
@@ -206,6 +209,23 @@ class OmniArgGroup(ArgGroup):
         )
 
         # OmniDiffusionKwargs fields
+        add_argument(
+            g, flag_name="--h3-sr-profile", env_var="DYN_OMNI_H3_SR_PROFILE",
+            default=None,
+            help="Opt-in H3/SR production profile; use the supervisor-owned native services without loading another model.",
+        )
+        for flag, env in (
+            ("--diffusion-offload-config", "DYN_OMNI_DIFFUSION_OFFLOAD_CONFIG"),
+            ("--stage-overrides", "DYN_OMNI_STAGE_OVERRIDES"),
+        ):
+            add_argument(g, flag_name=flag, env_var=env, default=None,
+                         arg_type=_parse_diffusion_quantization_config,
+                         help="Native vLLM-Omni JSON object, forwarded unchanged.")
+        add_negatable_bool_argument(
+            g, flag_name="--record-output-peak-memory",
+            env_var="DYN_OMNI_RECORD_OUTPUT_PEAK_MEMORY", default=True,
+            help="Record native output peak memory (upstream default); disable for the production no-memory-sampling contract.",
+        )
         add_negatable_bool_argument(
             g,
             flag_name="--step-execution",
@@ -539,6 +559,7 @@ class OmniConfig(DynamoRuntimeConfig):
     request_adapter_workflow: Optional[str] = None
     request_adapter_media_dir: str = "/tmp/dynamo_media"
     request_adapter_media_max_bytes: int = 2 * 1024 * 1024 * 1024
+    h3_sr_profile: Optional[str] = None
     detached_video_task_root: Optional[str] = None
     detached_video_drain_timeout: float = 1800.0
     detached_video_prefetch_capacity: int = 0
@@ -586,6 +607,15 @@ class OmniConfig(DynamoRuntimeConfig):
 
     def validate(self) -> None:
         DynamoRuntimeConfig.validate(self)
+        if self.h3_sr_profile is not None:
+            if not self.h3_sr_profile.strip():
+                raise ValueError("--h3-sr-profile must not be empty")
+            if self.stage_id is not None or self.omni_router or self.realtime:
+                raise ValueError("--h3-sr-profile supports aggregated unary workers only")
+            if self.request_adapter != "minimax_h3":
+                raise ValueError("--h3-sr-profile requires --request-adapter minimax_h3")
+            if self.diffusion.max_num_seqs not in (None, 1):
+                raise ValueError("H3/SR production allows one GPU business operation")
         capacity = self.diffusion.max_num_seqs
         if capacity is not None and (
             isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1
@@ -695,6 +725,7 @@ def parse_omni_args() -> OmniConfig:
     # LocalEntryNotFoundError (vLLM's EngineArgs does the same rewrite).
     if (
         huggingface_hub.constants.HF_HUB_OFFLINE
+        and config.h3_sr_profile is None
         and config.model
         and not os.path.exists(config.model)
     ):

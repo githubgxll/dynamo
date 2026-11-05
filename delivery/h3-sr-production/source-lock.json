@@ -1,0 +1,67 @@
+{
+  "schema": "h3-sr-production-source-lock/1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "parent_image_id": "sha256:cd87bc74b19402c536fc775ea2ebbc15f31aad0013756e8d8c448afe1c895a6b",
+  "parent_source_commit": "b42388a1a65067ed92dfe64f9364c4b044a8d666",
+  "parent_source_manifest_sha256": "6de9b4fe3db09914d4d497e888e2554265843e36af717d5e0e19d1f940109c69",
+  "recipe_base_commit": "b42388a1a65067ed92dfe64f9364c4b044a8d666",
+  "working_tree_base_commit": "b42388a1a65067ed92dfe64f9364c4b044a8d666",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "tag_prefix": "h3-sr-production",
+  "versions": {
+    "vllm": "0.32.0",
+    "vllm-omni": "0.32.0",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0",
+    "ai-dingo": "1.3.0",
+    "ai-dingo-runtime": "1.3.0",
+    "gpu-memory-service": "0.9.0"
+  },
+  "dingo_changes": {
+    "dingo/common/video_result_file.py": {
+      "before_sha256": "fa7742cf04beb2b725bc1a90f573d085422df20d625da05e737b27d97ae66e04",
+      "after_sha256": "467c11519868ff328140a638d059e5d231c9073cfc4c773dc235f7584032bf63"
+    },
+    "dingo/common/video_timing_schemas.py": {
+      "before_sha256": "3c735b03db179aced05a2ac372053afc3e335ab9c95aab6eb1727c2d85f2a49e",
+      "after_sha256": "a38e9dfc8d60cf5cb60e87ba8ba506a88403d4421d6294068e3b4f6425d00256"
+    },
+    "dingo/video_gateway/adapters/base.py": {
+      "before_sha256": "66951d468874055b584f0ace98e254e6d0375ba0ba93e7b3ee4f5258f2e0e500",
+      "after_sha256": "8683c184d2b8c05bbd6ad35a76a5c082e5cb2314963b26bbb3c59504c42305cd"
+    },
+    "dingo/video_gateway/adapters/minimax_h3.py": {
+      "before_sha256": "d82bef2bb004858b96ff0f06c1d384892bc44753c60233266ae4100ea27b4d31",
+      "after_sha256": "3b390d3b318f25afed940af0a82f611d3bd7f54b91d0b0a811a48e18be12dae9"
+    },
+    "dingo/video_gateway/dispatcher.py": {
+      "before_sha256": "70015030dab19fdd4398111533adb6b28b093dd842bc223626e1ebf8a60e43d2",
+      "after_sha256": "e760be5bda0eaecf9b73d2fdb8857bf83e5fbdf1df1722e6937ae695102c6ec5"
+    },
+    "dingo/video_gateway/models.py": {
+      "before_sha256": "ca8d8d4f5c33710b42003826f5e33590641262d1ed6c4bf3d03679a66c14609f",
+      "after_sha256": "df634ff3bbfa1338100185d7a305975942865a7162a65d4293030fe2e4eca1d1"
+    },
+    "dingo/vllm/omni/args.py": {
+      "before_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
+      "after_sha256": "7e4aee2628532c1091ec4749423cde41c1b9b5d9ce87beece402b146fc51a51c"
+    },
+    "dingo/vllm/omni/detached_tasks.py": {
+      "before_sha256": "c2af72a7c4460373f98d7727966323cc1d19ebea0db9a493fe0487982d5ad21f",
+      "after_sha256": "f107df886dc262b6fb4ab62ea2af3f0c96db1f29e87321bf6b6c3fa79eff8d88"
+    },
+    "dingo/vllm/omni/main.py": {
+      "before_sha256": "54d1a015648a46c5569f09fbcf6665753e91d6842819dfd72d38a4327d33f99b",
+      "after_sha256": "a705bec9ba6e8cb340cb27c6a6086bc65c41e13b2e01058497710b6acc954a8b"
+    },
+    "dingo/vllm/omni/production_handler.py": {
+      "before_sha256": null,
+      "after_sha256": "c17db5553059a612ff088110ceb197536c0b9ab4a6dbbc9452a06149ffd20b76"
+    }
+  },
+  "scope": "Copy-only c88 derivative; one shared image with FL/Ref profiles; package/native versions preserved. No model weights baked in; no K8S mutation.",
+  "parent_gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b"
+}

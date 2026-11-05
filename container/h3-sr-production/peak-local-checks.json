@@ -1,0 +1,36 @@
+{
+  "schema": "h3-sr-production-peak-local-checks/1",
+  "status": "PASS_LOCAL_ONLY_GPU_NOT_RUN",
+  "date": "2026-11-05",
+  "tests": 20,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "actual_pydantic_validator_cases": 8,
+  "actual_pydantic_version": "2.13.0",
+  "actual_pydantic_scope": "Mixin extracted from transformed exact protocol source; actual BaseModel/model_validator, not full installed Omni import",
+  "runner_scope": "Actual patched request/batch/step-core/profile method bodies executed with CPU transport/model boundaries; no CUDA",
+  "before_after_source_lock_sha256": "b24f4bc21fc723a0c317b61827435f5ca17e2d031292e10476d40bfc9e8cde03",
+  "implementation_sha256": "3d36d8cb981f2372c43ff1c58738007f0908548751dab75b0f90fc3dfe7e4d0d",
+  "test_sha256": "c2759d63bc5a06bb201127ee919b563a9628cff9982394d2b232d7c64c2488dd",
+  "changed_installed_paths": [
+    "vllm_omni/diffusion/data.py",
+    "vllm_omni/config/omni_config.py",
+    "vllm_omni/config/stage_config.py",
+    "vllm_omni/engine/arg_utils.py",
+    "vllm_omni/entrypoints/cli/serve.py",
+    "vllm_omni/diffusion/worker/diffusion_model_runner.py",
+    "vllm_omni/entrypoints/openai/api_server.py",
+    "vllm_omni/entrypoints/openai/protocol/videos.py",
+    "vllm_omni/entrypoints/openai/video/generation/helpers.py"
+  ],
+  "profile_run_method_body_unchanged": true,
+  "not_run": [
+    "Actual Linux installed module import",
+    "CUDA/GPU inference",
+    "Image build/publication",
+    "Kubernetes"
+  ],
+  "stored_availability_get_roundtrip": "PASS",
+  "canonical_text_policy": "LF exact Git export; source transformation semantics unchanged"
+}

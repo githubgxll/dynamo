@@ -1,0 +1,19 @@
+{
+  "schema": "h3-sr-production-timing-patches/1",
+  "parent_source_manifest_sha256": "6de9b4fe3db09914d4d497e888e2554265843e36af717d5e0e19d1f940109c69",
+  "timing_schema": "sr-timing-only/1",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py": {
+      "before_sha256": "d9d6716c9c5176156b0a0e7293c6dd554df423c7bf145dd11150ce4e46bf1de1",
+      "after_sha256": "0c0138f3af80e3f1dd560b8cd5e2f87658aa2f0183d168e804c60ee6e74ae442"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video_support.py": {
+      "before_sha256": "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1",
+      "after_sha256": "f4ae6720b6cee1eff4158b593f7892c0f1c34758a8bef9af6e59ee1de6f44229"
+    },
+    "vllm_omni/diffusion/models/seedvr2/long_video.py": {
+      "before_sha256": "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05",
+      "after_sha256": "ea9eb2f17c6f3bdad9c08e2dc87642cfcf268e49713d62f270f79ea4b9ad8a3b"
+    }
+  }
+}

@@ -36,8 +36,6 @@ async def init_omni(
     runtime: DistributedRuntime, config: OmniConfig, shutdown_event: asyncio.Event
 ):
     """Initialize Omni worker for multi-stage pipeline generation."""
-    from dingo.vllm.omni import OmniHandler
-
     generate_endpoint = runtime.endpoint(
         f"{config.namespace}.{config.component}.{config.endpoint}"
     )
@@ -49,7 +47,14 @@ async def init_omni(
     )
 
     detached_manager = None
-    handler = OmniHandler(
+    production = config.h3_sr_profile is not None
+    if production:
+        from .production_handler import ProductionOmniHandler
+        handler_class = ProductionOmniHandler
+    else:
+        from dingo.vllm.omni import OmniHandler
+        handler_class = OmniHandler
+    handler = handler_class(
         runtime=runtime,
         config=config,
         default_sampling_params={},
@@ -63,11 +68,11 @@ async def init_omni(
     )
     # Monitor AsyncOmni independently from the standard AsyncLLM worker path so
     # a dead stage/rank cannot leave a registered endpoint with no live engine.
-    _engine_monitor = OmniEngineMonitor(
-        runtime,
-        handler.engine_client,
-        shutdown_event,
-    )
+    if production:
+        await handler.check_ready()
+        _engine_monitor = handler.start_monitor(runtime, shutdown_event)
+    else:
+        _engine_monitor = OmniEngineMonitor(runtime, handler.engine_client, shutdown_event)
     serve_handler = handler.generate
     if config.detached_video_task_root is not None:
         from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
@@ -116,9 +121,12 @@ async def init_omni(
             needs=[],
         )
 
+        if production:
+            await handler.publish_registration()
+
         logger.info("Starting to serve Omni worker endpoint...")
 
-        health_check_payload = (
+        health_check_payload = handler.health_check_payload() if production else (
             await VllmOmniHealthCheckPayload.create(handler.engine_client)
         ).to_dict()
 
@@ -149,6 +157,8 @@ async def init_omni(
             try:
                 await asyncio.to_thread(handler.output_formatter.close)
             finally:
+                if production:
+                    await handler.aclose()
                 handler.cleanup()
 
 
@@ -160,7 +170,7 @@ async def worker():
     if not config.served_model_name:
         config.served_model_name = config.engine_args.served_model_name = config.model
 
-    if not os.path.exists(config.model):
+    if config.h3_sr_profile is None and not os.path.exists(config.model):
         await fetch_model(config.model)
 
     shutdown_event = asyncio.Event()

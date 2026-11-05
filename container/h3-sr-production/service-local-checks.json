@@ -1,0 +1,105 @@
+{
+  "schema": "h3sr-production-service-local/1",
+  "status": "PASS_LOCAL_CONTROL_AND_REAL_ASGI_ONLY_GPU_NOT_RUN",
+  "date": "2026-11-05",
+  "tests": 70,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "python": "3.14.7",
+  "web_versions": {
+    "fastapi": "0.136.3",
+    "starlette": "1.7.0",
+    "pydantic": "2.13.0"
+  },
+  "web_dependency_target_used_locally": "D:\\AI\\_scratch\\h3sr-web-cpu-01363",
+  "gpu_status": "NOT_RUN",
+  "kubernetes_status": "NOT_RUN",
+  "original_rfe_extension_sha256": "c4b53f117af1014b6b0c670c3f5762b6bb76b46588ea30fb4ef27f842777d0fb",
+  "coverage": [
+    "eight-rank identity/error gather protocol with CPU doubles",
+    "v2 optional metrics default-off; reject online legacy downgrade",
+    "HTTP202/async-output lock and terminal receipts",
+    "cancel/timeout durable blocked latch and management paths",
+    "same worker birth/source/epoch and handoff intent replay rejection",
+    "FL/Ref argv/env and automatic startup contracts",
+    "real FastAPI built-stack/lifespan preservation",
+    "actual parent restore function AST after timing/window deltas",
+    "job-owned context survives create_task and to_thread",
+    "TERM and KILL independently verify PID birth, process group and session; known surviving workers anchor exited-leader cleanup",
+    "exited-leader PID reuse and TERM-to-KILL PID/group reuse refuse signals and latch blocked evidence",
+    "only two baked production image identities survive broad H3 environment cleanup and reach both preflight subprocesses",
+    "operational readiness server binds 127.0.0.1 only",
+    "actual patched restore_to nested submit -> real concurrent ThreadPoolExecutor -> actual restore HTTP headers after controlled HTTP202/create_task/to_thread; both window permits pass real ControlGate and retain bearer",
+    "three real CPU subprocesses: model startup then identity then fixed Dingo module; same-Pod registered gateway precedes external Ready",
+    "gateway receipt epoch/profile hash/PID/birth and 600-second timeout; bad receipt, spawn failure, model exit during registration and gateway exit after Ready latch and clean owned processes",
+    "Gateway-only deployed H3SR_IMAGE_DIGEST survives env cleanup; stages requires complete repo@digest with no parent fallback; DYN and connection env retained"
+  ],
+  "boundaries": [
+    "CPU doubles do not prove eight-GPU/cache release/kernel behavior",
+    "actual Linux process groups, model loading and Gateway media acceptance remain pending",
+    "legacy v1 reader retained only for historical receipts",
+    "Shutdown tests mock Linux process identities and signals; bounded proc checks do not provide an atomic process-group signalling guarantee",
+    "Three real CPU children substitute small Python programs for native H3/SR/Dingo; model health and Linux identities/group signals are doubles, not actual native service or GPU acceptance"
+  ],
+  "files": {
+    "service/backend.py": "f613893b4b1360301f75da5e468f3b83cb9d5789d3e5e50b84052336f528fc5c",
+    "service/control.py": "797b2076dc09a82f54c1797dd582ec6c1c1e089c70f7ded06dbba2c16ba5d062",
+    "service/launcher.py": "252264fc6886e3bb25f75cc17be6c937eb8609d7bf4d5b6a63ab5aee8d0b0e4c",
+    "service/legacy_idle_cache.py": "c4b53f117af1014b6b0c670c3f5762b6bb76b46588ea30fb4ef27f842777d0fb",
+    "service/operation_context.py": "e35da0ed533d62aba97a86f03a562c54bd34f87ebcc78ea18471454743042a38",
+    "service/ownership.py": "2b02392ffe8085b4d2b11b68f1805a2f606df026a819c866931f7f8660c726ca",
+    "service/profile.py": "61116e217f6611eb92f23c4e197a7e394eb3a85db1e3f08deb94d37030b1da77",
+    "service/state.py": "3a44310b3aaf696cba4df25c922c5d5159ed26610dbf24063ea5502eedd89129",
+    "service/worker_extension.py": "4c291ab51ada4c03a91fc37721cf7b4459a88402264c6ea11f942f22e117475a",
+    "service/__init__.py": "fc074885248e4d226f19ab5cefb6ccc128482ad227052145afa7299df6e10ebe",
+    "window_headers_patch.py": "2561431a7ce17ab32ac077abe8a65acb73bd2ab628c02434a6a950fa1755d928",
+    "window-headers-patches.lock.json": "6b311eb3753d4466197dbf2c1655beecb0f20882600e14e3eb3466030d9063a7",
+    "tests/test_service_asgi.py": "532f079e8a0c9c122fad9ac12805874be6ea36bbb808d80a5409105dea406f00",
+    "tests/test_service_profile.py": "563e5e48cb523150decb0ae9f13a7233e7bc7c4fc0a83f7fcb91b4e2c1e80bf2",
+    "tests/test_service_runtime.py": "4831ebf3c0da3a5868a7c6688e4b2c83b43897467e7a988583a75f9d4bfd87c7",
+    "tests/test_service_shutdown.py": "be584b5516c63ca2b9a53e92e595567c27898f3271bdde7426803f8cceed044b",
+    "tests/test_service_window_context.py": "c6b98702e390a09d99c838914943075a7bb251e3b986ca88f7c0c237b716d6f0",
+    "tests/test_service_gateway_startup.py": "ebb1798173d87709b439b6f168e87b73c6b294a7fb38cf1530bc794fe7c00da5"
+  },
+  "verified_utc": "2026-11-05T10:48:39.505869+00:00",
+  "window_context_patch": {
+    "input_after_timing_sha256": "ea9eb2f17c6f3bdad9c08e2dc87642cfcf268e49713d62f270f79ea4b9ad8a3b",
+    "after_sha256": "0496767618adbbcd9c4b58f874cfb373b672439ac6677a9f3db9f47b6a3d8efa",
+    "native_worker_pool": "real concurrent.futures.ThreadPoolExecutor(max_workers=2)",
+    "media_http": "CPU doubles; test stops after headers before decode"
+  },
+  "startup_contract": {
+    "entrypoint": "python -B /opt/h3-sr/service/launcher.py --profile /etc/h3-sr/profile.json --gateway-command-file /etc/h3-sr/gateway-command.json",
+    "gateway_argv_prefix": [
+      "sys.executable",
+      "-B",
+      "-m",
+      "dingo.vllm.omni"
+    ],
+    "registration_file": "<control-root>/gateway-ready.json",
+    "registration_schema": "h3sr-gateway-registration/1",
+    "registration_fields": [
+      "schema",
+      "status",
+      "service_epoch",
+      "profile_sha256",
+      "pid",
+      "birth"
+    ],
+    "preflight_seconds": 600,
+    "each_model_seconds_max": 10800,
+    "identity_seconds_max": 150,
+    "gateway_registration_seconds_max": 600,
+    "startup_seconds_max": 22950,
+    "external_ready_requires": [
+      "phase=ready",
+      "gateway_ready=true",
+      "service_ready=true",
+      "three live owned children",
+      "no failure latch"
+    ],
+    "gateway_image_digest_env": "H3SR_IMAGE_DIGEST; required full repo@sha256 in stages mode; no parent fallback"
+  },
+  "canonical_text_policy": "LF exact Git export; final combined CPU checks are separately recorded"
+}

@@ -13,6 +13,8 @@ from typing import Any
 
 from dingo.common.video_timing_schemas import (
     MODEL_EXECUTION_KEY,
+    H3_SR_TIMING_KEY,
+    normalize_h3_sr_timing,
     normalize_model_execution,
 )
 
@@ -157,6 +159,17 @@ class VideoTask:
         height = self.normalized_request.get("height")
         if width is not None and height is not None:
             result["size"] = f"{width}x{height}"
+        sr_tier = self.normalized_request.get("sr_tier")
+        if sr_tier in {"1080", "1440"}:
+            result["sr_tier"] = sr_tier
+            if "size" in result:
+                result["base_size"] = result["size"]
+            target_width = self.normalized_request.get("final_width")
+            target_height = self.normalized_request.get("final_height")
+            if (type(target_width) is int and type(target_height) is int
+                    and min(target_width, target_height) > 0):
+                # A plan is never represented as an already generated result.
+                result["target_size"] = f"{target_width}x{target_height}"
         if self.normalized_request.get("seconds") is not None:
             result["seconds"] = self.normalized_request["seconds"]
         if self.normalized_request.get("num_frames") is not None:
@@ -185,6 +198,11 @@ class VideoTask:
             # an older Gateway in a rolling deployment can still deserialize
             # the task and simply ignore fields it does not understand.
             media = dict(self.normalized_request.get("_result_media") or {})
+            actual_width, actual_height = media.get("width"), media.get("height")
+            if (sr_tier in {"1080", "1440"}
+                    and type(actual_width) is int and type(actual_height) is int
+                    and min(actual_width, actual_height) > 0):
+                result["final_size"] = f"{actual_width}x{actual_height}"
             actual_frames = media.get("frames")
             actual_fps = media.get("fps")
             actual_seconds = media.get("duration_s", media.get("video_duration_s"))
@@ -232,6 +250,9 @@ class VideoTask:
         )
         if model_execution is not None:
             result.setdefault("metrics", {})["model_execution"] = model_execution
+        h3_sr_timing = normalize_h3_sr_timing(self.normalized_request.get(H3_SR_TIMING_KEY))
+        if h3_sr_timing is not None:
+            result.setdefault("metrics", {})["h3_sr_timing"] = h3_sr_timing
         if self.error is not None:
             result["error"] = asdict(self.error)
         return result

@@ -1,0 +1,49 @@
+{
+  "schema": "h3-sr-production-peak-patches/1",
+  "parent_source_commit": "b42388a1a65067ed92dfe64f9364c4b044a8d666",
+  "parent_source_manifest_sha256": "6de9b4fe3db09914d4d497e888e2554265843e36af717d5e0e19d1f940109c69",
+  "field": "record_output_peak_memory",
+  "cli_disable": "--no-record-output-peak-memory",
+  "default": true,
+  "disabled_internal_sentinel": -1.0,
+  "public_disabled_value": null,
+  "changes": {
+    "vllm_omni/diffusion/data.py": {
+      "before_sha256": "072c04ec4633e4efe163d4403b5e8b350233f443835056ff5f2a899ff132f713",
+      "after_sha256": "d9a54a3722d0f7771c782da0ef99d8a3c0581b3387f37aee855a0dc3dded7f88"
+    },
+    "vllm_omni/config/omni_config.py": {
+      "before_sha256": "a7847b5a48c2481fd53dd99e41a866425dec26f4c6eee7c47c5a3fd1b66693ed",
+      "after_sha256": "38395deb33bb757b146faca26936593939922860ea978ee56a345684e5d1ce8f"
+    },
+    "vllm_omni/config/stage_config.py": {
+      "before_sha256": "8c2dc9a8e0668b2d12e7a1650f0c8f151bf55a2a8f019a9bb6b7d7b2795b1bef",
+      "after_sha256": "8d29f922e31f02a0abdd632593c0a9960e2015970fc918d2e982d2651525b123"
+    },
+    "vllm_omni/engine/arg_utils.py": {
+      "before_sha256": "5d97a430ac4583a1ff01ff03fcb82bb3a4f9f9cece251c2b34900576d7f9f841",
+      "after_sha256": "3591601ddac68e1cc3333ec59cdb0711a4bcee280b9bfaf91a16427d3c97bfa4"
+    },
+    "vllm_omni/entrypoints/cli/serve.py": {
+      "before_sha256": "7eb4ee7f9434b396ddd781bfe5bf31b0c177005aa6c667ae12fdfd0a17822134",
+      "after_sha256": "cd43f92fdf2efa98f9582e137a38611302813c497035a66af2b6f3b476b065ae"
+    },
+    "vllm_omni/diffusion/worker/diffusion_model_runner.py": {
+      "before_sha256": "e3e75e5dbaf2ccf20b65995e32effc64962c8285b8f8c19bf61a1a785bdb21c1",
+      "after_sha256": "faeedf2105dba702b4b2ebbd472392e9b586bdf079a4759b3a0415e063ca0723"
+    },
+    "vllm_omni/entrypoints/openai/api_server.py": {
+      "before_sha256": "70f9f0d93a6505f0560f77a0183bf58a0329d3e5f5e518ff771c688f7e78dea5",
+      "after_sha256": "c9aab6edef57f0ef7d2ee4e07144ca727069fc60f4efc58c70128e7be4589cc9"
+    },
+    "vllm_omni/entrypoints/openai/protocol/videos.py": {
+      "before_sha256": "1ec725403d9892188bb1cf8515cf6e00d88bc0584fadcf59f65e59e83f84cfa8",
+      "after_sha256": "efe4f7225d857ea9d97ff8a341eac903fb2c756f394750737619f0093c1f451a"
+    },
+    "vllm_omni/entrypoints/openai/video/generation/helpers.py": {
+      "before_sha256": "3b60937d8c5294ba87a5abb9265643e1bb4beb98f9ea63f533a7d11450577808",
+      "after_sha256": "b2d4404be6dcb87038ef858a77f18846c85af02c082bab72ec49642f405003ca"
+    }
+  },
+  "scope": "Serving observation policy; profile_run capacity context untouched; internal float carrier remains compatible, public observations distinguish collected/not_collected/unavailable."
+}

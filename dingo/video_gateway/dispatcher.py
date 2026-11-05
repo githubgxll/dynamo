@@ -1792,6 +1792,7 @@ class VideoDispatcher:
                 )
             inference_time_s = worker_execution_s
             model_execution = result.model_execution
+            h3_sr_timing = getattr(result, "h3_sr_timing", None)
             stage_durations = dict(result.stage_durations or {})
             if worker_queue_wait_s is not None:
                 stage_durations["worker_queue_wait"] = worker_queue_wait_s
@@ -1818,6 +1819,7 @@ class VideoDispatcher:
                         inference_time_s,
                         stage_durations,
                         model_execution=model_execution,
+                        h3_sr_timing=h3_sr_timing,
                     )
                 except _TaskOwnershipLost:
                     raise
@@ -1843,7 +1845,7 @@ class VideoDispatcher:
                         "inference_time_s": inference_time_s,
                         "stage_durations": stage_durations,
                         "normalized_request": with_model_execution(
-                            latest.task.normalized_request, model_execution
+                            latest.task.normalized_request, model_execution, h3_sr_timing=h3_sr_timing
                         ),
                     },
                 )
@@ -2177,6 +2179,7 @@ class VideoDispatcher:
         stage_durations,
         *,
         model_execution=None,
+        h3_sr_timing=None,
     ):
         """Reconcile every uncertain write before publishing or failing a result."""
         failure_code = None
@@ -2296,7 +2299,7 @@ class VideoDispatcher:
                     "worker_lease_id": None,
                     "normalized_request": {
                         **with_model_execution(
-                            latest.task.normalized_request, model_execution
+                            latest.task.normalized_request, model_execution, h3_sr_timing=h3_sr_timing
                         ),
                         HANDOFF_KEY: reference,
                     },

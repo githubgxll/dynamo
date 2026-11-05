@@ -1,0 +1,11 @@
+{
+  "schema": "h3-sr-window-headers-patches/1",
+  "composition_order": "after sr_timing_patch",
+  "changes": {
+    "vllm_omni/diffusion/models/seedvr2/long_video.py": {
+      "before_sha256": "ea9eb2f17c6f3bdad9c08e2dc87642cfcf268e49713d62f270f79ea4b9ad8a3b",
+      "after_sha256": "0496767618adbbcd9c4b58f874cfb373b672439ac6677a9f3db9f47b6a3d8efa"
+    }
+  },
+  "scope": "Native restore-long captures a distinct copy_context per actual ThreadPoolExecutor.submit so each internal window retains job-owned headers; no context leaves original Authorization unchanged."
+}
