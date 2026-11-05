@@ -96,7 +96,7 @@ def test_vllm_ffmpeg_exceptions_are_image_scoped():
     scoped = [
         exc
         for exc in policy.exceptions
-        if "vllm-runtime" in (exc.get("images") or [])
+        if exc["type"] == "dpkg" and "vllm-runtime" in (exc.get("images") or [])
     ]
     assert scoped
     for exc in scoped:
@@ -105,6 +105,53 @@ def test_vllm_ffmpeg_exceptions_are_image_scoped():
         assert exc["images"] == ["vllm-runtime", "vllm-runtime-efa"]
         assert exc.get("allow")
         assert exc.get("reason")
+
+
+def test_oss_harmony_missing_metadata_is_resolved(tmp_path):
+    from compliance.generators.python import collect_components
+
+    dist = tmp_path / "oss_harmony-0.0.11.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text(
+        "Metadata-Version: 2.4\nName: oss-harmony\nVersion: 0.0.11\n"
+    )
+    components = collect_components([tmp_path])
+    assert len(components) == 1
+    component = components[0]
+    assert component.spdx == "Apache-2.0"
+    assert component.license_text
+    assert (
+        validate_row(
+            load_policy(_POLICY),
+            "python",
+            component.name,
+            component.version,
+            component.spdx,
+            "vllm-runtime",
+        )
+        is None
+    )
+
+
+def test_soxr_exception_is_limited_to_version_image_and_license():
+    policy = load_policy(_POLICY)
+    spdx = "LGPL-2.1-or-later"
+    assert (
+        validate_row(policy, "python", "soxr", "1.1.0", spdx, "vllm-runtime")
+        is None
+    )
+    assert validate_row(policy, "python", "soxr", "1.1.1", spdx, "vllm-runtime")
+    assert validate_row(policy, "python", "soxr", "1.1.0", spdx, "sglang-runtime")
+    assert validate_row(policy, "python", "soxr", "1.1.0", spdx)
+    assert validate_row(
+        policy, "python", "soxr", "1.1.0", "GPL-3.0-only", "vllm-runtime"
+    )
+    assert validate_row(
+        policy, "python", "soxr", "1.1.0", "UNKNOWN", "vllm-runtime"
+    )
+    assert validate_row(
+        policy, "python", "unreviewed-package", "1.1.0", spdx, "vllm-runtime"
+    )
 
 
 def test_vllm_scoped_dpkg_sources_are_required():

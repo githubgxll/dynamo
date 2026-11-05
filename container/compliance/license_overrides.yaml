@@ -365,6 +365,10 @@ overrides:
   - { ecosystem: python, name: nvidia-cutlass-dsl-libs-base, license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA CUTLASS DSL libs" }
   - { ecosystem: python, name: nvidia-mathdx,             license: LicenseRef-NVIDIA-Proprietary, source: "NVIDIA MathDx SDK license — https://docs.nvidia.com/cuda/mathdx/license.html" }
   - { ecosystem: python, name: openai-harmony,            license: "MIT",       source: "openai-harmony upstream — https://github.com/openai/harmony/blob/main/LICENSE" }
+  - ecosystem: python
+    name: oss-harmony
+    license: Apache-2.0
+    source: "oss-harmony 0.0.11 omits license metadata; verified Apache-2.0 in the release sdist LICENSE: https://files.pythonhosted.org/packages/43/88/ca56e5b17df4763bbb552c7be3abe432b51db3c51f6327a3848b88ad7c08/oss_harmony-0.0.11.tar.gz"
   - { ecosystem: python, name: pandas,                    license: "BSD-3-Clause",  source: "pandas upstream — https://github.com/pandas-dev/pandas/blob/main/LICENSE" }
   - { ecosystem: python, name: pathspec,                  license: "MPL-2.0",   source: "pathspec upstream — https://github.com/cpburnz/python-pathspec/blob/master/LICENSE" }
   - { ecosystem: python, name: prompt-toolkit,            license: "BSD-3-Clause",  source: "prompt-toolkit upstream — https://github.com/prompt-toolkit/python-prompt-toolkit/blob/main/LICENSE" }
