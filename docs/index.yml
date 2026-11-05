@@ -276,6 +276,8 @@ navigation:
                 path: observability/prometheus-grafana.md
               - page: Metrics
                 path: observability/metrics.md
+              - page: MiniMax H3 Super Resolution
+                path: video-gateway/super-resolution.md
               - page: Video Gateway Observability
                 path: video-gateway/observability.md
               - page: Video Performance Collection

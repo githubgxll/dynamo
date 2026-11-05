@@ -62,7 +62,8 @@ queued -> in_progress -> completed
 `GET /v1/videos/{task_id}/diagnostics` 的 `diagnostics.stage_durations`。
 该明细当前主要覆盖 Worker 输出编码和制品写入；Gateway 只有高层排队/结果处理耗时，
 媒体检查细项仍按诊断开关写入日志。诊断接口当前不提供完整链路时间线或历史重试记录。
-这里的 `metrics` 是逐任务计时元数据，与 Prometheus `/metrics` 端点无关；重试任务只返回
+这里的 `metrics` 是逐任务计时元数据；Prometheus `/metrics` 对部分同源测量做聚合，
+两者的粒度、统计时刻和窗口不同，不能直接逐点等同；重试任务只返回
 最终 attempt 的分项耗时，而顶层 `inference_time_s` 是从任务首次创建到终态的服务端总时间。
 
 任务完成后结果不会永久保留。生命周期清理会把到期任务转为 `expired` 并释放制品空间；
@@ -85,11 +86,12 @@ queued -> in_progress -> completed
 | 文档 | 内容 | 面向对象 |
 |---|---|---|
 | [接口使用说明](video-gateway-api.md) | 模型查询、任务提交、状态、下载、取消、FL2VA/Ref2VA 输入和错误码 | 接口调用方、联调人员 |
+| [超分画幅契约](super-resolution.md) | 1080P／2K白名单、基础与SR内部尺寸、窗口、裁剪和缩放 | 接口调用方、模型和部署维护人员 |
 | [协议与兼容性](video-gateway-protocol-compatibility.md) | 与 OpenAI Videos API、vLLM-Omni Videos API 的相同点和差异 | 接口调用方、适配开发人员 |
 | [可观测性与指标](observability.md) | Prometheus 指标、标签、HA 聚合、诊断接口及日志开关 | 部署、运维和面板开发人员 |
 | [性能采集机制](performance-collection.md) | HTTP 拉取、日志发现、SQL 字段、续采和存储预算 | 性能分析与采集器维护人员 |
-| [`CONTINUOUS_EXECUTION.md`](../../dingo/video_gateway/CONTINUOUS_EXECUTION.md) | Worker slot 提前释放、预取和连续执行的状态约束 | Gateway 开发与评审人员 |
-| [`GATEWAY_CONFIGURATION_CONSISTENCY.md`](../../dingo/video_gateway/GATEWAY_CONFIGURATION_CONSISTENCY.md) | 双 Gateway 配置哪些必须一致、哪些可在滚动升级期间短暂不同 | 部署和运维人员 |
+| `dingo/video_gateway/CONTINUOUS_EXECUTION.md` | Worker slot 提前释放、预取和连续执行的状态约束 | Gateway 开发与评审人员 |
+| `dingo/video_gateway/GATEWAY_CONFIGURATION_CONSISTENCY.md` | 双 Gateway 配置哪些必须一致、哪些可在滚动升级期间短暂不同 | 部署和运维人员 |
 
 Kubernetes 部署 recipe 和回归测试维护在独立的
 `dingo-video-gateway-regression` 项目中，接口文档不复制具体集群地址、PVC、节点或镜像配置。

@@ -107,8 +107,9 @@ Gateway 在成功交接结果、任务从 `in_progress` 转为 `finalizing` 时�
 它不带 `task_id`，不增加 etcd 查询，也不回填历史任务。跨 Gateway 平均值应合并
 Histogram 的 sum/count，P95 应合并 bucket 后计算，不直接平均各 Pod 的 P95。
 
-Prometheus 看板按记录交接事件的时间统计，而不是按阶段实际开始时间统计。当前模型阶段
-诊断使用最近 5 分钟的 rate 窗口；所选时间范围内没有有效样本时，不补零、不延续旧耗时。
+Prometheus 看板按记录交接事件的时间统计，而不是按阶段实际开始时间统计。模型阶段
+诊断的窗口由实际导入的面板查询决定，指标本身不规定5分钟或1分钟窗口；
+所选窗口内没有有效样本时，不补零、不延续旧耗时。
 性能分析页面使用单任务 SQL 样本，按终态事件时间和请求参数筛选，统计口径与上述曲线不同。
 
 Worker 转发的 `vllm_omni:*` 原生 Prometheus 指标保持原名，不经过上表的映射。
@@ -131,3 +132,12 @@ Worker 的 `dingo_video_worker_*` 执行、预取和终态指标由任务管理�
 
 源码变更后需要将定义随 Worker/Gateway版本发布。建议先更新 Gateway使其认识新 schema，
 再更新 Worker；旧 Gateway会省略它不认识的模型计时。既有任务不会自动补采模型计时。
+
+
+## 带超分请求的阶段区分
+
+H3 的 `model_execution` 经过 SR 包装器及 Base 检查点继续透传，仍使用本页原有模型阶段
+指标。SeedVR2 的服务、裁剪、交付处理、编码及校验等独立耗时放在
+`metrics.super_resolution`，并由 `dingo_video_super_resolution_stage_duration_seconds`
+暴露；不把 SR 阶段注册到 `minimax_h3.v1`，也不把 SR 时间加进 H3 的 diffuse。
+父子阶段和流水重叠阶段不能直接相加。画幅与交付处理见[超分画幅契约](super-resolution.md)。

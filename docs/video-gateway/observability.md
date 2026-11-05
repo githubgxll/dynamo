@@ -53,6 +53,26 @@ Pod 选择条件由部署标签决定，`role=router` 单独使用可能同时�
 etcd 实现目前对八种任务状态分别发出计数查询。Worker 发现/能力和 lease 正常复用本地缓存，
 不会在每次抓取时调用所有 Worker。该接口不是只读取内存 counter 的静态导出接口。
 
+## 超分指标
+
+画幅白名单、基础尺寸和裁剪／缩放规则见[超分画幅契约](super-resolution.md)。
+两项新指标均由 Gateway 的业务 HTTP `/metrics` 导出，无须新增 SeedVR2 抓取端点。
+
+| 指标 | 类型与标签 | 统计对象 |
+|---|---|---|
+| `dingo_video_super_resolution_stage_duration_seconds` | Histogram，`pool`、`stage` | Gateway 成功接受SR结果交接时，每个可用阶段观察一次 |
+| `dingo_video_super_resolution_requests_total` | Counter，`pool`、`tier`、`status` | SR业务任务的终态转换事件；tier为1080p／2k |
+
+不超分请求不会增加上述观测；启用SR的pool会初始化两档四种终态Counter为零，
+Histogram不补零。耗时的内部累计调用、模型等待区间并集和父阶段总时间不能相加。
+原生 `delivery_resize` 和公开阶段 `delivery_transform` 表示交付尺寸处理，
+并不等同于发生缩放；以 `sr-manifest.json` 中 `writer.requires_resize` 为准。
+
+> [!WARNING]
+> 当前任务从 completed／failed／cancelled 转为制品 expired 时，会再增加 expired 事件。
+> 所有status之和不是唯一请求总数。按档位看成功完成数时使用status="completed"；
+> 若要按所有终态统计唯一请求，需要先修复首次终态计数判断。
+
 ## 多 Gateway 聚合
 
 | 数据来源 | 聚合方法 | 原因 |

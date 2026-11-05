@@ -60,3 +60,34 @@ def test_native_delivery_matches_gateway_plan_and_center_pixels(output,dimension
     else:
         previous=module.delivery_frame(av.VideoFrame.from_ndarray(image,format='rgb24'),dw,dh,metrics).to_ndarray(format='rgb24')
         assert np.array_equal(actual,previous) and writer['requires_resize']
+
+
+def test_documented_v3_canvases_and_delivery_rules_match_native_writer():
+    """Keep the public matrix aligned with both planning and actual delivery."""
+    doc=(ROOT/'docs/video-gateway/super-resolution.md').read_text()
+    section=doc.split('## 1080P 白名单',1)[1].split('## 裁剪和缩放规则',1)[0]
+    actual={}
+    tier_window=33
+    for line in section.splitlines():
+        if line.startswith('## 2K 白名单'):
+            tier_window=65
+        if not line.startswith('| '):
+            continue
+        columns=[c.strip() for c in line.strip('|').split('|')]
+        if len(columns)!=6 or not columns[1][0].isdigit():
+            continue
+        output=tuple(map(int,columns[1].split('x')))
+        assert output not in actual
+        actual[output]=(tuple(map(int,columns[2].split('x'))),tuple(map(int,columns[3].split('x'))),tuple(map(int,columns[4].split(','))),columns[5],tier_window)
+    expected=dict(presets())
+    assert set(actual)==set(expected)
+    native=load('_document_native_writer',BUNDLE/'sources/vllm_omni/diffusion/models/seedvr2/long_video_support.py')
+    for output,row in expected.items():
+        base,internal,crop,resize,window=actual[output]
+        assert base==tuple(row[:2]) and internal==tuple(row[2:4]) and window==row[4]
+        writer=native.writer_spec({'delivery_size':output,'encoding_mode':'single_encode'},*internal)
+        assert crop==tuple(writer['crop_box'])
+        assert resize==('Lanczos 至 '+'x'.join(map(str,output)) if writer['requires_resize'] else '不缩放')
+    api=(ROOT/'docs/video-gateway/video-gateway-api.md').read_text()
+    assert '(super-resolution.md)' in api
+    assert 'path: video-gateway/super-resolution.md' in (ROOT/'docs/index.yml').read_text()

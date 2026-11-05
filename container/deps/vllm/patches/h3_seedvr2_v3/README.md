@@ -47,3 +47,6 @@ model path, one execution slot, and `DINGO_VIDEO_SEEDVR2_CONFIG`. Installing the
 bundle alone does not enable SR. H3 module offloading is configured through its
 explicit model startup options and `H3_OFFLOAD_FASTPATH`; model configuration is
 not copied into this bundle.
+
+The complete output/base/internal canvas table, crop boxes and resize exceptions
+are maintained in [the output contract](../../../../../docs/video-gateway/super-resolution.md).

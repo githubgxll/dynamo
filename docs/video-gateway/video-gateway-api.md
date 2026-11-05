@@ -123,33 +123,12 @@ adapter:
 ```
 
 FL2VA 可配置 `workflow: fl2va`；超分必须使用 `execution_mode: detached`，且匹配
-实际声明同一策略并已就绪的组合 Worker。下表是 v3 的完整尺寸映射，所有尺寸为宽×高：
+实际声明同一策略并已就绪的组合 Worker。完整的 14 个白名单尺寸、H3 基础尺寸、SR 内部尺寸、窗口、
+裁剪区域和缩放规则以[超分画幅契约](super-resolution.md)为准。
 
-| 档位 | 最终交付尺寸 | H3 基础尺寸 | SR 内部尺寸 | 最终画幅处理 |
-| --- | --- | --- | --- | --- |
-| 1080P | 1920x1080 | 1344x768 | 2016x1152 | 裁至2016x1134，再Lanczos缩小 |
-| 2K | 2560x1440 | 1344x768 | 2576x1472 | 居中裁剪 |
-| 1080P | 2208x936 | 1504x640 | 2256x960 | 居中裁剪 |
-| 2K | 2944x1248 | 1504x640 | 3008x1280 | 居中裁剪 |
-| 1080P | 1440x1080 | 1152x864 | 1472x1104 | 居中裁剪 |
-| 2K | 1920x1440 | 1152x864 | 1920x1440 | 直接编码 |
-| 1080P | 1080x1080 | 992x992 | 1088x1088 | 居中裁剪 |
-| 2K | 1440x1440 | 992x992 | 1440x1440 | 直接编码 |
-| 1080P | 1080x1440 | 864x1152 | 1104x1472 | 居中裁剪 |
-| 2K | 1440x1920 | 864x1152 | 1440x1920 | 直接编码 |
-| 1080P | 1080x1920 | 768x1344 | 1152x2016 | 裁至1134x2016，再Lanczos缩小 |
-| 2K | 1440x2560 | 768x1344 | 1472x2576 | 居中裁剪 |
-| 1080P兼容项 | 1800x1080 | 1280x768 | 1840x1104 | 居中裁剪 |
-| 2K兼容项 | 2400x1440 | 1280x768 | 2400x1440 | 直接编码 |
-
-1080P／2K 是本项目的交付档位，21:9 档实际为92:39；两个兼容项实际为5:3。
-基础画布与比例标签也可能略有差异，例如1344x768为7:4。基础画布按32对齐、SR内部
-画布按16对齐、全部2K交付画布按32对齐；1080P交付画布不额外要求32对齐。
-
-居中裁剪每轴至少保留97%；仅1920x1080及其竖屏需要裁剪后等比缩小，全部2K无需
-额外交付缩放。裁剪及必要缩放位于窗口融合后、唯一一次最终视频有损编码前；
-Worker外层使用stream copy保留视频码流和Base音轨。v3复用同次请求的Base／Raw
-完整媒体检查结果并核对哈希，最终成品仍执行完整帧数、尺寸、音轨和时间戳校验。
+v3 的全部 2K 无须额外交付缩放；仅 1920x1080 和 1080x1920 两种 1080P
+先裁剪再 Lanczos 等比缩小。其他尺寸直接居中裁剪或直接编码。每轴最多裁掉 3%，
+只执行一次最终视频有损编码，Worker 外层保留 Base 音轨并 stream copy 回封。
 
 v1保留1890x1080、2520x1440及对应竖屏的原比例缩放策略；v2保留1800x1080和
 2400x1440。策略需显式配置，v3不会被派发给仅声明旧策略的Worker。符合基础尺寸
@@ -163,11 +142,11 @@ v1保留1890x1080、2520x1440及对应竖屏的原比例缩放策略；v2保留1
 组合Worker通过环境变量接收运维配置，以下示例针对已固定的0.32原生SR镜像：
 
 ```json
-{"model":"/models/SeedVR2-3B-fp16","work_root":"/work/seedvr2","gpus":8,"engine_identity":"<pinned-image-and-model-revisions>","profile":"minimax_h3_seedvr2.v3","image_digest":"<pinned-image-digest>"}
+{"model":"/models/SeedVR2-3B-fp16","work_root":"/work/seedvr2","gpus":8,"engine_identity":"<pinned-image-and-model-revisions>","profile":"minimax_h3_seedvr2.v3","image_digest":"<image-repository>@sha256:<64-hex-digest>"}
 ```
 
 变量名为`DINGO_VIDEO_SEEDVR2_CONFIG`，它不是客户端参数。还需启用detached和
-`DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1。H3和独立的loopback SeedVR2子进程
+`DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1；当前 v2／v3 必须配置8张共享GPU。H3和独立的loopback SeedVR2子进程
 共用整个任务的执行许可。v3的1080P／2K分别使用33／65帧窗口，4帧重叠、单步Euler、
 Lab颜色修正；H3未指定seed时继续不传seed，v2／v3的SR服务使用固定seed 7723。
 
@@ -188,7 +167,12 @@ Gateway的`/metrics`新增：
   采用与任务阶段相同的桶；仅在成功接受SR结果交接时记录，每阶段每次一次。
 - `dingo_video_super_resolution_requests_total{pool,tier,status}`：Counter，
   tier为`1080p`／`2k`，status为`completed`／`failed`／`cancelled`／`expired`。
-  每个业务任务终态只计一次，内部重试不另计；进行中的请求及任务创建前的拒绝不计入。
+  按已提交的终态转换记录事件，内部重试不另计；进行中的请求及任务创建前的拒绝不计入。
+
+> [!WARNING]
+> 当前版本的请求 Counter 在已完成、失败或取消的任务随后转为制品过期时，
+> 还会增加一次 `status="expired"`。因此不能把所有 status 相加当作唯一业务请求总数。
+> 查询 `status="completed"` 可查看成功完成数；首次终态去重修复尚未包含在本次文档提交中。
 
 不超分请求不增加以上指标。Counter为启用SR的pool预先暴露零值；Histogram不补零。
 同其他进程内指标一样，重启会清零，采集间隔及崩溃可能造成事件丢失，不替代业务审计。
