@@ -7,6 +7,7 @@ import importlib.util
 from pathlib import Path
 
 import yaml
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / ".github/scripts/prepare_dingo_image_matrix.py"
@@ -36,12 +37,26 @@ def test_framework_tags_use_context_runtime_image_tags() -> None:
 
     for framework in ("vllm", "sglang"):
         runtime_tag = context[framework]["cuda13.0"]["runtime_image_tag"]
-        assert images[framework].endswith(f":{runtime_tag}-aaaaaaaaaaaa")
+        assert images[framework].endswith(
+            f":{runtime_tag.split('@', 1)[0]}-aaaaaaaaaaaa"
+        )
 
     dynamo_targets = {
         entry["docker_target"] for entry in matrix if entry["framework"] == "dynamo"
     }
     assert dynamo_targets == {"router", "runtime"}
+
+
+def test_runtime_tag_digest_is_not_part_of_output_tag() -> None:
+    value = "v0.32.0-ubuntu2404@sha256:" + "a" * 64
+    assert prepare_dingo_image_matrix.runtime_tag_prefix(value) == "v0.32.0-ubuntu2404"
+    assert prepare_dingo_image_matrix.runtime_tag_prefix("v0.32.0") == "v0.32.0"
+
+
+@pytest.mark.parametrize("suffix", ["sha256:abc", "", "sha512:" + "a" * 64, "sha256:" + "a" * 64 + "@extra"])
+def test_invalid_runtime_digest_pin_is_rejected(suffix: str) -> None:
+    with pytest.raises(ValueError, match="invalid digest pin"):
+        prepare_dingo_image_matrix.runtime_tag_prefix("v0.32.0@" + suffix)
 
 
 if __name__ == "__main__":

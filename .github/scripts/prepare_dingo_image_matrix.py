@@ -84,6 +84,14 @@ def select_image(enabled: bool, framework: str, selection: str) -> bool:
     return framework == selection
 
 
+def runtime_tag_prefix(runtime_image_tag: str) -> str:
+    """Keep a parent-image digest in FROM, never in the published image tag."""
+    tag, separator, digest = runtime_image_tag.partition("@")
+    if separator and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("runtime_image_tag has an invalid digest pin")
+    return tag
+
+
 def compute_builder_fingerprint(repo_root: Path) -> str:
     digest = hashlib.sha256()
     for relative_name in BUILDER_INPUTS:
@@ -169,7 +177,9 @@ def build_matrix(config: dict, github_sha: str, selection: str) -> list[dict[str
                 )
             device_key = f"cuda{cuda_version}"
             tag_context = context.get(framework, {}).get(device_key, {})
-            tag_prefix = require_string(tag_context, "runtime_image_tag")
+            tag_prefix = runtime_tag_prefix(
+                require_string(tag_context, "runtime_image_tag")
+            )
         else:
             tag_prefix = require_string(image, "tag_prefix")
         tag = f"{tag_prefix}-{short_sha}"
