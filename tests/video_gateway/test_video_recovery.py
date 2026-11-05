@@ -63,13 +63,12 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         r.start(); await asyncio.sleep(.02); await r.close()
         self.assertEqual(calls, [])
 
-    async def test_repeated_request_oom_diagnostics_do_not_exit_or_probe(self):
+    async def test_oom_drains_then_unregisters_and_exits_without_probe(self):
         r, calls, _ = self.setup_recovery()
         r.manager.handler.last_failure = {'reason': 'resource_exhausted', 'stage': 'base_generation'}
-        r.start(); await asyncio.sleep(.02); await r.close()
-        r.start(); await asyncio.sleep(.02); await r.close()
-        self.assertEqual(calls, [])
-        self.assertTrue(r.manager._accepting)
+        await r.watch()
+        self.assertEqual(calls, ['settled', 'unregister', 'sr_close', ('exit', 70)])
+        r.handler.engine_client.check_health.assert_not_awaited()
 
     async def test_dead_owned_service_exits(self):
         r, calls, _ = self.setup_recovery()
@@ -84,27 +83,11 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(r.sr_process.process.returncode)
         self.assertEqual(calls[-1], ('exit', 70))
 
-    async def test_h3_engine_dead_exits(self):
+    async def test_original_engine_monitor_owns_health_checks(self):
         r, calls, _ = self.setup_recovery()
-        EngineDeadError = type('EngineDeadError', (RuntimeError,), {})
-        r.handler.engine_client.check_health.side_effect = EngineDeadError()
-        await r.watch()
-        self.assertEqual(calls[-1], ('exit', 70))
-
-    async def test_transient_health_error_does_not_exit(self):
-        r, calls, _ = self.setup_recovery()
-        r.unhealthy_timeout_s = .1
-        r.handler.engine_client.check_health.side_effect = [RuntimeError('temporary'), None]
-        r.start(); await asyncio.sleep(.6); await r.close()
-        self.assertGreaterEqual(r.handler.engine_client.check_health.await_count, 2)
+        r.start(); await asyncio.sleep(.02); await r.close()
+        r.handler.engine_client.check_health.assert_not_awaited()
         self.assertEqual(calls, [])
-
-    async def test_persistent_health_failure_is_bounded(self):
-        r, calls, _ = self.setup_recovery()
-        r.unhealthy_timeout_s = .01
-        r.handler.engine_client.check_health.side_effect = RuntimeError('unavailable')
-        await asyncio.wait_for(r.watch(), 2)
-        self.assertEqual(calls[-1], ('exit', 70))
 
     async def test_unconfirmed_execution_exits(self):
         r, calls, _ = self.setup_recovery()
@@ -114,7 +97,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_settlement_pause_is_bounded(self):
         r, calls, _ = self.setup_recovery()
-        r.manager.handler.pause_started = time.monotonic() - 40
+        r.manager.handler.pause_started = time.monotonic() - r.pause_timeout_s - 1
         await r.watch()
         self.assertEqual(calls[-1], ('exit', 70))
 
@@ -197,3 +180,19 @@ class RankTrackingTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class OOMStatusOrder(unittest.IsolatedAsyncioTestCase):
+    async def test_oom_error_persistence_precedes_unregister_and_exit(self):
+        r,calls,_=RecoveryTests().setup_recovery()
+        persisted=asyncio.Event()
+        async def drain():
+            await asyncio.sleep(.005)
+            calls.append('failed_status_persisted')
+            persisted.set()
+        async def unregister():
+            self.assertTrue(persisted.is_set())
+            calls.append('unregister')
+        r.manager.shutdown=drain
+        r.endpoint.unregister_endpoint_instance=unregister
+        await r.recover('oom')
+        self.assertEqual(calls,['failed_status_persisted','unregister','sr_close',('exit',70)])

@@ -116,15 +116,9 @@ async def init_omni(
             await video_readiness.start()
         if sr_process is not None or base_recovery:
             from dingo.vllm.omni.video_recovery import CompositeWorkerRecovery
-            recovery_probe = None
-            if os.getenv("DINGO_VIDEO_OOM_RECOVERY_PROBE") == "1":
-                if config.request_adapter != "minimax_h3" or config.request_adapter_workflow != "fl2va":
-                    raise ValueError("OOM recovery probe is only validated for H3 FL2VA")
-                from dingo.vllm.omni.video_recovery_probe import probe_same_engine
-                recovery_probe = probe_same_engine
             video_recovery = CompositeWorkerRecovery(
                 detached_manager, generate_endpoint, handler, sr_process,
-                shutdown_event=shutdown_event, recovery_probe=recovery_probe,
+                shutdown_event=shutdown_event,
             )
             video_recovery.start()
         serve_handler = detached_manager.generate

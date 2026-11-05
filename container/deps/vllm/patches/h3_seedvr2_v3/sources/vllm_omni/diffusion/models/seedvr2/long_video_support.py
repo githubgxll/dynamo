@@ -96,8 +96,8 @@ def options(encoding_mode="legacy", delivery_size=None, window_frames=None,
         for name in ("run_id", "batch_id", "case_id", "action_id", "phase"):
             if name in context and (not isinstance(context[name], str) or not _TOKEN.fullmatch(context[name])):
                 raise ValueError("Invalid measurement identity: " + name)
-        if "expected_world_size" in context and context["expected_world_size"] != 8:
-            raise ValueError("This experiment requires expected_world_size=8")
+        if "expected_world_size" in context and (type(context["expected_world_size"]) is not int or context["expected_world_size"] not in (4, 8)):
+            raise ValueError("Measured SR requires expected_world_size=4 or 8")
         for name in ("model_manifest_hash",):
             if name in context and not re.fullmatch(r"[0-9a-f]{64}", str(context[name])):
                 raise ValueError("Invalid measurement hash: " + name)
@@ -204,7 +204,7 @@ class ServerMetrics:
             "selected_window": selected_window, "model_width": width, "model_height": height,
             "delivery_width": writer_spec(config, width, height)["width"],
             "delivery_height": writer_spec(config, width, height)["height"],
-            "target_frames": target, "expected_world_size": 8,
+            "target_frames": target, "expected_world_size": config["measurement_context"].get("expected_world_size", 8),
             "clock_domain": "perf_counter_ns pid=" + str(os.getpid()), "pid": os.getpid()}
         if self.enabled:
             self.safe("initialize", self._initialize)
@@ -426,8 +426,12 @@ def validate_bundle(job_id, files):
     if not isinstance(request, dict) or request.get("schema") != SCHEMA or request.get("sr_request_id") != job_id:
         bad("request.json", "schema /2 and exact native request identity are required")
         request = request if isinstance(request, dict) else {}
-    if request.get("expected_world_size") != 8 or request.get("measurement_mode") not in {"basic", "diagnostic"}:
-        bad("request.json", "SP8 measured request contract is incomplete")
+    world_size = request.get("expected_world_size")
+    if type(world_size) is not int or world_size not in (4, 8):
+        bad("request.json", "Measured request requires four or eight ranks")
+        world_size = 8  # Bound malformed input; never infer missing rank receipts.
+    if request.get("measurement_mode") not in {"basic", "diagnostic"}:
+        bad("request.json", "Measured request contract is incomplete")
     windows = files.get("window-map.jsonl")
     if not isinstance(windows, list) or not windows:
         bad("window-map.jsonl", "nonempty explicit window map is required")
@@ -491,7 +495,7 @@ def validate_bundle(job_id, files):
             if len(matches) != 1:
                 bad(label, "one service observation per window is required for " + phase, "server_stages")
         actual_ids, rank_bindings, rank_gpu_ids = set(), [], []
-        for rank in range(8):
+        for rank in range(world_size):
             key = f"{label}/rank-{rank}.json"
             expected_files.add(key)
             record = files.get(key)
@@ -507,7 +511,7 @@ def validate_bundle(job_id, files):
             if (not _v2_identity(record, item, (*_V2_IDENTITIES, *_V2_WINDOW_FIELDS))
                     or record.get("status") != "PASS" or record.get("errors") != []
                     or record.get("execution_scope") != "sr_rank" or record.get("rank") != rank
-                    or record.get("world_size") != 8 or not _v2_process(record)
+                    or record.get("world_size") != world_size or not _v2_process(record)
                     or record.get("video_payload_path") != "payload.video"
                     or record.get("clock_domain") != "process_perf_counter_ns"
                     or not isinstance(record.get("gpu_uuid"), str) or not record["gpu_uuid"]
@@ -530,10 +534,10 @@ def validate_bundle(job_id, files):
                         stable_rank_bindings.setdefault(rank, binding)
             if isinstance(record.get("gpu_uuid"), str):
                 rank_gpu_ids.append(record["gpu_uuid"])
-        if len(set(rank_bindings)) != 8 or len(set(rank_gpu_ids)) != 8:
-            bad(label, "SP8 requires eight distinct SR process and GPU bindings", "rank_pipeline")
+        if len(set(rank_bindings)) != world_size or len(set(rank_gpu_ids)) != world_size:
+            bad(label, "Measured SR requires distinct process and GPU bindings for every rank", "rank_pipeline")
         if len(actual_ids) != 1:
-            bad(label, "eight ranks must agree on one actual model request identity")
+            bad(label, "all ranks must agree on one actual model request identity")
         # The transfer sender and CPU consumer are distinct observations. A
         # CPU .numpy() receipt can never stand in for the actual worker copy.
         transfer_keys = [name for name in files if name.startswith(label + "/transfer-rank-") and name.endswith(".json")]
@@ -546,7 +550,7 @@ def validate_bundle(job_id, files):
             if (not isinstance(record, dict) or not _v2_identity(record, item, (*_V2_IDENTITIES, *_V2_WINDOW_FIELDS))
                     or record.get("status") != "PASS" or record.get("errors") != []
                     or record.get("execution_scope") != "worker_transport" or record.get("rank") != 0
-                    or record.get("world_size") != 8 or record.get("source_device_type") != "cuda"
+                    or record.get("world_size") != world_size or record.get("source_device_type") != "cuda"
                     or record.get("video_payload_path") != "payload.video"
                     or record.get("clock_domain") != "process_perf_counter_ns"
                     or record.get("observed_copy_count") != 1 or record.get("matched_payload_video") is not True
@@ -637,7 +641,7 @@ def validate_bundle(job_id, files):
         "metrics_status": "PASS_COMPLETE" if windows and not missing and not errors else "METRICS_INCOMPLETE",
         "missing_rank_records": missing, "inconsistent_rank_records": errors,
         "scope_completeness": scope_flags,
-        "scope": "SP8 GPU stages, actual worker CUDA-to-host transfer, separate API CPU postprocess; external NVML/controller stages remain separate"}
+        "scope": f"SP{world_size} GPU stages, actual worker CUDA-to-host transfer, separate API CPU postprocess; external NVML/controller stages remain separate"}
 
 
 def center_crop_box(width,height,delivery_width,delivery_height):

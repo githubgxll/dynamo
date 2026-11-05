@@ -233,7 +233,7 @@ def attach_engine(h3):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["resource_exhausted", "unknown"])
+@pytest.mark.parametrize("reason", ["unknown"])
 @pytest.mark.parametrize("sr", [True, False])
 async def test_settled_failures_can_repeat_then_generate_successfully(
     pipeline, tmp_path, monkeypatch, reason, sr
@@ -262,76 +262,41 @@ async def test_settled_failures_can_repeat_then_generate_successfully(
                 _ = [chunk async for chunk in handler.generate(request, None)]
         assert handler.sr_ready and not handler.quarantined
         assert handler.pause_started is None
-    assert client.collective_rpc_async.await_count == 2
+    client.collective_rpc_async.assert_not_awaited()
     chunks = await generate(handler, tmp_path / "attempts" / "3")
     assert chunks[0]["status"] == "completed"
     assert handler.sr_ready
 
 
 @pytest.mark.asyncio
-async def test_oom_settlement_beyond_old_ten_second_budget_can_continue(
-    pipeline, tmp_path, monkeypatch
-):
+async def test_oom_fences_worker_without_waiting_for_health(pipeline, tmp_path, monkeypatch):
     handler, h3, _ = pipeline
     client = attach_engine(h3)
-    entered = asyncio.Event()
-    original = h3.generate
-
-    async def slow_settlement(*args, **kwargs):
-        entered.set()
-        await asyncio.sleep(11)
-        return [None]
-
     async def failed(request, context):
         yield {"status": "failed", "error": "CUDA out of memory"}
-
-    client.collective_rpc_async.side_effect = slow_settlement
     monkeypatch.setattr(h3, "generate", failed)
     request = payload(); del request[SR_PAYLOAD_KEY]
-
-    async def consume():
-        return [chunk async for chunk in handler.generate(request, None)]
-
-    task = asyncio.create_task(consume())
-    await entered.wait()
-    await asyncio.sleep(10.2)
-    assert not task.done()
-    assert not handler.sr_ready and not handler.quarantined
-    with pytest.raises(VideoWorkerFailure):
-        await task
-    assert handler.sr_ready and not handler.quarantined
-    monkeypatch.setattr(h3, "generate", original)
-    chunks = await generate(handler, tmp_path / "attempts" / "after-slow-settlement")
-    assert chunks[0]["status"] == "completed"
+    with pytest.raises(VideoWorkerFailure) as caught:
+        _ = [chunk async for chunk in handler.generate(request, None)]
+    assert caught.value.internal_error['reason'] == 'resource_exhausted'
+    assert handler.quarantined and not handler.sr_ready
+    assert handler.last_failure == caught.value.internal_error
+    client.collective_rpc_async.assert_not_awaited()
+    h3.engine_client.check_health.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["resource_exhausted", "unknown"])
-@pytest.mark.parametrize("settlement_error", [TimeoutError("rank did not settle"), RuntimeError("executor unavailable")])
-async def test_rank_settlement_failure_quarantines_instead_of_readmitting(
-    pipeline, tmp_path, monkeypatch, caplog, reason, settlement_error
-):
+async def test_unknown_request_failure_does_not_probe_or_quarantine(pipeline, tmp_path, monkeypatch):
     handler, h3, _ = pipeline
     client = attach_engine(h3)
-    client.collective_rpc_async.side_effect = settlement_error
     async def failed(request, context):
-        yield {"status": "failed", "error": "base generation failed",
-               "_internal_error": {"schema_version": 1, "reason": reason,
-                                   "stage": "base_generation"}}
+        yield {"status": "failed", "error": "request failed",
+               "_internal_error": {"schema_version": 1, "reason": "unknown", "stage": "base_generation"}}
     monkeypatch.setattr(h3, "generate", failed)
-    with pytest.raises(VideoWorkerFailure) as caught:
+    with pytest.raises(VideoWorkerFailure):
         await generate(handler, tmp_path / "attempts" / "1")
-    assert handler.quarantined and not handler.sr_ready
-    assert handler.pause_started is None
-    assert caught.value.__cause__ is settlement_error
-    assert caught.value.internal_error == {
-        "schema_version": 1, "reason": reason, "stage": "base_generation"
-    }
-    assert handler.last_failure == caught.value.internal_error
-    assert "video_base_failure_settlement_failed" in caplog.text
-    assert f"reason={reason}" in caplog.text
-    assert ("settlement=timeout" if isinstance(settlement_error, TimeoutError)
-            else "settlement=error") in caplog.text
+    assert handler.sr_ready and not handler.quarantined
+    client.collective_rpc_async.assert_not_awaited()
 
 
 @pytest.mark.asyncio

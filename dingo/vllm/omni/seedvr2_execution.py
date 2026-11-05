@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dingo.vllm.omni.seedvr2_client import SETTLED, SeedVR2Client
+from dingo.common.video_worker_error import VideoWorkerFailure, normalize_internal_error
 
 
 class UnsafeRecovery(RuntimeError):
@@ -186,6 +187,9 @@ class SeedVR2Execution:
                         record.update(phase=state["status"], settled_at=time.time())
                         write_journal(journal, record)
                         if state["status"] != "completed" or state["frames"] != frames:
+                            failure = normalize_internal_error(state.get("internal_error"), stage="super_resolution")
+                            if failure["reason"] == "resource_exhausted":
+                                raise VideoWorkerFailure("SR exhausted memory", failure)
                             raise RuntimeError("SR did not complete every Base frame")
                         return job_id
                     if state["frames"] > frames:

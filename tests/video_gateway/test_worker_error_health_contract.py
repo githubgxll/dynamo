@@ -48,7 +48,7 @@ class Contracts(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(c.exception.internal_error['reason'],reason)
                 e=worker_execution_error({'code':'worker_failed','message':str(c.exception),'internal_error':classify_worker_error(c.exception)})
                 self.assertEqual(e.internal_error['reason'],reason)
-            self.assertTrue(h.sr_ready)
+            self.assertEqual(h.sr_ready, reason != 'resource_exhausted')
 
     async def test_known_input_failure_does_not_quarantine(self):
         class H3:

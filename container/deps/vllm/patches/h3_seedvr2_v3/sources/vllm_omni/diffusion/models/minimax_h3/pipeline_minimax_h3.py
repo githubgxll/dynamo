@@ -630,6 +630,29 @@ class _SingleRankEncoderGroup:
         self.device_group = None
 
 
+def _h3_forward_with_oom_cause(forward, request):
+    """Preserve real allocator OOMs hidden by a stable-ABI CUDA extension.
+
+    num_ooms counts exhausted allocations after retry; num_alloc_retries and
+    recoverable allocator warnings do not trigger this policy. Each H3 rank
+    executes one request, so the delta belongs to this invocation.
+    """
+    def count():
+        try:
+            return int(torch.cuda.memory_stats().get("num_ooms", 0))
+        except Exception:
+            return None
+    before = count()
+    try:
+        return forward(request)
+    except Exception as error:
+        after = count()
+        if (before is not None and after is not None and after > before
+                and not isinstance(error, torch.OutOfMemoryError)):
+            raise torch.OutOfMemoryError("CUDA out of memory during MiniMax-H3 forward") from error
+        raise
+
+
 class MiniMaxH3Pipeline(
     nn.Module,
     DenoiseProgressMixin,
@@ -3243,6 +3266,9 @@ class MiniMaxH3Pipeline(
 
     @torch.no_grad()
     def forward(self, request: DiffusionRequestBatch) -> DiffusionOutput:
+        return _h3_forward_with_oom_cause(self._forward_h3, request)
+
+    def _forward_h3(self, request: DiffusionRequestBatch) -> DiffusionOutput:
         if len(request.prompts) != 1:
             raise OmniClientError("MiniMax H3 supports one request at a time")
         check_request_cancellation()

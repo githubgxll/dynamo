@@ -63,24 +63,21 @@ class OwnedSRRanks:
 
 
 class CompositeWorkerRecovery:
-    """Exit on engine death or unconfirmed settlement, never on OOM classification.
+    """Video-only exit supervision; OOM always requires a fresh process.
 
-    The legacy recovery_probe argument remains accepted by the video startup
-    hook but is never called. Request-scoped failures can continue indefinitely.
+    The original OmniEngineMonitor owns engine health checks. This supervisor
+    never probes an OOM engine for reuse or submits a diagnostic inference.
     """
     def __init__(self, manager, endpoint, handler, sr_process, *,
                  drain_timeout_s=30.0, cleanup_timeout_s=20.0, exit_fn=os._exit,
-                 shutdown_event=None, recovery_probe=None, probe_timeout_s=90.0,
-                 pause_timeout_s=35.0, health_timeout_s=2.0,
-                 unhealthy_timeout_s=10.0, ranks_factory=OwnedSRRanks):
-        if min(drain_timeout_s, cleanup_timeout_s, pause_timeout_s,
-               health_timeout_s, unhealthy_timeout_s) <= 0:
+                 shutdown_event=None, pause_timeout_s=310.0,
+                 ranks_factory=OwnedSRRanks):
+        if min(drain_timeout_s, cleanup_timeout_s, pause_timeout_s) <= 0:
             raise ValueError('video supervision timeouts must be positive')
         self.manager, self.endpoint = manager, endpoint
         self.handler, self.sr_process = handler, sr_process
         self.drain_timeout_s, self.cleanup_timeout_s = drain_timeout_s, cleanup_timeout_s
         self.pause_timeout_s = pause_timeout_s
-        self.health_timeout_s, self.unhealthy_timeout_s = health_timeout_s, unhealthy_timeout_s
         self.ranks_factory = ranks_factory
         self.exit_fn, self.shutdown_event = exit_fn, shutdown_event
         self.started = False
@@ -90,13 +87,16 @@ class CompositeWorkerRecovery:
         self.task = asyncio.create_task(self.watch())
 
     async def watch(self):
-        unhealthy_since = None
         stopped_since = {}
         admission_paused = False
         try:
             ranks = (self.ranks_factory(self.sr_process.process, self.sr_process.config['gpus'])
                      if self.sr_process is not None else None)
             while True:
+                failure = getattr(self.manager.handler, 'last_failure', None) or {}
+                if failure.get('reason') == 'resource_exhausted':
+                    await self.recover('oom')
+                    return
                 process = self.sr_process.process if self.sr_process is not None else None
                 if self.sr_process is not None and (process is None or process.returncode is not None):
                     await self.recover('sr_process_exited')
@@ -123,7 +123,7 @@ class CompositeWorkerRecovery:
                     self.manager._accepting = False
                     self.manager.components_ready = False
                     admission_paused = True
-                if any(now - started > self.pause_timeout_s for started in stopped_since.values()):
+                if pause_started is None and any(now - started > self.pause_timeout_s for started in stopped_since.values()):
                     await self.recover('cancelled_execution_not_settled')
                     return
                 if not stopped and admission_paused:
@@ -131,17 +131,6 @@ class CompositeWorkerRecovery:
                         self.manager._accepting = True
                         self.manager.components_ready = False
                     admission_paused = False
-                try:
-                    await asyncio.wait_for(self.handler.engine_client.check_health(), self.health_timeout_s)
-                    unhealthy_since = None
-                except Exception as exc:
-                    if 'EngineDeadError' in {cls.__name__ for cls in type(exc).__mro__}:
-                        await self.recover('h3_engine_dead')
-                        return
-                    unhealthy_since = unhealthy_since or time.monotonic()
-                    if time.monotonic() - unhealthy_since >= self.unhealthy_timeout_s:
-                        await self.recover('h3_health_unavailable')
-                        return
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise
@@ -157,7 +146,9 @@ class CompositeWorkerRecovery:
         self.manager.components_ready = False
         if self.shutdown_event is not None:
             self.shutdown_event.set()
-        watchdog = threading.Timer(self.drain_timeout_s + self.cleanup_timeout_s + 10,
+        drain_timeout = min(self.drain_timeout_s, 5.0) if reason == 'oom' else self.drain_timeout_s
+        cleanup_timeout = min(self.cleanup_timeout_s, 5.0) if reason == 'oom' else self.cleanup_timeout_s
+        watchdog = threading.Timer(drain_timeout + cleanup_timeout + 10,
                                    self.exit_fn, args=(70,))
         watchdog.daemon = True
         watchdog.start()
@@ -165,8 +156,12 @@ class CompositeWorkerRecovery:
                      reason, process_snapshot())
         try:
             try:
-                await asyncio.wait_for(self.manager.shutdown(), self.drain_timeout_s)
+                await asyncio.wait_for(self.manager.shutdown(), drain_timeout)
                 logger.error('video_worker_recovery_tasks_settled')
+                if reason == 'oom':
+                    # The durable failed status is now available to Gateway's
+                    # detached waiter. Allow delivery before unregister/exit.
+                    await asyncio.sleep(1.0)
             except Exception:
                 logger.exception('video_worker_recovery_drain_incomplete')
 
@@ -178,10 +173,11 @@ class CompositeWorkerRecovery:
                         if self.sr_process is not None:
                             await self.sr_process.close()
                     finally:
-                        await asyncio.to_thread(self.handler.cleanup)
+                        if reason != 'oom':
+                            await asyncio.to_thread(self.handler.cleanup)
 
             try:
-                await asyncio.wait_for(cleanup(), self.cleanup_timeout_s)
+                await asyncio.wait_for(cleanup(), cleanup_timeout)
             except Exception:
                 logger.exception('video_worker_recovery_cleanup_incomplete')
         finally:

@@ -21,7 +21,6 @@ class VideoReadinessServer:
         if not self.manager._accepting or not bool(getattr(self.manager.handler, "video_ready", getattr(self.manager.handler, "sr_ready", True))):
             return False
         try:
-            await asyncio.wait_for(self.engine.check_health(), timeout=1.0)
             async with ClientSession(trust_env=False, timeout=ClientTimeout(total=1.0)) as session:
                 for port, route in ((self.runtime_port, '/health'), (self.sr_port, '/health')):
                     if port is None:

@@ -13,7 +13,10 @@
     {
       "path": "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3.py",
       "before_sha256": "8ba5e0353fa6e7ea5124bf5eb73ad19b21cc95878b1370251f657958eae79e5e",
-      "after_sha256": "3fd84ea51c514c6c758e94f1f5393f5a59b300c9aeecac61edb001e7d356efa0"
+      "after_sha256": "83b8abb2163d93918e8d413c4a5cc6efe90cd208a61134606360a5073226b111",
+      "compatible_parent_sha256": [
+        "3fd84ea51c514c6c758e94f1f5393f5a59b300c9aeecac61edb001e7d356efa0"
+      ]
     },
     {
       "path": "vllm_omni/diffusion/models/seedvr2/c14_capture.py",
@@ -23,17 +26,19 @@
     {
       "path": "vllm_omni/diffusion/models/seedvr2/long_video.py",
       "before_sha256": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
-      "after_sha256": "3e8fe4e7b705f63fbf9bf8cfa32b8e1ab0a723e9af73c3ea5aef8770f226230e",
+      "after_sha256": "344e7a8d3e36d82f7854c62362cc27934469b742507b3d54876c9b622dd1785f",
       "compatible_parent_sha256": [
-        "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05"
+        "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05",
+        "3e8fe4e7b705f63fbf9bf8cfa32b8e1ab0a723e9af73c3ea5aef8770f226230e"
       ]
     },
     {
       "path": "vllm_omni/diffusion/models/seedvr2/long_video_support.py",
       "before_sha256": null,
-      "after_sha256": "2cb778163bf7f36883138b9c584897422089ebaccbfd59ca10f6eb4346132650",
+      "after_sha256": "462c7b9de0ba97be0c72b31b2ea962c85f33bafa21e3f434df1cdaa024f2626a",
       "compatible_parent_sha256": [
-        "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1"
+        "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1",
+        "2cb778163bf7f36883138b9c584897422089ebaccbfd59ca10f6eb4346132650"
       ]
     },
     {

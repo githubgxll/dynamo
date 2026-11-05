@@ -146,7 +146,8 @@ v1保留1890x1080、2520x1440及对应竖屏的原比例缩放策略；v2保留1
 ```
 
 变量名为`DINGO_VIDEO_SEEDVR2_CONFIG`，它不是客户端参数。还需启用detached和
-`DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1；当前 v2／v3 必须配置8张共享GPU。H3和独立的loopback SeedVR2子进程
+`DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1；包含四卡适配的 v2／v3 实现支持4或8张共享GPU，
+旧镜像仍需8卡。卡数和版本约束见[超分说明](super-resolution.md)。H3和独立的loopback SeedVR2子进程
 共用整个任务的执行许可。v3的1080P／2K分别使用33／65帧窗口，4帧重叠、单步Euler、
 Lab颜色修正；H3未指定seed时继续不传seed，v2／v3的SR服务使用固定seed 7723。
 

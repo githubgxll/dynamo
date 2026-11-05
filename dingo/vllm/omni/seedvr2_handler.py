@@ -37,11 +37,6 @@ from dingo.vllm.omni.seedvr2_execution import (
 )
 
 
-# Allow slower rank cleanup after OOM while staying below the video supervisor's
-# 35-second pause deadline. The outer RPC wait includes two seconds of overhead.
-
-
-
 def validate_sr_request(payload: dict, *, profile=H3_SR_PROFILE) -> dict:
     sr = payload.get(SR_PAYLOAD_KEY)
     if not isinstance(sr, dict):
@@ -176,6 +171,14 @@ class SeedVR2Handler(H3VideoHandler):
             BINARY_RESULT_WRITER.reset(token)
 
     async def generate(self, payload, context):
+        try:
+            async for chunk in self._generate(payload, context):
+                yield chunk
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
+    async def _generate(self, payload, context):
         if not self.sr_ready:
             raise VideoWorkerFailure("composite Worker is unavailable", {"schema_version": 1, "reason": "engine_unavailable", "stage": "worker_execution"})
         if SR_PAYLOAD_KEY not in payload:
@@ -231,7 +234,9 @@ class SeedVR2Handler(H3VideoHandler):
                 **({"options": options} if options is not None else {}),
             )
         except Exception as exc:
-            raise VideoWorkerFailure(str(exc), classify_worker_error(exc, stage="super_resolution")) from exc
+            failure = VideoWorkerFailure(str(exc), classify_worker_error(exc, stage="super_resolution"))
+            self._record_failure(failure)
+            raise failure from exc
         stages = dict(stages, sr_service_s=time.monotonic() - mark)
         if context.is_stopped():
             raise asyncio.CancelledError

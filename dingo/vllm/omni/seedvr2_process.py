@@ -45,16 +45,16 @@ class SeedVR2Process:
             raise ValueError("invalid owned SeedVR2 process configuration")
         # Keep explicit profiles; the launcher derives both sequence and VAE
         # parallelism from this count and inherits the Pod's GPU visibility.
-        if type(config["gpus"]) is not int or config["gpus"] not in (1, 2, 8):
+        if type(config["gpus"]) is not int or config["gpus"] not in (1, 2, 4, 8):
             raise ValueError(
-                "composite SR profile requires one, two or eight allocated GPUs"
+                "composite SR profile requires one, two, four or eight allocated GPUs"
             )
         self.profile = config.get("profile", H3_SR_PROFILE)
         if self.profile not in H3_SR_PROFILES:
             raise ValueError("unsupported SR profile")
         if self.profile in {H3_SR_PROFILE_V2,H3_SR_PROFILE_V3}:
-            if config["gpus"] != 8 or os.getenv("DINGO_VIDEO_SEEDVR2_CUDA_VISIBLE_DEVICES"):
-                raise ValueError("SR v2 requires eight shared GPUs")
+            if config["gpus"] not in (4, 8) or os.getenv("DINGO_VIDEO_SEEDVR2_CUDA_VISIBLE_DEVICES"):
+                raise ValueError("SR v2/v3 requires four or eight shared GPUs")
             if not re.fullmatch(r"[^\s]{1,300}@sha256:[0-9a-f]{64}", config.get("image_digest", "")):
                 raise ValueError("SR v2 requires the pinned image digest")
         self.cuda_visible_devices = os.environ.get("DINGO_VIDEO_SEEDVR2_CUDA_VISIBLE_DEVICES")
@@ -196,7 +196,7 @@ class SeedVR2Process:
                         "SEEDVR2_METRICS_DIR": str(metrics_dir)})
             package_root = Path(__file__).resolve().parents[3]
             measurement_identity = {
-                "image_digest": self.config["image_digest"], "expected_world_size": 8,
+                "image_digest": self.config["image_digest"], "expected_world_size": self.config["gpus"],
                 "source_hashes": measurement_source_hashes(package_root, include_geometry=self.profile == H3_SR_PROFILE_V3),
                 "model_manifest_hash": hashlib.sha256((Path(self.config["model"]) / "conversion-manifest.json").read_bytes()).hexdigest(),
             }

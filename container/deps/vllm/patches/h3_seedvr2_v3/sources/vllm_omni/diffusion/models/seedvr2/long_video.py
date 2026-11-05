@@ -112,9 +112,28 @@ def _window(width: int, height: int) -> int:
     return fit - (fit - 1) % 4
 
 
-def _status(job: Path, stage: str, frames: int, error: str = "") -> None:
+def _is_oom(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (isinstance(error, MemoryError)
+                or any(cls.__name__ == "OutOfMemoryError" for cls in type(error).__mro__)
+                or str(error).startswith("CUDA out of memory")
+                or isinstance(error, JobOOMError)):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
+
+
+class JobOOMError(JobError):
+    """A loopback model response explicitly identified CUDA memory exhaustion."""
+
+
+def _status(job: Path, stage: str, frames: int, error: str = "", *, oom=False) -> None:
     # The owning PID lets a poller detect a job that a server restart abandoned.
     record = {"status": stage, "frames": frames, "error": error, "pid": os.getpid()}
+    if oom:
+        record["internal_error"] = {"schema_version": 1, "reason": "resource_exhausted", "stage": "super_resolution"}
     pending = job / "status.json.tmp"
     pending.write_text(json.dumps(record) + "\n")
     pending.replace(job / "status.json")
@@ -189,6 +208,11 @@ def _restore(
         try:
             response.raise_for_status()
         except requests.HTTPError as error:
+            # The model endpoint is owned loopback. Preserve only a bounded
+            # classification; never publish its traceback or device details.
+            body = response.content[:65536].decode("utf-8", errors="replace")
+            if any(marker in body for marker in ("CUDA out of memory", "torch.OutOfMemoryError", "torch.cuda.OutOfMemoryError")):
+                raise JobOOMError("SeedVR2 window exhausted GPU memory") from error
             raise JobError("SeedVR2 window restoration failed") from error
         _c14.media(c14_context, "window-output.mp4", response.content)
         with metrics.stage("window_output_decode", window_index=measurement["window_index"]):
@@ -498,7 +522,7 @@ def _background(
         logger.exception("SeedVR2 long-video job %s failed", job.name)
         current = json.loads((job / "status.json").read_text())
         detail = str(error) if isinstance(error, JobError) else "SeedVR2 long-video restoration failed"
-        _status(job, "cancelled" if isinstance(error, JobCancelledError) else "failed", current["frames"], detail)
+        _status(job, "cancelled" if isinstance(error, JobCancelledError) else "failed", current["frames"], detail, oom=_is_oom(error))
 
 
 @router.post("/v1/seedvr2/restore-long", status_code=202)

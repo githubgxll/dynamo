@@ -279,3 +279,15 @@ def test_journal_rejects_symlink_and_oversized_metadata(tmp_path):
 def test_job_id_cannot_escape_route(job):
     with pytest.raises(ValueError):
         SeedVR2Client.job_route(job)
+
+@pytest.mark.asyncio
+async def test_native_oom_classification_survives_status_and_journal(tmp_path):
+    from dingo.common.video_worker_error import VideoWorkerFailure
+    client,q,engine,path,kwargs=setup(tmp_path)
+    detail={'schema_version':1,'reason':'resource_exhausted','stage':'super_resolution'}
+    client.states=[{'status':'failed','frames':0,'internal_error':detail}]
+    with pytest.raises(VideoWorkerFailure) as caught:
+        await engine.run(tmp_path/'base.mp4',path,**kwargs)
+    assert caught.value.internal_error==detail
+    assert read_journal(path)['phase']=='failed'
+    assert client.deletes==0
