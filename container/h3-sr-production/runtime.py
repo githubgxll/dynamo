@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 INFO = HERE / "build-info"
@@ -68,9 +69,56 @@ def parent_module():
     return load("_h3sr_frozen_parent_runtime", PARENT_RUNTIME)
 
 
+def metadata_snapshot():
+    """Default discovery in a fresh interpreter, without importing engines."""
+    discovered = []
+    packages = []
+    for dist in md.distributions():
+        name = dist.metadata.get("Name")
+        if name:
+            packages.append((name.lower().replace("_", "-"), dist.version))
+            discovered.append({"name": name, "version": dist.version,
+                "location": str(dist.locate_file("")), "metadata_path": str(getattr(dist, "_path", ""))})
+    return {"schema": "h3sr-clean-metadata/1", "status": "PASS", "python": sys.executable,
+            "euid": os.geteuid() if hasattr(os, "geteuid") else None,
+            "cwd": os.getcwd(), "sys_path": list(sys.path), "packages": sorted(packages), "discovered": discovered}
+
+
+def fresh_process(action, directory, *, timeout=240):
+    """No -I/-S/path filtering: retain the real site, .pth, environment and cwd."""
+    directory = Path(directory)
+    command = [sys.executable, "-B", str(HERE / "runtime.py"), action, "--output-dir", str(directory)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        def as_text(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+        detail = as_text(getattr(error, "stdout", None)) + as_text(getattr(error, "stderr", None))
+        (directory / "fresh-process.log").write_text(detail + "\n" + type(error).__name__, encoding="utf-8")
+        if detail:
+            print(detail[-14000:], flush=True)
+        raise RuntimeError("Fresh metadata process failed: " + type(error).__name__) from error
+    log = result.stdout + result.stderr
+    (directory / "fresh-process.log").write_text(log, encoding="utf-8")
+    if result.returncode:
+        print(log[-14000:], flush=True)
+        raise RuntimeError("Fresh metadata process failed (exit " + str(result.returncode) + ")")
+    context = read(directory / "clean-metadata-context.json")
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    if (context.get("schema") != "h3sr-clean-metadata/1" or context.get("status") != "PASS"
+            or context.get("python") != sys.executable or context.get("cwd") != os.getcwd()
+            or context.get("euid") != euid or not isinstance(context.get("packages"), list)):
+        raise ValueError("Fresh metadata process identity or report differs")
+    return context
+
+
 def inventory():
-    return sorted((dist.metadata["Name"].lower().replace("_", "-"), dist.version)
-                  for dist in md.distributions() if dist.metadata.get("Name"))
+    with tempfile.TemporaryDirectory(prefix="h3sr-metadata-") as temporary:
+        report = fresh_process("metadata-inventory", temporary)
+    # Preserve duplicate rows; true startup-visible duplicate distributions are
+    # still rejected by the unchanged dependency auditor in its fresh process.
+    return [tuple(item) for item in report["packages"]]
 
 
 def source_map(root, package):
@@ -245,9 +293,25 @@ def dependency_checks(output):
     dump(output / "dependency-audit.json", report)
     if report["errors"]:
         raise ValueError("Actual installed dependency audit failed: " + json.dumps(report["errors"]))
-    native = load("_h3sr_actual_torch_contract", Path("/opt/h3-hsdp-offload/torch_contract.py"))
-    dump(output / "torch-contract.json", native.verify())
     return report["status"]
+
+
+def isolated_dependency_checks(output):
+    directory = Path(tempfile.mkdtemp(prefix="metadata-audit-", dir=output))
+    context = fresh_process("audit-dependencies", directory)
+    report = read(directory / "dependency-audit.json")
+    if report.get("errors") or not isinstance(report.get("status"), str):
+        raise ValueError("Fresh installed dependency audit failed")
+    dump(output / "metadata-isolation.json", {"status": "PASS", "evidence_directory": directory.name,
+        "parent_sys_path_after_imports": list(sys.path), "fresh_context": context,
+        "policy": "Same interpreter/UID/site/.pth/environment/cwd; no distribution filtering or new exceptions"})
+    return report["status"]
+
+
+def isolated_verify(output, phase):
+    directory = Path(tempfile.mkdtemp(prefix="source-" + phase + "-", dir=output))
+    fresh_process("verify-fresh", directory)
+    return read(directory / "source-verification.json")
 
 
 def validate(output):
@@ -255,7 +319,7 @@ def validate(output):
         raise ValueError("Actual Linux Python3.12 UID1000 validation required")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    proof = verify()
+    proof = isolated_verify(output, "initial")
     dump(output / "source-verification.json", proof)
     # Import every altered source from its actual installed package; prevent
     # fixture, copied /opt code or a user PYTHONPATH from shadowing the runtime.
@@ -276,7 +340,11 @@ def validate(output):
     dump(output / "actual-peak-api.json", peak.validate_installed_runtime())
     cli = load("_production_actual_native_cli", HERE / "cli_smoke.py")
     dump(output / "native-cli.json", cli.run())
-    dependencies = dependency_checks(output)
+    dependencies = isolated_dependency_checks(output)
+    # The Torch contract imports a heavy runtime. Keep it in the import/test
+    # process, never in the clean package-metadata audit process.
+    native = load("_h3sr_actual_torch_contract", Path("/opt/h3-hsdp-offload/torch_contract.py"))
+    dump(output / "torch-contract.json", native.verify())
     result = subprocess.run([sys.executable, "-B", str(HERE / "cpu_smoke.py"), "--output-dir", str(output)],
                             capture_output=True, text=True, timeout=600,
                             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -287,7 +355,7 @@ def validate(output):
     tests = read(output / "regression.json")
     if tests["tests"] < 1 or any(tests[k] for k in ("errors", "failures", "skipped")):
         raise ValueError("Incomplete production CPU regression run")
-    if verify() != proof:
+    if isolated_verify(output, "final") != proof:
         raise ValueError("Validation changed installed sources")
     value = {"schema": "h3sr-production-runtime/1", "status": "PASS_CPU_ONLY", "euid": 1000,
              "source_commit": os.environ[SOURCE_ENV], "parent_image": policy()["parent_image"],
@@ -300,9 +368,20 @@ def validate(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("apply", "verify", "validate"))
+    parser.add_argument("action", choices=("apply", "verify", "validate", "verify-fresh", "metadata-inventory", "audit-dependencies"))
     parser.add_argument("--output-dir", type=Path, default=INFO / "validation")
     args = parser.parse_args()
+    if args.action in ("metadata-inventory", "audit-dependencies", "verify-fresh"):
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        context = args.output_dir / "clean-metadata-context.json"
+        if context.exists():
+            raise ValueError("Fresh metadata evidence must not reuse an existing report")
+        dump(context, metadata_snapshot())
+        if args.action == "audit-dependencies":
+            print(json.dumps({"status": dependency_checks(args.output_dir)}))
+        elif args.action == "verify-fresh":
+            dump(args.output_dir / "source-verification.json", verify())
+        return
     result = apply() if args.action == "apply" else validate(args.output_dir) if args.action == "validate" else verify()
     if args.action == "verify":
         args.output_dir.mkdir(parents=True, exist_ok=True)

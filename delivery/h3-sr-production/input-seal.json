@@ -21,7 +21,7 @@
     "container/h3-sr-production/peak_patch.py": "3d36d8cb981f2372c43ff1c58738007f0908548751dab75b0f90fc3dfe7e4d0d",
     "container/h3-sr-production/profiles/fl2va-sr.json": "e431343f4baa28799e1d192f8af3db6f21b6500b35aec31b54a3c8d7a730c3de",
     "container/h3-sr-production/profiles/ref2va-sr.json": "21713bd4f5b9790bf7ddffa76baf90ee79d0cd14d014bd61dd1429a958fabfe7",
-    "container/h3-sr-production/runtime.py": "e1ab19eec7ce55f3988a0a52415f32dc3a4f030f39ba334c5c4842b247f5d939",
+    "container/h3-sr-production/runtime.py": "c020d7fa66a9fdc33c45a6776dba5cc041d8214d9745c419e2315b8eaf3fd97b",
     "container/h3-sr-production/service-local-checks.json": "62b8a7a1976b157b9df281c5c5412bc7866bb3c44ca7150539f070b2c5b0d7bf",
     "container/h3-sr-production/service/__init__.py": "fc074885248e4d226f19ab5cefb6ccc128482ad227052145afa7299df6e10ebe",
     "container/h3-sr-production/service/backend.py": "f613893b4b1360301f75da5e468f3b83cb9d5789d3e5e50b84052336f528fc5c",
@@ -55,6 +55,7 @@
     "container/h3-sr-production/tests/test_gateway.py": "2d64d24698bf92a998bd4dbe7bd2289393d12b6cc793cf74e1dc1c2b8fc227ac",
     "container/h3-sr-production/tests/test_gateway_dependencies.py": "f331bdcd29c5595f08e6dd872b5f5a3916130b6331be4c3f704e91ec68c71b06",
     "container/h3-sr-production/tests/test_gateway_handler.py": "7f70c67c3f500e9e66501cce6652aecbbf41d732eefb59f733aab5079095d767",
+    "container/h3-sr-production/tests/test_metadata_isolation.py": "c498022f7f1beb4d53297d25e5a94cde287fe5562edbb68003846a2968b2615e",
     "container/h3-sr-production/tests/test_peak_patch.py": "c2759d63bc5a06bb201127ee919b563a9628cff9982394d2b232d7c64c2488dd",
     "container/h3-sr-production/tests/test_recipe_runtime.py": "bc822c8f3eb79c219d179705a0742f732c70321ccb2661f58699c0a099b88dcd",
     "container/h3-sr-production/tests/test_service_asgi.py": "532f079e8a0c9c122fad9ac12805874be6ea36bbb808d80a5409105dea406f00",
@@ -97,6 +98,6 @@
     "dingo/vllm/omni/main.py": "a705bec9ba6e8cb340cb27c6a6086bc65c41e13b2e01058497710b6acc954a8b",
     "dingo/vllm/omni/production_handler.py": "c17db5553059a612ff088110ceb197536c0b9ab4a6dbbc9452a06149ffd20b76"
   },
-  "recipe_sha256": "4232f375e9577e7c3f1ae4bd811e13aa50afb8736e407540e025f65cab8e86ab",
-  "review_tree": "8ffba0018164b01154a92951ab4356ff15000cb0"
+  "recipe_sha256": "7f77bdedb367f7f5c3591bbd5ffa126002105b1b15b1dd914f043c644d4d29b2",
+  "review_tree": "859076d15a523c67e64ba5c0862835bca1f8c82c"
 }

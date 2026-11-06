@@ -1,16 +1,16 @@
 {
   "schema": "h3-sr-production-freeze/1",
   "status": "READY_FOR_BUILD",
-  "approved_at": "2026-11-05T19:39:41.796278+08:00",
-  "recipe_sha256": "4232f375e9577e7c3f1ae4bd811e13aa50afb8736e407540e025f65cab8e86ab",
-  "review_tree": "8ffba0018164b01154a92951ab4356ff15000cb0",
+  "approved_at": "2026-11-06T10:24:28.997897+08:00",
+  "recipe_sha256": "7f77bdedb367f7f5c3591bbd5ffa126002105b1b15b1dd914f043c644d4d29b2",
+  "review_tree": "859076d15a523c67e64ba5c0862835bca1f8c82c",
   "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
   "authorization": "User approved implementation on githubgxll/dynamo Dingorouter-H3-vllm-omni-jirx and image build after completion",
   "single_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
   "reviews": {
     "root": {
       "status": "PASS",
-      "scope": "92 sealed file hashes verified; 201 baseline plus affected deltas; independent 44 Gateway and 70 service tests; independent duration 11 tests; single image workflow reviewed",
+      "scope": "94 sealed file hashes reverified on 2026-11-06; prior reviewed baseline and affected deltas preserved; metadata isolation 6 tests plus recipe composition 7 tests independently PASS; workflow one image",
       "source": "implementation/ROOT-REVIEW.json and independent production_acceptance_audit delta review"
     },
     "k8s": {
@@ -24,7 +24,8 @@
   "delta_reviews": {
     "output_modality": "Contract and installed-parser smoke now explicit video, matching K8S reviewed invocation",
     "duration": "One rational time-base tick tolerated; hard 65 decoded frame and pixel budgets retained; 11 independent tests PASS",
-    "corrected_installed_cli": "Removed unsupported --component; exact K8S-generated two-profile argv and expected parser values match; only external source_profile_sha256 metadata differs; K8S 12 tests and source CLI flag surface plus recipe 7 tests PASS"
+    "corrected_installed_cli": "Removed unsupported --component; exact K8S-generated two-profile argv and expected parser values match; only external source_profile_sha256 metadata differs; K8S 12 tests and source CLI flag surface plus recipe 7 tests PASS",
+    "metadata_isolation": "Initial/final source verification and strict dependency audit use fresh interpreter; actual duplicates remain visible; Torch runtime checks in parent process; 6 isolation and 7 composition tests PASS"
   },
   "publication_policy": "One common image; sole submitter observes same Actions request and Harbor result before any sequential correction",
   "not_run": [
@@ -35,10 +36,16 @@
     "media quality"
   ],
   "previous_request": {
-    "commit": "212aec2d6cd05786af9f66d08272bac078c9e98d",
-    "run_id": 42017370062,
-    "attempt": 2,
+    "commit": "457139f478a2972db5e61cfb4eb4135ed9e9133f",
+    "run_id": 42020938250,
+    "attempt": 1,
     "result": "FAILED_BEFORE_PUBLICATION",
     "publication_state": "ABSENT_CONFIRMED"
+  },
+  "scope_clarification": {
+    "date": "2026-11-06",
+    "source_thread": "01a1875b-6398-78b0-99d7-865f025be98c",
+    "verified_user_message": "01a1aea7-69b9-70c3-8e62-4662b586eb26",
+    "scope": "Continue reviewed worker and previous Gateway compatibility. New size document guides park test only. No v3 Gateway integration in this release."
   }
 }
