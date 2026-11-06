@@ -54,6 +54,10 @@ fi
 
 export VLLM_OMNI_TARGET_DEVICE
 
+# Bytecode compilation can compete with the concurrent Rust wheel builds.
+# Keep it enabled, but allow slower builders more than uv's default 60 seconds.
+export UV_COMPILE_BYTECODE_TIMEOUT="${UV_COMPILE_BYTECODE_TIMEOUT:-300}"
+
 # Use --system flag only for CUDA (system Python), omit for CPU/XPU (venv)
 if [ "${VLLM_OMNI_TARGET_DEVICE}" = "cuda" ]; then
   uv pip install --system \
