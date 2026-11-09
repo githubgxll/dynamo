@@ -231,7 +231,8 @@ def validate_gateway(image_id, commit, output):
            "--mount", "type=bind,src=" + str((ops.HERE / "test-deps").resolve()) + ",dst=/tmp/gateway-test-deps,readonly",
            "--mount", "type=bind,src=" + str(output.resolve()) + ",dst=/tmp/h3-sr-video-gateway-evidence",
            image_id, "-P", "-B", "-m", "pytest", "-p", "pytest_asyncio.plugin", "-c", "/dev/null",
-           "--import-mode=importlib", "--confcutdir=" + testpack + "/tests/video_gateway", "-o", "asyncio_mode=auto", "-q",
+           "--rootdir=" + testpack, "--import-mode=importlib",
+           "--confcutdir=" + testpack + "/tests/video_gateway", "-o", "asyncio_mode=auto", "-q",
            "--junitxml=/tmp/h3-sr-video-gateway-evidence/gateway-tests.xml",
            *(testpack + "/tests/video_gateway/" + name for name in ops.GATEWAY_TEST_FILES),
            log=output / "gateway-tests.log")

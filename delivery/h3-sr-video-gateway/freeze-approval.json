@@ -1,14 +1,14 @@
 {
   "schema": "h3-sr-video-gateway-freeze/1",
-  "recipe_sha256": "033387bfdd9f2de92215636182913e6e7be6e468fdbdab79c9f27273eb36acf6",
-  "review_tree": "f9f0c7a2d63fc696bb7b810a5235e226b52e17e5",
+  "recipe_sha256": "0bcf35e7341bba9f1526f62b665b1512eb50c29f3ace4cdf758f358c109bd9b6",
+  "review_tree": "e7d8fa8d66bcb1f82df9f501dda21d796b686df2",
   "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
   "reviews": {
     "root": {
       "status": "PASS",
       "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_VideoGateway_Handoff_20261109\\implementation\\ROOT-REVIEW.json",
-      "sha256": "523956c46abe73cca38d8f9aea2dfb99807564f802374455229599375a7f125d",
-      "scope": "Final local source and affected contract review. Actual installed Linux CLI, image publication and real GPU operation remain separate gates."
+      "sha256": "f2dfdd9cffe92ab268499a3c5eb103067b4c1409f49ae708ce6affad83efcc38",
+      "scope": "Local review of CI-only rootdir fix and real pytest negative/positive regression. Fixed production bytes exact to prior accepted local review and actual runtime checks. Final image Linux gates and publication still required."
     },
     "k8s": {
       "status": "PASS",
@@ -18,11 +18,11 @@
       "carried_forward_from_recipe": "75ee261b8669df84efe12c587de9fbe6c83b849d22d2b3ff0ef5324e08d71a1b",
       "carried_forward_from_tree": "ff2df6f2420f461041dbcfbeeaa2f362f3d0d566",
       "impact_review": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_VideoGateway_Handoff_20261109\\implementation\\ROOT-REVIEW.json",
-      "carried_forward_reason": "Documented valid production profiles and public contract bytes unchanged, source correction limited to parent verification and duplicate CLI consolidation with input behavior restored."
+      "carried_forward_reason": "Only CI command rootdir and its regression changed. Fixed startup/public production contract remains byte-identical; prior root parent/CLI impact review retained."
     }
   },
   "status": "READY_FOR_BUILD",
-  "approved_at": "2026-11-09T10:44:59.607948+00:00",
+  "approved_at": "2026-11-09T11:02:45.492357+00:00",
   "authorization": "2026-11-09 user approved coordinated update and personal-branch source submission/build; sole submitter assembles completed matching root/K8S reviews",
   "single_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1"
 }

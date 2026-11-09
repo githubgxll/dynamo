@@ -1,4 +1,4 @@
-"""Production release regressions: subprocess/API/Docker boundaries are mocked."""
+"""Release boundary doubles and real pytest subprocess checks of JUnit provenance."""
 from __future__ import annotations
 
 import copy
@@ -7,10 +7,13 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("h3_video_gateway_ci_under_test", ROOT / ".github/scripts/h3_sr_video_gateway_ci.py")
@@ -455,6 +458,35 @@ class LocalChecks(unittest.TestCase):
 
 
 class InstalledGatewayGate(unittest.TestCase):
+    def test_real_pytest_rootdir_retains_junit_module_provenance(self):
+        self.assertIsNotNone(importlib.util.find_spec("pytest"), "The CI regression environment requires pytest")
+        with tempfile.TemporaryDirectory(prefix="h3sr-junit-root-") as temporary:
+            root = Path(temporary)
+            configuration = root / "config"
+            configuration.mkdir()
+            ini = configuration / "empty.ini"
+            ini.write_text("", encoding="utf-8")
+            testpack = root / "testpack"
+            tests = testpack / "tests/video_gateway"
+            tests.mkdir(parents=True)
+            source = tests / "test_provenance.py"
+            source.write_text("def test_provenance():\n    assert True\n", encoding="utf-8")
+            environment = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+            classnames = {}
+            for mode, extra in (("original", []), ("fixed", ["--rootdir=" + str(testpack)])):
+                junit = root / (mode + ".xml")
+                command = [sys.executable, "-P", "-B", "-m", "pytest", "-c", str(ini),
+                           "--import-mode=importlib", "--confcutdir=" + str(tests), "-p", "no:cacheprovider",
+                           "-q", "--junitxml=" + str(junit), *extra, str(source)]
+                result = subprocess.run(command, cwd=root, env=environment, capture_output=True,
+                                        text=True, encoding="utf-8", errors="replace", timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                cases = list(ET.parse(junit).iter("testcase"))
+                self.assertEqual(len(cases), 1)
+                classnames[mode] = cases[0].get("classname")
+            self.assertEqual(classnames["original"], "")
+            self.assertEqual(classnames["fixed"], "tests.video_gateway.test_provenance")
+
     def test_linux_result_retains_four_media_cases_and_no_skips(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
@@ -531,6 +563,7 @@ class InstalledGatewayGate(unittest.TestCase):
             self.assertTrue(any("dst=/tmp/gateway-testpack/tests/video_gateway,readonly" in value for value in mounts))
             self.assertTrue(any("dst=/tmp/gateway-testpack/tests/__init__.py,readonly" in value for value in mounts))
             self.assertIn("--confcutdir=/tmp/gateway-testpack/tests/video_gateway", command)
+            self.assertIn("--rootdir=/tmp/gateway-testpack", command)
 
 
 class WorkflowRouting(unittest.TestCase):

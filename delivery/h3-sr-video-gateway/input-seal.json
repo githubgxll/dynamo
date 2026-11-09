@@ -4,8 +4,8 @@
   "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
   "files": {
     ".gitattributes": "6e0f2b9645479f2afe943bfc52ce7a7889dc71fafe521e08094d352c209b8c17",
-    ".github/scripts/h3_sr_video_gateway_ci.py": "4d74c662d6e524b4181b34be270241f59bcc0026b05d2395210cd9570c1ae867",
-    ".github/scripts/test_h3_sr_video_gateway_ci.py": "ea668956f6c3ae31154aef545ce276bccd011f912e400f7d6c4aca8ab4d36305",
+    ".github/scripts/h3_sr_video_gateway_ci.py": "fa6b3978b7b482758dde9c5437270346d4ffaa4d0abf37902174ca52994a26a4",
+    ".github/scripts/test_h3_sr_video_gateway_ci.py": "f280415767911042f0ceb5a01a276272eda41b4bbba27381cbf663ae88e1f14f",
     ".github/workflows/dingo-router-ci.yml": "461555654d20d8f3cfa41eef44b806c66741d50bf2d079ac8d968fddf27da270",
     ".github/workflows/h3-sr-production.yml": "b47a9b2d8f7fe6c8f1ee1bf3805f712a9a796f41af05bb85d62fd945cce0951c",
     ".github/workflows/h3-sr-video-gateway.yml": "00c59b5199d42f885d390f5c1f68020af880d4ad2ffb5433b465783f99e10efd",
@@ -171,6 +171,6 @@
     "tests/video_gateway/test_video_recovery.py": "646aab276c2a0d979a9f5cc4637813c2991dac227012322e315f67e7dad2e24a",
     "tests/video_gateway/test_worker_error_health_contract.py": "8b600c13b556c6413809bff02b2e6a142eac1543c0b9b367c9c823864711b2ef"
   },
-  "recipe_sha256": "033387bfdd9f2de92215636182913e6e7be6e468fdbdab79c9f27273eb36acf6",
-  "review_tree": "f9f0c7a2d63fc696bb7b810a5235e226b52e17e5"
+  "recipe_sha256": "0bcf35e7341bba9f1526f62b665b1512eb50c29f3ace4cdf758f358c109bd9b6",
+  "review_tree": "e7d8fa8d66bcb1f82df9f501dda21d796b686df2"
 }
