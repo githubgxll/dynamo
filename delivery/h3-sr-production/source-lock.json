@@ -21,47 +21,219 @@
     "gpu-memory-service": "0.9.0"
   },
   "dingo_changes": {
+    "dingo/common/h3_reference_order.py": {
+      "before_sha256": null,
+      "after_sha256": "bd04d08efdddf19b53b0d01be615eed9351085770723b31036b9d910391dded7"
+    },
     "dingo/common/video_result_file.py": {
       "before_sha256": "fa7742cf04beb2b725bc1a90f573d085422df20d625da05e737b27d97ae66e04",
-      "after_sha256": "467c11519868ff328140a638d059e5d231c9073cfc4c773dc235f7584032bf63"
+      "after_sha256": "9d4735fa67c2ecfe554cac320b76eaf1b2ccad833212464f1679c2ed4cdc0555"
+    },
+    "dingo/common/video_sr_timings.py": {
+      "before_sha256": null,
+      "after_sha256": "a6895cde3a645924158283486d0c0b1cf4f0a0d3c9bb108a027de135003d519e"
+    },
+    "dingo/common/video_super_resolution.py": {
+      "before_sha256": null,
+      "after_sha256": "50ead8902132a4134991c44a64ac5bc87e5a37ece51a8ecc950ffe8a278c57fe"
     },
     "dingo/common/video_timing_schemas.py": {
       "before_sha256": "3c735b03db179aced05a2ac372053afc3e335ab9c95aab6eb1727c2d85f2a49e",
       "after_sha256": "a38e9dfc8d60cf5cb60e87ba8ba506a88403d4421d6294068e3b4f6425d00256"
     },
+    "dingo/common/video_worker_error.py": {
+      "before_sha256": null,
+      "after_sha256": "c33de2db28a2fffa2a17478d334416e53d787d237878eec8765f3e88660db253"
+    },
     "dingo/video_gateway/adapters/base.py": {
       "before_sha256": "66951d468874055b584f0ace98e254e6d0375ba0ba93e7b3ee4f5258f2e0e500",
-      "after_sha256": "8683c184d2b8c05bbd6ad35a76a5c082e5cb2314963b26bbb3c59504c42305cd"
+      "after_sha256": "3da034353f735f3dea7e143cd5e1e9ea63e29952aa13058e60e774782b43b20a"
+    },
+    "dingo/video_gateway/adapters/h3_output_policy.py": {
+      "before_sha256": null,
+      "after_sha256": "ed074dfe5a162fae0a40c17c2a4173bd8266be2f0872dc8a8a7304048ea6a2f0"
     },
     "dingo/video_gateway/adapters/minimax_h3.py": {
       "before_sha256": "d82bef2bb004858b96ff0f06c1d384892bc44753c60233266ae4100ea27b4d31",
-      "after_sha256": "3b390d3b318f25afed940af0a82f611d3bd7f54b91d0b0a811a48e18be12dae9"
+      "after_sha256": "dde5a43feb52493cd16968f5e8d3e6d300bd89277d6db24294a9dc12111771ef"
+    },
+    "dingo/video_gateway/api.py": {
+      "before_sha256": "b527c8fa261933c3c86801184189804ac27c98fab9f4c160839eb111bdbb8ac2",
+      "after_sha256": "5e07bf217c4f11a75007f3d00be2310e056d6e81c5f4fa1cc11829bdba8f5d48"
+    },
+    "dingo/video_gateway/app.py": {
+      "before_sha256": "661a17700c282b5795babd233ccc4bb8b75b6e1001fdff8c28e1cac63a954ade",
+      "after_sha256": "56cdbd7e346bd5112bfb1221c7de69fbac41c4f11f65dab5e27d6579cbbfdd3d"
+    },
+    "dingo/video_gateway/artifact_store.py": {
+      "before_sha256": "d67cd44500204674a6b4137d117db5d407ab033c2e1a4065fb5011f69ad9dd75",
+      "after_sha256": "05d43a39809b98c1eb8be92cad6c9347450d7f779eb5ffe59f60d720aab3576e"
+    },
+    "dingo/video_gateway/config.py": {
+      "before_sha256": "109839eaeb7d58ccc117264a65b90902c5bb16069411e5bbffd7a9e25c6bcc1e",
+      "after_sha256": "758e411c17576882cf7a185af884c3966dbdf9ff1efda340536a8c56f0a45041"
+    },
+    "dingo/video_gateway/context_ir/__init__.py": {
+      "before_sha256": null,
+      "after_sha256": "250ccc932c2fdae1bd31daf08a28c0bee49bee1045240c77f717cd2e55fe505d"
+    },
+    "dingo/video_gateway/context_ir/api.py": {
+      "before_sha256": null,
+      "after_sha256": "656440204ea4ab973a2551c05766ea249b1f74b8e7075ced8dd10f0640a4f0f4"
+    },
+    "dingo/video_gateway/context_ir/artifact_store.py": {
+      "before_sha256": null,
+      "after_sha256": "5bec8050045617714e019e014bad02c5c55be690ee7ae4e1e02809f6ec743b2e"
+    },
+    "dingo/video_gateway/context_ir/client.py": {
+      "before_sha256": null,
+      "after_sha256": "244a8335ce8f33bcb5b1eea5bb78f463c8627bc06e4698df0974419d0d1303d8"
+    },
+    "dingo/video_gateway/context_ir/config.py": {
+      "before_sha256": null,
+      "after_sha256": "3c3089dca97a8ebe011cf687acf3ee23350116a4dfb542f4ccef7fb3df6b560c"
+    },
+    "dingo/video_gateway/context_ir/dispatcher.py": {
+      "before_sha256": null,
+      "after_sha256": "1fa035c6621b018be99f419642239e16733271fa503508a6e042ef454d44e47a"
+    },
+    "dingo/video_gateway/context_ir/models.py": {
+      "before_sha256": null,
+      "after_sha256": "a30b4255d63a8f81f81b3599701fdaca6a703b9a4a62d2c8f9e86488d8b9ae7f"
+    },
+    "dingo/video_gateway/context_ir/protocol.py": {
+      "before_sha256": null,
+      "after_sha256": "d6a1a38e5a53237dfebb59331d491d14cc119edccff796dbd429245740929908"
+    },
+    "dingo/video_gateway/context_ir/service.py": {
+      "before_sha256": null,
+      "after_sha256": "9cd2384091ac48e2c4b69c2328d277ac419679c4ac17aa3cbb682cbeb4504eb9"
+    },
+    "dingo/video_gateway/context_ir/task_store.py": {
+      "before_sha256": null,
+      "after_sha256": "07c0cfb99d7ebfaa9613bdbf37dac60b41f089ba49de3822073ba9e6c12ae9bd"
+    },
+    "dingo/video_gateway/context_ir/validation.py": {
+      "before_sha256": null,
+      "after_sha256": "a3126d4bbd165e2863d2411d90603245c80e040c2bac89b197940bc143b22fa2"
     },
     "dingo/video_gateway/dispatcher.py": {
       "before_sha256": "70015030dab19fdd4398111533adb6b28b093dd842bc223626e1ebf8a60e43d2",
-      "after_sha256": "e760be5bda0eaecf9b73d2fdb8857bf83e5fbdf1df1722e6937ae695102c6ec5"
+      "after_sha256": "ece1dae8e0787633449f44694b6182aa5ca440318015ac2bc8420babb41176f6"
+    },
+    "dingo/video_gateway/errors.py": {
+      "before_sha256": "43b1c9bbcb3d6507556e7187c8d57afc8a12588eae0da4a8997e6cd5529c6166",
+      "after_sha256": "dcb19f4c0473c7b336c1d95504c8275e151b0894f8aba87f21e5704b9de6aab5"
     },
     "dingo/video_gateway/models.py": {
       "before_sha256": "ca8d8d4f5c33710b42003826f5e33590641262d1ed6c4bf3d03679a66c14609f",
-      "after_sha256": "df634ff3bbfa1338100185d7a305975942865a7162a65d4293030fe2e4eca1d1"
+      "after_sha256": "df415149eac0ccb3f4d62135fb47d6906a245b2769627900d4d3c0a149435760"
+    },
+    "dingo/video_gateway/performance.py": {
+      "before_sha256": "206ebe1c4943ce484e9de518ebaf11b282ed38859abdf24e254b2f5654ad2f36",
+      "after_sha256": "d5a7c1ef20c97ab8bb6d618d912a201163df8321bcbbf20e24eae79c34966f86"
+    },
+    "dingo/video_gateway/service.py": {
+      "before_sha256": "99bbaa20a3e3f92dff505f8110f3596f08149af0eeb29296d67b647fead687ce",
+      "after_sha256": "58199dce28dcfc18341f23d7bd96bb48d99d9bdc8f1fbf51fe3993269bb0fd6d"
+    },
+    "dingo/video_gateway/task_runtime/__init__.py": {
+      "before_sha256": null,
+      "after_sha256": "fde6be1cd396288ba93b304da3add7c9c962ef1c580abc5ff4dafd462d0151b7"
+    },
+    "dingo/video_gateway/task_runtime/transactions.py": {
+      "before_sha256": null,
+      "after_sha256": "c44f3a62d9ce454986412e186bbf6fa07847564e017ef3882cd88414a9f51d9a"
+    },
+    "dingo/video_gateway/task_store.py": {
+      "before_sha256": "46f64ec3b8d0f0e71a04054a9eda3c3e02edd52f28e9f56273810ea129de96fb",
+      "after_sha256": "849512cf8c853abf382bb6cb700c791c320a14b2098fd6b9ee91c24d6a6b2ea8"
+    },
+    "dingo/video_gateway/telemetry.py": {
+      "before_sha256": "903758b6bb0619babab7c8031724f4f1cf613928516c97938a65d25ccc281e2f",
+      "after_sha256": "6fab7ecd0596d7e61880eedacaf7079bda90c0dad54e4456c9436ea5d8751188"
     },
     "dingo/vllm/omni/args.py": {
       "before_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
-      "after_sha256": "7e4aee2628532c1091ec4749423cde41c1b9b5d9ce87beece402b146fc51a51c"
+      "after_sha256": "7904c2ff3ac3bd81daaaead0e10cc03124758740cc2c918f8c1e701816ad021c"
+    },
+    "dingo/vllm/omni/base_handler.py": {
+      "before_sha256": "11f0c1804e6d9f2b88f8f3644dc82ef7abe02e9309b3db79cde435cb1ed19261",
+      "after_sha256": "bac14a5e9e6268b6fb258f07a301f75aad175ecadd85f2fa773be4cbb103f951"
     },
     "dingo/vllm/omni/detached_tasks.py": {
       "before_sha256": "c2af72a7c4460373f98d7727966323cc1d19ebea0db9a493fe0487982d5ad21f",
-      "after_sha256": "f107df886dc262b6fb4ab62ea2af3f0c96db1f29e87321bf6b6c3fa79eff8d88"
+      "after_sha256": "3c370c73b52de1161ae6493e8bc234567443c99218aac7d418a19ea2d4ce091f"
+    },
+    "dingo/vllm/omni/h3_shared_inputs.py": {
+      "before_sha256": null,
+      "after_sha256": "e99ac20d80d31fc9124949729ccf8921e19942918d5ab8a51ef1fffc02f1935d"
+    },
+    "dingo/vllm/omni/h3_video_handler.py": {
+      "before_sha256": null,
+      "after_sha256": "731fd7cb87b5b5e6b2bd41a50d2d44044c82dcba648cbe8effc5e554aa141e17"
     },
     "dingo/vllm/omni/main.py": {
       "before_sha256": "54d1a015648a46c5569f09fbcf6665753e91d6842819dfd72d38a4327d33f99b",
-      "after_sha256": "a705bec9ba6e8cb340cb27c6a6086bc65c41e13b2e01058497710b6acc954a8b"
+      "after_sha256": "ff7664b322867f2471d521562e27006507decc8a15bb9e6f77de61a6367816b7"
+    },
+    "dingo/vllm/omni/omni_handler.py": {
+      "before_sha256": "48ae037ec0d75f7e0d6977a435cee3551e0841de19e1202723f2481d1fd5bcc8",
+      "after_sha256": "5c01db6c5188355421797ec1302a8d8366f6d667776d83cf2b1c89ebcd2cda05"
     },
     "dingo/vllm/omni/production_handler.py": {
       "before_sha256": null,
       "after_sha256": "c17db5553059a612ff088110ceb197536c0b9ab4a6dbbc9452a06149ffd20b76"
+    },
+    "dingo/vllm/omni/request_adapters/minimax_h3.py": {
+      "before_sha256": "63b617be6f7c378dbe773ab718ef8ce153eb36a8e79e955ec62f37297604a7ac",
+      "after_sha256": "91365fafe2760a8866e904619f6214aa48639e613188ee4d3bdb74f81d7f9bc2"
+    },
+    "dingo/vllm/omni/seedvr2_client.py": {
+      "before_sha256": null,
+      "after_sha256": "abb68f899535e272f6046b888694a1f233222c7f46b34b121cd704a403493171"
+    },
+    "dingo/vllm/omni/seedvr2_execution.py": {
+      "before_sha256": null,
+      "after_sha256": "8aeaac7ae94759b3675ca849c5569b2eabb3a11e68fa9825303d75c0f6076880"
+    },
+    "dingo/vllm/omni/seedvr2_handler.py": {
+      "before_sha256": null,
+      "after_sha256": "91a8fd2d0cc1c66c8dab1c896999db09d4cabcbc3f7182d9521491aabcf7f7fd"
+    },
+    "dingo/vllm/omni/seedvr2_media.py": {
+      "before_sha256": null,
+      "after_sha256": "df18016a80e3c433cad47043a677166b8f22f427f881e6626f840cd258827c9a"
+    },
+    "dingo/vllm/omni/seedvr2_process.py": {
+      "before_sha256": null,
+      "after_sha256": "6f26e69a20a4c076669077bca411771d1e6b9d5f6351ec1b640f4c846e164d74"
+    },
+    "dingo/vllm/omni/video_readiness.py": {
+      "before_sha256": null,
+      "after_sha256": "53f64724374a3073e3776a8fe080e056f06d26a590e574791387b3ae85179c08"
+    },
+    "dingo/vllm/omni/video_recovery.py": {
+      "before_sha256": null,
+      "after_sha256": "2d902ca6ced3f2959aacd53d7ae64f753b7fccff35d0eae877a0ed3388696fb8"
     }
   },
-  "scope": "Copy-only c88 derivative; one shared image with FL/Ref profiles; package/native versions preserved. No model weights baked in; no K8S mutation.",
-  "parent_gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b"
+  "scope": "Copy-only c88 derivative with current af4 Gateway/ContextIR, SR-only production bridge and BF16 startup profiles. Native dependency and Omni source versions preserved.",
+  "parent_gateway_commit": "9ccee2f56d0122be94d7436ae2f5fec96d15ea9b",
+  "integrated_gateway_commit": "af4b80e5027817c9ba4242a23769282b3017daf8",
+  "gateway_source_url": "https://github.com/githubgxll/dynamo/tree/af4b80e5027817c9ba4242a23769282b3017daf8",
+  "gateway_reference_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:8bf72ebc29d39a88a2aa98363a2ef2e9cc4d8c057ae2ecda7b73a9729206733e",
+  "startup_sources": {
+    "h3-sr-startup/.gitattributes": "69d53134c40f2c799ded9445204156c2a7813116252a31d94a261f365ae499ee",
+    "h3-sr-startup/BASELINE-SNAPSHOTS.json": "bdc7c58722aad00f7b12700c96830ede90e48e06c75267650eedadf7e3bd674c",
+    "h3-sr-startup/configure.py": "d4b0f53ae9771ceba232f84b56961944dbfabc8957fde0fb026cebbf80a5dda0",
+    "h3-sr-startup/gateway-command.fl2va.json": "933e3de293d821f8e0895255806c833bae1428e45f07c23f84e06acacfe3da71",
+    "h3-sr-startup/gateway-command.ref2va.json": "d188f77706c549d9962b6e87fadfb0b3a02274190537f8ad30586bce9ee0d4d5",
+    "h3-sr-startup/prepare-sr-weights.sh": "ea783bbdb26b05d704ec8c6f4b2b850a1ade11acb254e897c88200ebac0a2a9b",
+    "h3-sr-startup/profiles/fl2va-sr.json": "134e579b212cf71f1bfdb3a090caa688195a86ed887656c79938a05f4f50e974",
+    "h3-sr-startup/profiles/ref2va-sr.json": "3bac419f1d105da1672887f5383651c24331ddfc2941a59b17e55cadaab1e7ae",
+    "h3-sr-startup/SOURCE-MANIFEST.json": "66d352c0877157b476549d2c330cf5379e1a46038ca51c0312c3ccf5610448ed",
+    "h3-sr-startup/start-fl2va.sh": "978d49b736b073df70553477834c4dc1b3159f6d036b6de0f478c8114e9ad652",
+    "h3-sr-startup/start-ref2va.sh": "286e5d48e808fafd4a70bd8de02e7b18deef589e4648e3b58ba709a83f9fc639"
+  }
 }

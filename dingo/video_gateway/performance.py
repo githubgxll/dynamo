@@ -9,6 +9,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from dingo.common.video_sr_timings import SR_TIMINGS_KEY, normalize_sr_timings
 from dingo.common.video_timing_schemas import (
     MODEL_EXECUTION_KEY,
     normalize_model_execution,
@@ -117,4 +118,5 @@ def performance_record(task: VideoTask) -> dict[str, Any]:
             "finalize_s": _number(task.finalize_time_s),
         },
         "model_execution": normalize_model_execution(request.get(MODEL_EXECUTION_KEY)),
+        "super_resolution": normalize_sr_timings(request.get(SR_TIMINGS_KEY)),
     }

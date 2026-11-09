@@ -11,6 +11,7 @@
 *.[Gg][Zz]          binary
 *.fatbin            binary
 *.mp4               binary
+delivery/h3-sr-video-gateway/test-deps/*.whl binary
 
 # Exclude test data files from linguist language detection
 lib/llm/tests/data/** linguist-vendored

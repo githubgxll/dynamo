@@ -33,6 +33,11 @@ def validate(profile):
         if "--host" not in argv or argv[argv.index("--host") + 1] != "127.0.0.1":
             raise ValueError("Native backends must remain loopback-only")
     h3 = profile["h3"]["native_argv"]
+    if (h3.count("--dtype") != 1 or h3.index("--dtype") + 1 >= len(h3)
+            or h3[h3.index("--dtype") + 1] != "bfloat16"
+            or profile["h3"].get("quantization_config") is not None
+            or any(arg.startswith("--") and ("quant" in arg.lower() or "fp8" in arg.lower()) for arg in h3)):
+        raise ValueError("Production H3 requires BF16 with no quantization configuration")
     if ("--diffusion-offload-config" in h3) is not ref:
         raise ValueError("FL must omit offload; Ref must explicitly select components")
     if not ref and any("offload" in arg for arg in h3):
@@ -90,7 +95,8 @@ def gateway_environment(profile, *, profile_path, epoch, root, inherited=None):
     for name in ("PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         env[name] = profile["common_environment"].get(name, "1")
     env.update(H3SR_PROFILE_PATH=str(Path(profile_path).resolve()), H3SR_SERVICE_EPOCH=epoch,
-               H3SR_CONTROL_ROOT=str(root), PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+               H3SR_CONTROL_ROOT=str(root), PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+               PYTHONSAFEPATH="1")
     return env
 
 
@@ -150,6 +156,7 @@ def environment(profile, role, *, profile_path, epoch, root, inherited=None):
     # Intentional, narrow module path for spawn workers. No sitecustomize or
     # installed vllm_omni package is provided by this directory.
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PYTHONSAFEPATH"] = "1"
     if role == "sr" and profile["monitoring"]["mode"] == "stages":
         env["SEEDVR2_METRICS_DIR"] = profile["monitoring"]["stage_mode_target"]["sr_metrics_dir"]
     for name in ("TMPDIR", "TMP", "TEMP", "HF_HOME", "XDG_CACHE_HOME", "TORCH_HOME", "TRITON_CACHE_DIR", "VLLM_CACHE_ROOT", "SPEAKER_SAMPLES_DIR"):

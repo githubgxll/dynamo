@@ -1,0 +1,25 @@
+{
+  "schema": "h3-sr-video-gateway-release-lock/1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "parent_image_id": "sha256:cd87bc74b19402c536fc775ea2ebbc15f31aad0013756e8d8c448afe1c895a6b",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "versions": {
+    "vllm": "0.32.0",
+    "vllm-omni": "0.32.0",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0",
+    "ai-dingo": "1.3.0",
+    "ai-dingo-runtime": "1.3.0",
+    "gpu-memory-service": "0.9.0"
+  },
+  "recipe_base_commit": "2d58b79df39a9335e2f850d3a83bf938610cc611",
+  "working_tree_base_commit": "2d58b79df39a9335e2f850d3a83bf938610cc611",
+  "tag_prefix": "h3-sr-video-gateway",
+  "runtime_source_lock": "delivery/h3-sr-production/source-lock.json",
+  "expected_environment_additions": {
+    "PYTHONSAFEPATH": "1"
+  }
+}

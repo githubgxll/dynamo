@@ -11,6 +11,7 @@ import base64
 from fractions import Fraction
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -233,6 +234,43 @@ def native_h3_request(request, workflow, *, stages=False):
     return fields, refs, (width, height)
 
 
+def decode_sr_source(request):
+    """Accept one embedded Base MP4 with an explicit actual-frame contract."""
+    value = request.get("input_reference")
+    prefix = "data:video/mp4;base64,"
+    if (request.get("input_references") is not None or not isinstance(value, str)
+            or not value.startswith(prefix)):
+        raise ValueError("SR-only requires one embedded video/mp4 input_reference")
+    body = value[len(prefix):]
+    if not body or len(body) > 4 * ((MAX_MEDIA_BYTES + 2) // 3):
+        raise ValueError("SR-only input must be a non-empty MP4 no larger than 128 MiB")
+    try:
+        data = base64.b64decode(body, validate=True)
+    except ValueError as error:
+        raise ValueError("Invalid SR-only video base64") from error
+    if not data or len(data) > MAX_MEDIA_BYTES:
+        raise ValueError("SR-only input must be a non-empty MP4 no larger than 128 MiB")
+    ext = request.get("nvext")
+    if (not isinstance(ext, dict) or ext.get("fps") != 24
+            or type(ext.get("num_frames")) is not int or not 1 <= ext["num_frames"] <= 362):
+        raise ValueError("SR-only requires 24 FPS and the actual source frame count in 1..362")
+    return data, ext["num_frames"]
+
+
+def native_sr_admission(width, height, plan):
+    """Run the installed native CPU contract without importing model packages."""
+    dist = importlib.metadata.distribution("vllm-omni")
+    path = Path(dist.locate_file("vllm_omni/diffusion/models/seedvr2/long_video_support.py"))
+    spec = importlib.util.spec_from_file_location("_h3sr_native_sr_admission", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Installed native SR admission contract is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = module.options(encoding_mode="single_encode", delivery_size="%dx%d" % plan["delivery"],
+        window_frames=plan["window_frames"])
+    module.validate_source(config, width, height, *plan["internal"])
+
+
 async def process(argv):
     child = await asyncio.create_subprocess_exec(*map(str, argv),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -251,7 +289,7 @@ async def process(argv):
 
 
 async def probe(path):
-    value = json.loads(await process(["ffprobe", "-v", "error", "-count_frames", "-show_streams", "-of", "json", path]))
+    value = json.loads(await process(["ffprobe", "-v", "error", "-count_frames", "-show_streams", "-show_format", "-of", "json", path]))
     videos = [s for s in value["streams"] if s.get("codec_type") == "video"]
     audios = [s for s in value["streams"] if s.get("codec_type") == "audio"]
     if len(videos) != 1 or len(audios) > 1:
@@ -262,7 +300,11 @@ async def probe(path):
         raise RuntimeError("Backend video must have actual frames at 24 FPS")
     if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
         raise RuntimeError("Backend must provide copy-compatible H264/yuv420p")
-    return {"width": video["width"], "height": video["height"], "frames": frames, "audio": bool(audios)}
+    container = value.get("format", {})
+    return {"width": video["width"], "height": video["height"], "frames": frames, "audio": bool(audios),
+        "audio_codec": audios[0].get("codec_name") if audios else None,
+        "format_name": container.get("format_name", ""),
+        "major_brand": container.get("tags", {}).get("major_brand", "").strip()}
 
 
 async def audio_identity(path):
@@ -379,18 +421,47 @@ class GatewayBridge:
 
     async def execute(self, request, action_id, output_writer):
         action_id = identifier(action_id)
-        fields, refs, expected_size = native_h3_request(request, self.workflow, stages=self.stages)
+        operation = request.get("operation", "generate")
+        if operation not in ("generate", "sr_only"):
+            raise ValueError("operation must be generate or sr_only")
+        sr_only = operation == "sr_only"
         tier = request.get("sr_tier")
         if tier is not None and tier not in ("1080", "1440"):
             raise ValueError("Invalid SR tier")
-        if tier is not None:
-            admit_sr(*expected_size, tier, self.profile)
+        if sr_only:
+            if tier is None:
+                raise ValueError("SR-only requires sr_tier 1080 or 1440")
+            source, expected_frames = decode_sr_source(request)
+        else:
+            fields, refs, expected_size = native_h3_request(request, self.workflow, stages=self.stages)
+            if tier is not None:
+                admit_sr(*expected_size, tier, self.profile)
         folder = self.executor.root.parent / "requests" / action_id
         folder.mkdir(parents=True, exist_ok=False)
         base, raw, final = (folder / name for name in ("base.mp4", "sr.mp4", "final.mp4"))
         state = {}
         durations = {}
         timing = {"schema": "h3sr-production-timing/1", "scope": TIMING_SCOPE} if self.stages else None
+        if sr_only:
+            with base.open("xb") as stream:
+                stream.write(source)
+                stream.flush()
+                os.fsync(stream.fileno())
+            media = await self.probe(base)
+            formats = media.get("format_name", "").split(",")
+            brand = media.get("major_brand", "")
+            if "mp4" not in formats or not (brand in {"isom", "mp41", "mp42", "avc1", "M4V"}
+                    or re.fullmatch(r"iso[2-9]", brand)):
+                raise ValueError("SR-only source must be an ISO MP4 container")
+            if (min(media["width"], media["height"]) != 768 or media["frames"] != expected_frames
+                    or (media["audio"] and media.get("audio_codec") != "aac")):
+                raise ValueError("SR-only source requires a 768-pixel short edge, matching actual frames and AAC or no audio")
+            plan = admit_sr(media["width"], media["height"], tier, self.profile)
+            native_sr_admission(media["width"], media["height"], plan)
+            await self.process(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", base, "-f", "null", "-"])
+            _write_receipt(folder / "source.json", {"operation": operation, "sha256": hashlib.sha256(source).hexdigest(),
+                "bytes": len(source), "media": media, "full_decode": True})
+            state.update(base=media, plan=plan)
 
         async def h3():
             tick = time.monotonic()
@@ -441,7 +512,7 @@ class GatewayBridge:
                 raise RuntimeError("SR submission identity is unknown")
             route = SR_ROUTE + "/" + job
             # Persist the job identity before polling; a transport failure never resubmits.
-            (folder / "sr-job.json").write_text(json.dumps(task), encoding="utf-8")
+            _write_receipt(folder / "sr-job.json", task)
             while True:
                 status = await self.http.json(8124, route, headers=headers)
                 if type(status.get("frames")) is not int or not 0 <= status["frames"] <= media["frames"]:
@@ -463,6 +534,7 @@ class GatewayBridge:
                     or manifest.get("model_size") != dict(zip(("width", "height"), plan["internal"]))
                     or manifest.get("delivery_size") != dict(zip(("width", "height"), plan["delivery"]))):
                 raise RuntimeError("SR silently changed the selected window/model/delivery canvas")
+            _write_receipt(folder / "sr-manifest.json", manifest)
             await self.http.download(8124, route + "/content", raw, headers=headers)
             if hashlib.sha256(raw.read_bytes()).hexdigest() != manifest.get("sha256"):
                 raise RuntimeError("SR content differs from terminal manifest")
@@ -500,6 +572,6 @@ class GatewayBridge:
             return TerminalResult(action_id, True, True, True, payload)
 
         async with asyncio.timeout(10800):
-            result = await self.executor.execute_owned(action_id, h3_callable=h3,
+            result = await self.executor.execute_owned(action_id, h3_callable=None if sr_only else h3,
                 sr_callable=sr if tier is not None else None, remux_callable=finish)
         return result["results"]["remux"].payload

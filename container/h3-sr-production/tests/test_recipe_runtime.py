@@ -39,6 +39,13 @@ def populate(root):
 
 
 class SourceComposition(unittest.TestCase):
+    def test_external_startup_bundle_matches_frozen_inputs(self):
+        policy = runtime.read(inputs() / "source-lock.json")
+        actual = runtime.startup_sources()
+        self.assertEqual(actual, policy["startup_sources"])
+        for name in ("configure.py", "start-fl2va.sh", "start-ref2va.sh", "prepare-sr-weights.sh"):
+            self.assertIn("h3-sr-startup/" + name, actual)
+
     def test_guarded_gateway_payload_matches_lock_and_effective_sources(self):
         policy = runtime.read(inputs() / "source-lock.json")
         self.assertTrue(policy["dingo_changes"])

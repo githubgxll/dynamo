@@ -133,6 +133,13 @@ def recipe_map():
             and p.suffix not in (".pyc", ".pyo")}
 
 
+def startup_sources():
+    directory = HERE.parent / "h3-sr-startup"
+    if not directory.is_dir() or any(path.is_symlink() for path in directory.rglob("*")):
+        raise ValueError("Frozen startup bundle is missing or contains a symlink")
+    return source_map(HERE.parent, directory.name)
+
+
 def distribution(name):
     dist = md.distribution(name)
     root = Path(dist.locate_file("")).resolve()
@@ -191,6 +198,9 @@ def apply():
     if os.geteuid() != 0 or (INFO / "application.json").exists():
         raise ValueError("Apply is a create-once root build action")
     value = policy()
+    startup = startup_sources()
+    if startup != value["startup_sources"]:
+        raise ValueError("Installed startup bundle differs from the frozen source lock")
     parent = parent_module()
     before = parent.verify_installed()
     if (before["source_commit"] != value["parent_source_commit"]
@@ -235,6 +245,7 @@ def apply():
                "omni_changes": {k: sha(v) for k, v in omni_changes.items()},
                "dingo_changes": {k: sha(v) for k, v in dingo_changes.items()},
                "recipe_sources": recipe_map(),
+               "startup_sources": startup,
                "omni_record_sha256": sha(omni_record.read_bytes()), "dingo_record_sha256": sha(dingo_record.read_bytes())}
     dump(INFO / "application.json", receipt)
     return verify()
@@ -247,6 +258,8 @@ def verify():
         raise ValueError("Installed application identity differs")
     if recipe_map() != receipt["recipe_sources"]:
         raise ValueError("Production helper/profile/recipe sources changed")
+    if startup_sources() != receipt["startup_sources"] or receipt["startup_sources"] != value["startup_sources"]:
+        raise ValueError("Installed startup bundle changed")
     if Path("/usr/local/lib/python3.12/dist-packages/h3_sr_production.pth").read_bytes() != b"/opt/h3-sr\n":
         raise ValueError("Spawn import path for the independent production modules differs")
     expected = native_expected()
@@ -272,6 +285,7 @@ def verify():
             "source_manifest_sha256": expected["source_manifest_sha256"],
             "changed_sources": sorted(receipt["omni_changes"]), "dingo_changes": receipt["dingo_changes"],
             "recipe_manifest_sha256": map_sha(receipt["recipe_sources"]),
+            "startup_manifest_sha256": map_sha(receipt["startup_sources"]),
             "package_inventory_status": "UNCHANGED", "gpu_status": "NOT_RUN"}
 
 

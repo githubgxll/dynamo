@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import json
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -82,6 +84,116 @@ def test_capacity_clamps_cephfs_free_bytes_at_zero(tmp_path, monkeypatch):
         120,
         0,
     )
+
+
+def _ceph_mount(monkeypatch, mount, attributes):
+    reads = []
+
+    def getxattr(path, name):
+        path = Path(path)
+        reads.append((path, name))
+        try:
+            return attributes[path][name]
+        except KeyError:
+            raise OSError(errno.ENODATA, "no attribute") from None
+
+    monkeypatch.setattr(os, "getxattr", getxattr)
+    monkeypatch.setattr(Path, "is_mount", lambda path: path == mount)
+    return reads
+
+
+def test_capacity_finds_pvc_quota_above_artifact_root_and_refreshes_usage(
+    tmp_path, monkeypatch
+):
+    mount = tmp_path / "pvc"
+    store = FileArtifactStore(mount / "deployment" / "artifacts")
+    attributes = {
+        mount: {
+            "ceph.quota.max_bytes": b"1000000",
+            "ceph.dir.rbytes": b"250000",
+        },
+        store.root: {"ceph.dir.rbytes": b"1000"},
+    }
+    _ceph_mount(monkeypatch, mount, attributes)
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _path: pytest.fail("stale statfs fallback")
+    )
+
+    # Include the PVC's other directories, not just this artifact subtree.
+    for used in (250_000, 300_000, 100_000):
+        attributes[mount]["ceph.dir.rbytes"] = str(used).encode()
+        capacity = asyncio.run(store.capacity())
+        assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+            1_000_000,
+            used,
+            1_000_000 - used,
+        )
+
+
+def test_capacity_does_not_read_quota_outside_its_mount(tmp_path, monkeypatch):
+    mount = tmp_path / "pvc"
+    store = FileArtifactStore(mount / "deployment" / "artifacts")
+    reads = _ceph_mount(
+        monkeypatch,
+        mount,
+        {tmp_path: {"ceph.quota.max_bytes": b"9999999", "ceph.dir.rbytes": b"0"}},
+    )
+
+    capacity = asyncio.run(store.capacity())
+    usage = shutil.disk_usage(store.root)
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == usage
+    assert (mount, "ceph.quota.max_bytes") in reads
+    assert all(path == mount or mount in path.parents for path, _name in reads)
+
+
+def test_capacity_preserves_nearest_directory_quota(tmp_path, monkeypatch):
+    mount = tmp_path / "pvc"
+    inner = mount / "deployment"
+    store = FileArtifactStore(inner / "artifacts")
+    reads = _ceph_mount(
+        monkeypatch,
+        mount,
+        {
+            inner: {"ceph.quota.max_bytes": b"1000", "ceph.dir.rbytes": b"200"},
+            mount: {"ceph.quota.max_bytes": b"1000000", "ceph.dir.rbytes": b"900000"},
+        },
+    )
+
+    capacity = asyncio.run(store.capacity())
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+        1000,
+        200,
+        800,
+    )
+    assert all(path != mount for path, _name in reads)
+
+
+@pytest.mark.parametrize("used", [None, b"invalid", b"-1"])
+def test_capacity_does_not_skip_a_quota_with_unreadable_usage(
+    tmp_path, monkeypatch, used
+):
+    mount = tmp_path / "pvc"
+    store = FileArtifactStore(mount / "artifacts")
+    local = {"ceph.quota.max_bytes": b"1000"}
+    if used is not None:
+        local["ceph.dir.rbytes"] = used
+    reads = _ceph_mount(
+        monkeypatch,
+        mount,
+        {
+            store.root: local,
+            mount: {"ceph.quota.max_bytes": b"1000000", "ceph.dir.rbytes": b"0"},
+        },
+    )
+
+    capacity = asyncio.run(store.capacity())
+
+    assert (capacity.total_bytes, capacity.used_bytes, capacity.free_bytes) == (
+        shutil.disk_usage(store.root)
+    )
+    assert all(path == store.root for path, _name in reads)
 
 
 async def test_detached_status_and_response_are_identity_and_checksum_checked(tmp_path):

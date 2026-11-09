@@ -265,6 +265,10 @@ class MiniMaxH3RequestAdapter:
             media_max_bytes, _managed_media_size(self.requests_root)
         )
         self._deferred_cleanups: set[asyncio.Task[None]] = set()
+        self.shared_inputs_enabled = os.getenv("DINGO_H3_SHARED_INPUTS_ENABLED") == "1"
+        self.shared_storage_id = os.getenv("DINGO_H3_SHARED_INPUTS_STORAGE_ID", "")
+        if self.shared_inputs_enabled and (not self.shared_storage_id or len(self.shared_storage_id) > 160):
+            raise ValueError("shared H3 inputs require a storage identity")
 
     @staticmethod
     def release_input_payload(request: dict[str, Any]) -> None:
@@ -349,6 +353,28 @@ class MiniMaxH3RequestAdapter:
         loader: Any,
         request_scope: _RequestMediaScope | None = None,
     ) -> Any | None:
+        from dingo.vllm.omni.h3_shared_inputs import CURRENT, descriptor
+        shared = descriptor({"input_reference": req.input_reference,
+                             "input_references": req.input_references})
+        if shared is not None:
+            session = CURRENT.get()
+            if not self.shared_inputs_enabled or session is None or session.adapter is not self or session.value != shared:
+                raise ValueError("shared inputs require a bound detached request")
+            images, videos, audios = [], [], []
+            for entry in shared["entries"]:
+                path = session.path(entry["ordinal"])
+                kind = entry["content_type"].split("/", 1)[0]
+                if kind == "image":
+                    def load(path=path):
+                        with path.open("rb") as stream:
+                            return loader._open_image_sync(stream)
+                    images.append(await asyncio.to_thread(load))
+                else:
+                    item = _StoredMedia(kind, str(path), entry["bytes"], entry["sha256"])
+                    (videos if kind == "video" else audios).append(item)
+            if self.workflow == "fl2va":
+                return _KeyframeReference(tuple(images), tuple(shared["frame_indices"]))
+            return _MixedReference(tuple(images), tuple(videos), tuple(audios))
         if req.input_reference is not None and req.input_references is not None:
             raise ValueError(
                 "input_reference and input_references are mutually exclusive"

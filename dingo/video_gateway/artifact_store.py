@@ -155,15 +155,30 @@ class FileArtifactStore:
     async def capacity(self) -> ArtifactCapacity:
         def _capacity() -> ArtifactCapacity:
             # CephFS statfs may report stale quota usage on different clients.
-            # The quota root's recursive byte count is current across mounts.
-            try:
-                quota = int(os.getxattr(self.root, "ceph.quota.max_bytes"))
-                used = int(os.getxattr(self.root, "ceph.dir.rbytes"))
-            except (OSError, ValueError):
-                pass
-            else:
-                if quota > 0 and used >= 0:
-                    return ArtifactCapacity(quota, used, max(0, quota - used))
+            # Artifacts can be below the PVC's quota-bearing directory. Read
+            # both quota and recursive usage at that directory, including its
+            # other children; never combine its quota with a child's usage.
+            cursor = self.root
+            while True:
+                try:
+                    quota = int(os.getxattr(cursor, "ceph.quota.max_bytes"))
+                except OSError as exc:
+                    if exc.errno != errno.ENODATA:
+                        break
+                    quota = 0
+                except ValueError:
+                    break
+                if quota > 0:
+                    try:
+                        used = int(os.getxattr(cursor, "ceph.dir.rbytes"))
+                    except (OSError, ValueError):
+                        break
+                    if used >= 0:
+                        return ArtifactCapacity(quota, used, max(0, quota - used))
+                    break
+                if cursor == cursor.parent or cursor.is_mount():
+                    break
+                cursor = cursor.parent
 
             usage = shutil.disk_usage(self.root)
             return ArtifactCapacity(usage.total, usage.used, usage.free)

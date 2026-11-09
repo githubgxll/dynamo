@@ -380,11 +380,18 @@ def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
     )
 
 
+def test_media_single_file_limit_can_opt_in_to_128_mib(tmp_path):
+    raw = _raw(tmp_path)
+    raw["media"] = {"max_single_file_bytes": 128 * 1024 * 1024}
+
+    assert parse_config(raw).media.max_single_file_bytes == 128 * 1024 * 1024
+
+
 @pytest.mark.parametrize(
     ("section", "field", "value", "message"),
     [
         ("http", "max_body_bytes", 513 * 1024 * 1024, "hard cap"),
-        ("media", "max_single_file_bytes", 51 * 1024 * 1024, "hard cap"),
+        ("media", "max_single_file_bytes", 129 * 1024 * 1024, "hard cap"),
         ("media", "max_parts", 33, "hard cap"),
         ("media", "max_result_bytes", 129 * 1024 * 1024, "hard cap"),
     ],

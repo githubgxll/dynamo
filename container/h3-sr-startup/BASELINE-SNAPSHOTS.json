@@ -1,0 +1,22 @@
+{
+  "schema": "h3sr-video-gateway-startup-baselines/1",
+  "baseline_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:609cfa150ec8ccc81ccf33bc591daf20692e20f94d5ef163c30ca21302e6a4b3",
+  "baseline_source_commit": "2d58b79df39a9335e2f850d3a83bf938610cc611",
+  "formal_sr_only": "PENDING_NEW_IMAGE_PUBLICATION_AND_GATEWAY_ACCEPTANCE",
+  "snapshots": [
+    {
+      "variant": "ref2va",
+      "source": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_Decoupling_Handoff_20261109\\profiles\\ref2va-sr-tested.json",
+      "snapshot": "profiles\\ref2va-sr.json",
+      "sha256": "3bac419f1d105da1672887f5383651c24331ddfc2941a59b17e55cadaab1e7ae",
+      "state": "REF_GPU_TESTED"
+    },
+    {
+      "variant": "fl2va",
+      "source": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_Decoupling_Handoff_20261109\\profiles\\fl2va-sr-candidate.json",
+      "snapshot": "profiles\\fl2va-sr.json",
+      "sha256": "134e579b212cf71f1bfdb3a090caa688195a86ed887656c79938a05f4f50e974",
+      "state": "FL_CANDIDATE_LOCAL_CHECKED"
+    }
+  ]
+}

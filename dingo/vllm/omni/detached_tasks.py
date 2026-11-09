@@ -18,6 +18,8 @@ import logging
 import os
 import time
 import uuid
+from dingo.common.video_worker_error import classify_worker_error, failed_chunk_error, VideoWorkerFailure
+
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,11 @@ from dingo.common.video_result_file import (
     INLINE_RESULT_FORMAT,
     BinaryResultWriter,
     normalize_inline_result,
+)
+from dingo.common.video_super_resolution import (
+    H3_SR_PROFILE,
+    SR_CAPABILITY,
+    SR_PAYLOAD_KEY,
 )
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
@@ -47,6 +54,12 @@ from dingo.common.video_task_protocol import (
 logger = logging.getLogger(__name__)
 
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+
+class _WorkerUnavailableBeforeExecution(VideoWorkerFailure):
+    """An accepted video task was rejected before calling the model."""
+
+
 _DETACHED_EXECUTION_ACTIVE = Gauge(
     "dingo_video_worker_detached_execution_active",
     "Detached video tasks currently executing in the Omni engine.",
@@ -195,6 +208,11 @@ class DetachedOmniTaskManager:
         if cancel_grace_s <= 0:
             raise ValueError("detached cancel grace must be positive")
         self.handler = handler
+        self.shared_input_adapter = getattr(handler, "request_adapter", None)
+        if self.shared_input_adapter is None:
+            self.shared_input_adapter = getattr(getattr(handler, "handler", None), "request_adapter", None)
+        if not getattr(self.shared_input_adapter, "shared_inputs_enabled", False):
+            self.shared_input_adapter = None
         self.root = Path(artifact_root).expanduser().resolve()
         self.root.mkdir(mode=0o750, parents=True, exist_ok=True)
         self.drain_timeout_s = drain_timeout_s
@@ -203,6 +221,7 @@ class DetachedOmniTaskManager:
         self._running: dict[tuple[str, str, str, int, str], _RunningTask] = {}
         self._lock = asyncio.Lock()
         self._accepting = True
+        self.components_ready = True
         self.execution_capacity = execution_capacity
         self.prefetch_capacity = prefetch_capacity
         self._execution_slots = asyncio.Semaphore(execution_capacity)
@@ -226,6 +245,10 @@ class DetachedOmniTaskManager:
         if self.inline_results and not self.binary_results:
             raise ValueError("inline results require binary results")
 
+    @property
+    def accepting(self):
+        return self._accepting and self.components_ready and bool(getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True)))
+
     async def generate(
         self, request: dict[str, Any], context: Any
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -244,8 +267,12 @@ class DetachedOmniTaskManager:
                 async for chunk in self.handler.generate(request, context):
                     yield chunk
                 return
+            if SR_PAYLOAD_KEY in request:
+                raise ValueError(
+                    "super-resolution execution is not supported by this Worker"
+                )
             async with self._lock:
-                if not self._accepting:
+                if not self.accepting:
                     raise RuntimeError("detached Worker is draining")
                 if len(self._running) + self._direct_running >= self.execution_capacity:
                     raise RuntimeError("Worker execution capacity exhausted")
@@ -266,7 +293,7 @@ class DetachedOmniTaskManager:
                 or envelope.get("schema_version") != SCHEMA_VERSION
             ):
                 raise ValueError("invalid detached capabilities request")
-            yield {
+            response = {
                 "schema_version": SCHEMA_VERSION,
                 "capabilities": [
                     WAIT_TERMINAL_CAPABILITY,
@@ -276,8 +303,27 @@ class DetachedOmniTaskManager:
                 "execution_capacity": self.execution_capacity,
                 "prefetch_capacity": self.prefetch_capacity,
                 "admission_capacity": self.execution_capacity + self.prefetch_capacity,
-                "accepting": self._accepting,
+                "accepting": self.accepting,
             }
+            if hasattr(self.handler, "sr_ready"):
+                ready = self.accepting
+                response["accepting"] = self._accepting and ready
+                response["super_resolution"] = {
+                    "ready": ready, "profiles": [getattr(self.handler, "sr_profile", H3_SR_PROFILE)] if ready else []
+                }
+                response["capabilities"].append(SR_CAPABILITY)
+                if not ready:
+                    response.update(execution_capacity=0, prefetch_capacity=0, admission_capacity=0)
+            if not self.accepting:
+                response.update(execution_capacity=0, prefetch_capacity=0, admission_capacity=0)
+            if self.shared_input_adapter is not None:
+                from dingo.vllm.omni.h3_shared_inputs import CAPABILITY
+                response["capabilities"].append(CAPABILITY)
+                response["shared_inputs"] = {
+                    "storage_id": self.shared_input_adapter.shared_storage_id,
+                    "workflow": self.shared_input_adapter.workflow,
+                }
+            yield response
             return
         identity = DetachedTaskIdentity.from_envelope(envelope)
         if op == "submit":
@@ -434,10 +480,28 @@ class DetachedOmniTaskManager:
         *,
         deadline_at_ms: int | None = None,
     ) -> dict[str, Any]:
-        if not self._accepting:
+        if not self.accepting:
             raise RuntimeError("detached Worker is draining")
+        if not bool(getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True))):
+            raise RuntimeError("composite Worker is unavailable")
         if not isinstance(payload, dict):
             raise ValueError("detached submit payload must be an object")
+        from dingo.vllm.omni.h3_shared_inputs import descriptor, validate
+        shared = descriptor(payload)
+        if shared is not None:
+            if self.shared_input_adapter is None:
+                raise ValueError("shared H3 input protocol is disabled")
+            validate(shared, storage_id=self.shared_input_adapter.shared_storage_id,
+                     workflow=self.shared_input_adapter.workflow, identity=identity)
+        # The combined executor is not installed yet. Never let this private
+        # field be silently discarded by the ordinary H3 handler.
+        if SR_PAYLOAD_KEY in payload:
+            validator = getattr(self.handler, "validate_sr_request", None)
+            if validator is None:
+                raise ValueError(
+                    "super-resolution execution is not supported by this Worker"
+                )
+            validator(payload)
         attempt_root = await asyncio.to_thread(self._validate_task_manifest, identity)
         status_path = attempt_root / "worker-status.json"
         async with self._lock:
@@ -595,7 +659,9 @@ class DetachedOmniTaskManager:
         queued_at_ms=None,
         status_path=None,
     ):
-        if not self.prefetch_capacity:
+        from dingo.vllm.omni.h3_shared_inputs import CURRENT, SharedInputSession, descriptor
+        shared = descriptor(payload)
+        if not self.prefetch_capacity and shared is None:
             return await self._execute_started(identity, payload, context)
         # Submission already resolved this path before publishing accepted.
         # Do not insert a filesystem await before acquiring the FIFO permit:
@@ -603,6 +669,16 @@ class DetachedOmniTaskManager:
         if status_path is None:
             status_path = await asyncio.to_thread(self._status_path, identity)
         acquire = asyncio.create_task(self._execution_slots.acquire())
+        session = None
+        prepare = None
+        ready = acquire
+        if shared is not None:
+            session = SharedInputSession(shared, self.shared_input_adapter, self.root, identity)
+            timeout_s = 120 if deadline_at_ms is None else min(120, max(0, (deadline_at_ms - int(time.time()*1000))/1000))
+            prepare = asyncio.create_task(session.prepare(timeout_s))
+            async def both():
+                await asyncio.gather(asyncio.shield(acquire), asyncio.shield(prepare))
+            ready = asyncio.create_task(both())
         stopped = context.async_killed_or_stopped()
         cancel_watch = asyncio.create_task(self._watch_cancel(identity, context))
         waiting_metric_active = True
@@ -614,14 +690,14 @@ class DetachedOmniTaskManager:
                 else max(0, (deadline_at_ms - int(time.time() * 1000)) / 1000)
             )
             done, _ = await asyncio.wait(
-                {acquire, stopped}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+                {ready, stopped}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
             if stopped in done or context.is_stopped():
                 await self._record_terminal(
                     identity, status_path, self._base_status(identity, "cancelled")
                 )
                 return
-            if acquire not in done or (
+            if ready not in done or (
                 deadline_at_ms is not None and int(time.time() * 1000) >= deadline_at_ms
             ):
                 await self._record_terminal(
@@ -636,11 +712,14 @@ class DetachedOmniTaskManager:
                     },
                 )
                 return
+            await ready
             _DETACHED_PREFETCH_WAITING.dec()
             waiting_metric_active = False
-            await self._execute_started(
-                identity, payload, context, queued_at_ms=queued_at_ms
-            )
+            token = CURRENT.set(session)
+            try:
+                await self._execute_started(identity, payload, context, queued_at_ms=queued_at_ms)
+            finally:
+                CURRENT.reset(token)
         except asyncio.CancelledError:
             context.stop_generating()
             running = self._running.get(identity.key)
@@ -649,6 +728,20 @@ class DetachedOmniTaskManager:
                     identity, status_path, self._base_status(identity, "cancelled")
                 )
             raise
+        except Exception as exc:
+            if session is None or session.prepared:
+                # Preserve the existing execution/persistence error path;
+                # only raw-input preparation failures belong to this branch.
+                raise
+            logger.exception("shared input preparation failed task=%s", identity.task_id)
+            unavailable = not bool(getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True)))
+            await self._record_terminal(identity, status_path, {
+                **self._base_status(identity, "failed"),
+                "error": {"code": "worker_unavailable_before_execution" if unavailable else "input_processing_failed",
+                          "message": "Worker unavailable before execution" if unavailable else "Input preparation failed",
+                          "internal_error": {"schema_version": 1, "reason": "engine_unavailable" if unavailable else "input_processing_failed",
+                                             "stage": "input_processing", "task_id": identity.task_id, "attempt": identity.attempt}},
+            })
         finally:
             if waiting_metric_active:
                 _DETACHED_PREFETCH_WAITING.dec()
@@ -656,7 +749,18 @@ class DetachedOmniTaskManager:
                 acquire.cancel()
             cancel_watch.cancel()
             stopped.cancel()
-            await asyncio.gather(acquire, cancel_watch, stopped, return_exceptions=True)
+            if ready is not acquire:
+                ready.cancel()
+            if prepare is not None:
+                prepare.cancel()
+            await asyncio.gather(acquire, cancel_watch, stopped, ready, *([prepare] if prepare is not None else []), return_exceptions=True)
+            if session is not None:
+                finished = self._running.get(identity.key)
+                cancelled = finished is not None and (finished.persisted_terminal or {}).get("state") == "cancelled"
+                if cancelled and session.prepared and finished.started:
+                    self.shared_input_adapter._defer_cancelled_cleanup(session, context.id())
+                else:
+                    await asyncio.to_thread(session.cleanup)
             if (
                 not acquire.cancelled()
                 and acquire.exception() is None
@@ -745,6 +849,11 @@ class DetachedOmniTaskManager:
             BinaryResultWriter(attempt_root) if self.binary_results else None
         )
         try:
+            if not bool(getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True))):
+                raise _WorkerUnavailableBeforeExecution(
+                    "Worker is quarantined",
+                    {"schema_version": 1, "reason": "engine_unavailable", "stage": "worker_execution"},
+                )
             if self.inline_results:
                 terminal = None
                 async for chunk in self.handler.generate(payload, context):
@@ -757,6 +866,8 @@ class DetachedOmniTaskManager:
                             raise RuntimeError(
                                 "Worker returned multiple terminal responses"
                             )
+                        if chunk.get("status") == "failed":
+                            raise failed_chunk_error(chunk)
                         terminal = normalize_inline_result(chunk)
                 if terminal is None and not context.is_stopped():
                     raise RuntimeError("Worker stream ended without terminal response")
@@ -773,6 +884,8 @@ class DetachedOmniTaskManager:
                             raise RuntimeError(
                                 "Omni detached response chunk is not an object"
                             )
+                        if chunk.get("status") == "failed":
+                            raise failed_chunk_error(chunk)
                         encoded = await asyncio.to_thread(
                             lambda value: (
                                 json.dumps(
@@ -845,14 +958,21 @@ class DetachedOmniTaskManager:
             status_stop.set()
             await asyncio.gather(status_heartbeat, return_exceptions=True)
             logger.exception("detached Omni task failed: %s", identity.task_id)
+            internal_error = {**classify_worker_error(exc), "task_id": identity.task_id, "attempt": identity.attempt}
+            logger.error("video_worker_internal_error %s", json.dumps(internal_error, sort_keys=True))
             failed = {
                 **self._base_status(identity, "failed"),
                 "queued_at_ms": queued_at_ms,
                 "started_at_ms": started_at_ms,
                 "completed_at_ms": int(time.time() * 1000),
                 "error": {
-                    "code": "worker_failed",
+                    "code": (
+                        "worker_unavailable_before_execution"
+                        if isinstance(exc, _WorkerUnavailableBeforeExecution)
+                        else "worker_failed"
+                    ),
                     "message": str(exc)[:1024] or "detached Omni task failed",
+                    "internal_error": internal_error,
                 },
             }
             await self._record_terminal(identity, status_path, failed)

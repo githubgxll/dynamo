@@ -16,6 +16,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from dingo.common.video_sr_timings import SR_TIMINGS_KEY, normalize_sr_timings
+from dingo.video_gateway.adapters.h3_output_policy import h3_sr_tier
 from dingo.common.video_timing_schemas import (
     MODEL_EXECUTION_KEY,
     normalize_model_execution,
@@ -176,7 +178,32 @@ class GatewayTelemetry:
             buckets=_TASK_DURATION_BUCKETS,
         )
 
+    def record_super_resolution_stage_duration(self, pool_id: str, stage: str, seconds: float) -> None:
+        self.observe(
+            "dingo_video_super_resolution_stage_duration_seconds",
+            seconds,
+            labels={"pool": pool_id, "stage": stage},
+            buckets=_TASK_DURATION_BUCKETS,
+        )
+
+    def initialize_super_resolution_requests(self, pool_id: str) -> None:
+        # Expose a zero before the first request, so a subsequent scrape can
+        # measure its increase. Never initialize histogram observations.
+        for tier in ("1080p", "2k"):
+            for status in ("completed", "failed", "cancelled", "expired"):
+                self.increment(
+                    "dingo_video_super_resolution_requests_total",
+                    labels={"pool": pool_id, "tier": tier, "status": status},
+                    amount=0,
+                )
+
     def record_terminal(self, task: VideoTask) -> None:
+        tier = h3_sr_tier(task.normalized_request)
+        if tier is not None:
+            self.increment(
+                "dingo_video_super_resolution_requests_total",
+                labels={"pool": task.pool_id, "tier": tier, "status": task.status.value},
+            )
         error_code = task.error.code if task.error is not None else "none"
         self.increment(
             "dingo_video_task_terminal_total",
@@ -322,6 +349,10 @@ class GatewayTelemetry:
             before.status == TaskStatus.IN_PROGRESS
             and after.status == TaskStatus.FINALIZING
         ):
+            sr_timings = normalize_sr_timings(after.normalized_request.get(SR_TIMINGS_KEY))
+            if sr_timings is not None:
+                for stage, seconds in sr_timings["stages"].items():
+                    self.record_super_resolution_stage_duration(after.pool_id, stage, seconds)
             timing = normalize_model_execution(
                 after.normalized_request.get(MODEL_EXECUTION_KEY)
             )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dingo.common.video_worker_error import normalize_internal_error
 
 
 @dataclass(slots=True)
@@ -61,11 +62,20 @@ class WorkerUnavailable(WorkerExecutionFailed):
 def worker_execution_error(error: object) -> WorkerExecutionFailed:
     """Conservative compatibility classifier for this deployed Worker protocol.
 
-    Worker errors currently have no infrastructure-specific structured code.
-    Match only complete, known engine-unavailable messages, never substrings,
-    arbitrary RuntimeError, or the generic worker_failed code by itself.
+    A dedicated video error identifies rejection before model execution.
+    Otherwise match only complete, known engine-unavailable messages, never
+    substrings, arbitrary RuntimeError, or the generic worker_failed code itself.
     Unknown, parameter, media and model errors are deliberately not retried.
     """
+    if isinstance(error, dict) and error.get("code") == "worker_unavailable_before_execution":
+        failure = WorkerUnavailable(str(error.get("message") or "Worker unavailable before execution"))
+        if "internal_error" in error:
+            failure.internal_error = normalize_internal_error(error["internal_error"])
+        return failure
+    if isinstance(error, dict) and "internal_error" in error:
+        failure = WorkerExecutionFailed(str(error.get("message") or "Worker generation failed"))
+        failure.internal_error = normalize_internal_error(error["internal_error"])
+        return failure
     message = error
     if isinstance(error, dict):
         if error.get("code") != "worker_failed":

@@ -109,7 +109,7 @@ class HTTPClientContract(unittest.IsolatedAsyncioTestCase):
 class PublicAdapterContract(unittest.TestCase):
     def adapter(self, enabled=True, validate=False):
         from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter
-        pool = SimpleNamespace(pool_id="public-fl", backend_model="worker-fl", adapter=SimpleNamespace(
+        pool = SimpleNamespace(pool_id="public-fl", backend_model="worker-fl", sr_profile=None, adapter=SimpleNamespace(
             workflow="fl2va", options={"enable_sr": enabled, "validate_media": validate}))
         return MiniMaxH3VideoAdapter(pool)
 

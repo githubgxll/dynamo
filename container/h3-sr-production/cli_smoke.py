@@ -7,7 +7,9 @@ import io
 import json
 from pathlib import Path
 import socket
+import subprocess
 import sys
+import tempfile
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -101,8 +103,8 @@ def run():
                         spec = getattr(parsed, "diffusion_quantization_config", None)
                         if isinstance(spec, str):
                             spec = json.loads(spec)
-                        if spec != value["h3"]["quantization_config"]:
-                            raise ValueError("DiT-only quantization parser differs")
+                        if spec is not None or value["h3"]["quantization_config"] is not None:
+                            raise ValueError("BF16 H3 must not activate diffusion quantization")
                         configured_offload = offload.parse_diffusion_offload_config(getattr(parsed, "diffusion_offload_config", None))
                         if bool(configured_offload) != (name == "ref2va-sr"):
                             raise ValueError("FL/Ref module-offload parser scope differs")
@@ -131,6 +133,36 @@ def run():
             else:
                 raise ValueError("Native parser accepted an unknown option")
         dingo = dingo_parser_profiles()
+    backend_imports = backend_import_profiles()
     return {"status": "PASS_ACTUAL_INSTALLED_PARSER_ONLY", "profiles": results, "dingo_profiles": dingo,
+            "backend_import_profiles": backend_imports,
             "unknown_options_rejected": True, "dispatch_executed": False,
             "engine_started": False, "model_loaded": False, "gpu_status": "NOT_RUN"}
+
+
+def backend_import_profiles():
+    """Use the production command in a clean interpreter before model loading."""
+    from service import launcher, profile as profiles
+    reports = []
+    with tempfile.TemporaryDirectory(prefix="h3sr-entry-imports-") as temporary:
+        directory = Path(temporary)
+        for name in ("fl2va-sr", "ref2va-sr"):
+            path = HERE / "profiles" / (name + ".json")
+            value = profiles.load(path)
+            for role in ("h3", "sr"):
+                environment = profiles.environment(value, role, profile_path=path,
+                    epoch="cpu-import-check", root=directory)
+                report = directory / (name + "-" + role + ".json")
+                command = launcher.backend_command(path, role) + ["--check-imports", "--import-report", str(report)]
+                result = subprocess.run(command, env=environment, cwd=HERE / "service", capture_output=True,
+                                        text=True, encoding="utf-8", errors="replace", timeout=240)
+                if result.returncode or not report.is_file():
+                    raise RuntimeError("Actual backend import check failed: " + name + "/" + role
+                                       + "\n" + result.stdout[-8000:] + result.stderr[-8000:])
+                checked = json.loads(report.read_text(encoding="utf-8"))
+                if (checked.get("status") != "PASS_ACTUAL_BACKEND_IMPORTS_ONLY"
+                        or checked.get("safe_path") is not True
+                        or checked.get("profile") != name or checked.get("role") != role):
+                    raise ValueError("Actual backend import report differs")
+                reports.append(checked)
+    return reports

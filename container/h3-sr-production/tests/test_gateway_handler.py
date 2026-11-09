@@ -154,7 +154,7 @@ class MainSelection(unittest.IsolatedAsyncioTestCase):
     async def test_opt_in_retains_registration_detached_wrapper_and_cleanup(self):
         source = ast.parse((REPO / "dingo/vllm/omni/main.py").read_text(encoding="utf-8"))
         function = next(n for n in source.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "init_omni")
-        namespace = {"__package__": "dingo.vllm.omni", "asyncio": asyncio,
+        namespace = {"__package__": "dingo.vllm.omni", "asyncio": asyncio, "os": os,
             "DistributedRuntime": object, "OmniConfig": object,
             "shutdown_endpoints": [], "get_fs": lambda value: None,
             "logger": mock.Mock(), "setup_metrics_collection": mock.Mock(),

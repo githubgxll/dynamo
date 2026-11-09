@@ -19,14 +19,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_sr_timings import normalize_sr_timings
 from dingo.common.video_result_file import validate_descriptor
+from dingo.common.video_super_resolution import SR_PAYLOAD_KEY, H3_SR_PROFILE_V2, H3_SR_PROFILE_V3
+from dingo.common.h3_reference_order import group_references
 from dingo.common.video_timing_schemas import normalize_model_execution, normalize_h3_sr_timing
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
+from dingo.video_gateway.adapters.h3_output_policy import (
+    H3OutputPlan,
+    H3_SR_BASE_SIZES,
+    H3_SR_V3_PRESETS,
+    plan_h3_output,
+)
 from dingo.video_gateway.adapters.h3_shape import (
-    H3Shape,
     align_frame_count,
     relative_ratio_error,
-    resolve_output_shape,
 )
 from dingo.video_gateway.config import PoolConfig
 from dingo.video_gateway.errors import GatewayError, worker_execution_error
@@ -154,6 +161,7 @@ _ALLOWED_FIELDS = {
     "user",
     "generate_sound",
     "sr_tier",
+    "operation",
 }
 _KNOWN_UNSUPPORTED_FIELDS = {
     "start_time_seconds",
@@ -172,6 +180,8 @@ _MAX_PROMPT_BYTES = 32 * 1024
 _MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _MAX_VIDEO_BYTES = 50 * 1024 * 1024
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
+_MAX_SR_SOURCE_BYTES = 128 * 1024 * 1024
+_MAX_SR_SOURCE_FRAMES = 362
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,19 +291,16 @@ def _coalesce(
     return direct if direct is not None else extra.get(key)
 
 
-def _resolve_gateway_shape(width, height, *, requested_aspect_ratio=None, allow_native_base=False):
-    # The production native reference deliberately uses explicit 1280x768 (or
-    # portrait) with the native named-aspect fallback. Keep this narrowly
-    # opt-in; generic Gateway shape validation remains unchanged.
+def _resolve_gateway_shape(width, height, *, requested_aspect_ratio=None, allow_native_base=False, sr_profile=None):
     if allow_native_base and (width, height) in {(1280, 768), (768, 1280)}:
-        name = "16:9" if width > height else "9:16"
-        if requested_aspect_ratio not in (None, name):
+        ratio = "16:9" if width > height else "9:16"
+        if requested_aspect_ratio not in (None, ratio):
             raise ValueError("aspect_ratio conflicts with the native Base canvas")
-        return H3Shape(width=width, height=height, aspect_ratio=name)
-    return resolve_output_shape(width, height, requested_aspect_ratio=requested_aspect_ratio)
+        return H3OutputPlan(width, height, width, height, ratio)
+    return plan_h3_output(width, height, requested_aspect_ratio=requested_aspect_ratio, sr_profile=sr_profile)
 
 
-def _parse_size(fields: Mapping[str, list[str]], *, allow_native_base=False) -> tuple[int, int]:
+def _parse_size(fields: Mapping[str, list[str]], *, allow_native_base=False, sr_profile=None) -> tuple[int, int]:
     size = _one(fields, "size")
     width = _integer(_one(fields, "width"), "width")
     height = _integer(_one(fields, "height"), "height")
@@ -328,7 +335,7 @@ def _parse_size(fields: Mapping[str, list[str]], *, allow_native_base=False) -> 
         )
     assert width is not None and height is not None
     try:
-        _resolve_gateway_shape(width, height, allow_native_base=allow_native_base)
+        _resolve_gateway_shape(width, height, allow_native_base=allow_native_base, sr_profile=sr_profile)
     except ValueError as exc:
         raise GatewayError(
             400,
@@ -627,6 +634,52 @@ def _probe_upload(upload: UploadedArtifact, limits: _MiniMaxH3Limits) -> _MediaP
     )
 
 
+def _probe_sr_source(upload: UploadedArtifact) -> dict[str, Any]:
+    """Validate an already-generated Base without H3 reference-media limits."""
+    if not 0 < upload.size <= _MAX_SR_SOURCE_BYTES:
+        raise GatewayError(413, "file_too_large", "SR source must be at most 128 MiB", upload.field_name)
+    with upload.path.open("rb") as stream:
+        header = stream.read(128)
+    content_type = _canonical_content_type(upload, header)
+    major_brand = header[8:12].decode("ascii", errors="replace").strip()
+    if content_type != "video/mp4" or major_brand not in {
+        "isom", "iso2", "iso3", "iso4", "iso5", "iso6", "iso7", "iso8", "iso9",
+        "mp41", "mp42", "avc1", "M4V",
+    }:
+        raise GatewayError(415, "unsupported_media_format", "SR source must be an MP4 video", upload.field_name)
+    import av
+
+    try:
+        with av.open(str(upload.path)) as container:
+            videos, audios = list(container.streams.video), list(container.streams.audio)
+            if len(videos) != 1 or len(audios) > 1 or len(container.streams) != len(videos) + len(audios):
+                raise ValueError("SR source must contain one video and at most one audio stream")
+            video = videos[0]
+            if video.codec_context.name != "h264" or any(audio.codec_context.name != "aac" for audio in audios):
+                raise ValueError("SR source requires H.264 video and optional AAC audio")
+            if video.average_rate != 24 or min(video.width, video.height) != 768:
+                raise ValueError("SR source requires 24 FPS and a 768-pixel short edge")
+            frames, audio_frames = 0, 0
+            for frame in container.decode():
+                if isinstance(frame, av.VideoFrame):
+                    frames += 1
+                    if frames > _MAX_SR_SOURCE_FRAMES:
+                        raise ValueError("SR source exceeds 362 actual frames")
+                    if frame.format.name != "yuv420p":
+                        raise ValueError("SR source video must use yuv420p")
+                else:
+                    audio_frames += 1
+            if frames == 0 or (audios and audio_frames == 0):
+                raise ValueError("SR source has an empty video or audio stream")
+            return {"width": video.width, "height": video.height, "frames": frames,
+                    "fps": 24, "audio": bool(audios), "duration_s": frames / 24,
+                    "content_type": content_type}
+    except GatewayError:
+        raise
+    except Exception as error:
+        raise GatewayError(400, "invalid_sr_source", str(error), upload.field_name) from error
+
+
 def _data_url(
     path: Path, content_type: str, *, expected_bytes: int, expected_sha256: str
 ) -> str:
@@ -728,6 +781,7 @@ class _MiniMaxH3WorkerStreamConsumer:
             stage_durations=stage_durations,
             model_execution=normalize_model_execution(terminal.get("model_execution")),
             h3_sr_timing=normalize_h3_sr_timing(terminal.get("h3_sr_timing")),
+            super_resolution_timings=normalize_sr_timings(terminal.get("super_resolution_timings")),
         )
 
 
@@ -760,12 +814,24 @@ class MiniMaxH3VideoAdapter:
             "validate_media",
             "max_encoded_reference_bytes",
             "limits",
+            "super_resolution",
+            "reference_transport",
+            "shared_storage_id",
         }
         unknown_options = sorted(set(self.options) - supported_options)
         if unknown_options:
             raise ValueError(
                 "unknown MiniMax-H3 adapter options: " + ", ".join(unknown_options)
             )
+        if self.options.get("enable_sr") is True and self.pool.sr_profile is not None:
+            raise ValueError("enable_sr and native super_resolution profiles cannot be combined")
+        transport = self.options.get("reference_transport", "inline")
+        if transport not in {"inline", "shared_files_v1"}:
+            raise ValueError("unsupported H3 reference transport")
+        if self.options.get("enable_sr") is True and transport != "inline":
+            raise ValueError("production enable_sr requires inline reference transport")
+        if transport == "shared_files_v1" and (self.pool.execution_mode != "detached" or not isinstance(self.options.get("shared_storage_id"), str) or not 1 <= len(self.options["shared_storage_id"]) <= 160):
+            raise ValueError("shared H3 inputs require detached mode and storage identity")
         # Media-content reads can exhibit large shared-filesystem tails. Keep
         # them opt-in; descriptor/path/stat/size publication checks remain in
         # the artifact store when this is disabled.
@@ -817,7 +883,7 @@ class MiniMaxH3VideoAdapter:
 
     def capabilities(self, *, max_result_bytes: int) -> dict[str, Any]:
         supports_reference_media = self.workflow == "ref2va"
-        return {
+        capabilities = {
             "workflow": self.workflow,
             "image_formats": ["jpeg", "png", "webp"],
             "video_formats": ["mp4", "mov"] if supports_reference_media else [],
@@ -834,6 +900,30 @@ class MiniMaxH3VideoAdapter:
             "max_outputs_per_prompt": 1,
             "max_references": 2 if self.workflow == "fl2va" else 12,
         }
+        if self.pool.sr_profile:
+            capabilities["super_resolution"] = {
+                "profile": self.pool.sr_profile,
+                "output_sizes": [f"{w}x{h}" for w, h in (H3_SR_V3_PRESETS if self.pool.sr_profile == H3_SR_PROFILE_V3 else [(1800, 1080), (2400, 1440)] if self.pool.sr_profile == H3_SR_PROFILE_V2 else H3_SR_BASE_SIZES)],
+                "requires_ready_worker": True,
+            }
+        capabilities["operations"] = ["generate"]
+        if self.options.get("enable_sr") is True:
+            capabilities["operations"].append("sr_only")
+            capabilities["sr_only"] = {
+                "input_field": "input_references",
+                "input_formats": ["mp4"],
+                "video_codec": "h264",
+                "pixel_format": "yuv420p",
+                "audio_codecs": ["aac"],
+                "audio_optional": True,
+                "short_edge": 768,
+                "fps": 24,
+                "min_frames": 1,
+                "max_frames": _MAX_SR_SOURCE_FRAMES,
+                "max_source_bytes": _MAX_SR_SOURCE_BYTES,
+                "tiers": ["1080", "1440"],
+            }
+        return capabilities
 
     def estimate_encoded_reference_bytes(
         self, manifest: Sequence[Mapping[str, Any]]
@@ -862,6 +952,13 @@ class MiniMaxH3VideoAdapter:
                 f"unsupported parameters: {', '.join(recognized_unsupported)}",
                 recognized_unsupported[0],
             )
+        operation = _one(fields, "operation")
+        if operation is None:
+            operation = "generate"
+        if operation not in {"generate", "sr_only"}:
+            raise GatewayError(400, "invalid_operation", "operation must be generate or sr_only", "operation")
+        if operation == "sr_only":
+            return self._normalize_sr_only(fields, uploads, public_model)
         reference_fields = {upload.field_name for upload in uploads}
         if {"input_reference", "input_references"} <= reference_fields:
             raise GatewayError(
@@ -975,12 +1072,14 @@ class MiniMaxH3VideoAdapter:
                 )
             seconds = num_frames / 24.0
 
-        width, height = _parse_size(fields, allow_native_base=self.options.get("enable_sr") is True)
+        width, height = _parse_size(fields, allow_native_base=self.options.get("enable_sr") is True,
+                                    sr_profile=self.pool.sr_profile)
         aspect_ratio = _one(fields, "aspect_ratio")
         try:
             resolved_shape = _resolve_gateway_shape(
                 width, height, requested_aspect_ratio=aspect_ratio,
                 allow_native_base=self.options.get("enable_sr") is True,
+                sr_profile=self.pool.sr_profile,
             )
         except ValueError as exc:
             raise GatewayError(
@@ -1175,28 +1274,90 @@ class MiniMaxH3VideoAdapter:
             normalized.update(seed=seed, seed_generated=False)
         sr_tier = _one(fields, "sr_tier")
         if sr_tier is not None:
-            if self.options.get("enable_sr") is not True:
-                raise GatewayError(400, "sr_disabled", "this pool does not enable H3/SR production", "sr_tier")
-            if sr_tier not in {"1080", "1440"}:
-                raise GatewayError(400, "invalid_sr_tier", "sr_tier must be 1080 or 1440", "sr_tier")
-            # Exact source ratio, even final pixels; width/height remain the
-            # Base request geometry and publication validates this final size.
-            from math import gcd, lcm
-            from fractions import Fraction
-            common = gcd(width, height)
-            a, b = width // common, height // common
-            step = lcm(2 // gcd(a, 2), 2 // gcd(b, 2))
-            factor = int(Fraction(int(sr_tier), min(a, b)) // step) * step
-            if min(a * factor, b * factor) != int(sr_tier):
-                raise GatewayError(400, "invalid_sr_shape", "source ratio cannot produce this exact even SR tier", "sr_tier")
-            step16 = lcm(16 // gcd(a, 16), 16 // gcd(b, 16))
-            factor16 = math.ceil(Fraction(int(sr_tier), min(a, b)) / step16) * step16
-            pixels, window = a * b * factor16 * factor16, 33 if sr_tier == "1080" else 65
-            if (pixels > self.options.get("sr_frame_pixels", 3791872)
-                    or pixels * window > self.options.get("sr_clip_pixels", 246471680)
-                    or window > self.options.get("sr_max_window", 65)):
-                raise GatewayError(400, "sr_capacity_exceeded", "SR canvas/window exceeds the frozen production budget", "sr_tier")
-            normalized.update(sr_tier=sr_tier, final_width=a * factor, final_height=b * factor)
+            self._apply_sr_tier(normalized, sr_tier)
+        if uploads and self.options.get("reference_transport") == "shared_files_v1":
+            normalized["shared_inputs"] = {"storage_id": self.options["shared_storage_id"], "protocol": "shared_files_v1"}
+        if resolved_shape.sr_profile:
+            normalized["super_resolution"] = {
+                "schema_version": 1,
+                "profile": resolved_shape.sr_profile,
+                "base_width": resolved_shape.base_width,
+                "base_height": resolved_shape.base_height,
+                "output_width": width,
+                "output_height": height,
+                "sr_width": resolved_shape.sr_width,
+                "sr_height": resolved_shape.sr_height,
+            }
+        return normalized
+
+    def _apply_sr_tier(self, normalized: dict[str, Any], sr_tier: str) -> None:
+        if self.options.get("enable_sr") is not True:
+            raise GatewayError(400, "sr_disabled", "this pool does not enable H3/SR production", "sr_tier")
+        if sr_tier not in {"1080", "1440"}:
+            raise GatewayError(400, "invalid_sr_tier", "sr_tier must be 1080 or 1440", "sr_tier")
+        from math import gcd, lcm
+        from fractions import Fraction
+
+        common = gcd(normalized["width"], normalized["height"])
+        a, b = normalized["width"] // common, normalized["height"] // common
+        step = lcm(2 // gcd(a, 2), 2 // gcd(b, 2))
+        factor = int(Fraction(int(sr_tier), min(a, b)) // step) * step
+        if min(a * factor, b * factor) != int(sr_tier):
+            raise GatewayError(400, "invalid_sr_shape", "source ratio cannot produce this exact even SR tier", "sr_tier")
+        step16 = lcm(16 // gcd(a, 16), 16 // gcd(b, 16))
+        factor16 = math.ceil(Fraction(int(sr_tier), min(a, b)) / step16) * step16
+        pixels, window = a * b * factor16 * factor16, 33 if sr_tier == "1080" else 65
+        if (pixels > self.options.get("sr_frame_pixels", 3791872)
+                or pixels * window > self.options.get("sr_clip_pixels", 246471680)
+                or window > self.options.get("sr_max_window", 65)):
+            raise GatewayError(400, "sr_capacity_exceeded", "SR canvas/window exceeds the frozen production budget", "sr_tier")
+        normalized.update(sr_tier=sr_tier, final_width=a * factor, final_height=b * factor)
+
+    def _normalize_sr_only(
+        self,
+        fields: Mapping[str, list[str]],
+        uploads: Sequence[UploadedArtifact],
+        public_model: str,
+    ) -> dict[str, Any]:
+        if self.options.get("enable_sr") is not True:
+            raise GatewayError(400, "sr_disabled", "this pool does not enable H3/SR production", "operation")
+        allowed = {"model", "operation", "sr_tier", "output_format", "response_format", "user"}
+        unexpected = sorted(set(fields) - allowed)
+        if unexpected:
+            raise GatewayError(400, "unsupported_parameter", "SR-only parameters are derived from the source video", unexpected[0])
+        model = _one(fields, "model")
+        if model is not None and model != public_model:
+            raise GatewayError(400, "model_mismatch", "model changed while parsing", "model")
+        if _one(fields, "output_format") not in {None, "mp4"}:
+            raise GatewayError(400, "unsupported_output_format", "only MP4 output is supported", "output_format")
+        if _one(fields, "response_format") not in {None, "b64_json"}:
+            raise GatewayError(400, "unsupported_response_format", "asynchronous video tasks support response_format=b64_json internally", "response_format")
+        sr_tier = _one(fields, "sr_tier", required=True)
+        assert sr_tier is not None
+        if sr_tier not in {"1080", "1440"}:
+            raise GatewayError(400, "invalid_sr_tier", "sr_tier must be 1080 or 1440", "sr_tier")
+        if len(uploads) != 1 or uploads[0].field_name != "input_references":
+            raise GatewayError(400, "invalid_sr_source", "SR-only requires exactly one input_references MP4 file", "input_references")
+        upload = uploads[0]
+        source = _probe_sr_source(upload)
+        normalized = {
+            "operation": "sr_only",
+            "public_model": public_model,
+            "backend_model": self.pool.backend_model,
+            "workflow": self.workflow,
+            "width": source["width"],
+            "height": source["height"],
+            "fps": 24,
+            "seconds": source["frames"] / 24,
+            "num_frames": source["frames"],
+            "generate_sound": source["audio"],
+            "source_sha256": upload.sha256,
+            "reference_kinds": ["video"],
+            "reference_metadata": [{"ordinal": upload.ordinal, "kind": "video", **source,
+                                    "bytes": upload.size}],
+            "user": _one(fields, "user"),
+        }
+        self._apply_sr_tier(normalized, sr_tier)
         return normalized
 
     def _validate_references(
@@ -1307,30 +1468,71 @@ class MiniMaxH3VideoAdapter:
         manifest: Sequence[Mapping[str, Any]],
         task_root: Path,
     ) -> dict[str, Any]:
+        sr = normalized.get("super_resolution")
+        if sr is not None:
+            # Reconstruct the plan rather than trusting persisted/user fields.
+            plan = plan_h3_output(
+                normalized["width"],
+                normalized["height"],
+                sr_profile=self.pool.sr_profile,
+            )
+            expected = {
+                "schema_version": 1,
+                "profile": plan.sr_profile,
+                "base_width": plan.base_width,
+                "base_height": plan.base_height,
+                "output_width": plan.output_width,
+                "output_height": plan.output_height,
+                "sr_width": plan.sr_width,
+                "sr_height": plan.sr_height,
+            }
+            if plan.sr_profile is None or sr != expected:
+                raise ValueError("persisted SR plan does not match model output policy")
+        sr_only = normalized.get("operation") == "sr_only"
         payload: dict[str, Any] = {
             "model": normalized["backend_model"],
-            "prompt": normalized["prompt"],
-            "size": f"{normalized['width']}x{normalized['height']}",
             "response_format": "b64_json",
             "output_format": "mp4",
-            "nvext": {
-                "fps": normalized["fps"],
-                "num_frames": normalized["num_frames"],
-                "num_inference_steps": normalized["num_inference_steps"],
-            },
+            "nvext": {"fps": normalized["fps"], "num_frames": normalized["num_frames"]},
         }
-        if self.options.get("enable_sr") is True:
-            payload["seconds"] = normalized["seconds"]
-            if normalized.get("sr_tier") is not None:
-                payload["sr_tier"] = normalized["sr_tier"]
-            if normalized.get("frame_indices") is not None:
-                payload["nvext"]["frame_indices"] = normalized["frame_indices"]
-        if normalized.get("seed") is not None:
-            payload["nvext"]["seed"] = normalized["seed"]
-        if normalized.get("negative_prompt") is not None:
-            payload["nvext"]["negative_prompt"] = normalized["negative_prompt"]
-        if normalized.get("guidance_scale") is not None:
-            payload["nvext"]["guidance_scale"] = normalized["guidance_scale"]
+        if sr_only:
+            payload.update(operation="sr_only", sr_tier=normalized["sr_tier"])
+        else:
+            payload.update(
+                prompt=normalized["prompt"],
+                size=f"{sr['base_width']}x{sr['base_height']}" if sr else f"{normalized['width']}x{normalized['height']}",
+            )
+            if sr is not None:
+                payload[SR_PAYLOAD_KEY] = dict(sr)
+            payload["nvext"]["num_inference_steps"] = normalized["num_inference_steps"]
+            if self.options.get("enable_sr") is True:
+                payload["seconds"] = normalized["seconds"]
+                if normalized.get("sr_tier") is not None:
+                    payload["sr_tier"] = normalized["sr_tier"]
+                if normalized.get("frame_indices") is not None:
+                    payload["nvext"]["frame_indices"] = normalized["frame_indices"]
+            if normalized.get("seed") is not None:
+                payload["nvext"]["seed"] = normalized["seed"]
+            if normalized.get("negative_prompt") is not None:
+                payload["nvext"]["negative_prompt"] = normalized["negative_prompt"]
+            if normalized.get("guidance_scale") is not None:
+                payload["nvext"]["guidance_scale"] = normalized["guidance_scale"]
+
+        if normalized.get("shared_inputs") and manifest:
+            raw_manifest = (task_root / "input-manifest.json").read_bytes()
+            artifact = json.loads((task_root / "_artifact.json").read_bytes())
+            envelope = {
+                "type": "dingo_h3_shared_inputs_v1", "schema_version": 1,
+                "storage_id": normalized["shared_inputs"]["storage_id"],
+                "workflow": self.workflow,
+                **{key: artifact[key] for key in ("deployment_id", "pool_id", "task_id")},
+                "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
+                "frame_indices": normalized.get("frame_indices"),
+                "entries": [{key: entry[key] for key in ("ordinal", "path", "content_type", "bytes", "sha256")}
+                            for entry in sorted(manifest, key=lambda e: int(e["ordinal"]))],
+            }
+            payload["input_reference"] = json.dumps(envelope, separators=(",", ":"))
+            return payload
 
         estimated_encoded_bytes = self.estimate_encoded_reference_bytes(manifest)
         if estimated_encoded_bytes > self.max_encoded_reference_bytes:
@@ -1364,7 +1566,11 @@ class MiniMaxH3VideoAdapter:
                 )
             )
 
-        if self.workflow == "fl2va":
+        if sr_only:
+            if len(references) != 1 or references[0][0] != "video/mp4":
+                raise RuntimeError("SR-only requires one persisted MP4 source")
+            payload["input_reference"] = references[0][1]
+        elif self.workflow == "fl2va":
             indices = normalized.get("frame_indices") or []
             if len(references) == 1 and indices == [0]:
                 payload["input_reference"] = references[0][1]
@@ -1384,18 +1590,10 @@ class MiniMaxH3VideoAdapter:
         elif len(references) == 1:
             payload["input_reference"] = references[0][1]
         elif references:
-            envelope = {
-                "type": "ref2va_mixed_v1",
-                "images": [
-                    value for mime, value in references if mime.startswith("image/")
-                ],
-                "videos": [
-                    value for mime, value in references if mime.startswith("video/")
-                ],
-                "audios": [
-                    value for mime, value in references if mime.startswith("audio/")
-                ],
-            }
+            grouped = group_references(references, lambda item: item[0].split("/", 1)[0])
+            envelope = {"type": "ref2va_mixed_v1",
+                        **{kind + "s": [value for mime, value in items]
+                           for kind, items in grouped.items()}}
             payload["input_reference"] = json.dumps(envelope, separators=(",", ":"))
         return payload
 
@@ -1611,11 +1809,12 @@ class MiniMaxH3VideoAdapter:
             started = time.perf_counter()
             frame_count = sum(1 for _frame in container.decode(video=0))
             _record_media_timing(diagnostic_timings, "frame_count_decode", started)
-        expected_frames = align_frame_count(int(normalized["num_frames"]))
+        expected_frames = int(normalized["num_frames"])
+        if normalized.get("operation") != "sr_only":
+            expected_frames = align_frame_count(expected_frames)
         if frame_count != expected_frames:
             raise RuntimeError(
-                f"MP4 frame count {frame_count} does not match expected "
-                f"MiniMax-H3 aligned count {expected_frames}"
+                f"MP4 frame count {frame_count} does not match expected {expected_frames}"
             )
         video_duration = frame_count / average_rate
         container_duration = (

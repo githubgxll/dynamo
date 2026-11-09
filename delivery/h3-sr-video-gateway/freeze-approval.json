@@ -1,0 +1,23 @@
+{
+  "schema": "h3-sr-video-gateway-freeze/1",
+  "recipe_sha256": "75ee261b8669df84efe12c587de9fbe6c83b849d22d2b3ff0ef5324e08d71a1b",
+  "review_tree": "ff2df6f2420f461041dbcfbeeaa2f362f3d0d566",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "reviews": {
+    "root": {
+      "status": "PASS",
+      "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_VideoGateway_Handoff_20261109\\implementation\\ROOT-REVIEW.json",
+      "scope": "Local technical source/recipe/protocol review"
+    },
+    "k8s": {
+      "status": "PASS",
+      "evidence": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_VideoGateway_Handoff_20261109\\implementation\\K8S-CONTRACT-REVIEW.json",
+      "sha256": "67c1c167a62b015cfa3cbf8e42a606d2c40446a95b99cf8853775dfdc2dd194b",
+      "scope": "Static startup and public API contract review only; no cluster/GPU/deployment/image publication in this review"
+    }
+  },
+  "status": "READY_FOR_BUILD",
+  "approved_at": "2026-11-09T18:02:01.276859+08:00",
+  "authorization": "2026-11-09 user approved coordinated update and personal-branch source submission/build; sole submitter assembles completed matching root/K8S reviews",
+  "single_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1"
+}

@@ -1,10 +1,9 @@
 {
   "schema": "h3sr-production-target/1",
   "profile": "fl2va-sr",
-  "status": "PREPARATION_ONLY_PRODUCTION_ENTRYPOINT_PENDING",
-  "source_date": "2026-11-05",
+  "status": "BF16_STARTUP_TEMPLATE_PUBLICATION_IDENTITY_PENDING",
+  "source_date": "2026-11-09",
   "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
-  "release_image": null,
   "framework_version": "0.32.0",
   "topology": {
     "gpu_count": 8,
@@ -114,8 +113,9 @@
       "10800",
       "--cache-config",
       "{\"Fn_compute_blocks\":1,\"Bn_compute_blocks\":0,\"max_warmup_steps\":8,\"residual_diff_threshold\":0.12,\"max_continuous_cached_steps\":2,\"enable_taylorseer\":false,\"scm_steps_mask_policy\":null}",
-      "--diffusion-quantization-config",
-      "{\"transformer\":{\"method\":\"fp8\",\"activation_scheme\":\"dynamic\"},\"text_encoder\":null,\"default\":null}"
+      "--disable-log-stats",
+      "--no-collect-stage-metrics",
+      "--no-record-output-peak-memory"
     ],
     "stage_environment": {
       "TMPDIR": "/work/h3/tmp",
@@ -139,14 +139,7 @@
       "enable_taylorseer": false,
       "scm_steps_mask_policy": null
     },
-    "quantization_config": {
-      "transformer": {
-        "method": "fp8",
-        "activation_scheme": "dynamic"
-      },
-      "text_encoder": null,
-      "default": null
-    },
+    "quantization_config": null,
     "offload_config": null,
     "default_request": {
       "num_inference_steps": 50,
@@ -210,7 +203,7 @@
       "mp",
       "--vae-use-tiling",
       "--stage-overrides",
-      "{\"0\":{\"ulysses_degree\":8,\"vae_patch_parallel_size\":8,\"vae_parallel_mode\":\"spatial_shard_height\"}}",
+      "{\"0\":{\"ulysses_degree\":8,\"vae_parallel_mode\":\"spatial_shard_height\",\"vae_patch_parallel_size\":8}}",
       "--api-server-count",
       "1",
       "--tensor-parallel-size",
@@ -237,7 +230,10 @@
       "--init-timeout",
       "10800",
       "--stage-init-timeout",
-      "10800"
+      "10800",
+      "--disable-log-stats",
+      "--no-collect-stage-metrics",
+      "--no-record-output-peak-memory"
     ],
     "stage_environment": {
       "TMPDIR": "/work/sr/tmp",
@@ -298,7 +294,7 @@
       "audio": "copy original Base audio into final SR video"
     },
     "production_api_wrapper_required": false,
-    "control_wrapper_status": "native-SR-no-Ref-control-extension"
+    "control_wrapper_status": "REF_CONTROL_DISABLED_BY_PROFILE"
   },
   "sr_weight_preparation": {
     "init_required": true,
@@ -307,7 +303,7 @@
     "cpu_init_argv": [
       "python3",
       "-B",
-      "/opt/h3-sr/convert_seedvr2.py",
+      "/opt/h3-weight-init/convert_seedvr2.py",
       "--source-dir",
       "/models/SeedVR2-3B",
       "--output-dir",
@@ -363,12 +359,15 @@
     "sr_converted": "emptyDir 24Gi"
   },
   "lifecycle": {
-    "implementation_status": "TO_IMPLEMENT",
+    "implementation_status": "IMPLEMENTED",
     "startup": "automatic",
     "order": [
       "sr-weight-init",
+      "runtime-and-weight-verification",
       "h3-ready",
       "sr-ready",
+      "ref-rank-identities-if-enabled",
+      "dingo-registered",
       "worker-ready"
     ],
     "ready_requires_both_services": true,
@@ -383,7 +382,17 @@
     ],
     "on_child_exit": "worker not-ready; stop dispatch; preserve task state",
     "automatic_inference_retry": false,
-    "shutdown_scope": "owned process groups only"
+    "shutdown_scope": "owned process groups only",
+    "launcher_argv": [
+      "python3",
+      "-B",
+      "/opt/h3-sr/service/launcher.py",
+      "--profile",
+      "/etc/h3-sr/profile.json",
+      "--gateway-command-file",
+      "/etc/h3-sr/gateway-command.json"
+    ],
+    "startup_budget_seconds": 22950
   },
   "handoff": {
     "enabled": false,
@@ -405,7 +414,7 @@
       "off",
       "stages"
     ],
-    "target_contract_status": "stages requires new SR timing mode; production mapping pending",
+    "target_contract_status": "IMPLEMENTED off or timing-only stages",
     "memory_sampling": false,
     "nvml_sampler": false,
     "per_pid_sampler": false,
@@ -419,7 +428,7 @@
         "--enable-diffusion-pipeline-profiler"
       ],
       "sr_measurement_mode": "timing",
-      "sr_mode_implementation_status": "TO_IMPLEMENT",
+      "sr_mode_implementation_status": "IMPLEMENTED",
       "sr_metrics_dir": "/work/metrics/sr",
       "memory_sampling": false,
       "offload_timing": false,
@@ -428,13 +437,13 @@
     },
     "lifecycle_and_control_receipts": "required independently of optional monitoring",
     "native_output_peak_memory": false,
-    "native_output_peak_memory_implementation_status": "TO_IMPLEMENT runner/config/API option; no current public CLI",
+    "native_output_peak_memory_implementation_status": "IMPLEMENTED --no-record-output-peak-memory",
     "return_stage_metrics_scope": "asynchronous video metadata; not the synchronous profiler switch"
   },
   "gateway": {
     "existing_public_api_preserved": true,
-    "adapter_implementation_status": "TO_ALIGN_WITH_DEPLOYED_GATEWAY_COMMIT",
-    "backend_transport": "native HTTP through worker adapter or equivalent direct AsyncOmni mapping",
+    "adapter_implementation_status": "IMPLEMENTED_DEPLOYMENT_VALUES_AND_E2E_ACCEPTANCE_PENDING",
+    "backend_transport": "Dingo ProductionOmniHandler to native HTTP through GatewayBridge and shared GatewayExecutor",
     "size_policy": "Gateway accepts size or width/height; adapter maps to backend",
     "request_model": "minimax-h3-fl2va",
     "pure_base_request": "publish H3 output; both backend services remain started",
@@ -442,13 +451,24 @@
       "1080",
       "1440"
     ],
-    "worker_ready_only_when_all_backends_ready": true
+    "worker_ready_only_when_all_backends_ready": true,
+    "dingo_component": "backend",
+    "output_modalities": [
+      "video"
+    ],
+    "sr_opt_in": "model pool adapter_options.enable_sr=true"
   },
   "validation": {
     "reference_run": null,
     "reference_scope": "configuration derived from prior FL no-offload profile",
     "new_production_entrypoint_gpu_test": "PENDING",
     "new_profile_gateway_test": "PENDING",
-    "new_image_build": "NOT_SUBMITTED"
-  }
+    "new_image_build": "PUBLISHED_AND_PULLED_CPU_VALIDATED",
+    "actual_image_runtime_tests": 177,
+    "actual_image_tests_skipped": 0
+  },
+  "release_date": "2026-11-06",
+  "baseline_release_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:609cfa150ec8ccc81ccf33bc591daf20692e20f94d5ef163c30ca21302e6a4b3",
+  "release_image": null,
+  "baseline_source_commit": "2d58b79df39a9335e2f850d3a83bf938610cc611"
 }

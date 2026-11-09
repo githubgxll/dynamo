@@ -47,6 +47,15 @@ No retrospective backfill or exact audit-count guarantee is provided.
 
 All metrics below use the `dingo_video_` prefix and a bounded `pool` label.
 
+`artifact_total_bytes` and `artifact_free_bytes` describe shared storage capacity.
+On CephFS, the configured artifact root can be nested below the PVC quota root.
+Capacity sampling finds the nearest byte quota without walking outside the mount,
+then reads both `ceph.quota.max_bytes` and `ceph.dir.rbytes` at that directory.
+Its usage includes sibling directories sharing that quota. Each call refreshes
+these values; it does not scan all files. Other filesystems, or unreadable quota
+usage, fall back to filesystem statistics. These are capacity observations,
+not an exact audit of file contents or Ceph replica/metadata overhead.
+
 | Metric suffix | Meaning |
 | --- | --- |
 | workers | Discovered physical Worker registrations, not Pods or slots |

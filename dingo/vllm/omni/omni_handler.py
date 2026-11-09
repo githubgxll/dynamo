@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import random
+from dingo.common.video_worker_error import classify_worker_error
+
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, Optional, Union, cast
 
@@ -195,7 +197,9 @@ class OmniHandler(BaseOmniHandler):
                     )
                 except Exception as e:
                     logger.warning("Failed to adapt video input reference: %s", e)
-                    yield self._error_chunk(request_id, str(e), request_type)
+                    chunk = self._error_chunk(request_id, str(e), request_type)
+                    chunk["_internal_error"] = {"schema_version": 1, "reason": "input_processing_failed", "stage": "input_processing"}
+                    yield chunk
                     return
             elif parsed_request.input_reference is not None:
                 try:
@@ -242,7 +246,9 @@ class OmniHandler(BaseOmniHandler):
             )
         except (ValueError, NotImplementedError) as e:
             logger.error(f"Invalid request {request_id}: {e}")
-            yield self._error_chunk(request_id, str(e), request_type)
+            chunk = self._error_chunk(request_id, str(e), request_type)
+            chunk["_internal_error"] = classify_worker_error(e, stage="input_processing")
+            yield chunk
             return
 
         if (
@@ -296,7 +302,9 @@ class OmniHandler(BaseOmniHandler):
                 raise
             except Exception as e:
                 logger.error(f"Error during generation for request {request_id}: {e}")
-                yield self._error_chunk(request_id, str(e), inputs.request_type)
+                chunk = self._error_chunk(request_id, str(e), inputs.request_type)
+                chunk["_internal_error"] = classify_worker_error(e, stage="base_generation")
+                yield chunk
 
     async def build_engine_inputs(
         self,

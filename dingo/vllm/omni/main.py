@@ -4,6 +4,7 @@
 """Omni worker entrypoint for python -m dingo.vllm.omni."""
 
 import asyncio
+import json
 import logging
 import os
 
@@ -47,6 +48,9 @@ async def init_omni(
     )
 
     detached_manager = None
+    sr_process = None
+    video_readiness = None
+    video_recovery = None
     production = config.h3_sr_profile is not None
     if production:
         from .production_handler import ProductionOmniHandler
@@ -77,13 +81,51 @@ async def init_omni(
     if config.detached_video_task_root is not None:
         from dingo.vllm.omni.detached_tasks import DetachedOmniTaskManager
 
+        task_handler = handler
+        sr_config = os.getenv("DINGO_VIDEO_SEEDVR2_CONFIG")
+        if sr_config and not production:
+            from dingo.vllm.omni.seedvr2_process import SeedVR2Process
+
+            if (config.diffusion.max_num_seqs or 1) != 1:
+                raise ValueError("composite SR Worker requires execution capacity one")
+            if os.getenv("DINGO_VIDEO_BINARY_RESULTS") != "1":
+                raise ValueError("composite SR Worker requires binary results")
+            sr_process = SeedVR2Process(json.loads(sr_config))
+            try:
+                task_handler = await sr_process.start(handler)
+            except BaseException:
+                handler.cleanup()
+                raise
+        base_recovery = not production and os.getenv("DINGO_VIDEO_H3_RECOVERY") == "1"
+        if base_recovery and sr_process is None:
+            if config.request_adapter != "minimax_h3" or config.request_adapter_workflow not in {"fl2va", "ref2va"}:
+                raise ValueError("base recovery requires the H3 video adapter")
+            if (config.diffusion.max_num_seqs or 1) != 1:
+                raise ValueError("H3 video recovery requires execution capacity one")
+            from dingo.vllm.omni.h3_video_handler import H3VideoHandler
+            task_handler = H3VideoHandler(handler)
         detached_manager = DetachedOmniTaskManager(
-            handler,
+            task_handler,
             config.detached_video_task_root,
             drain_timeout_s=config.detached_video_drain_timeout,
             execution_capacity=config.diffusion.max_num_seqs or 1,
             prefetch_capacity=config.detached_video_prefetch_capacity,
         )
+        if (sr_process is not None or base_recovery) and os.getenv("DINGO_VIDEO_READINESS_PORT"):
+            from dingo.vllm.omni.video_readiness import VideoReadinessServer
+            video_readiness = VideoReadinessServer(
+                detached_manager, handler.engine_client,
+                port=int(os.environ["DINGO_VIDEO_READINESS_PORT"]),
+                sr_port=8124 if sr_process is not None else None,
+            )
+            await video_readiness.start()
+        if sr_process is not None or base_recovery:
+            from dingo.vllm.omni.video_recovery import CompositeWorkerRecovery
+            video_recovery = CompositeWorkerRecovery(
+                detached_manager, generate_endpoint, handler, sr_process,
+                shutdown_event=shutdown_event,
+            )
+            video_recovery.start()
         serve_handler = detached_manager.generate
         logger.info(
             "Enabled detached Omni video tasks below %s",
@@ -151,15 +193,23 @@ async def init_omni(
     finally:
         logger.debug("Cleaning up Omni worker")
         try:
+            if video_recovery is not None:
+                await video_recovery.close()
+            if video_readiness is not None:
+                await video_readiness.close()
             if detached_manager is not None:
                 await detached_manager.shutdown()
         finally:
             try:
                 await asyncio.to_thread(handler.output_formatter.close)
             finally:
-                if production:
-                    await handler.aclose()
-                handler.cleanup()
+                try:
+                    if production:
+                        await handler.aclose()
+                    if sr_process is not None:
+                        await sr_process.close()
+                finally:
+                    handler.cleanup()
 
 
 async def worker():

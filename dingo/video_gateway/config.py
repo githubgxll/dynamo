@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dingo.common.video_super_resolution import configured_sr_profile
+from dingo.video_gateway.context_ir.config import ContextIRConfig, parse_context_ir
+
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _LOGGER = logging.getLogger(__name__)
 MINIMAX_H3_PROTOCOL_REVISION = "dingo-vllm-omni-h3-detached-v1"
@@ -26,7 +29,7 @@ _MIB = 1024 * 1024
 _MAX_BODY_HARD_CAP = 512 * _MIB
 _MEDIA_HARD_CAPS = {
     "max_total_file_bytes": 256 * _MIB,
-    "max_single_file_bytes": 50 * _MIB,
+    "max_single_file_bytes": 128 * _MIB,
     "max_text_field_bytes": 1024 * 1024,
     "max_parts": 32,
     "max_encoded_reference_bytes": 384 * _MIB,
@@ -213,6 +216,19 @@ class PoolConfig:
     adapter: AdapterConfig
     scheduling: SchedulingConfig
     configuration_revision: str
+    base_configuration_revision: str | None = None
+
+    @property
+    def sr_profile(self) -> str | None:
+        return configured_sr_profile(self.adapter.name, self.adapter.options)
+
+    def request_configuration_revision(self, normalized: Mapping[str, Any]) -> str:
+        if (
+            "super_resolution" in normalized
+            or "super_resolution" not in self.adapter.options
+        ):
+            return self.configuration_revision
+        return self.base_configuration_revision or self.configuration_revision
 
     @property
     def endpoint_path(self) -> str:
@@ -235,6 +251,8 @@ class GatewayConfig:
     performance_cache: PerformanceCacheConfig = field(
         default_factory=PerformanceCacheConfig
     )
+
+    context_ir: ContextIRConfig = field(default_factory=ContextIRConfig)
 
     def pool_for_model(self, model: str) -> PoolConfig | None:
         return self.pools_by_model.get(model)
@@ -704,6 +722,9 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         },
     )
     scheduling = _scheduling_config(data.get("scheduling"), pool_id)
+    sr_profile = configured_sr_profile(adapter.name, adapter.options)
+    if sr_profile and execution_mode != "detached":
+        raise ValueError("super_resolution requires detached execution_mode")
     if scheduling.early_release_slot and execution_mode != "detached":
         raise ValueError("early slot release requires detached execution_mode")
     if scheduling.worker_capacity > 1 and execution_mode != "detached":
@@ -718,7 +739,10 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
             "name": adapter.name,
             "workflow": adapter.workflow,
             "compatibility_version": adapter.compatibility_version,
-            "options": adapter.options,
+            # Transport selection is persisted per task and negotiated with
+            # the Worker; it does not change model semantics or idempotency.
+            "options": {key: value for key, value in adapter.options.items()
+                        if key not in {"reference_transport", "shared_storage_id"}},
         },
         "scheduling": {
             "worker_capacity": scheduling.worker_capacity,
@@ -733,6 +757,22 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
             ).encode()
         ).hexdigest()
     )
+    # Keep the historical Base fingerprint stable when only SR configuration
+    # changes. All other model, execution and scheduling fields remain hashed.
+    base_options = dict(revision_payload["adapter"]["options"])
+    base_options.pop("super_resolution", None)
+    base_payload = {
+        **revision_payload,
+        "adapter": {**revision_payload["adapter"], "options": base_options},
+    }
+    base_revision = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                base_payload, sort_keys=True, separators=(",", ":"), default=str
+            ).encode()
+        ).hexdigest()
+    )
     return PoolConfig(
         pool_id=pool_id,
         served_models=served_models,
@@ -742,6 +782,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         adapter=adapter,
         scheduling=scheduling,
         configuration_revision=revision,
+        base_configuration_revision=base_revision,
     )
 
 
@@ -760,6 +801,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "lifecycle",
             "pools",
             "performance_cache",
+            "context_ir",
         },
         "config",
     )
@@ -814,6 +856,7 @@ def parse_config(raw: Any) -> GatewayConfig:
         pools_by_model=by_model,
         pools_by_id=by_id,
         performance_cache=_performance_cache_config(data.get("performance_cache")),
+        context_ir=parse_context_ir(data.get("context_ir"), by_model),
     )
 
 

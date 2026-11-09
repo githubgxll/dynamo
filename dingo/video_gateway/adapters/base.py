@@ -42,6 +42,7 @@ class WorkerVideoResult:
     artifact: Mapping[str, Any] | None = None
     model_execution: Mapping[str, Any] | None = None
     h3_sr_timing: Mapping[str, Any] | None = None
+    super_resolution_timings: Mapping[str, Any] | None = None
 
 
 class WorkerStreamConsumer(Protocol):

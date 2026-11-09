@@ -1,0 +1,473 @@
+{
+  "schema": "h3sr-production-target/1",
+  "profile": "fl2va-sr",
+  "status": "PUBLISHED_CPU_VALIDATED_GPU_PENDING",
+  "source_date": "2026-11-05",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:c88bef388ed25359c78c48ae841736049100d7447c572678992699ae6291e25d",
+  "release_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:609cfa150ec8ccc81ccf33bc591daf20692e20f94d5ef163c30ca21302e6a4b3",
+  "framework_version": "0.32.0",
+  "topology": {
+    "gpu_count": 8,
+    "gpu_model": "H100 80GB HBM3",
+    "power_limit_w": 700,
+    "initial_validation_node": "hd04-gpu1-0050",
+    "h3_variants_per_pod": 1,
+    "shared_h3_sr_gpu_set": true,
+    "gpu_business_concurrency": 1
+  },
+  "common_environment": {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "VLLM_NO_USAGE_STATS": "1",
+    "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    "DINGO_ENABLE_MINIMAX_H3_PATCHES": "0",
+    "OMNI_DIFFUSION_PROMPT_EMBED_CACHE": "0",
+    "VLLM_OMNI_VAE_LEGACY_TEMPORAL": "0",
+    "VLLM_OMNI_VAE_ENCODE_LEGACY_PREP": "0",
+    "VLLM_OMNI_VIDEO_SYNC_TIMEOUT": "10800",
+    "VLLM_OMNI_ASYNC_OUTPUT_TIMEOUT": "10800",
+    "VLLM_OMNI_DLO_DP_WAVE_TIMEOUT": "10800",
+    "NCCL_DEBUG": "WARN",
+    "TZ": "Asia/Shanghai",
+    "MASTER_ADDR": "127.0.0.1"
+  },
+  "environment_sanitization": {
+    "clear_prefixes": [
+      "H3_",
+      "DIFFUSION_CACHE_",
+      "VLLM_OMNI_SEEDVR2_",
+      "SEEDVR2_",
+      "OMNI_MEMDIAG_",
+      "H3SR_MEMORY_"
+    ],
+    "clear_names": [
+      "PYTHONPATH",
+      "PYTHONHOME",
+      "MASTER_PORT",
+      "MASTER_ADDR",
+      "RANK",
+      "WORLD_SIZE",
+      "LOCAL_RANK"
+    ],
+    "preserve_gpu_visibility": "Use the eight GPUs assigned to this Pod for both H3 and SR."
+  },
+  "h3": {
+    "native_argv": [
+      "vllm-omni",
+      "serve",
+      "/models/h3/FL2VA",
+      "--omni",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8123",
+      "--served-model-name",
+      "minimax-h3-fl2va",
+      "--task-type",
+      "fl2va",
+      "--dtype",
+      "bfloat16",
+      "--trust-remote-code",
+      "--num-gpus",
+      "8",
+      "--tensor-parallel-size",
+      "1",
+      "--ulysses-degree",
+      "8",
+      "--max-num-seqs",
+      "1",
+      "--ring-degree",
+      "1",
+      "--cfg-parallel-size",
+      "1",
+      "--allgather-degree",
+      "1",
+      "--ulysses-mode",
+      "strict",
+      "--use-hsdp",
+      "--hsdp-shard-size",
+      "8",
+      "--hsdp-replicate-size",
+      "1",
+      "--text-encoder-tp-size",
+      "8",
+      "--vae-patch-parallel-size",
+      "8",
+      "--vae-parallel-mode",
+      "tile",
+      "--vae-use-tiling",
+      "--diffusion-attention-backend",
+      "FLASH_ATTN",
+      "--enforce-eager",
+      "--cache-backend",
+      "cache_dit",
+      "--no-ulysses-a2a-permute",
+      "--request-batch-max-wait-ms",
+      "0",
+      "--init-timeout",
+      "10800",
+      "--stage-init-timeout",
+      "10800",
+      "--cache-config",
+      "{\"Fn_compute_blocks\":1,\"Bn_compute_blocks\":0,\"max_warmup_steps\":8,\"residual_diff_threshold\":0.12,\"max_continuous_cached_steps\":2,\"enable_taylorseer\":false,\"scm_steps_mask_policy\":null}",
+      "--disable-log-stats",
+      "--no-collect-stage-metrics",
+      "--no-record-output-peak-memory"
+    ],
+    "stage_environment": {
+      "TMPDIR": "/work/h3/tmp",
+      "TMP": "/work/h3/tmp",
+      "TEMP": "/work/h3/tmp",
+      "HF_HOME": "/work/h3/cache/hf",
+      "XDG_CACHE_HOME": "/work/h3/cache/xdg",
+      "TORCH_HOME": "/work/h3/cache/torch",
+      "TRITON_CACHE_DIR": "/work/h3/cache/triton",
+      "SPEAKER_SAMPLES_DIR": "/work/h3/cache/speakers",
+      "VLLM_CACHE_ROOT": "/work/h3/cache/vllm",
+      "MASTER_PORT": "29510",
+      "VLLM_LOGGING_LEVEL": "INFO"
+    },
+    "cache_config": {
+      "Fn_compute_blocks": 1,
+      "Bn_compute_blocks": 0,
+      "max_warmup_steps": 8,
+      "residual_diff_threshold": 0.12,
+      "max_continuous_cached_steps": 2,
+      "enable_taylorseer": false,
+      "scm_steps_mask_policy": null
+    },
+    "quantization_config": null,
+    "offload_config": null,
+    "default_request": {
+      "num_inference_steps": 50,
+      "guidance_scale": 1,
+      "num_outputs_per_prompt": 1,
+      "return_stage_metrics": false,
+      "fps": 24,
+      "flow_shift": 12,
+      "extra_params": {
+        "audio_flow_shift": 3
+      }
+    },
+    "cpu_offload_enabled": false,
+    "request_task_mapping": {
+      "text_only": {
+        "task": "t2va",
+        "input_references": []
+      },
+      "first_frame": {
+        "task": "fl2va",
+        "frame_indices": [
+          0
+        ]
+      },
+      "first_last_frames": {
+        "task": "fl2va",
+        "frame_indices": [
+          0,
+          -1
+        ]
+      },
+      "last_frame": {
+        "task": "fl2va",
+        "frame_indices": [
+          -1
+        ]
+      }
+    },
+    "request_required_explicit_fields": [
+      "seconds",
+      "size_or_width_height",
+      "seed"
+    ]
+  },
+  "sr": {
+    "native_argv": [
+      "vllm-omni",
+      "serve",
+      "/opt/sr/seedvr2-3b",
+      "--omni",
+      "--model-class-name",
+      "SeedVR2Pipeline",
+      "--dtype",
+      "float16",
+      "--enforce-eager",
+      "--cache-backend",
+      "none",
+      "--num-gpus",
+      "8",
+      "--distributed-executor-backend",
+      "mp",
+      "--vae-use-tiling",
+      "--stage-overrides",
+      "{\"0\":{\"ulysses_degree\":8,\"vae_parallel_mode\":\"spatial_shard_height\",\"vae_patch_parallel_size\":8}}",
+      "--api-server-count",
+      "1",
+      "--tensor-parallel-size",
+      "1",
+      "--ring-degree",
+      "1",
+      "--cfg-parallel-size",
+      "1",
+      "--allgather-degree",
+      "1",
+      "--text-encoder-tp-size",
+      "1",
+      "--ulysses-mode",
+      "strict",
+      "--no-ulysses-a2a-permute",
+      "--max-num-seqs",
+      "1",
+      "--request-batch-max-wait-ms",
+      "0",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8124",
+      "--init-timeout",
+      "10800",
+      "--stage-init-timeout",
+      "10800",
+      "--disable-log-stats",
+      "--no-collect-stage-metrics",
+      "--no-record-output-peak-memory"
+    ],
+    "stage_environment": {
+      "TMPDIR": "/work/sr/tmp",
+      "TMP": "/work/sr/tmp",
+      "TEMP": "/work/sr/tmp",
+      "HF_HOME": "/work/sr/cache/hf",
+      "XDG_CACHE_HOME": "/work/sr/cache/xdg",
+      "TORCH_HOME": "/work/sr/cache/torch",
+      "TRITON_CACHE_DIR": "/work/sr/cache/triton",
+      "SPEAKER_SAMPLES_DIR": "/work/sr/cache/speakers",
+      "VLLM_CACHE_ROOT": "/work/sr/cache/vllm",
+      "MASTER_PORT": "29610",
+      "VLLM_OMNI_SEEDVR2_SHARDED_FRAME_PIXELS": "3791872",
+      "VLLM_OMNI_SEEDVR2_SHARDED_CLIP_PIXELS": "246471680",
+      "VLLM_OMNI_SEEDVR2_MAX_FRAMES": "65",
+      "VLLM_OMNI_SEEDVR2_LONG_MAX_WINDOW": "65",
+      "VLLM_OMNI_SEEDVR2_LONG_OUTPUT_DIR": "/work/sr/jobs",
+      "VLLM_OMNI_SEEDVR2_LONG_JOB_TTL_SECONDS": "604800"
+    },
+    "start_automatically": true,
+    "model_path": "/opt/sr/seedvr2-3b",
+    "request_profiles_for_1280x768_base": {
+      "1080": {
+        "window_frames": 33,
+        "model_size": [
+          1840,
+          1104
+        ],
+        "delivery_size": [
+          1800,
+          1080
+        ]
+      },
+      "1440": {
+        "window_frames": 65,
+        "model_size": [
+          2400,
+          1440
+        ],
+        "delivery_size": [
+          2400,
+          1440
+        ]
+      }
+    },
+    "default_request": {
+      "seed": 7723,
+      "color_correction_method": "lab",
+      "encoding_mode": "single_encode",
+      "measurement_mode": "off",
+      "loop_input": false
+    },
+    "fixed_semantics": {
+      "steps": 1,
+      "guidance_scale": 1,
+      "overlap": 4,
+      "use_actual_base_frame_count": true,
+      "audio": "copy original Base audio into final SR video"
+    },
+    "production_api_wrapper_required": false,
+    "control_wrapper_status": "REF_CONTROL_DISABLED_BY_PROFILE"
+  },
+  "sr_weight_preparation": {
+    "init_required": true,
+    "source_dir": "/models/SeedVR2-3B",
+    "output_dir": "/opt/sr/seedvr2-3b",
+    "cpu_init_argv": [
+      "python3",
+      "-B",
+      "/opt/h3-weight-init/convert_seedvr2.py",
+      "--source-dir",
+      "/models/SeedVR2-3B",
+      "--output-dir",
+      "/opt/sr/seedvr2-3b"
+    ],
+    "persistent_output_validation_option": "--verify-only",
+    "verification_also_requires_source_dir": true,
+    "conversion_script_sha256": "cab495159e2739c53a1578f4195fc5f4cc17df7380db08ee308b5cf1179fb6fd",
+    "source_revision": "37255ff8cccfb01071b87f635a5948ca8d53117c",
+    "derived_files": [
+      "seedvr2_ema_3b_fp16.safetensors",
+      "ema_vae_fp16.safetensors",
+      "pos_emb.pt",
+      "model_index.json",
+      "conversion-manifest.json"
+    ],
+    "main_mount_read_only": true
+  },
+  "model_mounts": [
+    {
+      "source": "/dingofs/data2/mengsz/MiniMax-H3",
+      "container": "/models/h3",
+      "read_only": true
+    },
+    {
+      "source": "/dingofs/data2/userdata/dingjs/models/SeedVR2-3B",
+      "container": "/models/SeedVR2-3B",
+      "read_only": true
+    },
+    {
+      "source": "initContainer derived FP16 emptyDir",
+      "container": "/opt/sr",
+      "main_container_read_only": true
+    }
+  ],
+  "pod_resources_reference": {
+    "requests": {
+      "cpu": "104",
+      "memory": "1600Gi",
+      "nvidia.com/gpu-h100-80gb-hbm3": 8,
+      "ephemeral-storage": "160Gi"
+    },
+    "limits": {
+      "cpu": "104",
+      "memory": "1600Gi",
+      "nvidia.com/gpu-h100-80gb-hbm3": 8,
+      "ephemeral-storage": "200Gi"
+    }
+  },
+  "scratch_volumes": {
+    "work": "emptyDir 100Gi",
+    "shm": "memory emptyDir 128Gi",
+    "sr_converted": "emptyDir 24Gi"
+  },
+  "lifecycle": {
+    "implementation_status": "IMPLEMENTED",
+    "startup": "automatic",
+    "order": [
+      "sr-weight-init",
+      "runtime-and-weight-verification",
+      "h3-ready",
+      "sr-ready",
+      "ref-rank-identities-if-enabled",
+      "dingo-registered",
+      "worker-ready"
+    ],
+    "ready_requires_both_services": true,
+    "additional_ref_ready_requirement": null,
+    "shared_execution_lock": true,
+    "lock_scope": [
+      "cache-handoff-if-enabled",
+      "h3-request",
+      "sr-job-if-requested",
+      "audio-remux",
+      "completion-confirmation"
+    ],
+    "on_child_exit": "worker not-ready; stop dispatch; preserve task state",
+    "automatic_inference_retry": false,
+    "shutdown_scope": "owned process groups only",
+    "launcher_argv": [
+      "python3",
+      "-B",
+      "/opt/h3-sr/service/launcher.py",
+      "--profile",
+      "/etc/h3-sr/profile.json",
+      "--gateway-command-file",
+      "/etc/h3-sr/gateway-command.json"
+    ],
+    "startup_budget_seconds": 22950
+  },
+  "handoff": {
+    "enabled": false,
+    "implementation_status": "DISABLED_BY_PROFILE",
+    "trigger": null,
+    "sr_worker_extension": null,
+    "internal_path": null,
+    "stage_ids": [],
+    "expected_world_size": null,
+    "requires_eight_rank_identity_validation": false,
+    "periodic_memory_sampling_required": false,
+    "receipt_metrics_default": "off",
+    "control_receipt_required": false,
+    "unknown_result_policy": null
+  },
+  "monitoring": {
+    "mode": "off",
+    "target_modes": [
+      "off",
+      "stages"
+    ],
+    "target_contract_status": "IMPLEMENTED off or timing-only stages",
+    "memory_sampling": false,
+    "nvml_sampler": false,
+    "per_pid_sampler": false,
+    "block_hooks": false,
+    "offload_timing": false,
+    "cache_dit_summary": false,
+    "h3_pipeline_profiler": false,
+    "sr_measurement_mode": "off",
+    "stage_mode_target": {
+      "h3_cli_add": [
+        "--enable-diffusion-pipeline-profiler"
+      ],
+      "sr_measurement_mode": "timing",
+      "sr_mode_implementation_status": "IMPLEMENTED",
+      "sr_metrics_dir": "/work/metrics/sr",
+      "memory_sampling": false,
+      "offload_timing": false,
+      "h3_sync_stage_metrics_source": "X-Stage-Durations response header",
+      "native_output_peak_memory": false
+    },
+    "lifecycle_and_control_receipts": "required independently of optional monitoring",
+    "native_output_peak_memory": false,
+    "native_output_peak_memory_implementation_status": "IMPLEMENTED --no-record-output-peak-memory",
+    "return_stage_metrics_scope": "asynchronous video metadata; not the synchronous profiler switch"
+  },
+  "gateway": {
+    "existing_public_api_preserved": true,
+    "adapter_implementation_status": "IMPLEMENTED_DEPLOYMENT_VALUES_AND_E2E_ACCEPTANCE_PENDING",
+    "backend_transport": "Dingo ProductionOmniHandler to native HTTP through GatewayBridge and shared GatewayExecutor",
+    "size_policy": "Gateway accepts size or width/height; adapter maps to backend",
+    "request_model": "minimax-h3-fl2va",
+    "pure_base_request": "publish H3 output; both backend services remain started",
+    "sr_tiers": [
+      "1080",
+      "1440"
+    ],
+    "worker_ready_only_when_all_backends_ready": true,
+    "dingo_component": "backend",
+    "output_modalities": [
+      "video"
+    ],
+    "sr_opt_in": "model pool adapter_options.enable_sr=true"
+  },
+  "validation": {
+    "reference_run": null,
+    "reference_scope": "configuration derived from prior FL no-offload profile",
+    "new_production_entrypoint_gpu_test": "PENDING",
+    "new_profile_gateway_test": "PENDING",
+    "new_image_build": "PUBLISHED_AND_PULLED_CPU_VALIDATED",
+    "actual_image_runtime_tests": 177,
+    "actual_image_tests_skipped": 0
+  },
+  "source_commit": "2d58b79df39a9335e2f850d3a83bf938610cc611",
+  "release_date": "2026-11-06"
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "h3sr-video-gateway-upstream/1",
+  "repository": "https://github.com/githubgxll/dynamo",
+  "branch": "DingoRouter-video-gateway",
+  "commit": "af4b80e5027817c9ba4242a23769282b3017daf8",
+  "source_url": "https://github.com/githubgxll/dynamo/tree/af4b80e5027817c9ba4242a23769282b3017daf8",
+  "run_id": 42149601684,
+  "run_url": "https://github.com/githubgxll/dynamo/actions/runs/42149601684",
+  "image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:8bf72ebc29d39a88a2aa98363a2ef2e9cc4d8c057ae2ecda7b73a9729206733e",
+  "scope": "Latest published upstream source reference, not a live Kubernetes deployment observation",
+  "context_ir_sources": {
+    "dingo/video_gateway/context_ir/__init__.py": "250ccc932c2fdae1bd31daf08a28c0bee49bee1045240c77f717cd2e55fe505d",
+    "dingo/video_gateway/context_ir/api.py": "656440204ea4ab973a2551c05766ea249b1f74b8e7075ced8dd10f0640a4f0f4",
+    "dingo/video_gateway/context_ir/artifact_store.py": "5bec8050045617714e019e014bad02c5c55be690ee7ae4e1e02809f6ec743b2e",
+    "dingo/video_gateway/context_ir/client.py": "244a8335ce8f33bcb5b1eea5bb78f463c8627bc06e4698df0974419d0d1303d8",
+    "dingo/video_gateway/context_ir/config.py": "3c3089dca97a8ebe011cf687acf3ee23350116a4dfb542f4ccef7fb3df6b560c",
+    "dingo/video_gateway/context_ir/dispatcher.py": "1fa035c6621b018be99f419642239e16733271fa503508a6e042ef454d44e47a",
+    "dingo/video_gateway/context_ir/models.py": "a30b4255d63a8f81f81b3599701fdaca6a703b9a4a62d2c8f9e86488d8b9ae7f",
+    "dingo/video_gateway/context_ir/protocol.py": "d6a1a38e5a53237dfebb59331d491d14cc119edccff796dbd429245740929908",
+    "dingo/video_gateway/context_ir/service.py": "9cd2384091ac48e2c4b69c2328d277ac419679c4ac17aa3cbb682cbeb4504eb9",
+    "dingo/video_gateway/context_ir/task_store.py": "07c0cfb99d7ebfaa9613bdbf37dac60b41f089ba49de3822073ba9e6c12ae9bd",
+    "dingo/video_gateway/context_ir/validation.py": "a3126d4bbd165e2863d2411d90603245c80e040c2bac89b197940bc143b22fa2"
+  }
+}

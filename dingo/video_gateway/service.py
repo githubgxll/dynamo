@@ -151,7 +151,7 @@ class VideoGatewayService:
             self.config.media.max_encoded_reference_bytes,
             adapter.max_encoded_reference_bytes,
         )
-        if encoded_reference_bytes > encoded_reference_limit:
+        if not normalized.get("shared_inputs") and encoded_reference_bytes > encoded_reference_limit:
             await self.artifacts.discard(upload_root)
             raise GatewayError(
                 413,
@@ -159,7 +159,8 @@ class VideoGatewayService:
                 "encoded Worker reference payload exceeds the configured limit",
                 "input_references",
             )
-        self.dispatcher.record_legacy_input(encoded_reference_bytes)
+        if not normalized.get("shared_inputs"):
+            self.dispatcher.record_legacy_input(encoded_reference_bytes)
         # Reserve two encoded-input copies for mixed-reference JSON assembly.
         estimated_payload_bytes = (
             2 * encoded_reference_bytes
@@ -167,6 +168,8 @@ class VideoGatewayService:
             + self.config.media.task_memory_overhead_bytes
         )
         digest_request = dict(normalized)
+        # Internal input transport must not change the client's request digest.
+        digest_request.pop("shared_inputs", None)
         # Match legacy unseeded requests whose Gateway generated a seed before
         # persistence; that random seed was never part of the request digest.
         if digest_request.pop("seed_generated", False):
@@ -174,7 +177,7 @@ class VideoGatewayService:
         digest_payload = {
             "model": model,
             "pool_id": pool.pool_id,
-            "configuration_revision": pool.configuration_revision,
+            "configuration_revision": pool.request_configuration_revision(normalized),
             "normalized_request": digest_request,
             "references": [
                 {
@@ -214,6 +217,16 @@ class VideoGatewayService:
                         )
                     await self.artifacts.discard(upload_root)
                     return Submission(stored=existing, created=False)
+            if "super_resolution" in normalized and not self.dispatcher.has_sr_workers(
+                pool.pool_id, normalized
+            ):
+                raise GatewayError(
+                    503,
+                    "super_resolution_unavailable",
+                    "no compatible and ready super-resolution Worker is available",
+                    "size",
+                    error_type="service_unavailable_error",
+                )
             if (
                 not pool.scheduling.accept_without_workers
                 and not self.dispatcher.has_workers(pool.pool_id)
@@ -269,7 +282,7 @@ class VideoGatewayService:
                 model=model,
                 backend_model=pool.backend_model,
                 backend_target=pool.backend_target,
-                configuration_revision=pool.configuration_revision,
+                configuration_revision=pool.request_configuration_revision(normalized),
                 delivery_mode=delivery_mode,
                 status=TaskStatus.QUEUED,
                 request_digest=request_digest,

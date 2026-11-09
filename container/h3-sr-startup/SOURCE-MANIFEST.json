@@ -1,0 +1,15 @@
+{
+  "schema": "h3sr-startup-source-copy/1",
+  "source": "D:\\AI\\H3_experiments_H100_HBM3_20261012\\delivery\\H3_SR_VideoGateway_Handoff_20261109\\startup",
+  "files": {
+    "BASELINE-SNAPSHOTS.json": "bdc7c58722aad00f7b12700c96830ede90e48e06c75267650eedadf7e3bd674c",
+    "configure.py": "d4b0f53ae9771ceba232f84b56961944dbfabc8957fde0fb026cebbf80a5dda0",
+    "gateway-command.fl2va.json": "933e3de293d821f8e0895255806c833bae1428e45f07c23f84e06acacfe3da71",
+    "gateway-command.ref2va.json": "d188f77706c549d9962b6e87fadfb0b3a02274190537f8ad30586bce9ee0d4d5",
+    "prepare-sr-weights.sh": "ea783bbdb26b05d704ec8c6f4b2b850a1ade11acb254e897c88200ebac0a2a9b",
+    "start-fl2va.sh": "978d49b736b073df70553477834c4dc1b3159f6d036b6de0f478c8114e9ad652",
+    "start-ref2va.sh": "286e5d48e808fafd4a70bd8de02e7b18deef589e4648e3b58ba709a83f9fc639",
+    "profiles/fl2va-sr.json": "134e579b212cf71f1bfdb3a090caa688195a86ed887656c79938a05f4f50e974",
+    "profiles/ref2va-sr.json": "3bac419f1d105da1672887f5383651c24331ddfc2941a59b17e55cadaab1e7ae"
+  }
+}

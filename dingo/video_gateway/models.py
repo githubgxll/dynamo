@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
+from dingo.common.video_sr_timings import SR_TIMINGS_KEY, normalize_sr_timings
 from dingo.common.video_timing_schemas import (
     MODEL_EXECUTION_KEY,
     H3_SR_TIMING_KEY,
@@ -122,6 +123,7 @@ class VideoTask:
     queue_wait_s: float | None = None
     stage_durations: dict[str, float] | None = None
     error: TaskError | None = None
+    internal_error: dict[str, Any] | None = None
     estimated_payload_bytes: int = 0
     normalized_request: dict[str, Any] = field(default_factory=dict)
 
@@ -253,6 +255,9 @@ class VideoTask:
         h3_sr_timing = normalize_h3_sr_timing(self.normalized_request.get(H3_SR_TIMING_KEY))
         if h3_sr_timing is not None:
             result.setdefault("metrics", {})["h3_sr_timing"] = h3_sr_timing
+        sr_timings = normalize_sr_timings(self.normalized_request.get(SR_TIMINGS_KEY))
+        if sr_timings is not None:
+            result.setdefault("metrics", {})["super_resolution"] = sr_timings
         if self.error is not None:
             result["error"] = asdict(self.error)
         return result

@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from dingo.common.video_sr_timings import SR_TIMINGS_KEY
 from dingo.common.video_timing_schemas import MODEL_EXECUTION_KEY
 from dingo.video_gateway.errors import (
     GatewayError,
@@ -34,6 +35,7 @@ from dingo.video_gateway.models import (
     now_ms,
 )
 from dingo.video_gateway.result_handoff import read_handoff, validate_handoff_transition
+from dingo.video_gateway.task_runtime import transactions as task_transactions
 
 _INDEX_SCHEMA_VERSION = 3
 _SEQUENCE_WIDTH = 20
@@ -890,11 +892,7 @@ class EtcdTaskStore(TaskStore):
     def _index_schema_key(self) -> str:
         return self._meta_key("task-index-schema")
 
-    @staticmethod
-    def _sequence_token(sequence: int) -> str:
-        if sequence <= 0 or sequence >= 10**_SEQUENCE_WIDTH:
-            raise ValueError("task created_seq is outside the supported range")
-        return f"{sequence:0{_SEQUENCE_WIDTH}d}"
+    _sequence_token = staticmethod(task_transactions.sequence_token)
 
     def _task_index_prefix(
         self,
@@ -944,11 +942,7 @@ class EtcdTaskStore(TaskStore):
             f"{self._sequence_token(task.created_seq)}/{task.id}"
         )
 
-    @staticmethod
-    def _encode(value: Any) -> str:
-        return json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
+    _encode = staticmethod(task_transactions.encode)
 
     @staticmethod
     def _task(value: EtcdValue) -> StoredTask:
@@ -1093,12 +1087,7 @@ class EtcdTaskStore(TaskStore):
         return sequence, value
 
     def _counter_compare(self, key: str, value: EtcdValue | None) -> list[dict]:
-        if value is None:
-            return [self.client.compare_version(key, 0)]
-        return [
-            self.client.compare_mod(key, value.mod_revision),
-            self.client.compare_value(key, value.value),
-        ]
+        return task_transactions.compare_snapshot(self.client, key, value)
 
     async def create_task(
         self,
@@ -1158,19 +1147,10 @@ class EtcdTaskStore(TaskStore):
         attempt = 0
         while asyncio.get_running_loop().time() < deadline:
             if idem_key is not None:
-                existing = await self.client.get(idem_key)
+                existing = await task_transactions.get_idempotent(
+                    self.client, idem_key, task.request_digest, self.get_task)
                 if existing is not None:
-                    index = json.loads(existing.value)
-                    if index["request_digest"] != task.request_digest:
-                        raise GatewayError(
-                            409,
-                            "idempotency_conflict",
-                            "Idempotency-Key was already used with another request",
-                        )
-                    stored = await self.get_task(index["task_id"])
-                    if stored is None:
-                        raise RuntimeError("idempotency index points to a missing task")
-                    return stored, False
+                    return existing, False
 
             count, counter = await self._counter(task.pool_id)
             retry_count, retry_counter = await self._retry_counter(
@@ -1180,37 +1160,22 @@ class EtcdTaskStore(TaskStore):
             if count - retry_count >= queue_limit:
                 raise GatewayError(429, "queue_full", "video queue is full")
             assigned = _apply_patch(task, {"created_seq": sequence + 1})
-            compare = [
-                self.client.compare_version(task_key, 0),
-                self.client.compare_version(queue_key, 0),
-                *self._counter_compare(counter_key, counter),
-                *self._counter_compare(
-                    self._retry_counter_key(task.pool_id, "waiting"), retry_counter
-                ),
-                *self._counter_compare(self._sequence_key(), sequence_value),
-            ]
-            success = [
-                self.client.put(task_key, self._encode(assigned.to_dict())),
-                self.client.put(queue_key, str(assigned.queued_at_ms)),
-                self.client.put(counter_key, str(count + 1)),
-                self.client.put(self._sequence_key(), str(assigned.created_seq)),
-                self.client.put(self._ordered_queue_key(assigned), assigned.id),
-                *[
-                    self.client.put(key, assigned.id)
-                    for key in self._all_task_index_keys(assigned)
-                ],
-                self.client.put(self._expiry_index_key(assigned), assigned.id),
-            ]
-            if idem_key is not None:
-                compare.append(self.client.compare_version(idem_key, 0))
-                success.append(
-                    self.client.put(
-                        idem_key,
-                        self._encode(
-                            {"task_id": task.id, "request_digest": task.request_digest}
-                        ),
-                    )
-                )
+            compare, success = task_transactions.admission_transaction(
+                self.client, task_key=task_key, task_json=assigned.to_dict(),
+                sequence_key=self._sequence_key(), sequence=sequence,
+                sequence_value=sequence_value, queue_counter_key=counter_key,
+                queue_count=count, queue_counter_value=counter,
+                queue_writes=[self.client.put(queue_key, str(assigned.queued_at_ms)),
+                              self.client.put(self._ordered_queue_key(assigned), assigned.id)],
+                index_writes=[*[self.client.put(key, assigned.id)
+                               for key in self._all_task_index_keys(assigned)],
+                              self.client.put(self._expiry_index_key(assigned), assigned.id)],
+                idempotency_key=idem_key, task_id=task.id,
+                request_digest=task.request_digest,
+                compares=[self.client.compare_version(queue_key, 0),
+                          *self._counter_compare(
+                              self._retry_counter_key(task.pool_id, "waiting"), retry_counter)],
+            )
             succeeded, revision = await self.client.txn(compare, success)
             if succeeded:
                 return StoredTask(assigned, revision), True
@@ -1288,6 +1253,7 @@ class EtcdTaskStore(TaskStore):
         updated.stage_durations = None
         updated.normalized_request = dict(updated.normalized_request)
         updated.normalized_request.pop(MODEL_EXECUTION_KEY, None)
+        updated.normalized_request.pop(SR_TIMINGS_KEY, None)
         updated.error = None
         counter_key = self._counter_key(task.pool_id)
         queue_key = self._queue_key(task.pool_id, task.id)

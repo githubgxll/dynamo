@@ -31,6 +31,11 @@ IDENTITY_TIMEOUT = 150
 GATEWAY_TIMEOUT = 600
 
 
+def backend_command(profile_path, role):
+    return [sys.executable, "-B", "-P", "-m", "service.backend",
+            "--profile", str(profile_path), "--role", role]
+
+
 def process_group_identity(pid):
     """Read a stable PID birth together with its Linux group/session."""
     before = process_birth(pid)
@@ -159,8 +164,7 @@ class Supervisor:
 
     def _start(self, role):
         env = profiles.environment(self.profile, role, profile_path=self.profile_path, epoch=self.epoch, root=self.root)
-        command = [sys.executable, "-B", str(Path(__file__).with_name("backend.py")),
-                   "--profile", str(self.profile_path), "--role", role]
+        command = backend_command(self.profile_path, role)
         self._spawn_owned(role, command, env)
         port = 8123 if role == "h3" else 8124
         self._wait_health(role, port)

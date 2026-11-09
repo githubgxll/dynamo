@@ -140,11 +140,13 @@ class HTTPFixture:
                 "files": {"request.json": identity, "server-stages.jsonl": [{"stage": "source_decode", "cpu_wall_ms": 2.0}],
                     "windows/0/rank-0.json": {"stages": [{"phase": "vae_encode", "cuda_stream_elapsed_ms": 3.0}]}}}
         if route.endswith("/manifest"):
+            model_width, model_height = map(int, self.latest_fields["size"].split("x"))
+            delivery_width, delivery_height = map(int, self.latest_fields["delivery_size"].split("x"))
             return {"schema": "seedvr2-long-optimization/1", "sr_request_id": "a" * 32,
                 "encoding_mode": "single_encode", "final_lossy_video_encode_count": 1,
-                "configured_window": 33, "selected_window": 33,
-                "model_size": {"width": 1840, "height": 1104},
-                "delivery_size": {"width": 1800, "height": 1080},
+                "configured_window": self.latest_fields["window_frames"], "selected_window": self.latest_fields["window_frames"],
+                "model_size": {"width": model_width, "height": model_height},
+                "delivery_size": {"width": delivery_width, "height": delivery_height},
                 "sha256": "0" * 64 if self.bad_manifest else hashlib.sha256(b"SR").hexdigest()}
         if self.pause_status:
             self.waiting.set()

@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from datetime import datetime
 import io
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -47,7 +48,7 @@ import hashlib,json,os,sys,time
 role,location,bad=sys.argv[1:]
 root=Path(location)
 if role == 'gateway':
-    observed=json.loads((root/'state.json').read_text())
+    observed=json.loads(os.environ.get('H3SR_CPU_PARENT_STATE') or (root/'state.json').read_text())
     (root/'gateway-observed.json').write_text(json.dumps(observed))
     receipt={'schema':'h3sr-gateway-registration/1','status':'REGISTERED',
         'service_epoch':os.environ['H3SR_SERVICE_EPOCH'],
@@ -155,6 +156,11 @@ class ThreeOwnedChildren(unittest.TestCase):
         if role == "gateway" and self.exit_h3_before_registration:
             h3 = next(child for child in self.children.values())
             h3.terminate(); h3.wait(timeout=5)
+        if role == "gateway" and os.name == "nt":
+            # Windows read handles can block atomic replace. This CPU-only
+            # child receives the already-published state snapshot at spawn.
+            kwargs["env"] = {**kwargs["env"], "H3SR_CPU_PARENT_STATE":
+                             (self.root / "control/state.json").read_text(encoding="utf-8")}
         child = self.real_popen([sys.executable, "-B", "-c", CPU_CHILD, role, str(self.root / "control"), self.bad_receipt], **kwargs)
         self.children[child.pid] = child
         return child

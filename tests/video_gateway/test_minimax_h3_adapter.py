@@ -810,6 +810,170 @@ def _write_h264_aac_mp4(path: Path, *, frames: int, width: int, height: int) -> 
             container.mux(packet)
 
 
+def _sr_only_adapter(make_gateway_config, workflow="fl2va"):
+    adapter = _adapter(make_gateway_config, workflow)
+    adapter.options["enable_sr"] = True
+    return adapter
+
+
+def _sr_only_fields(model="public-fl", tier="1080"):
+    return {"model": [model], "operation": ["sr_only"], "sr_tier": [tier]}
+
+
+def _sr_upload(path: Path, field="input_references"):
+    payload = path.read_bytes()
+    return UploadedArtifact(field, 0, path.name, "video/mp4", path, len(payload), hashlib.sha256(payload).hexdigest())
+
+
+def _write_sr_video(path: Path, *, frames=6, fps=24, width=768, height=768, codec="libx264"):
+    import av
+
+    with av.open(str(path), "w") as container:
+        video = container.add_stream(codec, rate=fps)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        video.options = {"preset": "ultrafast"} if codec == "libx264" else {}
+        for index in range(frames):
+            frame = av.VideoFrame(width, height, "yuv420p")
+            for plane, value in zip(frame.planes, (16, 128, 128)):
+                plane.update(bytes([value]) * plane.buffer_size)
+            frame.pts, frame.time_base = index, Fraction(1, fps)
+            for packet in video.encode(frame):
+                container.mux(packet)
+        for packet in video.encode():
+            container.mux(packet)
+
+
+@pytest.mark.parametrize("workflow", ["fl2va", "ref2va"])
+@pytest.mark.parametrize("tier", ["1080", "1440"])
+def test_sr_only_builds_one_video_payload_without_h3_parameters(tmp_path, make_gateway_config, workflow, tier):
+    path = tmp_path / "source.mp4"
+    _write_h264_aac_mp4(path, frames=6, width=768, height=768)
+    upload = _sr_upload(path)
+    model = "public-fl" if workflow == "fl2va" else "public-ref"
+    adapter = _sr_only_adapter(make_gateway_config, workflow)
+
+    normalized = adapter.normalize_request(_sr_only_fields(model, tier), [upload], model)
+    manifest = [upload.manifest_entry(relative_to=tmp_path)]
+    payload = adapter.build_worker_payload(normalized, manifest, tmp_path)
+
+    assert normalized["num_frames"] == 6
+    assert normalized["seconds"] == 0.25
+    assert normalized["generate_sound"] is True
+    assert (normalized["final_width"], normalized["final_height"]) == (int(tier), int(tier))
+    assert payload == {
+        "model": adapter.pool.backend_model, "operation": "sr_only", "sr_tier": tier,
+        "response_format": "b64_json", "output_format": "mp4",
+        "nvext": {"fps": 24, "num_frames": 6},
+        "input_reference": _data_url("video/mp4", path.read_bytes()),
+    }
+
+
+def test_sr_only_accepts_actual_15_second_base_padding_and_no_audio(tmp_path, make_gateway_config):
+    path = tmp_path / "source.mp4"
+    _write_sr_video(path, frames=362)
+    normalized = _sr_only_adapter(make_gateway_config).normalize_request(
+        _sr_only_fields(), [_sr_upload(path)], "public-fl")
+    assert normalized["num_frames"] == 362
+    assert normalized["seconds"] > 15
+    assert normalized["generate_sound"] is False
+
+
+def test_sr_only_rejects_non_mp4_brand(tmp_path, make_gateway_config):
+    path = tmp_path / "source.mp4"
+    _write_sr_video(path)
+    payload = bytearray(path.read_bytes())
+    payload[8:12] = b"3gp6"
+    path.write_bytes(payload)
+    with pytest.raises(GatewayError) as error:
+        _sr_only_adapter(make_gateway_config).normalize_request(_sr_only_fields(), [_sr_upload(path)], "public-fl")
+    assert error.value.code == "unsupported_media_format"
+
+
+@pytest.mark.parametrize("frames,fps,width,codec", [
+    (363, 24, 768, "libx264"), (6, 25, 768, "libx264"),
+    (6, 24, 512, "libx264"), (6, 24, 768, "mpeg4"),
+])
+def test_sr_only_rejects_source_outside_verified_media_contract(tmp_path, make_gateway_config, frames, fps, width, codec):
+    path = tmp_path / "source.mp4"
+    _write_sr_video(path, frames=frames, fps=fps, width=width, height=width, codec=codec)
+    with pytest.raises(GatewayError) as error:
+        _sr_only_adapter(make_gateway_config).normalize_request(_sr_only_fields(), [_sr_upload(path)], "public-fl")
+    assert error.value.code == "invalid_sr_source"
+
+
+@pytest.mark.parametrize("field", ["prompt", "seconds", "num_frames", "size", "seed", "fps", "num_inference_steps", "extra_params", "generate_sound"])
+def test_sr_only_rejects_generation_parameters(make_gateway_config, field):
+    fields = {**_sr_only_fields(), field: ["1"]}
+    with pytest.raises(GatewayError) as error:
+        _sr_only_adapter(make_gateway_config).normalize_request(fields, [], "public-fl")
+    assert error.value.code == "unsupported_parameter"
+    assert error.value.param == field
+
+
+def test_sr_only_requires_enabled_pool_and_tier(make_gateway_config):
+    with pytest.raises(GatewayError) as error:
+        _adapter(make_gateway_config).normalize_request(_sr_only_fields(), [], "public-fl")
+    assert error.value.code == "sr_disabled"
+    fields = _sr_only_fields()
+    del fields["sr_tier"]
+    with pytest.raises(GatewayError) as error:
+        _sr_only_adapter(make_gateway_config).normalize_request(fields, [], "public-fl")
+    assert error.value.param == "sr_tier"
+
+
+@pytest.mark.parametrize("field,count", [("input_reference", 1), ("input_references", 0), ("input_references", 2)])
+def test_sr_only_requires_one_plural_file_field(tmp_path, make_gateway_config, field, count):
+    upload = _png_upload(tmp_path, field=field)
+    with pytest.raises(GatewayError) as error:
+        _sr_only_adapter(make_gateway_config).normalize_request(_sr_only_fields(), [upload] * count, "public-fl")
+    assert error.value.code == "invalid_sr_source"
+
+
+def test_generate_operation_keeps_legacy_request_shape(make_gateway_config):
+    adapter = _adapter(make_gateway_config)
+    expected = adapter.normalize_request(_base_fields(), [], "public-fl")
+    explicit = adapter.normalize_request({**_base_fields(), "operation": ["generate"]}, [], "public-fl")
+    assert explicit == expected
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request({**_base_fields(), "operation": ["unknown"]}, [], "public-fl")
+    assert error.value.code == "invalid_operation"
+
+
+def test_sr_only_capabilities_and_reference_limits_are_separate(tmp_path, make_gateway_config):
+    adapter = _sr_only_adapter(make_gateway_config, "ref2va")
+    capabilities = adapter.capabilities(max_result_bytes=128 * 1024 * 1024)
+    assert capabilities["operations"] == ["generate", "sr_only"]
+    assert capabilities["sr_only"]["max_frames"] == 362
+    assert capabilities["sr_only"]["max_source_bytes"] == 128 * 1024 * 1024
+    assert capabilities["max_video_bytes"] == 50 * 1024 * 1024
+    path = tmp_path / "reference.mp4"
+    path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    upload = _sr_upload(path)
+    oversized = UploadedArtifact(upload.field_name, upload.ordinal, upload.filename, upload.content_type,
+                                 upload.path, 51 * 1024 * 1024, upload.sha256)
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(_base_fields("public-ref"), [oversized], "public-ref")
+    assert error.value.code == "file_too_large"
+    oversized = UploadedArtifact(upload.field_name, upload.ordinal, upload.filename, upload.content_type,
+                                 upload.path, 128 * 1024 * 1024 + 1, upload.sha256)
+    with pytest.raises(GatewayError) as error:
+        adapter.normalize_request(_sr_only_fields("public-ref"), [oversized], "public-ref")
+    assert error.value.code == "file_too_large"
+
+
+def test_sr_only_output_uses_actual_frames_instead_of_h3_alignment(tmp_path, make_gateway_config):
+    path = tmp_path / "result.mp4"
+    _write_sr_video(path, width=1080, height=1080)
+    adapter = _sr_only_adapter(make_gateway_config)
+    adapter.options["validate_media"] = True
+    normalized = {"operation": "sr_only", "width": 768, "height": 768, "num_frames": 6,
+                  "final_width": 1080, "final_height": 1080, "generate_sound": False}
+    assert adapter.validate_artifact(path, normalized)["frames"] == 6
+    normalized["num_frames"] = 7
+    with pytest.raises(RuntimeError, match="frame count"):
+        adapter.validate_artifact(path, normalized)
+
+
 def test_media_gate_accepts_h3_aligned_h264_aac_result(tmp_path, make_gateway_config):
     adapter = _adapter(make_gateway_config)
     adapter.options["validate_media"] = True
