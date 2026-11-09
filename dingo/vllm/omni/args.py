@@ -87,7 +87,6 @@ class OmniDiffusionKwargs:
     enable_diffusion_pipeline_profiler: bool = False
     diffusion_attention_backend: Optional[str] = None
     diffusion_quantization_config: Optional[dict] = None
-    diffusion_offload_config: Optional[dict] = None
     stage_overrides: Optional[dict] = None
     record_output_peak_memory: bool = True
     # Opt-in diffusion scheduler controls. None preserves the upstream default.
@@ -224,13 +223,11 @@ class OmniArgGroup(ArgGroup):
             default=None,
             help="Opt-in H3/SR production profile; use the supervisor-owned native services without loading another model.",
         )
-        for flag, env in (
-            ("--diffusion-offload-config", "DYN_OMNI_DIFFUSION_OFFLOAD_CONFIG"),
-            ("--stage-overrides", "DYN_OMNI_STAGE_OVERRIDES"),
-        ):
-            add_argument(g, flag_name=flag, env_var=env, default=None,
-                         arg_type=_parse_diffusion_quantization_config,
-                         help="Native vLLM-Omni JSON object, forwarded unchanged.")
+        add_argument(
+            g, flag_name="--stage-overrides", env_var="DYN_OMNI_STAGE_OVERRIDES",
+            default=None, arg_type=_parse_diffusion_quantization_config,
+            help="Native vLLM-Omni JSON object, forwarded unchanged.",
+        )
         add_negatable_bool_argument(
             g, flag_name="--record-output-peak-memory",
             env_var="DYN_OMNI_RECORD_OUTPUT_PEAK_MEMORY", default=True,
@@ -388,7 +385,7 @@ class OmniArgGroup(ArgGroup):
         )
 
         add_argument(g, flag_name="--dtype", env_var="DYN_OMNI_DIFFUSION_DTYPE", default=None, help="Diffusion engine dtype")
-        add_argument(g, flag_name="--diffusion-offload-config", env_var="DYN_OMNI_DIFFUSION_OFFLOAD_CONFIG", default=None, arg_type=json.loads,
+        add_argument(g, flag_name="--diffusion-offload-config", env_var="DYN_OMNI_DIFFUSION_OFFLOAD_CONFIG", default=None, arg_type=_parse_diffusion_quantization_config,
                      help="Explicit upstream diffusion offload configuration JSON.")
         for flag, env, kind in [
             ("num-gpus", "NUM_GPUS", int), ("task-type", "TASK_TYPE", str),

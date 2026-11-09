@@ -151,7 +151,7 @@
     },
     "dingo/vllm/omni/args.py": {
       "before_sha256": "70e9e85a445c2e9f415c25708c182175d87218b6ea6a50e4e666c4e6d35333aa",
-      "after_sha256": "7904c2ff3ac3bd81daaaead0e10cc03124758740cc2c918f8c1e701816ad021c"
+      "after_sha256": "98e17b7707c1ce2752f1dac4dc6c038a97becc9de70e9fea9e6ff1fc0299fdee"
     },
     "dingo/vllm/omni/base_handler.py": {
       "before_sha256": "11f0c1804e6d9f2b88f8f3644dc82ef7abe02e9309b3db79cde435cb1ed19261",

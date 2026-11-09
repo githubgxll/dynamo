@@ -26,6 +26,7 @@
     "container/h3-sr-production/tests/test_gateway_dependencies.py": "7d6d502dde9bdbb4e827f44f42aa7f91ed2d859792e86cce425ad535dbc13bb1",
     "container/h3-sr-production/tests/test_gateway_handler.py": "8bb308bf38c773bd4d55a805f83ab3d29ddd96cbafee906dae082b8957b9975f",
     "container/h3-sr-production/tests/test_gateway_sr_only.py": "61af3c3084837618b4ddcc273a7654ab8bda904608fc18b94fff47f2befb59f6",
+    "container/h3-sr-production/tests/test_omni_argument_registration.py": "51959f4a529a6d4eeb40cad3e66132243a0c6ddb7e9b29e67f32b6b809904483",
     "container/h3-sr-production/tests/test_recipe_runtime.py": "ed863fb104e013b848e7b92abbde716b8484069228fed2661eaa9404fc2f6187",
     "container/h3-sr-production/tests/test_service_gateway_startup.py": "d0f6de69667b35096d55d725460ef5a1dcbdcdc1741972cdabadc56540ef534d",
     "container/h3-sr-startup/.gitattributes": "69d53134c40f2c799ded9445204156c2a7813116252a31d94a261f365ae499ee",
@@ -70,7 +71,7 @@
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/task_runtime/transactions.py": "c44f3a62d9ce454986412e186bbf6fa07847564e017ef3882cd88414a9f51d9a",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/task_store.py": "849512cf8c853abf382bb6cb700c791c320a14b2098fd6b9ee91c24d6a6b2ea8",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/telemetry.py": "6fab7ecd0596d7e61880eedacaf7079bda90c0dad54e4456c9436ea5d8751188",
-    "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/args.py": "7904c2ff3ac3bd81daaaead0e10cc03124758740cc2c918f8c1e701816ad021c",
+    "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/args.py": "98e17b7707c1ce2752f1dac4dc6c038a97becc9de70e9fea9e6ff1fc0299fdee",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/base_handler.py": "bac14a5e9e6268b6fb258f07a301f75aad175ecadd85f2fa773be4cbb103f951",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/detached_tasks.py": "3c370c73b52de1161ae6493e8bc234567443c99218aac7d418a19ea2d4ce091f",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/h3_shared_inputs.py": "e99ac20d80d31fc9124949729ccf8921e19942918d5ab8a51ef1fffc02f1935d",
@@ -85,7 +86,7 @@
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/seedvr2_process.py": "6f26e69a20a4c076669077bca411771d1e6b9d5f6351ec1b640f4c846e164d74",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/video_readiness.py": "53f64724374a3073e3776a8fe080e056f06d26a590e574791387b3ae85179c08",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/video_recovery.py": "2d902ca6ced3f2959aacd53d7ae64f753b7fccff35d0eae877a0ed3388696fb8",
-    "delivery/h3-sr-production/source-lock.json": "7a36040213187f58e05e1e161c37e0f5d80e7d28de16ef7699b4d2bc76e1fc6e",
+    "delivery/h3-sr-production/source-lock.json": "a02fd4a22f27fc983205fde08da2c9149ddcf966bb1b5f506e1a8e68384e4cf0",
     "delivery/h3-sr-video-gateway/01-check.cmd": "ff3816bee72d8d9550a8172d29163853438b213163b747870570eff474a22c0b",
     "delivery/h3-sr-video-gateway/02-submit-build.cmd": "1162118b1f4b38522d50fe9f90b9c5a05e6241abaa9ed73f9a2e56eee5c76604",
     "delivery/h3-sr-video-gateway/README.md": "dd9d1380c468ab94d1d609fbd6679eb827db9df9dfca73c8030dc51c9f477d2d",
@@ -128,7 +129,7 @@
     "dingo/video_gateway/task_runtime/transactions.py": "c44f3a62d9ce454986412e186bbf6fa07847564e017ef3882cd88414a9f51d9a",
     "dingo/video_gateway/task_store.py": "849512cf8c853abf382bb6cb700c791c320a14b2098fd6b9ee91c24d6a6b2ea8",
     "dingo/video_gateway/telemetry.py": "6fab7ecd0596d7e61880eedacaf7079bda90c0dad54e4456c9436ea5d8751188",
-    "dingo/vllm/omni/args.py": "7904c2ff3ac3bd81daaaead0e10cc03124758740cc2c918f8c1e701816ad021c",
+    "dingo/vllm/omni/args.py": "98e17b7707c1ce2752f1dac4dc6c038a97becc9de70e9fea9e6ff1fc0299fdee",
     "dingo/vllm/omni/base_handler.py": "bac14a5e9e6268b6fb258f07a301f75aad175ecadd85f2fa773be4cbb103f951",
     "dingo/vllm/omni/detached_tasks.py": "3c370c73b52de1161ae6493e8bc234567443c99218aac7d418a19ea2d4ce091f",
     "dingo/vllm/omni/h3_shared_inputs.py": "e99ac20d80d31fc9124949729ccf8921e19942918d5ab8a51ef1fffc02f1935d",
@@ -170,6 +171,6 @@
     "tests/video_gateway/test_video_recovery.py": "646aab276c2a0d979a9f5cc4637813c2991dac227012322e315f67e7dad2e24a",
     "tests/video_gateway/test_worker_error_health_contract.py": "8b600c13b556c6413809bff02b2e6a142eac1543c0b9b367c9c823864711b2ef"
   },
-  "recipe_sha256": "ac0d90b978bcf321f82ac32e9512f35462359b4f2c86d898fd1c06d8cb0b93fd",
-  "review_tree": "5cec558c3bf9b6d1386a8baa2c87e08f3ae4076e"
+  "recipe_sha256": "033387bfdd9f2de92215636182913e6e7be6e468fdbdab79c9f27273eb36acf6",
+  "review_tree": "f9f0c7a2d63fc696bb7b810a5235e226b52e17e5"
 }
