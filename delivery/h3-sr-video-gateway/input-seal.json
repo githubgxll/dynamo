@@ -15,7 +15,7 @@
     "container/h3-sr-production/gateway.py": "6823b56749f5901f79645a1369e66987c10ffdc36dcec3068aafde99f99a924c",
     "container/h3-sr-production/profiles/fl2va-sr.json": "6923ebdf230d63f3e245e5b9f1cb0f7959049572c280e8f09cd4bdb60b3c5ca8",
     "container/h3-sr-production/profiles/ref2va-sr.json": "fa06419e9d96bf7355efaa2e4e581c708741eeb971dfe0e58298d94683d2a073",
-    "container/h3-sr-production/runtime.py": "d68888b8e7b7ec9824ae4bde7a1a1d4a516f2451f43d783c0da374efea5ca1cb",
+    "container/h3-sr-production/runtime.py": "a08e09c2e3da843ecd41e0b83be3d539d8b2aa4bcf62af37be67f39b5e0752e6",
     "container/h3-sr-production/service/backend.py": "d9ca5dc9ddc5236de42419cc4bc5d1e77554e42f4c0e11e003be9d3ef84745e1",
     "container/h3-sr-production/service/launcher.py": "f7f1e45e2e9892ce8a2fc3abe0ddd120379d6839860861e333573237336b7298",
     "container/h3-sr-production/service/profile.py": "447a9440993a4844bd282af7ec375b542eb0dc2ea153077dd7e366c99da2e411",
@@ -26,7 +26,7 @@
     "container/h3-sr-production/tests/test_gateway_dependencies.py": "7d6d502dde9bdbb4e827f44f42aa7f91ed2d859792e86cce425ad535dbc13bb1",
     "container/h3-sr-production/tests/test_gateway_handler.py": "8bb308bf38c773bd4d55a805f83ab3d29ddd96cbafee906dae082b8957b9975f",
     "container/h3-sr-production/tests/test_gateway_sr_only.py": "61af3c3084837618b4ddcc273a7654ab8bda904608fc18b94fff47f2befb59f6",
-    "container/h3-sr-production/tests/test_recipe_runtime.py": "28e24d211a7bcaf222228e5fbf68ad6185a69e66f4030fad22c47c27a4b9b4a9",
+    "container/h3-sr-production/tests/test_recipe_runtime.py": "ed863fb104e013b848e7b92abbde716b8484069228fed2661eaa9404fc2f6187",
     "container/h3-sr-production/tests/test_service_gateway_startup.py": "d0f6de69667b35096d55d725460ef5a1dcbdcdc1741972cdabadc56540ef534d",
     "container/h3-sr-startup/.gitattributes": "69d53134c40f2c799ded9445204156c2a7813116252a31d94a261f365ae499ee",
     "container/h3-sr-startup/BASELINE-SNAPSHOTS.json": "bdc7c58722aad00f7b12700c96830ede90e48e06c75267650eedadf7e3bd674c",
@@ -49,7 +49,6 @@
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/adapters/minimax_h3.py": "dde5a43feb52493cd16968f5e8d3e6d300bd89277d6db24294a9dc12111771ef",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/api.py": "5e07bf217c4f11a75007f3d00be2310e056d6e81c5f4fa1cc11829bdba8f5d48",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/app.py": "56cdbd7e346bd5112bfb1221c7de69fbac41c4f11f65dab5e27d6579cbbfdd3d",
-    "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/artifact_store.py": "05d43a39809b98c1eb8be92cad6c9347450d7f779eb5ffe59f60d720aab3576e",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/config.py": "758e411c17576882cf7a185af884c3966dbdf9ff1efda340536a8c56f0a45041",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/context_ir/__init__.py": "250ccc932c2fdae1bd31daf08a28c0bee49bee1045240c77f717cd2e55fe505d",
     "delivery/h3-sr-production/dingo-overlay/dingo/video_gateway/context_ir/api.py": "656440204ea4ab973a2551c05766ea249b1f74b8e7075ced8dd10f0640a4f0f4",
@@ -86,7 +85,7 @@
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/seedvr2_process.py": "6f26e69a20a4c076669077bca411771d1e6b9d5f6351ec1b640f4c846e164d74",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/video_readiness.py": "53f64724374a3073e3776a8fe080e056f06d26a590e574791387b3ae85179c08",
     "delivery/h3-sr-production/dingo-overlay/dingo/vllm/omni/video_recovery.py": "2d902ca6ced3f2959aacd53d7ae64f753b7fccff35d0eae877a0ed3388696fb8",
-    "delivery/h3-sr-production/source-lock.json": "5e5e3cd7e6273b1726e324d6351b4acc27bba5b4b1b93b755a27f9740a7f49e6",
+    "delivery/h3-sr-production/source-lock.json": "7a36040213187f58e05e1e161c37e0f5d80e7d28de16ef7699b4d2bc76e1fc6e",
     "delivery/h3-sr-video-gateway/01-check.cmd": "ff3816bee72d8d9550a8172d29163853438b213163b747870570eff474a22c0b",
     "delivery/h3-sr-video-gateway/02-submit-build.cmd": "1162118b1f4b38522d50fe9f90b9c5a05e6241abaa9ed73f9a2e56eee5c76604",
     "delivery/h3-sr-video-gateway/README.md": "dd9d1380c468ab94d1d609fbd6679eb827db9df9dfca73c8030dc51c9f477d2d",
@@ -171,6 +170,6 @@
     "tests/video_gateway/test_video_recovery.py": "646aab276c2a0d979a9f5cc4637813c2991dac227012322e315f67e7dad2e24a",
     "tests/video_gateway/test_worker_error_health_contract.py": "8b600c13b556c6413809bff02b2e6a142eac1543c0b9b367c9c823864711b2ef"
   },
-  "recipe_sha256": "75ee261b8669df84efe12c587de9fbe6c83b849d22d2b3ff0ef5324e08d71a1b",
-  "review_tree": "ff2df6f2420f461041dbcfbeeaa2f362f3d0d566"
+  "recipe_sha256": "ac0d90b978bcf321f82ac32e9512f35462359b4f2c86d898fd1c06d8cb0b93fd",
+  "review_tree": "5cec558c3bf9b6d1386a8baa2c87e08f3ae4076e"
 }

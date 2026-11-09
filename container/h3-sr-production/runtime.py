@@ -211,6 +211,9 @@ def apply():
         raise ValueError("Parent complete source inventory differs")
     packages = inventory()
     preserved = parent.preserved_snapshot()
+    actual_dingo = {name: digest for name, digest in preserved.items() if name.startswith("dingo/")}
+    if actual_dingo != value["parent_dingo_sources"] or map_sha(actual_dingo) != value["parent_dingo_sources_sha256"]:
+        raise ValueError("Actual installed Dingo tree differs from the published parent source evidence")
     _, omni_root, omni_record = distribution("vllm-omni")
     _, dingo_root, dingo_record = distribution("ai-dingo")
     omni_changes, planned = plan_native(omni_root, parent_sources)
@@ -222,7 +225,8 @@ def apply():
         path = target(dingo_root, relative)
         original = sha(path.read_bytes()) if path.exists() else None
         if original != entry["before_sha256"]:
-            raise ValueError("Installed Gateway source differs from reviewed parent: " + relative)
+            raise ValueError("Installed Gateway source differs from reviewed parent: " + relative
+                             + " expected=" + str(entry["before_sha256"]) + " actual=" + str(original))
         contents = (HERE / "dingo-overlay" / relative).read_bytes()
         if sha(contents) != entry["after_sha256"]:
             raise ValueError("Frozen Gateway source payload differs: " + relative)

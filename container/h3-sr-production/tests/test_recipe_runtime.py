@@ -39,6 +39,14 @@ def populate(root):
 
 
 class SourceComposition(unittest.TestCase):
+    def test_overlay_before_hashes_match_actual_published_parent_evidence(self):
+        policy = runtime.read(inputs() / "source-lock.json")
+        parent = policy["parent_dingo_sources"]
+        self.assertEqual(runtime.map_sha(parent), policy["parent_dingo_sources_sha256"])
+        for name, entry in policy["dingo_changes"].items():
+            self.assertEqual(entry["before_sha256"], parent.get(name), name)
+        self.assertNotIn("dingo/video_gateway/artifact_store.py", policy["dingo_changes"])
+
     def test_external_startup_bundle_matches_frozen_inputs(self):
         policy = runtime.read(inputs() / "source-lock.json")
         actual = runtime.startup_sources()
