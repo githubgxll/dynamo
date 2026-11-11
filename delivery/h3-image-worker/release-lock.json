@@ -1,0 +1,61 @@
+{
+  "schema": "h3-image-worker-release-lock/1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "recipe_base_commit": "e5cf166562b4479112832ad628f3affe6a2e0782",
+  "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
+  "parent_image_id": "sha256:d3ca8512e502bca43edcf9897f02347f724f4b4a08676561bae0c6c5541c3ce9",
+  "platform": "linux/amd64",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/vllm-omni",
+  "tag_prefix": "h3-image-worker",
+  "marker": "[h3-image-worker]",
+  "upstream_reference_commit": "0b74da131f963ab2fd60f7eba813145672cf81e4",
+  "parent_source_git_head": "c958c8f5f628f2f29d5e548af236df2b1f5b59ab",
+  "source_policy": "Inherited verified c958 source with two source-hash-bound public fixes; no package or native ABI replacement",
+  "versions": {
+    "torch": "2.14.0+cu130",
+    "vllm": "0.33.0",
+    "transformers": "5.19.0",
+    "diffusers": "0.40.0",
+    "cache-dit": "1.5.0",
+    "lmcache": "0.5.6",
+    "nvidia-nccl-cu13": "2.30.7"
+  },
+  "expected_image_config": {
+    "User": "1000:1000",
+    "WorkingDir": "/work",
+    "Entrypoint": [
+      "python3",
+      "-P",
+      "/opt/h3-image-worker/worker.py"
+    ],
+    "Cmd": [
+      "--shared-root",
+      "/source-models",
+      "--profile",
+      "h100-4-tp4"
+    ]
+  },
+  "expected_environment_additions": {
+    "HOME": "/work",
+    "TMPDIR": "/work/tmp",
+    "HF_HOME": "/work/cache/hf",
+    "TORCH_HOME": "/work/cache/torch",
+    "XDG_CACHE_HOME": "/work/cache",
+    "TRITON_CACHE_DIR": "/work/cache/triton",
+    "VLLM_CACHE_ROOT": "/work/cache/vllm",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONSAFEPATH": "1"
+  },
+  "model_root": "/opt/models/minimax-h3-image",
+  "model_weights_in_image": false,
+  "weight_binding": "Existing Image fbde899 and H3 text_encoder0919fb from finite flat/generation shared-root layout; full hash verification then manifest-bound writable symlink view",
+  "gpu_scope": "H100 acceptance and media generation pending operator stage",
+  "repairs": [
+    "Prefer a verified local text_encoder directory",
+    "Restore image VAE RoPE frequencies in FP32 after decoder BF16 casting"
+  ],
+  "license_policy": "Experimental inherited-upstream software declarations and package inventory; formal production license approval is separate"
+}

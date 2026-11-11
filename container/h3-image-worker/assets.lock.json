@@ -1,0 +1,887 @@
+{
+  "schema_version": 1,
+  "title": "MiniMax-H3-Image原生模型及H3公共文本编码器下载交接",
+  "date": "2026-11-11",
+  "default_batches": [
+    "A"
+  ],
+  "download_root_name": "H3_Test_models",
+  "size_unit": "decimal bytes; 1 GB=1000000000 bytes",
+  "canonical_source": "Pinned official HF snapshots; ModelScope native and encoder weight sizes and SHA256 matched. Runtime small files checked against pinned HF Git blob hashes.",
+  "ordinary_file_hash": "Git blob SHA1 over ASCII blob header, decimal byte length, one NUL byte, and raw file bytes.",
+  "scope_note": "This is a separate image-generation manifest. Its internal batch A is independent of safety batch A/B.",
+  "models": [
+    {
+      "id": "MiniMaxAI/MiniMax-H3-Image",
+      "batch": "A",
+      "purpose": "图像生成和编辑原生权重",
+      "local_dir": "generation/MiniMax-H3-Image",
+      "revision": "fbde899fffb5c5225ee8dd7027680113746af42e",
+      "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/tree/fbde899fffb5c5225ee8dd7027680113746af42e",
+      "modelscope_url": "https://www.modelscope.cn/models/MiniMax/MiniMax-H3-Image",
+      "modelscope_id": "MiniMax/MiniMax-H3-Image",
+      "license": "MiniMax H3 Image Community License",
+      "access": false,
+      "files": [
+        {
+          "path": ".gitattributes",
+          "bytes": 1772,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "ff223b2563f2c4096863f2598233398c954b8270",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/.gitattributes",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/.gitattributes"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 18208,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "fdb73fd0a0c6f656b541d1a9c055b38125279c8c",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/LICENSE",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/LICENSE"
+        },
+        {
+          "path": "README.md",
+          "bytes": 22917,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "fb13f30cb70e09c8363517f0121f1a31d2e2aa99",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/README.md",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/README.md"
+        },
+        {
+          "path": "assets/minimax-h3-image.jpg",
+          "bytes": 604227,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "5e007e09a3b4c943628b78db63646b1a1c515f363733efd0260bafa200311211",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/minimax-h3-image.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/minimax-h3-image.jpg"
+        },
+        {
+          "path": "assets/showcase/art.jpg",
+          "bytes": 985509,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "c82d3598b38b600c0463654da88dff651f6e728130d81c94a3ba8c51134ed50b",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/art.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/art.jpg"
+        },
+        {
+          "path": "assets/showcase/char.jpg",
+          "bytes": 436793,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "43071bb73a98657dd541aa9ce6ca0da01743c33dc93beaea443ea59efa7cee3d",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/char.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/char.jpg"
+        },
+        {
+          "path": "assets/showcase/edit_map.jpg",
+          "bytes": 1118914,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "f915c291bfa6b80aa34204ff14ad3ed447e3c8a4aec9240ddb300676030f1260",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/edit_map.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/edit_map.jpg"
+        },
+        {
+          "path": "assets/showcase/edit_multi.jpg",
+          "bytes": 809136,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "0fb39644b7945ecee27d0543403a75878dddf00c5c60e5d400aeaf5970a40be5",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/edit_multi.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/edit_multi.jpg"
+        },
+        {
+          "path": "assets/showcase/edit_render.jpg",
+          "bytes": 570020,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "60dd5476d2567cbc0e2a9de3de0f8552352dcb8d92c0d5692051da7faaea9d62",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/edit_render.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/edit_render.jpg"
+        },
+        {
+          "path": "assets/showcase/photo.jpg",
+          "bytes": 243324,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "f46d75cf8e301e47631885a3cfe5ecd584e17b7d5a48dcc8c06aac2414ef37e8",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/photo.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/photo.jpg"
+        },
+        {
+          "path": "assets/showcase/scene.jpg",
+          "bytes": 1393763,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "100511a798fdc7f1e642dfc10e412bd66481999e0430dacfcc2f1317379d9840",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/scene.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/scene.jpg"
+        },
+        {
+          "path": "assets/showcase/surreal.jpg",
+          "bytes": 368177,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "3c05b55223cbdcb33c8011deb8ccda6de1b4c5ca0bbcc92bd2134c5f2e69eaba",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/surreal.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/surreal.jpg"
+        },
+        {
+          "path": "assets/showcase/text.jpg",
+          "bytes": 544532,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "21cb8f0b7af3a64b9a2ba9bb29d0ace53d6e96cdcecfc50ab084088335016b55",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase/text.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase/text.jpg"
+        },
+        {
+          "path": "assets/showcase_hero.jpg",
+          "bytes": 1256299,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "fbcb0a3292548856d4906dfd7b22a7608da8d118357ae07ae417a9931dfcc8c7",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/showcase_hero.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/showcase_hero.jpg"
+        },
+        {
+          "path": "assets/workflow_edit.jpg",
+          "bytes": 607824,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "32555ea21e53cd3d7a47f9b0a6dba66d626a98f40339529d0d2c503a9cbc1f40",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/workflow_edit.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/workflow_edit.jpg"
+        },
+        {
+          "path": "assets/workflow_t2i.jpg",
+          "bytes": 1370295,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "7c74a3b8ae85e3bfbf78e9cbc91c76e9fa044a4fee81e4d100b019710ebbfdf0",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/assets/workflow_t2i.jpg",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/assets/workflow_t2i.jpg"
+        },
+        {
+          "path": "examples/api_generate.py",
+          "bytes": 1778,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "3e14471ce8378f46753c91131db8ad6e69fae836",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/api_generate.py",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/api_generate.py"
+        },
+        {
+          "path": "examples/context_ir.py",
+          "bytes": 3847,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "f79e57d20da89eef698588380d682625e6ed12d2",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/context_ir.py",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/context_ir.py"
+        },
+        {
+          "path": "examples/edit.py",
+          "bytes": 2788,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "c98a48de2e5eaec123441339d68b679484098bc4",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/edit.py",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/edit.py"
+        },
+        {
+          "path": "examples/instruction.edit.txt",
+          "bytes": 305,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "0bdf6d1730c2480f24cb0f4a0a5178b5c141fdc5",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/instruction.edit.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/instruction.edit.txt"
+        },
+        {
+          "path": "examples/instruction.t2i.txt",
+          "bytes": 177,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "1f929c3a1f49a2a68633b6c4065f448d230dcc34",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/instruction.t2i.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/instruction.t2i.txt"
+        },
+        {
+          "path": "examples/prompt.edit.txt",
+          "bytes": 1822,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "655222b73b5de63df4586665fecd908c19880a5c",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/prompt.edit.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/prompt.edit.txt"
+        },
+        {
+          "path": "examples/reference1.png",
+          "bytes": 1715003,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": "e3ef31ce2bf5f9a6f45c13f65b4728a87cc767cbcc8f0313aa1a4c8014dae85d",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/reference1.png",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/reference1.png"
+        },
+        {
+          "path": "examples/request.t2i.json",
+          "bytes": 1689,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "3cc1af8266ffbf1117d6fbb5a7095b3f077d730f",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/request.t2i.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/request.t2i.json"
+        },
+        {
+          "path": "examples/revised_prompt.edit.txt",
+          "bytes": 2914,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "a63f03a03e9e4f6d775e5cf6f8af6d0e44051103",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/revised_prompt.edit.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/revised_prompt.edit.txt"
+        },
+        {
+          "path": "examples/revised_prompt.t2i.txt",
+          "bytes": 1504,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "e4a1a75d1cf66b41367202e6110cb62d03ecaa5d",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/revised_prompt.t2i.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/revised_prompt.t2i.txt"
+        },
+        {
+          "path": "examples/revised_size.edit.txt",
+          "bytes": 9,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "acce0b67a7901227f711fbb48511e858aecc38bb",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/revised_size.edit.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/revised_size.edit.txt"
+        },
+        {
+          "path": "examples/revised_size.t2i.txt",
+          "bytes": 9,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "3be7039d6ad984b211e77f73a2ed55c6b41a9b91",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/revised_size.t2i.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/revised_size.t2i.txt"
+        },
+        {
+          "path": "examples/t2i.py",
+          "bytes": 1788,
+          "required": false,
+          "role": "documentation_or_example",
+          "sha256": null,
+          "git_blob_sha1": "4f943e1399ef7360a557023495d460a8145af5d7",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/examples/t2i.py",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/examples/t2i.py"
+        },
+        {
+          "path": "model_index.json",
+          "bytes": 891,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "4da9f612a69ddfef3a618aaed7700e7db6302a22",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/model_index.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/model_index.json"
+        },
+        {
+          "path": "pdd_config.json",
+          "bytes": 174,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "a4510e8cae7ec61fb368fcab854fd698d6364f4b",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/pdd_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/pdd_config.json"
+        },
+        {
+          "path": "pdd_fused_heads.safetensors",
+          "bytes": 12388808,
+          "required": true,
+          "role": "weight",
+          "sha256": "c07093a098e3bef4d43cd29c33e239a0c45424c5ff40dfcc864df00b8d664738",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/pdd_fused_heads.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/pdd_fused_heads.safetensors"
+        },
+        {
+          "path": "processor/chat_template.json",
+          "bytes": 5499,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "1081bacf1af7c7c6de4a585ce02cd0fd34e382da",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/chat_template.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/chat_template.json"
+        },
+        {
+          "path": "processor/merges.txt",
+          "bytes": 1671839,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/merges.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/merges.txt"
+        },
+        {
+          "path": "processor/preprocessor_config.json",
+          "bytes": 390,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/preprocessor_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/preprocessor_config.json"
+        },
+        {
+          "path": "processor/tokenizer.json",
+          "bytes": 7032403,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "c6cc1014128b19d1fc46b1d30a23e3b1d35db421",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/tokenizer.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/tokenizer.json"
+        },
+        {
+          "path": "processor/tokenizer_config.json",
+          "bytes": 11003,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "204d76f78dac6dedc820418c30bf01145de78a21",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/tokenizer_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/tokenizer_config.json"
+        },
+        {
+          "path": "processor/video_preprocessor_config.json",
+          "bytes": 385,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/video_preprocessor_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/video_preprocessor_config.json"
+        },
+        {
+          "path": "processor/vocab.json",
+          "bytes": 2776833,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "4783fe10ac3adce15ac8f358ef5462739852c569",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/processor/vocab.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/processor/vocab.json"
+        },
+        {
+          "path": "tokenizer/merges.txt",
+          "bytes": 1671839,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/tokenizer/merges.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/tokenizer/merges.txt"
+        },
+        {
+          "path": "tokenizer/tokenizer.json",
+          "bytes": 7032403,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "c6cc1014128b19d1fc46b1d30a23e3b1d35db421",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/tokenizer/tokenizer.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/tokenizer/tokenizer.json"
+        },
+        {
+          "path": "tokenizer/tokenizer_config.json",
+          "bytes": 11003,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "204d76f78dac6dedc820418c30bf01145de78a21",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/tokenizer/tokenizer_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/tokenizer/tokenizer_config.json"
+        },
+        {
+          "path": "tokenizer/vocab.json",
+          "bytes": 2776833,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "4783fe10ac3adce15ac8f358ef5462739852c569",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/tokenizer/vocab.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/tokenizer/vocab.json"
+        },
+        {
+          "path": "transformer/config.json",
+          "bytes": 630,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "ef7bd84de2aaab19f86a42ef5057b9a4a0f39290",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/config.json"
+        },
+        {
+          "path": "transformer/model-00001-of-00012.safetensors",
+          "bytes": 5441123104,
+          "required": true,
+          "role": "weight",
+          "sha256": "200667b632a6004bb8442008c4a8e975d64a7dbbc3d5569ed482650c3d61ff7b",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00001-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00001-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00002-of-00012.safetensors",
+          "bytes": 5839159856,
+          "required": true,
+          "role": "weight",
+          "sha256": "2227018562b2d92db391bce2fe641ea7f887585b581d6a73092a8fcfc59ef348",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00002-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00002-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00003-of-00012.safetensors",
+          "bytes": 5472861152,
+          "required": true,
+          "role": "weight",
+          "sha256": "165469f7dccbb9fb6cbdc7a88e89d2a0220697af4da7ee40a96b369ccfa5abc9",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00003-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00003-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00004-of-00012.safetensors",
+          "bytes": 5472860360,
+          "required": true,
+          "role": "weight",
+          "sha256": "2bf7dff80d49203cee29834ce6bd86077b09c4b73174d1c4f696f8fecab83ed3",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00004-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00004-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00005-of-00012.safetensors",
+          "bytes": 5839159904,
+          "required": true,
+          "role": "weight",
+          "sha256": "dcc7c79d46fa1ca910396fa001657985057db491af1bfadeda4cf3a82da329f2",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00005-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00005-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00006-of-00012.safetensors",
+          "bytes": 5472861168,
+          "required": true,
+          "role": "weight",
+          "sha256": "12c76e39604f04d11d282172719bad6ad374e98479b8892f4ea0c9d2695b3086",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00006-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00006-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00007-of-00012.safetensors",
+          "bytes": 5472860360,
+          "required": true,
+          "role": "weight",
+          "sha256": "59ed575a374c0304da09beb234225c17b5ecc1e491b76f72455f0b3b7a1fbbff",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00007-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00007-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00008-of-00012.safetensors",
+          "bytes": 5839159904,
+          "required": true,
+          "role": "weight",
+          "sha256": "b71af5f2f42fee2530b4154caba6ce595ce98072d831090a6b63a546420c0072",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00008-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00008-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00009-of-00012.safetensors",
+          "bytes": 5472861168,
+          "required": true,
+          "role": "weight",
+          "sha256": "a2764f44f306f6eecfd3d52567bcebe64ddfafb0a2fbdaf089efc1e74cbe82f8",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00009-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00009-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00010-of-00012.safetensors",
+          "bytes": 5472860360,
+          "required": true,
+          "role": "weight",
+          "sha256": "0e82a47b5fd0498674718c7a0b3830d042d349f6b5fe16cd2b35cccca5063365",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00010-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00010-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00011-of-00012.safetensors",
+          "bytes": 5839159904,
+          "required": true,
+          "role": "weight",
+          "sha256": "d728554ce210b10062e70db51080d2f6d6e41c6d0fa033dc77b021db20745d2b",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00011-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00011-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model-00012-of-00012.safetensors",
+          "bytes": 4644160496,
+          "required": true,
+          "role": "weight",
+          "sha256": "8d9e1c67066a5fa646f2e87f0868f73cb50be66cc1739e51eb12791fd9123b83",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model-00012-of-00012.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model-00012-of-00012.safetensors"
+        },
+        {
+          "path": "transformer/model.safetensors.index.json",
+          "bytes": 38049,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "ee0300325c3324848937c3d2bfafda4aac067e41",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/transformer/model.safetensors.index.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/transformer/model.safetensors.index.json"
+        },
+        {
+          "path": "vae/config.json",
+          "bytes": 1826,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "419343c810f2cab3d8400e091f527b483051f99d",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/vae/config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/vae/config.json"
+        },
+        {
+          "path": "vae/diffusion_pytorch_model.safetensors",
+          "bytes": 2336964672,
+          "required": true,
+          "role": "weight",
+          "sha256": "a7c8bb1e181865e7cf87c29d3d6bc728d944ce4862b92d0e1cbdcc36b3b180b2",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/resolve/fbde899fffb5c5225ee8dd7027680113746af42e/vae/diffusion_pytorch_model.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3-Image/resolve/master/vae/diffusion_pytorch_model.safetensors"
+        }
+      ],
+      "logical_weight_bytes": 68628441216,
+      "required_asset_bytes": 68651473216,
+      "selected_snapshot_bytes": 68663558559
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-H3",
+      "batch": "A",
+      "purpose": "H3-Image公共文本编码器，可复用已有同版资产",
+      "local_dir": "generation/MiniMax-H3",
+      "revision": "0919fb684102ef115126612f3fbb84d1027e7317",
+      "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/tree/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder",
+      "modelscope_url": "https://www.modelscope.cn/models/MiniMax/MiniMax-H3",
+      "modelscope_id": "MiniMax/MiniMax-H3",
+      "license": "MiniMax H3 Community License",
+      "access": false,
+      "files": [
+        {
+          "path": "text_encoder/chat_template.json",
+          "bytes": 5499,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "1081bacf1af7c7c6de4a585ce02cd0fd34e382da",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/chat_template.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/chat_template.json"
+        },
+        {
+          "path": "text_encoder/config.json",
+          "bytes": 1474,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "29e925092dee9f14278c53e7e7d876cea8a997bc",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/config.json"
+        },
+        {
+          "path": "text_encoder/merges.txt",
+          "bytes": 1671839,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/merges.txt",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/merges.txt"
+        },
+        {
+          "path": "text_encoder/model-00001-of-00014.safetensors",
+          "bytes": 4932328944,
+          "required": true,
+          "role": "weight",
+          "sha256": "6b9dfbc930e505402ae9d7e5091a9d7d656cda5f34614f01cfe70bfb0cca27cb",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00001-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00001-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00002-of-00014.safetensors",
+          "bytes": 4875990528,
+          "required": true,
+          "role": "weight",
+          "sha256": "d8bb44b4ff303fe76fe9e894022fb3dc71b15a2e716592790fe0e3c3e60478fa",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00002-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00002-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00003-of-00014.safetensors",
+          "bytes": 4875990552,
+          "required": true,
+          "role": "weight",
+          "sha256": "54f22e8b3168f8dc962fac0d313607ebf52a12b433d4cf3098a0d82d9f042940",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00003-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00003-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00004-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "ad09c74d3c13ee29b5d0d84548fd8a3424a651564eaccd519946c296e59c557f",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00004-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00004-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00005-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "fc993c8a0e2a5b0570f383e1a95dc3a1281d1b224b6f3ee908f4827941e1dfc2",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00005-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00005-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00006-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "82f05620d1f718a90c362b221d6a184ff1a0f53301d706882d3df49695fa1974",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00006-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00006-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00007-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "fb91da8cb01ff4de3eef0eab1c3e769a734b3a1aafc61734068638a0d6c86934",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00007-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00007-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00008-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "431ca56535c8781944ce3801f5eb61c45531e853ecc5846d936ebaf4761b764f",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00008-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00008-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00009-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "3825e3f4302f4d2f7d76aa7430d2ce0864fde6b9e540a5806bf0d8e38e4d9f47",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00009-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00009-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00010-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "aded5a4d1d5e22dbd8b6f79266b6eb88c840411b09527c53917a1419ace22e2f",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00010-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00010-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00011-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "3820ffe8d8d6477f6fe8d614ef3c87abb264ee39accebf43a1507b970d80946f",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00011-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00011-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00012-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "05ad2d08ce71963121c9b03f1d9ec5d7641052f4b23c6c12b80d71065eb8e98e",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00012-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00012-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00013-of-00014.safetensors",
+          "bytes": 4875990584,
+          "required": true,
+          "role": "weight",
+          "sha256": "b64f2289871261fdd1abbd3b78bcd66011b341de3dc8eeb2ed1a473ee7c8d95c",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00013-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00013-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model-00014-of-00014.safetensors",
+          "bytes": 3270697008,
+          "required": true,
+          "role": "weight",
+          "sha256": "e45b6c9998c77ee5a6577f9f47bc76416c1d4d387169e50c4c9d3134ea51b13b",
+          "git_blob_sha1": null,
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model-00014-of-00014.safetensors",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model-00014-of-00014.safetensors"
+        },
+        {
+          "path": "text_encoder/model.safetensors.index.json",
+          "bytes": 97831,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "b7f68f12031a25c81d72d46a284fe9e1daa448b8",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/model.safetensors.index.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/model.safetensors.index.json"
+        },
+        {
+          "path": "text_encoder/preprocessor_config.json",
+          "bytes": 390,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/preprocessor_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/preprocessor_config.json"
+        },
+        {
+          "path": "text_encoder/tokenizer.json",
+          "bytes": 7032403,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "c6cc1014128b19d1fc46b1d30a23e3b1d35db421",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/tokenizer.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/tokenizer.json"
+        },
+        {
+          "path": "text_encoder/tokenizer_config.json",
+          "bytes": 11003,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "204d76f78dac6dedc820418c30bf01145de78a21",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/tokenizer_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/tokenizer_config.json"
+        },
+        {
+          "path": "text_encoder/video_preprocessor_config.json",
+          "bytes": 385,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/video_preprocessor_config.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/video_preprocessor_config.json"
+        },
+        {
+          "path": "text_encoder/vocab.json",
+          "bytes": 2776833,
+          "required": true,
+          "role": "runtime_config_tokenizer_or_index",
+          "sha256": null,
+          "git_blob_sha1": "4783fe10ac3adce15ac8f358ef5462739852c569",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/text_encoder/vocab.json",
+          "modelscope_url": "https://modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/text_encoder/vocab.json"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 17604,
+          "required": false,
+          "role": "documentation",
+          "sha256": null,
+          "git_blob_sha1": "c389b45855337ccec8ddeb389f4fe902abcd0b19",
+          "official_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/resolve/0919fb684102ef115126612f3fbb84d1027e7317/LICENSE",
+          "modelscope_url": "https://www.modelscope.cn/models/MiniMax/MiniMax-H3/resolve/master/LICENSE"
+        }
+      ],
+      "logical_weight_bytes": 66714912872,
+      "required_asset_bytes": 66726510529,
+      "selected_snapshot_bytes": 66726528133
+    }
+  ],
+  "batch_summary": {
+    "A": {
+      "models": 2,
+      "logical_weight_bytes": 135343354088,
+      "required_asset_bytes": 135377983745,
+      "selected_snapshot_bytes": 135390086692
+    }
+  }
+}

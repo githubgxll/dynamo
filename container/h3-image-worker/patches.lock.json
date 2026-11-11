@@ -1,0 +1,28 @@
+{
+  "schema": "h3-image-worker-patches/1",
+  "parent_source_git_head": "c958c8f5f628f2f29d5e548af236df2b1f5b59ab",
+  "patches": [
+    {
+      "path": "vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3_image.py",
+      "parent_sha256": "6f007bd0d8e0fb6da2f33761ad0214920e77f37d1ec5f9edcb324f15b87e1102",
+      "patched_sha256": "18aa0ea860e654e10d3f2cc1743b63fea51cd0c75340f44a8879d0ce25f21614",
+      "payload": "patched-source/pipeline_minimax_h3_image.py",
+      "upstream_commit": "0b74da131f963ab2fd60f7eba813145672cf81e4",
+      "symbols": [
+        "MiniMaxH3ImagePipeline._resolve_text_encoder_root"
+      ]
+    },
+    {
+      "path": "vllm_omni/diffusion/models/minimax_h3/image_vae.py",
+      "parent_sha256": "2676932e3d635fabc4d814729a5de63a1fbe82acbc600e140b55fe7a2ed01d69",
+      "patched_sha256": "310281b8d5576aec7dd89e1c0730ec5f6476ad3620c08a3c810d8eee0eb547c5",
+      "payload": "patched-source/image_vae.py",
+      "upstream_commit": "0b74da131f963ab2fd60f7eba813145672cf81e4",
+      "symbols": [
+        "_RotaryEmbedding2d",
+        "MiniMaxH3ImageVAE.prepare_decoder_weights"
+      ]
+    }
+  ],
+  "scope": "Local text encoder priority and exact FP32 RoPE restoration only. NVIDIA runtime and packages preserved."
+}
