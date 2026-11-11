@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import csv
 import hashlib
 import importlib
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import traceback
 
 HERE = Path(__file__).resolve().parent
@@ -132,20 +134,36 @@ def check_cli():
     command.subparser_init(subcommands)
     engine = importlib.import_module("vllm_omni.engine.arg_utils").OmniEngineArgs
     results = []
-    for profile in read(HERE / "profiles.json")["profiles"]:
-        namespace = parser.parse_args(profile["argv"][1:])
-        arguments = engine.from_cli_args(namespace)
-        for name, expected in (("num_gpus", profile["gpus"]), ("tensor_parallel_size", profile["dit_tp"]),
-                               ("text_encoder_tp_size", profile["te_tp"]), ("ulysses_degree", profile["sp"])):
-            if getattr(arguments, name) != expected:
-                raise ValueError("CLI/dataclass dropped " + name + " for " + profile["id"])
-        for name in ("diffusion_offload_config", "additional_config", "enable_multithread_weight_load"):
-            if getattr(arguments, name) != getattr(namespace, name):
-                raise ValueError("CLI/dataclass changed " + name)
-        if namespace.enable_multithread_weight_load is not False:
-            raise ValueError("The frozen profile must disable parallel weight loading")
-        results.append({"profile": profile["id"], "status": "PASS", "gpus": profile["gpus"],
-                        "dit_tp": profile["dit_tp"], "te_tp": profile["te_tp"]})
+    profiles = read(HERE / "profiles.json")
+    # EngineArgs.__post_init__ resolves model/tokenizer paths in HF offline mode.
+    # This parameter-contract gate has no weights: use a real empty local directory
+    # only for dataclass construction, after asserting the actual CLI model mapping.
+    with tempfile.TemporaryDirectory(prefix="h3-image-cli-contract-") as fixture:
+        for profile in profiles["profiles"]:
+            namespace = parser.parse_args(profile["argv"][1:])
+            if getattr(namespace, "model_tag", None) != profiles["model_root"]:
+                raise ValueError("CLI positional model differs from the frozen path")
+            namespace.model = namespace.model_tag  # Same precedence as OmniServeCommand.cmd.
+            if getattr(namespace, "tokenizer", None) is not None:
+                raise ValueError("The frozen diffusion profile must not resolve a tokenizer")
+            fixture_namespace = copy.deepcopy(namespace)
+            fixture_namespace.model = fixture
+            arguments = engine.from_cli_args(fixture_namespace)
+            if namespace.model != profiles["model_root"] or namespace.model_tag != profiles["model_root"]:
+                raise ValueError("CLI fixture mutated the original positional model namespace")
+            if arguments.model != fixture or getattr(arguments, "tokenizer", None) is not None:
+                raise ValueError("CLI dataclass did not retain its isolated local model fixture")
+            for name, expected in (("num_gpus", profile["gpus"]), ("tensor_parallel_size", profile["dit_tp"]),
+                                   ("text_encoder_tp_size", profile["te_tp"]), ("ulysses_degree", profile["sp"])):
+                if getattr(arguments, name) != expected:
+                    raise ValueError("CLI/dataclass dropped " + name + " for " + profile["id"])
+            for name in ("diffusion_offload_config", "additional_config", "enable_multithread_weight_load"):
+                if getattr(arguments, name) != getattr(namespace, name):
+                    raise ValueError("CLI/dataclass changed " + name)
+            if namespace.enable_multithread_weight_load is not False:
+                raise ValueError("The frozen profile must disable parallel weight loading")
+            results.append({"profile": profile["id"], "status": "PASS", "gpus": profile["gpus"],
+                            "dit_tp": profile["dit_tp"], "te_tp": profile["te_tp"]})
     return results
 
 
@@ -293,7 +311,8 @@ def validate(output):
         raise ValueError("Inherited Torch/CUDA ABI version differs")
     cli = check_cli()
     dump(output / "cli-validation.json", {"status": "PASS", "profiles": cli,
-          "scope": "Actual parser and engine dataclass only; no GPU model loading"})
+          "model_path_isolation": "Original positional model asserted; empty temporary local directory used only for dataclass path resolution",
+          "scope": "Actual parser and engine dataclass only; no weights, serve.validate, model loading or GPU"})
     run_script(HERE / "cpu_checks.py", ["--output-dir", str(output)], output, "cpu-checks.txt")
     checks = read(output / "cpu-checks.json")
     if (checks.get("status") != "PASS_CPU_RUNTIME_ONLY" or checks.get("tests_run", 0) < 10

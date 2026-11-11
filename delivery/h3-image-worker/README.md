@@ -51,6 +51,8 @@ CI使用现有持久Docker builder，先在固定父imageID上只读执行独立
 
 LMCache0.5.6的正确CUDA扩展是`lmcache.cuda_ops`。最终UID1000禁网环境在新进程严格导入`lmcache.lmcache_native`与`lmcache.cuda_ops`，四个实际原生库按`native.lock.json`核验字节、SHA256、唯一RECORD hash／size行及活动分发路径。保存`native-validation.json`，不吞掉导入／符号／driver错误，不把外层LMCache的CPU回退日志算作原生加载通过。vLLM的CUDA目标为`_C_stable_libtorch`；CPU平台尝试旧`vllm._C`的warning不单独证明GPU运行失败，真实CUDA算子仍待H100验收。
 
+CLI构筑检查先用真实parser解析原profiles，核对位置参数的模型路径并按serve的优先级映射到model；随后仅在参数dataclass检查中使用独立空临时本地目录，避免vLLM的offline路径解析去找默认远程模型缓存。保留真实from_cli_args／__post_init__与并行、offload参数检查，禁止tokenizer远程解析，不关闭禁网、不下载或伪造真实模型权重。此检查不执行serve.validate、模型加载或服务派发；真实挂载身份由Worker资产检查及后续GPU运行确认。
+
 发布后对同一回拉imageID额外执行UID1000／禁网／只读的`tar`可见性与版本观察，保存`tar-validation.json`。缺少tar仅记录交接限制，可改用Python流式导出；不为此另打镜像。该观察不替代运行时或GPU门禁。
 
 继承的 cuDNN `LD_PRELOAD`／`LD_LIBRARY_PATH` 保持有效。依赖检查使用严格pip／uv结果，uv检查使用独立无缓存模式，避免继承root缓存目录权限造成误失败。最终保存安装清单、CycloneDX包声明、源文件清单与发布证据。该声明材料用于实验镜像交接，生产许可审批按组内正式流程另验。

@@ -17,18 +17,19 @@
     "container/h3-image-worker/patched-source/pipeline_minimax_h3_image.py": "18aa0ea860e654e10d3f2cc1743b63fea51cd0c75340f44a8879d0ce25f21614",
     "container/h3-image-worker/patches.lock.json": "47d787d1e0ef01cadf2d1396b3b3d1ea0bdc58e9915c20f6eec68f1e11271110",
     "container/h3-image-worker/profiles.json": "6cc2952f8c1caa101319ec9d0c3dbdf58851f04546ff5bc6ff0239eb18db45eb",
-    "container/h3-image-worker/runtime.py": "464de44afe88d51b765909da2604d283dcbab2380f9a72bcff814a53c959e0a8",
+    "container/h3-image-worker/runtime.py": "f7395b5d7f3794334b8e83a7bd3eaaab9d34aff5a3ec0333085d0811888bab21",
+    "container/h3-image-worker/tests/fixtures/tracking_parser.py": "a47ff3fea71fd64905d06c1a7f633ed2e21a180013c3732c64a3dd87f3943120",
     "container/h3-image-worker/tests/test_inventory.py": "26ad888efdf0f68638cdac6c16ab3a1a0aff9b5e168797d164368d44e20234e7",
     "container/h3-image-worker/tests/test_native.py": "7755852513d0690c9759b29d7c9220b6f07142dba45f0dd9372eb4a4f99c77d2",
-    "container/h3-image-worker/tests/test_runtime.py": "19f796362efe4285fe7f70eeaf70d5b7a3878f53ac9e053b9a50c8c3a30a30ba",
+    "container/h3-image-worker/tests/test_runtime.py": "d582f0605efea6527900606f74a3bbd74a309e7d32876fbf9211a2adcce4a04a",
     "container/h3-image-worker/tests/test_worker.py": "99f3c5b5b0429cd5493611c92289a424f6bfcdceb6fe46fc99631b21f6a9d6b1",
     "container/h3-image-worker/worker.py": "020c3cd5a5271db1cbc94b68a52e8d559dffcb05805670cd06a4baf8328ae51f",
-    "delivery/h3-image-worker/README.md": "bcf8d03b1ff11c23d6cd432063588c16bb8c27e619478607e88f3ae2f8aa3336",
+    "delivery/h3-image-worker/README.md": "f3a26944f4cd87d9b1cc03be7e84cc4a60edcb25676dfbc688f96ba45f018b32",
     "delivery/h3-image-worker/ops.py": "4c8d6e6c18e564065127157caa15f37a3007bc5cbc02301a8cd9fb37b460215d",
     "delivery/h3-image-worker/parent-source-manifest.json": "2e166884b39de4e718340316cc986acf181c5cdf6b4cc3ff8604d8f7a4b07a9a",
     "delivery/h3-image-worker/release-lock.json": "04eaa4a5f707e820d0ab3ace3f86f12dbd05eb79d4a5dab2777061c5e030e191",
     "delivery/h3-image-worker/tests/test_ops.py": "b2fadd3b783d671769aa7559b6268dfed690d1ffb480b40365bdbd4181583c8a"
   },
-  "recipe_sha256": "230212e0f27c12bc6fe4b7736f71163958c7e954ae6a78987acdff9beb681316",
-  "review_tree": "8adbc1ed2d7db34c8f3710bf721740998fbc1148"
+  "recipe_sha256": "d1cc942a33d9f30251db5d644c6477f772afb8d1c1161f3c77f8171f35ced66b",
+  "review_tree": "bdce67384137b4c3bc7ec2359cbde40f87d4ff9f"
 }
