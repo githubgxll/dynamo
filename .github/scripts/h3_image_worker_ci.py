@@ -18,14 +18,16 @@ ops = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ops)
 BRANCH, REPOSITORY, PARENT, PARENT_ID = ops.BRANCH, ops.HARBOR, ops.PARENT, ops.PARENT_ID
 RUNTIME = "/opt/h3-image-worker/runtime.py"
-MINIMUM_SOURCE_FILES = 2138
+GENERATED_SOURCE = "vllm_omni/_version.py"
+PARENT_PROBE_TIMEOUT_SECONDS = 180
 CONFIG_FIELDS = ("User", "Entrypoint", "Cmd", "WorkingDir", "ExposedPorts", "Volumes", "Healthcheck",
                  "StopSignal", "Shell", "OnBuild")
 read, dump, hash_value = ops.read, ops.dump, ops.hash_value
 
 
-def command(arguments, log=None):
-    result = subprocess.run(arguments, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def command(arguments, log=None, timeout=None):
+    result = subprocess.run(arguments, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout)
     if log is not None:
         Path(log).parent.mkdir(parents=True, exist_ok=True)
         Path(log).write_text(result.stdout + result.stderr, encoding="utf-8")
@@ -104,6 +106,140 @@ def pull_digest(output):
     return matches.pop()
 
 
+def source_inputs():
+    copied = read(ROOT / "delivery/h3-image-worker/parent-source-manifest.json")["files"]
+    patches = read(ROOT / "container/h3-image-worker/patches.lock.json")["patches"]
+    return copied, {item["path"]: item["patched_sha256"] for item in patches}
+
+
+def validate_source_coverage(inventory, patched=False):
+    copied, patches = source_inputs()
+    files, generated = inventory.get("source_sha256"), inventory.get("generated_source_sha256")
+    if not isinstance(files, dict) or not files or not isinstance(generated, dict):
+        raise ValueError("Actual source and generated-source maps are required")
+    if set(generated) - {GENERATED_SOURCE} or set(files) & set(generated):
+        raise ValueError("Only the separate generated Omni version file is allowed")
+    for name, digest in {**files, **generated}.items():
+        if not isinstance(name, str) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Actual source hash is malformed")
+    expected = dict(copied)
+    if patched:
+        expected.update(patches)
+    if any(name not in expected or digest != expected[name] for name, digest in files.items()):
+        raise ValueError("Installed source bytes differ from the frozen COPY projection and reviewed repairs")
+    coverage = inventory.get("source_coverage", {})
+    counts = {"copied_source_files": len(copied), "installed_record_source_files": len(files) + len(generated),
+              "recorded_source_files": len(files) + len(generated), "parent_projected_source_files": len(files)}
+    if coverage.get("status") != "PASS" or any(type(coverage.get(key)) is not int or coverage[key] != value
+                                               for key, value in counts.items()):
+        raise ValueError("The actual installed RECORD source coverage is incomplete")
+    if coverage.get("missing_record_sources") != [] or coverage.get("unexpected_installed_sources") != []:
+        raise ValueError("Installed sources are missing or unexpected")
+    if coverage.get("omitted_from_wheel") != sorted(set(copied) - set(files) - set(generated)):
+        raise ValueError("Omitted wheel sources do not match the frozen COPY difference")
+    if coverage.get("generated_source_files") != sorted(generated):
+        raise ValueError("Generated source coverage differs from its actual hash map")
+    critical = coverage.get("critical_paths_verified")
+    if (not isinstance(critical, list) or len(critical) != len(set(critical))
+            or not set(patches).issubset(critical) or not set(critical).issubset(files)):
+        raise ValueError("The two repaired H3 modules must be covered by the actual installed sources")
+    return coverage
+
+
+def validate_package_inventory(inventory):
+    packages, distributions = inventory.get("packages"), inventory.get("distributions")
+    if not isinstance(packages, dict) or not packages or not isinstance(distributions, list) or not distributions:
+        raise ValueError("Active packages and all installed metadata instances are required")
+    required = {"vllm-omni", "torch", "vllm", "lmcache"}
+    if not required.issubset(packages):
+        raise ValueError("The protected active packages are missing")
+    directories = []
+    for item in distributions:
+        if not isinstance(item, dict) or not isinstance(item.get("canonical_name"), str):
+            raise ValueError("An installed metadata instance has no canonical identity")
+        if (not isinstance(item.get("metadata_directory"), str) or not item["metadata_directory"]
+                or not isinstance(item.get("version"), str) or not item["version"]):
+            raise ValueError("An installed metadata instance has no version or directory")
+        for key in ("metadata_sha256", "record_sha256", "direct_url_sha256"):
+            if key != "metadata_sha256" and item.get(key) is None and key in item:
+                continue
+            if not isinstance(item.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", item[key]):
+                raise ValueError("An installed metadata instance has a malformed hash")
+        if item["metadata_sha256"] == hashlib.sha256(b"").hexdigest():
+            raise ValueError("An installed distribution has empty metadata")
+        directories.append(item["metadata_directory"])
+    if len(directories) != len(set(directories)):
+        raise ValueError("Physical metadata directories must be deduplicated")
+    for name, active in packages.items():
+        if (not isinstance(active, dict) or active.get("canonical_name") != name
+                or not any(item == active for item in distributions)):
+            raise ValueError("An active package is not represented by its actual metadata directory: " + str(name))
+
+
+def output_text(value):
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+
+def parent_probe(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    current = run_identity()
+    container_name = "h3-image-parent-probe-" + current["run_id"] + "-" + str(current["run_attempt"]) + "-" + current["commit"][:12]
+    script = ROOT / "container/h3-image-worker/inventory.py"
+    manifest = ROOT / "delivery/h3-image-worker/parent-source-manifest.json"
+    arguments = ["docker", "run", "--rm", "--name", container_name, "--network", "none", "--read-only", "--user", "1000:1000",
+                 "--workdir", "/tmp", "--entrypoint", "python3", "--mount",
+                 "type=bind,src=" + str(script.resolve()) + ",dst=/tmp/h3-image-probe/inventory.py,readonly", "--mount",
+                 "type=bind,src=" + str(manifest.resolve()) + ",dst=/tmp/h3-image-probe/parent-source-manifest.json,readonly",
+                 PARENT_ID, "-I", "-B", "/tmp/h3-image-probe/inventory.py", "--source-manifest",
+                 "/tmp/h3-image-probe/parent-source-manifest.json"]
+    stdout, stderr = "", ""
+    record = {"schema": "h3-image-worker-parent-probe/1", **current, "status": "FAIL", "container_name": container_name,
+              "parent_image": PARENT, "parent_image_id": PARENT_ID, "returncode": None,
+              "timeout_seconds": PARENT_PROBE_TIMEOUT_SECONDS,
+              "observed_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        record["inventory_script_sha256"] = hashlib.sha256(script.read_bytes()).hexdigest()
+        record["source_manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        result = command(arguments, timeout=PARENT_PROBE_TIMEOUT_SECONDS)
+        stdout, stderr = output_text(result.stdout), output_text(result.stderr)
+        record["returncode"] = result.returncode
+        if result.returncode:
+            raise RuntimeError("The actual parent inventory process failed")
+        inventory = json.loads(stdout)
+        if not isinstance(inventory, dict):
+            raise ValueError("The actual parent inventory is not a JSON object")
+        validate_package_inventory(inventory)
+        record["source_coverage"] = validate_source_coverage(inventory)
+        dump(directory / "parent-inventory.json", inventory)
+        record.update(status="PASS", active_packages=len(inventory["packages"]),
+                      distribution_instances=len(inventory["distributions"]))
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = output_text(error.stdout), output_text(error.stderr)
+        record.update(error_type=type(error).__name__, error="Parent inventory exceeded the bounded timeout")
+        try:
+            cleanup = command(["docker", "rm", "--force", container_name], timeout=30)
+            record["timeout_cleanup_returncode"] = cleanup.returncode
+            record["timeout_cleanup_stdout"] = output_text(cleanup.stdout)
+            record["timeout_cleanup_stderr"] = output_text(cleanup.stderr)
+        except Exception as cleanup_error:
+            record["timeout_cleanup_error"] = type(cleanup_error).__name__ + ": " + str(cleanup_error)
+    except Exception as error:
+        record.update(error_type=type(error).__name__, error=str(error))
+    finally:
+        (directory / "parent-inventory.stdout.txt").write_text(stdout, encoding="utf-8")
+        (directory / "parent-inventory.stderr.txt").write_text(stderr, encoding="utf-8")
+        record["stdout_sha256"] = hashlib.sha256(stdout.encode()).hexdigest()
+        record["stderr_sha256"] = hashlib.sha256(stderr.encode()).hexdigest()
+        dump(directory / "parent-probe-result.json", record)
+    if record["status"] != "PASS":
+        print("Parent inventory probe failed: " + record.get("error", "unknown failure"), flush=True)
+        print("=== parent-inventory.stderr.txt ===\n" + stderr[-8000:], flush=True)
+        if stdout:
+            print("=== parent-inventory.stdout.txt tail ===\n" + stdout[-4000:], flush=True)
+        raise RuntimeError("Parent inventory probe failed; diagnostics are preserved in the transaction artifact")
+    return record
+
+
 def prepare(directory, github_output=None):
     current = run_identity()
     _, _, seal = ops.check_seal(committed=True)
@@ -123,6 +259,7 @@ def prepare(directory, github_output=None):
     if parent.get("Id") != PARENT_ID or parent.get("Os") != "linux" or parent.get("Architecture") != "amd64":
         raise ValueError("Pinned official parent identity differs")
     dump(directory / "parent-inspect.json", parent)
+    probe = parent_probe(directory)
     existing_digest = None
     if state == "EXISTS":
         existing_digest = pull_digest(docker("pull", "--platform", "linux/amd64", image,
@@ -130,6 +267,9 @@ def prepare(directory, github_output=None):
     record = {"schema": "h3-image-worker-ci-preparation/1", "status": "PASS", **current,
               "image": image, "parent_image": PARENT, "parent_image_id": PARENT_ID,
               "recipe_sha256": seal["recipe_sha256"], "review_tree": seal["review_tree"],
+              "parent_inventory_sha256": hashlib.sha256((directory / "parent-inventory.json").read_bytes()).hexdigest(),
+              "parent_probe_result_sha256": hashlib.sha256((directory / "parent-probe-result.json").read_bytes()).hexdigest(),
+              "parent_probe_status": probe["status"],
               "tag_inspection": state, "reused": state == "EXISTS", "existing_digest": existing_digest}
     dump(directory / "preparation.json", record)
     if github_output:
@@ -186,11 +326,8 @@ def validate_reports(directory, commit):
                           "dit_tp": item["dit_tp"], "te_tp": item["te_tp"]} for item in profiles]
     if len(expected_profiles) != 4 or runtime.get("cli_profiles") != expected_profiles:
         raise ValueError("All four actual native CLI profiles must match the frozen configuration")
-    files = proof.get("source_sha256")
-    if (not isinstance(files, dict) or len(files) < MINIMUM_SOURCE_FILES
-            or any(not isinstance(name, str) or not name or not isinstance(digest, str)
-                   or not re.fullmatch(r"[0-9a-f]{64}", digest) for name, digest in files.items())):
-        raise ValueError("Actual installed source map is incomplete or malformed")
+    validate_source_coverage(proof, patched=True)
+    files = proof["source_sha256"]
     expected = {"status": "PASS", "source_commit": commit, "parent_image": PARENT,
                 "source_manifest_sha256": hash_value(files)}
     if any(proof.get(key) != value for key, value in expected.items()):

@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -22,6 +25,9 @@ CURRENT = {"commit": COMMIT, "run_id": "431", "run_attempt": 3}
 ENV = {"GITHUB_REF_NAME": ci.BRANCH, "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": COMMIT,
        "GITHUB_RUN_ID": "431", "GITHUB_RUN_ATTEMPT": "3"}
 IMAGE = ci.image_tag(COMMIT)
+# Keep atomic-receipt fixtures outside the Windows virtualized temporary root.
+TEMP_ROOT = ROOT / ".h3-experimental-evidence/h3-image-worker/ci-unit-fixtures"
+TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def configs():
@@ -39,10 +45,37 @@ def configs():
     return parent, child
 
 
+def source_inventory(patched=False):
+    copied, patches = ci.source_inputs()
+    names = sorted(patches) + [next(name for name in copied if name not in patches)]
+    files = {name: patches[name] if patched and name in patches else copied[name] for name in names}
+    generated = {ci.GENERATED_SOURCE: "d" * 64}
+    coverage = {"status": "PASS", "copied_source_files": len(copied),
+                "installed_record_source_files": len(files) + len(generated),
+                "recorded_source_files": len(files) + len(generated),
+                "parent_projected_source_files": len(files), "missing_record_sources": [],
+                "unexpected_installed_sources": [], "critical_paths_verified": sorted(patches),
+                "generated_source_files": sorted(generated), "omitted_from_wheel": sorted(set(copied) - set(files))}
+    return {"source_sha256": files, "generated_source_sha256": generated, "source_coverage": coverage}
+
+
+def parent_inventory():
+    packages = {name: {"canonical_name": name, "version": "1.0", "metadata_directory": "/site-packages/" + name + ".dist-info",
+                       "metadata_sha256": "e" * 64, "record_sha256": "f" * 64, "direct_url_sha256": "0" * 64}
+                for name in ("torch", "vllm", "vllm-omni", "lmcache")}
+    return {"packages": packages, "distributions": [{"canonical_name": name, **item} for name, item in packages.items()],
+            **source_inventory()}
+
+
+def parent_probe_files(directory):
+    ci.dump(directory / "parent-inventory.json", parent_inventory())
+    ci.dump(directory / "parent-probe-result.json", {"status": "PASS"})
+    return {"status": "PASS"}
+
+
 def reports(directory):
-    files = {"vllm_omni/fixture/module_" + str(number) + ".py": "d" * 64
-             for number in range(ci.MINIMUM_SOURCE_FILES - 1)}
-    files["vllm_omni/diffusion/models/minimax_h3/pipeline_minimax_h3_image.py"] = "d" * 64
+    sources = source_inventory(patched=True)
+    files = sources["source_sha256"]
     source_hash = ci.hash_value(files)
     profiles = ci.read(ROOT / "container/h3-image-worker/profiles.json")["profiles"]
     runtime = {"status": "PASS_CPU_ONLY", "source_commit": COMMIT, "parent_image": ci.PARENT,
@@ -53,7 +86,7 @@ def reports(directory):
                "cli_profiles": [{"profile": item["id"], "status": "PASS", "gpus": item["gpus"],
                                  "dit_tp": item["dit_tp"], "te_tp": item["te_tp"]} for item in profiles]}
     proof = {"status": "PASS", "source_commit": COMMIT, "parent_image": ci.PARENT,
-             "source_sha256": files, "source_manifest_sha256": source_hash}
+             **sources, "source_manifest_sha256": source_hash}
     ci.dump(directory / "runtime-validation.json", runtime)
     ci.dump(directory / "source-verification.json", proof)
     return runtime, proof
@@ -151,13 +184,18 @@ class IdentityAndConfig(unittest.TestCase):
 
 class RuntimeProof(unittest.TestCase):
     def test_matching_installed_proof_passes(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             runtime, proof = reports(directory)
             self.assertEqual(ci.validate_reports(directory, COMMIT), (runtime, proof))
 
+    def test_complete_record_projection_may_be_smaller_than_copy_tree(self):
+        sources = source_inventory(patched=True)
+        self.assertLess(len(sources["source_sha256"]), sources["source_coverage"]["copied_source_files"])
+        self.assertEqual(ci.validate_source_coverage(sources, patched=True)["status"], "PASS")
+
     def test_root_changed_inventory_or_wrong_parent_fails(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             for key, value in (("euid", 0), ("inventory_preserved", False), ("parent_image_id", CHILD_ID),
                                ("errors", ["actual failure"]), ("source_commit", "f" * 40)):
@@ -167,7 +205,7 @@ class RuntimeProof(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaises(ValueError): ci.validate_reports(directory, COMMIT)
 
     def test_empty_or_malformed_source_proof_fails(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             for files in ({}, {"file.py": "short"}, {"file.py": None}):
                 _, proof = reports(directory)
@@ -176,7 +214,7 @@ class RuntimeProof(unittest.TestCase):
                 with self.subTest(files=files), self.assertRaises(ValueError): ci.validate_reports(directory, COMMIT)
 
     def test_source_hash_or_identity_change_fails(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             for key, value in (("source_manifest_sha256", "f" * 64), ("source_commit", "f" * 40),
                                ("parent_image", "other-parent")):
@@ -186,7 +224,7 @@ class RuntimeProof(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaises(ValueError): ci.validate_reports(directory, COMMIT)
 
     def test_missing_failed_or_empty_actual_cpu_checks_fail(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             for key, value in (("status", "PENDING"), ("tests_run", 0), ("tests_run", "12"),
                                ("failures", 1), ("errors", 1), ("skipped", 1)):
@@ -197,7 +235,7 @@ class RuntimeProof(unittest.TestCase):
                     ci.validate_reports(directory, COMMIT)
 
     def test_incomplete_cli_profiles_and_source_inventory_fail(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             runtime, _ = reports(directory)
             runtime["cli_profiles"].pop()
@@ -209,10 +247,115 @@ class RuntimeProof(unittest.TestCase):
             ci.dump(directory / "source-verification.json", proof)
             with self.assertRaises(ValueError): ci.validate_reports(directory, COMMIT)
 
+    def test_source_coverage_requires_counts_omission_and_both_critical_modules(self):
+        for key, value in (("copied_source_files", 0), ("recorded_source_files", 0),
+                           ("installed_record_source_files", 0), ("parent_projected_source_files", 0),
+                           ("omitted_from_wheel", []), ("critical_paths_verified", []),
+                           ("missing_record_sources", ["missing.py"]),
+                           ("unexpected_installed_sources", ["extra.py"]), ("generated_source_files", [])):
+            inventory = source_inventory(patched=True)
+            inventory["source_coverage"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): ci.validate_source_coverage(inventory, patched=True)
+
+    def test_unreviewed_copied_or_generated_module_is_rejected(self):
+        inventory = source_inventory(patched=True)
+        name = next(iter(inventory["source_sha256"]))
+        inventory["source_sha256"][name] = "0" * 64
+        with self.assertRaises(ValueError): ci.validate_source_coverage(inventory, patched=True)
+        inventory = source_inventory(patched=True)
+        inventory["generated_source_sha256"]["vllm_omni/unreviewed.py"] = "0" * 64
+        with self.assertRaises(ValueError): ci.validate_source_coverage(inventory, patched=True)
+
+
+class ParentProbe(unittest.TestCase):
+    def invoke(self, directory, result=None, error=None):
+        response = result or SimpleNamespace(returncode=0, stdout=json.dumps(parent_inventory()), stderr="")
+        console = io.StringIO()
+        with mock.patch.dict(os.environ, ENV), redirect_stdout(console), \
+                mock.patch.object(ci, "command", side_effect=error, return_value=response) as command:
+            value = ci.parent_probe(directory)
+        return value, command, console.getvalue()
+
+    def test_parent_probe_is_uid1000_offline_readonly_and_keeps_both_streams(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            record, command, _ = self.invoke(directory)
+            arguments = command.call_args.args[0]
+            self.assertIn("--read-only", arguments)
+            self.assertIn("--network", arguments)
+            self.assertIn("none", arguments)
+            self.assertIn("1000:1000", arguments)
+            self.assertIn(ci.PARENT_ID, arguments)
+            self.assertNotIn("--privileged", arguments)
+            self.assertEqual(command.call_args.kwargs["timeout"], ci.PARENT_PROBE_TIMEOUT_SECONDS)
+            self.assertEqual(record["status"], "PASS")
+            self.assertTrue((directory / "parent-inventory.json").is_file())
+            self.assertEqual((directory / "parent-inventory.stderr.txt").read_text(), "")
+            self.assertEqual(ci.read(directory / "parent-probe-result.json")["returncode"], 0)
+
+    def test_nonzero_subprocess_preserves_root_cause_and_stops(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            response = SimpleNamespace(returncode=7, stdout="partial evidence", stderr="the actual metadata traceback")
+            with self.assertRaises(RuntimeError): self.invoke(directory, result=response)
+            result = ci.read(directory / "parent-probe-result.json")
+            self.assertEqual(result["returncode"], 7)
+            self.assertEqual((directory / "parent-inventory.stderr.txt").read_text(), response.stderr)
+            self.assertFalse((directory / "parent-inventory.json").exists())
+
+    def test_timeout_preserves_partial_stdout_and_stderr(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            error = subprocess.TimeoutExpired(["docker", "run"], 180, output=b"partial JSON", stderr=b"blocked read")
+            with self.assertRaises(RuntimeError): self.invoke(directory, error=error)
+            result = ci.read(directory / "parent-probe-result.json")
+            self.assertEqual(result["error_type"], "TimeoutExpired")
+            self.assertEqual((directory / "parent-inventory.stdout.txt").read_text(), "partial JSON")
+            self.assertEqual((directory / "parent-inventory.stderr.txt").read_text(), "blocked read")
+
+    def test_invalid_json_preserves_process_output_and_diagnostic(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            response = SimpleNamespace(returncode=0, stdout="not JSON", stderr="a warning")
+            with self.assertRaises(RuntimeError): self.invoke(directory, result=response)
+            self.assertEqual(ci.read(directory / "parent-probe-result.json")["error_type"], "JSONDecodeError")
+            self.assertEqual((directory / "parent-inventory.stdout.txt").read_text(), "not JSON")
+            self.assertEqual((directory / "parent-inventory.stderr.txt").read_text(), "a warning")
+
+    def test_missing_tool_still_produces_failure_record(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            with self.assertRaises(RuntimeError): self.invoke(directory, error=FileNotFoundError("docker unavailable"))
+            self.assertEqual(ci.read(directory / "parent-probe-result.json")["error_type"], "FileNotFoundError")
+            self.assertTrue((directory / "parent-inventory.stdout.txt").exists())
+            self.assertTrue((directory / "parent-inventory.stderr.txt").exists())
+
+    def test_active_and_shadow_metadata_instances_are_retained(self):
+        inventory = parent_inventory()
+        shadow = {**inventory["distributions"][0], "metadata_directory": "/other-site/torch.dist-info", "version": "old"}
+        inventory["distributions"].append(shadow)
+        ci.validate_package_inventory(inventory)
+        for broken in ({**inventory, "packages": {}}, {**inventory, "distributions": []}):
+            with self.assertRaises(ValueError): ci.validate_package_inventory(broken)
+        inventory["packages"]["torch"]["metadata_directory"] = "/unobserved/torch.dist-info"
+        with self.assertRaises(ValueError): ci.validate_package_inventory(inventory)
+
+    def test_missing_optional_metadata_files_remain_distinct_from_empty_file_hash(self):
+        inventory = parent_inventory()
+        for item in inventory["distributions"]:
+            item["record_sha256"] = None
+            item["direct_url_sha256"] = None
+        for item in inventory["packages"].values():
+            item["record_sha256"] = None
+            item["direct_url_sha256"] = None
+        ci.validate_package_inventory(inventory)
+        inventory["packages"]["torch"]["record_sha256"] = ci.hashlib.sha256(b"").hexdigest()
+        with self.assertRaises(ValueError): ci.validate_package_inventory(inventory)
+
 
 class Preparation(unittest.TestCase):
     def test_missing_approval_stops_before_registry_or_parent_pull(self):
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, ENV), \
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
                 mock.patch.object(ci.ops, "check_seal", side_effect=ValueError("approval missing")), \
                 mock.patch.object(ci, "docker") as docker, mock.patch.object(ci, "lookup") as lookup:
             with self.assertRaises(ValueError): ci.prepare(Path(temp))
@@ -220,7 +363,7 @@ class Preparation(unittest.TestCase):
             lookup.assert_not_called()
 
     def test_unknown_registry_state_stops_before_build(self):
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, ENV), \
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
                 mock.patch.object(ci.ops, "check_seal", return_value=({}, "tree", {"recipe_sha256": "e" * 64, "review_tree": "tree"})), \
                 mock.patch.object(ci.ops, "git", side_effect=["worker [h3-image-worker]", COMMIT]), \
                 mock.patch.object(ci.ops, "valid_request_message", return_value=True), \
@@ -229,21 +372,40 @@ class Preparation(unittest.TestCase):
             docker.assert_not_called()
 
     def test_preparation_is_exclusive_for_this_attempt(self):
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, ENV), \
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
                 mock.patch.object(ci.ops, "check_seal", return_value=({}, "tree", {})), \
                 mock.patch.object(ci.ops, "git", side_effect=["worker [h3-image-worker]", COMMIT]), \
                 mock.patch.object(ci.ops, "valid_request_message", return_value=True):
             ci.dump(Path(temp) / "preparation.json", {})
             with self.assertRaises(ValueError): ci.prepare(Path(temp))
 
+    def test_parent_probe_failure_never_emits_build_permission(self):
+        parent, _ = configs()
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
+                mock.patch.object(ci.ops, "check_seal", return_value=({}, "tree", {"recipe_sha256": "e" * 64, "review_tree": "tree"})), \
+                mock.patch.object(ci.ops, "git", side_effect=["worker [h3-image-worker]", COMMIT]), \
+                mock.patch.object(ci.ops, "valid_request_message", return_value=True), \
+                mock.patch.object(ci, "lookup", return_value="ABSENT_CONFIRMED"), \
+                mock.patch.object(ci, "inspect", return_value=parent), \
+                mock.patch.object(ci, "docker", return_value="Digest: " + DIGEST + "\n") as docker, \
+                mock.patch.object(ci, "parent_probe", side_effect=RuntimeError("parent metadata failure")):
+            directory = Path(temp)
+            output = directory / "github-output.txt"
+            with self.assertRaises(RuntimeError): ci.prepare(directory, output)
+            self.assertFalse(output.exists())
+            self.assertFalse((directory / "preparation.json").exists())
+            self.assertEqual(docker.call_args.args[0], "pull")
+            self.assertEqual(docker.call_count, 1)
+
     def test_existing_tag_disables_build_and_pins_existing_digest(self):
         parent, _ = configs()
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, ENV), \
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
                 mock.patch.object(ci.ops, "check_seal", return_value=({}, "tree", {"recipe_sha256": "e" * 64, "review_tree": "tree"})), \
                 mock.patch.object(ci.ops, "git", side_effect=["worker [h3-image-worker]", COMMIT]), \
                 mock.patch.object(ci.ops, "valid_request_message", return_value=True), \
                 mock.patch.object(ci, "lookup", return_value="EXISTS"), \
                 mock.patch.object(ci, "inspect", return_value=parent), \
+                mock.patch.object(ci, "parent_probe", side_effect=parent_probe_files), \
                 mock.patch.object(ci, "docker", return_value="Digest: " + DIGEST + "\n"):
             output = Path(temp) / "github-output.txt"
             result = ci.prepare(Path(temp), output)
@@ -266,7 +428,7 @@ class Publication(unittest.TestCase):
         return result, calls
 
     def test_publishes_once_and_hashes_deployment_receipt(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, _, _, child = transaction(directory)
             result, calls = self.invoke(directory, child)
@@ -277,7 +439,7 @@ class Publication(unittest.TestCase):
             self.assertEqual(result["published_image"], ci.REPOSITORY + "@" + DIGEST)
 
     def test_existing_publication_is_revalidated_and_reused_without_push(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, _, _, child = transaction(directory, reused=True)
             result, calls = self.invoke(directory, child, reused=True)
@@ -286,7 +448,7 @@ class Publication(unittest.TestCase):
             self.assertFalse(any(args[0] == "push" for args in calls))
 
     def test_tail_pull_failure_preserves_actual_published_identity(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, _, _, child = transaction(directory)
             with self.assertRaises(RuntimeError): self.invoke(directory, child, pull_error=True)
@@ -296,14 +458,14 @@ class Publication(unittest.TestCase):
             self.assertEqual(record["push_count"], 1)
 
     def test_second_publish_in_same_transaction_is_excluded(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, _, _, child = transaction(directory)
             self.invoke(directory, child)
             with self.assertRaises(FileExistsError): self.invoke(directory, child)
 
     def test_unknown_or_existing_prepush_tag_stops_publication(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             for state in ("UNKNOWN", "EXISTS"):
                 directory = Path(temp) / state
                 _, _, _, child = transaction(directory)
@@ -312,7 +474,7 @@ class Publication(unittest.TestCase):
                 self.assertFalse((directory / "publication.json").exists())
 
     def test_changed_candidate_identity_stops_publication(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, candidate, _, child = transaction(directory)
             candidate["recipe_sha256"] = "f" * 64
@@ -321,7 +483,7 @@ class Publication(unittest.TestCase):
             self.assertFalse((directory / "publication-operation.json").exists())
 
     def test_pulled_imageid_must_match_tested_image(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
             directory = Path(temp)
             _, _, _, child = transaction(directory)
             wrong = {**child, "Id": "sha256:" + "f" * 64}

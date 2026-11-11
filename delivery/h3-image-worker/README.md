@@ -6,7 +6,7 @@
 
 ## 修复与实际源码
 
-父镜像复制的源码Git HEAD为 `c958c8f5f628f2f29d5e548af236df2b1f5b59ab`。本次已完整重算其152,195,329-byte源码层SHA256，冻结2138个Python源文件的哈希。最终安装版逐文件与此清单比较，再仅回补以下公开上游修复。
+父镜像复制的源码Git HEAD为 `c958c8f5f628f2f29d5e548af236df2b1f5b59ab`。本次已完整重算其152,195,329-byte源码层SHA256，冻结2138个Python源文件的哈希。最终安装版以实际RECORD和包目录的完整源文件集合为边界，逐文件投影到COPY来源清单校验；COPY中未入wheel的文件显式记录，版本生成文件单独锁定实际父哈希。仅回补以下公开上游修复。
 
 1. `MiniMaxH3ImagePipeline._resolve_text_encoder_root` 优先读取已校验的本地 `text_encoder/`，满足离线组合目录加载。
 2. Image VAE decoder转为BF16后重新计算FP32 RoPE频率，并保留重复准备时的CUDA Graph缓存。
@@ -47,7 +47,7 @@ Worker按既有83文件交接的真实来源固定Image `fbde899fffb5c5225ee8dd7
 
 本地使用 `delivery/h3-image-worker/ops.py check` 检查源码、锁、workflow路由和回归。`seal` 生成精确输入树和文件哈希。根协调者对同一tree／recipe／父digest给出 `reviews/BUILD_REVIEW.json` PASS，导入对应冻结回执后，唯一线上提交者才提交触发CI的push。
 
-CI使用现有持久Docker builder，先本地build/load，执行实际最终imageID的UID1000禁网验证，通过后发布并按完整digest回拉。运行时验证包含父环境包metadata及来源、2138源文件与两个精确修复、四种CLI参数／dataclass传递、10项真实模块CPU功能与小VAE数值检查，以及Worker本地回归。
+CI使用现有持久Docker builder，先在固定父imageID上只读执行独立实装probe，保存stdout／stderr和退出状态，再build/load候选。实际最终imageID的UID1000禁网验证通过后发布，并按完整digest回拉。运行时验证保留活动分发及全部metadata实例、COPY来源与实际RECORD完整覆盖、两个精确修复、四种CLI参数／dataclass传递、10项真实模块CPU功能与小VAE数值检查，以及Worker本地回归。
 
 继承的 cuDNN `LD_PRELOAD`／`LD_LIBRARY_PATH` 保持有效。依赖检查使用严格pip／uv结果，uv检查使用独立无缓存模式，避免继承root缓存目录权限造成误失败。最终保存安装清单、CycloneDX包声明、源文件清单与发布证据。该声明材料用于实验镜像交接，生产许可审批按组内正式流程另验。
 

@@ -37,7 +37,10 @@ def hash_value(value):
 def probe():
     result = subprocess.run([sys.executable, "-I", "-B", str(HERE / "inventory.py"),
                              "--source-manifest", str(INPUTS / "parent-source-manifest.json")],
-                            capture_output=True, text=True, encoding="utf-8", check=True)
+                            capture_output=True, text=True, encoding="utf-8", timeout=180)
+    if result.returncode:
+        raise RuntimeError("Installed inventory probe failed (exit " + str(result.returncode) + ")\n"
+                           + result.stdout[-6000:] + result.stderr[-12000:])
     return json.loads(result.stdout)
 
 
@@ -50,7 +53,8 @@ def expected_sources(patched):
 
 def snapshot():
     inventory = probe()
-    if inventory["source_sha256"] != expected_sources(False):
+    expected = expected_sources(False)
+    if any(expected.get(name) != digest for name, digest in inventory["source_sha256"].items()):
         raise ValueError("Installed parent source differs from its fully verified source layer")
     dump(BUILD / "parent-inventory.json", inventory)
     return {"status": "PASS_PARENT_SOURCE", "files": len(inventory["source_sha256"])}
@@ -91,7 +95,16 @@ def apply():
     expected_omni = dict(expected_packages["vllm-omni"])
     expected_omni["record_sha256"] = after["packages"]["vllm-omni"]["record_sha256"]
     expected_packages["vllm-omni"] = expected_omni
-    if after["packages"] != expected_packages or after["source_sha256"] != expected_sources(True):
+    expected_distributions = [dict(item) for item in before["distributions"]]
+    for item in expected_distributions:
+        if item["metadata_directory"] == expected_omni["metadata_directory"]:
+            item["record_sha256"] = expected_omni["record_sha256"]
+    patched_sources = expected_sources(True)
+    projected = {name: patched_sources[name] for name in before["source_sha256"]}
+    if (after["packages"] != expected_packages or after["distributions"] != expected_distributions
+            or after["source_sha256"] != projected
+            or after["source_coverage"] != before["source_coverage"]
+            or after["generated_source_sha256"] != before["generated_source_sha256"]):
         raise ValueError("Unexpected package or source change during the two repairs")
     dump(BUILD / "expected-inventory.json", after)
     dump(BUILD / "patch-application.json", {"status": "PASS", "patches": patches,
@@ -125,9 +138,11 @@ def check_cli():
                                ("text_encoder_tp_size", profile["te_tp"]), ("ulysses_degree", profile["sp"])):
             if getattr(arguments, name) != expected:
                 raise ValueError("CLI/dataclass dropped " + name + " for " + profile["id"])
-        for name in ("diffusion_offload_config", "additional_config", "disable_multithread_weight_load"):
+        for name in ("diffusion_offload_config", "additional_config", "enable_multithread_weight_load"):
             if getattr(arguments, name) != getattr(namespace, name):
                 raise ValueError("CLI/dataclass changed " + name)
+        if namespace.enable_multithread_weight_load is not False:
+            raise ValueError("The frozen profile must disable parallel weight loading")
         results.append({"profile": profile["id"], "status": "PASS", "gpus": profile["gpus"],
                         "dit_tp": profile["dit_tp"], "te_tp": profile["te_tp"]})
     return results
@@ -150,7 +165,12 @@ def validate(output):
             print(result.stdout + result.stderr, flush=True)
             raise RuntimeError("Strict installed dependency check failed: " + name)
     for name in ("torch", "vllm", "vllm_omni", "lmcache.c_ops"):
-        importlib.import_module(name)
+        module = importlib.import_module(name)
+        distribution_name = "vllm-omni" if name == "vllm_omni" else name.split(".")[0]
+        distribution = metadata.distribution(distribution_name)
+        root = Path(distribution.locate_file(name.split(".")[0])).resolve()
+        if not Path(module.__file__).resolve().is_relative_to(root):
+            raise ValueError("Import did not use the active distribution: " + name)
     import torch
     if torch.__version__ != value["versions"]["torch"] or torch.version.cuda != "13.0":
         raise ValueError("Inherited Torch/CUDA ABI version differs")
@@ -169,6 +189,8 @@ def validate(output):
     commit = os.environ["H3_IMAGE_WORKER_SOURCE_COMMIT"]
     proof = {"status": "PASS", "source_commit": commit, "parent_image": value["parent_image"],
              "source_sha256": current["source_sha256"],
+             "generated_source_sha256": current["generated_source_sha256"],
+             "source_coverage": current["source_coverage"],
              "source_manifest_sha256": hash_value(current["source_sha256"]),
              "parent_copied_git_head": value["parent_source_git_head"],
              "omni_version": current["omni_version"], "omni_root": current["omni_root"],

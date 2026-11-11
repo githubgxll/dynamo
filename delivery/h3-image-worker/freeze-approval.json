@@ -1,8 +1,8 @@
 {
   "schema": "h3-image-worker-freeze/1",
   "status": "READY_FOR_BUILD",
-  "recipe_sha256": "01feabc3c2cb04d253398ec3a5a8a2ee331c353fe1a5f7f9a75c1cdfc31e6c8e",
-  "review_tree": "346c6e777bdaced29265bc33a54f0dedbdf673e4",
+  "recipe_sha256": "01b02864973944e0da8ab77ab15bb6f3d44bdc8b726d6bccdf8a22144f05724d",
+  "review_tree": "f3cc58d037384fe6a9adc1acd86d03d5d13a78f7",
   "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
   "reviews": {
     "root": "PASS"
@@ -10,19 +10,19 @@
   "root_review": {
     "schema": "h3-image-worker-root-build-review/1",
     "status": "PASS",
-    "reviewed_at_utc": "2026-11-11T09:29:41.204614+00:00",
-    "recipe_sha256": "01feabc3c2cb04d253398ec3a5a8a2ee331c353fe1a5f7f9a75c1cdfc31e6c8e",
-    "review_tree": "346c6e777bdaced29265bc33a54f0dedbdf673e4",
+    "reviewed_at_utc": "2026-11-11T10:11:13.591270+00:00",
+    "recipe_sha256": "01b02864973944e0da8ab77ab15bb6f3d44bdc8b726d6bccdf8a22144f05724d",
+    "review_tree": "f3cc58d037384fe6a9adc1acd86d03d5d13a78f7",
     "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
     "parent_image_id": "sha256:d3ca8512e502bca43edcf9897f02347f724f4b4a08676561bae0c6c5541c3ce9",
     "reviewer": "H3-Image coordinating root chat",
     "sole_online_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
-    "reviewed_files": 20,
+    "reviewed_files": 22,
     "review_artifact_sha256": {
+      "INDEPENDENT_REQUEST2_FINAL_REVIEW.json": "ecc881689069477a54cecbaf6c29fa180a27881c1890685dd0bf319199a57946",
+      "ROOT_REQUEST2_TREE_REVIEW.json": "21f2ceba7ddd3b56ea1083fba4daeac7bb25d358b1a0c6f6363ef3455825c9ae",
       "THEORY_BUILD_REVIEW.md": "17b9db74c18fc8c0e2c5bc0985a3dba308cc488e322ce442a4c4f449665ace8b",
-      "INDEPENDENT_TREE_REVIEW.json": "e5f2ff26bb5dd2c5c2525dc8a8a443721f860a5552e0b21af1ef4f35a2a60ea8",
       "ROOT_SOURCE_LAYER_REVIEW.json": "2786cb7efb6397c7b35229ee66a6af60ce19337ab561cb045e46cfbf7ef47f6b",
-      "ROOT_TREE_REVIEW.json": "8ade2b0ebc4aff1bfbd446dc62596a392097e17777f90b20e9bb996aa8098430",
       "WEIGHTS_HANDOFF_REVIEW.md": "08e9b1f45644365b8e2db3aa43e68a1c5665a26e2588b5deca28e610896cf422"
     },
     "blocking_findings": [],
@@ -39,7 +39,19 @@
       "H100 GPU inference or performance",
       "Generated PNG or human-quality acceptance"
     ],
-    "root_online_build_requests": 0
+    "root_online_build_requests": 0,
+    "request_number": 2,
+    "local_regression_tests": 97,
+    "prior_request": {
+      "request_number": 1,
+      "run_id": 42996021914,
+      "status": "FAILED_NOT_PUBLISHED",
+      "publication_state": "ABSENT_CONFIRMED",
+      "evidence_preserved": true
+    },
+    "theory_review_reuse": "Original model/Worker/profile/asset/patch contracts verified byte-identical; only affected CI/inventory/diagnostic changes reviewed.",
+    "unresolved_diagnostic": "Original child cause was not surfaced; next read-only actual-parent probe must retain complete streams and exit before proceeding.",
+    "cli_validator_delta": "Only two files changed after previous candidate; enable_multithread_weight_load=False matches actual parent CLI and dataclass source SHA."
   },
-  "root_review_sha256": "b72dd61a4bf69f98118e918e280e8b0f555c716b13fd7ba11e1fb4097947527b"
+  "root_review_sha256": "a88657cc07da7eea07d432a358e7ce062f95707d8895b49a6d3b8c8382efa306"
 }
