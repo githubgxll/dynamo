@@ -1,8 +1,8 @@
 {
   "schema": "h3-image-worker-freeze/1",
   "status": "READY_FOR_BUILD",
-  "recipe_sha256": "01b02864973944e0da8ab77ab15bb6f3d44bdc8b726d6bccdf8a22144f05724d",
-  "review_tree": "f3cc58d037384fe6a9adc1acd86d03d5d13a78f7",
+  "recipe_sha256": "230212e0f27c12bc6fe4b7736f71163958c7e954ae6a78987acdff9beb681316",
+  "review_tree": "8adbc1ed2d7db34c8f3710bf721740998fbc1148",
   "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
   "reviews": {
     "root": "PASS"
@@ -10,17 +10,20 @@
   "root_review": {
     "schema": "h3-image-worker-root-build-review/1",
     "status": "PASS",
-    "reviewed_at_utc": "2026-11-11T10:11:13.591270+00:00",
-    "recipe_sha256": "01b02864973944e0da8ab77ab15bb6f3d44bdc8b726d6bccdf8a22144f05724d",
-    "review_tree": "f3cc58d037384fe6a9adc1acd86d03d5d13a78f7",
+    "reviewed_at_utc": "2026-11-11T10:42:48.571932+00:00",
+    "recipe_sha256": "230212e0f27c12bc6fe4b7736f71163958c7e954ae6a78987acdff9beb681316",
+    "review_tree": "8adbc1ed2d7db34c8f3710bf721740998fbc1148",
     "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
     "parent_image_id": "sha256:d3ca8512e502bca43edcf9897f02347f724f4b4a08676561bae0c6c5541c3ce9",
     "reviewer": "H3-Image coordinating root chat",
     "sole_online_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
-    "reviewed_files": 22,
+    "reviewed_files": 24,
     "review_artifact_sha256": {
-      "INDEPENDENT_REQUEST2_FINAL_REVIEW.json": "ecc881689069477a54cecbaf6c29fa180a27881c1890685dd0bf319199a57946",
-      "ROOT_REQUEST2_TREE_REVIEW.json": "21f2ceba7ddd3b56ea1083fba4daeac7bb25d358b1a0c6f6363ef3455825c9ae",
+      "INDEPENDENT_REQUEST3_REVIEW.json": "ef05fd35469ee55ea8c7e1f4827f9bad3029ab62af3fd8ab09bce33f675885ac",
+      "ROOT_REQUEST3_TREE_REVIEW.json": "606535e1d0df84a0924c4c27fcec58e3f7fcd300690c4e04050b3f50824ddac4",
+      "ROOT_NATIVE_LAYER_REVIEW.json": "1b105fb5b102ead9d1efd86ffc138d0aff0e81dbb01c9cb73ab198affe524c88",
+      "REQUEST3_NATIVE_GATE_AUDIT.md": "faeacfc1bc0b6920c4204cec3e7baf0889329b5be68b62a92d1da6b57af304ac",
+      "CPU_PATH_REVIEW.md": "bcaa73156318c3878f7f28acd1171797639bd173691cb0e82d8b3e80398f2a64",
       "THEORY_BUILD_REVIEW.md": "17b9db74c18fc8c0e2c5bc0985a3dba308cc488e322ce442a4c4f449665ace8b",
       "ROOT_SOURCE_LAYER_REVIEW.json": "2786cb7efb6397c7b35229ee66a6af60ce19337ab561cb045e46cfbf7ef47f6b",
       "WEIGHTS_HANDOFF_REVIEW.md": "08e9b1f45644365b8e2db3aa43e68a1c5665a26e2588b5deca28e610896cf422"
@@ -40,18 +43,26 @@
       "Generated PNG or human-quality acceptance"
     ],
     "root_online_build_requests": 0,
-    "request_number": 2,
-    "local_regression_tests": 97,
-    "prior_request": {
-      "request_number": 1,
-      "run_id": 42996021914,
-      "status": "FAILED_NOT_PUBLISHED",
-      "publication_state": "ABSENT_CONFIRMED",
-      "evidence_preserved": true
-    },
+    "request_number": 3,
+    "local_regression_tests": 119,
     "theory_review_reuse": "Original model/Worker/profile/asset/patch contracts verified byte-identical; only affected CI/inventory/diagnostic changes reviewed.",
-    "unresolved_diagnostic": "Original child cause was not surfaced; next read-only actual-parent probe must retain complete streams and exit before proceeding.",
-    "cli_validator_delta": "Only two files changed after previous candidate; enable_multithread_weight_load=False matches actual parent CLI and dataclass source SHA."
+    "resolved_failure": "Request2 validator used old lmcache.c_ops; corrected to strict lmcache_native/cuda_ops imports with locked actual artifact bytes and RECORD. No driver skips.",
+    "prior_requests": [
+      {
+        "request_number": 1,
+        "status": "FAILED_NOT_PUBLISHED",
+        "publication_state": "ABSENT_CONFIRMED",
+        "evidence_preserved": true
+      },
+      {
+        "request_number": 2,
+        "status": "FAILED_NOT_PUBLISHED",
+        "publication_state": "ABSENT_CONFIRMED",
+        "evidence_preserved": true
+      }
+    ],
+    "native_qualification_scope": "Strict actual Linux UID1000 loader and identity must pass before publication; CUDA kernel/NCCL/model/GPU execution remains pending.",
+    "tar_observation_scope": "Post-digest-pull same imageID UID1000 network-none read-only informational observation only; no extra publish/build."
   },
-  "root_review_sha256": "a88657cc07da7eea07d432a358e7ce062f95707d8895b49a6d3b8c8382efa306"
+  "root_review_sha256": "4e9ddec49be114ef842ebc228994fa9e6e47a1cb1be8c991fe1365725719f654"
 }

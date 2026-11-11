@@ -47,7 +47,11 @@ Worker按既有83文件交接的真实来源固定Image `fbde899fffb5c5225ee8dd7
 
 本地使用 `delivery/h3-image-worker/ops.py check` 检查源码、锁、workflow路由和回归。`seal` 生成精确输入树和文件哈希。根协调者对同一tree／recipe／父digest给出 `reviews/BUILD_REVIEW.json` PASS，导入对应冻结回执后，唯一线上提交者才提交触发CI的push。
 
-CI使用现有持久Docker builder，先在固定父imageID上只读执行独立实装probe，保存stdout／stderr和退出状态，再build/load候选。实际最终imageID的UID1000禁网验证通过后发布，并按完整digest回拉。运行时验证保留活动分发及全部metadata实例、COPY来源与实际RECORD完整覆盖、两个精确修复、四种CLI参数／dataclass传递、10项真实模块CPU功能与小VAE数值检查，以及Worker本地回归。
+CI使用现有持久Docker builder，先在固定父imageID上只读执行独立实装probe，保存stdout／stderr和退出状态，再build/load候选。实际最终imageID的UID1000禁网验证通过后发布，并按完整digest回拉。运行时验证保留活动分发及全部metadata实例、COPY来源与实际RECORD完整覆盖、两个精确修复、四种CLI参数／dataclass传递、10项真实模块CPU检查，以及Worker本地回归。CPU用例包含PDD／tile数值、tiny VAE加载／dtype／FP32 RoPE及幂等，不包含完整VAE forward／decode或图像画质。
+
+LMCache0.5.6的正确CUDA扩展是`lmcache.cuda_ops`。最终UID1000禁网环境在新进程严格导入`lmcache.lmcache_native`与`lmcache.cuda_ops`，四个实际原生库按`native.lock.json`核验字节、SHA256、唯一RECORD hash／size行及活动分发路径。保存`native-validation.json`，不吞掉导入／符号／driver错误，不把外层LMCache的CPU回退日志算作原生加载通过。vLLM的CUDA目标为`_C_stable_libtorch`；CPU平台尝试旧`vllm._C`的warning不单独证明GPU运行失败，真实CUDA算子仍待H100验收。
+
+发布后对同一回拉imageID额外执行UID1000／禁网／只读的`tar`可见性与版本观察，保存`tar-validation.json`。缺少tar仅记录交接限制，可改用Python流式导出；不为此另打镜像。该观察不替代运行时或GPU门禁。
 
 继承的 cuDNN `LD_PRELOAD`／`LD_LIBRARY_PATH` 保持有效。依赖检查使用严格pip／uv结果，uv检查使用独立无缓存模式，避免继承root缓存目录权限造成误失败。最终保存安装清单、CycloneDX包声明、源文件清单与发布证据。该声明材料用于实验镜像交接，生产许可审批按组内正式流程另验。
 

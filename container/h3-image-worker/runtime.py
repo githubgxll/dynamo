@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 
 HERE = Path(__file__).resolve().parent
 INPUTS = HERE / "inputs"
@@ -148,6 +149,118 @@ def check_cli():
     return results
 
 
+def check_lmcache_native(output):
+    """Strict CPU loader check of the active LMCache distribution and locked ELF payloads."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    report = {"status": "STARTED_NATIVE_CHECK", "files": [], "imports": [],
+              "gpu_validation": "NOT_RUN", "driver_error_skips": False}
+    dump(output / "native-validation.json", report)
+    try:
+        lock = read(HERE / "native.lock.json")
+        if (lock.get("schema") != "h3-image-worker-native-artifacts/1"
+                or lock.get("distribution") != "lmcache"
+                or lock.get("gpu_entrypoint") != "lmcache.cuda_ops"):
+            raise ValueError("Unknown LMCache native artifact contract")
+        items = lock.get("files", [])
+        if len(items) != 4 or len({item["path"] for item in items}) != 4:
+            raise ValueError("Exactly four distinct locked LMCache native artifacts are required")
+        prefixes = {"cuda_ops", "lmcache_fs", "lmcache_native", "lmcache_redis"}
+        if {Path(item["path"]).name.split(".")[0] for item in items} != prefixes:
+            raise ValueError("Unknown LMCache native artifact name")
+        distribution = metadata.distribution("lmcache")
+        if distribution.version != lock["version"]:
+            raise ValueError("Active LMCache distribution version differs from native.lock")
+        package_root = Path(distribution.locate_file("lmcache")).resolve()
+        recorded_files = {str(item).replace("\\", "/") for item in distribution.files or ()}
+        installed_native = {name for name in recorded_files if name.startswith("lmcache/") and name.endswith(".so")}
+        locked = {item["path"] for item in items}
+        if installed_native != locked:
+            raise ValueError("Installed LMCache native selection differs from native.lock: "
+                             + json.dumps({"missing": sorted(locked - installed_native),
+                                           "unknown": sorted(installed_native - locked)}))
+        filesystem_native = {"lmcache/" + path.relative_to(package_root).as_posix()
+                             for path in package_root.rglob("*.so")}
+        if filesystem_native != locked:
+            raise ValueError("Actual LMCache native files differ from native.lock: "
+                             + json.dumps({"missing": sorted(locked - filesystem_native),
+                                           "unknown": sorted(filesystem_native - locked)}))
+        record_text = distribution.read_text("RECORD")
+        if not isinstance(record_text, str):
+            raise ValueError("Active LMCache distribution RECORD is absent")
+        rows = list(csv.reader(io.StringIO(record_text)))
+        expected_paths = {}
+        for item in items:
+            name = item["path"]
+            relative = Path(name)
+            if (relative.is_absolute() or ".." in relative.parts or "\\" in name
+                    or not name.startswith("lmcache/") or not name.endswith(".so")):
+                raise ValueError("Unsafe native artifact path: " + name)
+            wanted = item.get("sha256")
+            size = item.get("bytes")
+            if (not isinstance(wanted, str) or len(wanted) != 64
+                    or any(c not in "0123456789abcdef" for c in wanted)
+                    or type(size) is not int or size <= 0):
+                raise ValueError("Invalid native artifact identity: " + name)
+            path = Path(distribution.locate_file(name)).resolve()
+            if not path.is_relative_to(package_root) or not path.is_file():
+                raise ValueError("Native artifact is outside the active distribution: " + name)
+            if path.stat().st_size != size:
+                raise ValueError("Native artifact byte count differs: " + name)
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                while chunk := stream.read(8 * 1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest() != wanted:
+                raise ValueError("Native artifact SHA256 differs: " + name)
+            matched = [row for row in rows if row and row[0] == name]
+            encoded = base64.urlsafe_b64encode(digest.digest()).decode("ascii").rstrip("=")
+            if len(matched) != 1 or matched[0][1:] != ["sha256=" + encoded, str(size)]:
+                raise ValueError("Native artifact RECORD hash/size row differs: " + name)
+            expected_paths[name] = path
+            report["files"].append({"path": name, "resolved_path": str(path),
+                                    "sha256": digest.hexdigest(), "bytes": size,
+                                    "record_verified": True})
+        # Load Torch first for libtorch dependencies, without requiring a CUDA driver.
+        # Any actual loader/driver/import error below is fatal; no skip allowlist.
+        for name, distribution_name in (("torch", "torch"), ("lmcache", "lmcache")):
+            module = importlib.import_module(name)
+            active = metadata.distribution(distribution_name)
+            active_root = Path(active.locate_file(name)).resolve()
+            origin = Path(module.__file__).resolve()
+            spec_origin = getattr(getattr(module, "__spec__", None), "origin", None)
+            if not spec_origin or Path(spec_origin).resolve() != origin:
+                raise ValueError("Import __file__/__spec__.origin differs: " + name)
+            if not origin.is_relative_to(active_root):
+                raise ValueError("Import did not use the active distribution: " + name)
+            report["imports"].append({"module": name, "origin": str(origin)})
+        for name in ("lmcache.lmcache_native", "lmcache.cuda_ops"):
+            basename = name.split(".")[-1] + "."
+            matches = [path for relative, path in expected_paths.items()
+                       if Path(relative).name.startswith(basename)]
+            if len(matches) != 1:
+                raise ValueError("Native import has no unique locked origin: " + name)
+            module = importlib.import_module(name)
+            origin = Path(module.__file__).resolve()
+            spec_origin = getattr(getattr(module, "__spec__", None), "origin", None)
+            if not spec_origin or Path(spec_origin).resolve() != origin or origin != matches[0]:
+                raise ValueError("Native import did not use the active locked artifact: " + name)
+            report["imports"].append({"module": name, "origin": str(matches[0]), "locked_origin_verified": True})
+        report.update(status="PASS_STRICT_NATIVE_CPU_LOADER",
+                      distribution="lmcache", version=distribution.version,
+                      distribution_root=str(package_root),
+                      native_lock_sha256=hashlib.sha256((HERE / "native.lock.json").read_bytes()).hexdigest())
+    except Exception as exc:
+        report.update(status="FAILED_NATIVE_CHECK", error_type=type(exc).__name__,
+                      error=str(exc), traceback=traceback.format_exc())
+        dump(output / "native-validation.json", report)
+        (output / "native-failure.txt").write_text(report["traceback"], encoding="utf-8")
+        raise
+    dump(output / "native-validation.json", report)
+    return report
+
+
+
 def validate(output):
     output.mkdir(parents=True, exist_ok=True)
     value = read(INPUTS / "release-lock.json")
@@ -164,13 +277,17 @@ def validate(output):
         if result.returncode:
             print(result.stdout + result.stderr, flush=True)
             raise RuntimeError("Strict installed dependency check failed: " + name)
-    for name in ("torch", "vllm", "vllm_omni", "lmcache.c_ops"):
+    for name in ("torch", "vllm", "vllm_omni"):
         module = importlib.import_module(name)
         distribution_name = "vllm-omni" if name == "vllm_omni" else name.split(".")[0]
         distribution = metadata.distribution(distribution_name)
         root = Path(distribution.locate_file(name.split(".")[0])).resolve()
         if not Path(module.__file__).resolve().is_relative_to(root):
             raise ValueError("Import did not use the active distribution: " + name)
+    run_script(Path(__file__), ["native-check", "--output-dir", str(output)], output, "native-checks.txt")
+    native = read(output / "native-validation.json")
+    if native.get("status") != "PASS_STRICT_NATIVE_CPU_LOADER":
+        raise ValueError("Strict native CPU loader check did not pass")
     import torch
     if torch.__version__ != value["versions"]["torch"] or torch.version.cuda != "13.0":
         raise ValueError("Inherited Torch/CUDA ABI version differs")
@@ -211,16 +328,20 @@ def validate(output):
               "euid": os.geteuid(), "inventory_preserved": True,
               "preservation_scope": "All versions/METADATA/direct_url/native packages retained; two source files and their RECORD rows repaired",
               "source_manifest_sha256": proof["source_manifest_sha256"], "versions": versions,
-              "cpu_checks": checks, "cli_profiles": cli, "errors": [], "gpu_validation": "NOT_RUN"}
+              "cpu_checks": checks, "cli_profiles": cli, "native_validation": native,
+              "errors": [], "gpu_validation": "NOT_RUN"}
     dump(output / "runtime-validation.json", report)
     return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("snapshot", "apply", "validate", "local-tests"))
+    parser.add_argument("action", choices=("snapshot", "apply", "validate", "local-tests", "native-check"))
     parser.add_argument("--output-dir", type=Path, default=BUILD / "validation")
     args = parser.parse_args()
+    if args.action == "native-check":
+        print(json.dumps(check_lmcache_native(args.output_dir), indent=2))
+        return
     if args.action == "local-tests":
         result = subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", str(HERE / "tests")],
                                 text=True, encoding="utf-8")

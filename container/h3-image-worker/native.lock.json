@@ -1,0 +1,68 @@
+{
+  "schema": "h3-image-worker-native-artifacts/1",
+  "parent_image": "docker.io/vllm/vllm-omni@sha256:77c3f76764346918576ba4183daf169240070b659c919c7fff45df31bbf333c9",
+  "source_layer_sha256": "0ff1d20968ecaaa978a13fcfd3797a5417e96add1409ccd2333d26da2134ec67",
+  "source_layer_bytes": 21279201,
+  "source_layer_fully_verified": true,
+  "distribution": "lmcache",
+  "version": "0.5.6",
+  "gpu_entrypoint": "lmcache.cuda_ops",
+  "files": [
+    {
+      "path": "lmcache/cuda_ops.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "90153fa7a2a071a2201de02b7ab0cc06cab7328a0a9cd4be16ed49f1f3bb6cd0",
+      "bytes": 44909056,
+      "elf_needed": [
+        "libc10.so",
+        "libtorch_cpu.so",
+        "libtorch_python.so",
+        "libcudart.so.13",
+        "libc10_cuda.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    },
+    {
+      "path": "lmcache/lmcache_fs.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "5f4deaa3b077c7b3472b3a3878c546d299602421eae24175759fce0d961b8a85",
+      "bytes": 7168704,
+      "elf_needed": [
+        "libc10.so",
+        "libtorch_cpu.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    },
+    {
+      "path": "lmcache/lmcache_native.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "6a714e0463365a93c0f92dd5535892827286b02fa9c5a9a207120678110ab2d7",
+      "bytes": 8753832,
+      "elf_needed": [
+        "libc10.so",
+        "libtorch_cpu.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    },
+    {
+      "path": "lmcache/lmcache_redis.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "b0f28e2642710c730cca7d3d4a1a8e7ff15fbefdb44c5eb935e62daba402968d",
+      "bytes": 7026224,
+      "elf_needed": [
+        "libc10.so",
+        "libtorch_cpu.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ]
+    }
+  ],
+  "scope": "Native artifact identity and CPU loader checks; GPU kernels require H100 qualification"
+}

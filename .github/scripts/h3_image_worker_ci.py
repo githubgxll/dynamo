@@ -8,7 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
@@ -20,6 +20,25 @@ BRANCH, REPOSITORY, PARENT, PARENT_ID = ops.BRANCH, ops.HARBOR, ops.PARENT, ops.
 RUNTIME = "/opt/h3-image-worker/runtime.py"
 GENERATED_SOURCE = "vllm_omni/_version.py"
 PARENT_PROBE_TIMEOUT_SECONDS = 180
+TAR_PROBE_TIMEOUT_SECONDS = 30
+TAR_PROBE_SOURCE = """import json
+import os
+import shutil
+import subprocess
+
+path = shutil.which("tar")
+result = {"euid": os.geteuid(), "tar_path": path, "version_returncode": None,
+          "version_stdout": "", "version_stderr": ""}
+if path is not None:
+    try:
+        version = subprocess.run([path, "--version"], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=10)
+        result.update(version_returncode=version.returncode, version_stdout=version.stdout,
+                      version_stderr=version.stderr)
+    except Exception as error:
+        result.update(version_error_type=type(error).__name__, version_error=str(error))
+print(json.dumps(result, sort_keys=True))
+"""
 CONFIG_FIELDS = ("User", "Entrypoint", "Cmd", "WorkingDir", "ExposedPorts", "Volumes", "Healthcheck",
                  "StopSignal", "Shell", "OnBuild")
 read, dump, hash_value = ops.read, ops.dump, ops.hash_value
@@ -334,7 +353,56 @@ def validate_reports(directory, commit):
         raise ValueError("Actual installed source proof identity differs")
     if runtime.get("source_manifest_sha256") != proof["source_manifest_sha256"]:
         raise ValueError("Runtime and installed source proof differ")
+    validate_native_reports(directory, runtime)
     return runtime, proof
+
+
+def validate_native_reports(directory, runtime):
+    lock_path = ROOT / "container/h3-image-worker/native.lock.json"
+    native_lock = read(lock_path)
+    native = read(directory / "native-validation.json")
+    if runtime.get("native_validation") != native:
+        raise ValueError("Runtime and actual native-loader evidence differ")
+    expected = {"status": "PASS_STRICT_NATIVE_CPU_LOADER", "distribution": "lmcache",
+                "version": native_lock.get("version"), "gpu_validation": "NOT_RUN",
+                "native_lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest()}
+    if any(native.get(key) != value for key, value in expected.items()) or native.get("driver_error_skips") is not False:
+        raise ValueError("Strict native-loader qualification identity differs")
+    if (native_lock.get("schema") != "h3-image-worker-native-artifacts/1"
+            or native_lock.get("distribution") != "lmcache" or native_lock.get("parent_image") != PARENT
+            or native_lock.get("gpu_entrypoint") != "lmcache.cuda_ops"):
+        raise ValueError("Unknown locked native artifact contract")
+    locked = native_lock.get("files", [])
+    files = native.get("files")
+    if not isinstance(files, list) or len(files) != 4 or len(locked) != 4:
+        raise ValueError("Exactly four locked and verified native artifacts are required")
+    if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) for item in files):
+        raise ValueError("Native artifact evidence has no path identity")
+    actual = {item["path"]: item for item in files}
+    if len(actual) != 4 or set(actual) != {item["path"] for item in locked}:
+        raise ValueError("Actual native artifact selection differs from the lock")
+    root = native.get("distribution_root")
+    if (not isinstance(root, str) or not PurePosixPath(root).is_absolute() or str(PurePosixPath(root)) != root
+            or ".." in PurePosixPath(root).parts or "\\" in root):
+        raise ValueError("An absolute active LMCache distribution root is required")
+    native_origins = {}
+    for item in locked:
+        observed = actual[item["path"]]
+        origin = str(PurePosixPath(root).joinpath(*PurePosixPath(item["path"]).parts[1:]))
+        if (observed.get("sha256") != item["sha256"] or type(observed.get("bytes")) is not int
+                or observed["bytes"] != item["bytes"] or observed.get("record_verified") is not True
+                or observed.get("resolved_path") != origin):
+            raise ValueError("Native artifact bytes, active origin or RECORD proof differs: " + item["path"])
+        native_origins[PurePosixPath(item["path"]).name.split(".")[0]] = origin
+    imports = native.get("imports")
+    if not isinstance(imports, list) or any(not isinstance(item, dict) for item in imports):
+        raise ValueError("Actual native import evidence is missing")
+    for name in ("lmcache.lmcache_native", "lmcache.cuda_ops"):
+        observed = [item for item in imports if item.get("module") == name]
+        if (len(observed) != 1 or observed[0].get("locked_origin_verified") is not True
+                or observed[0].get("origin") != native_origins.get(name.rsplit(".", 1)[1])):
+            raise ValueError("The actual native import did not use the locked artifact: " + name)
+    return native
 
 
 def validate(directory):
@@ -364,6 +432,64 @@ def validate(directory):
 def claim(path, value):
     with Path(path).open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(json.dumps(value, indent=2) + "\n")
+
+
+def observe_tar(directory, published_image, image_id):
+    """Record tar availability after verified publication, without changing acceptance."""
+    directory.mkdir(parents=True, exist_ok=True)
+    current = run_identity()
+    container_name = "h3-image-tar-probe-" + current["run_id"] + "-" + str(current["run_attempt"]) + "-" + current["commit"][:12]
+    arguments = ["docker", "run", "--rm", "--name", container_name, "--network", "none", "--read-only",
+                 "--user", "1000:1000", "--workdir", "/tmp", "--entrypoint", "python3", image_id,
+                 "-I", "-B", "-c", TAR_PROBE_SOURCE]
+    stdout, stderr = "", ""
+    record = {"schema": "h3-image-worker-tar-observation/1", **current, "status": "OBSERVATION_ERROR",
+              "published_image": published_image, "image_id": image_id, "container_name": container_name,
+              "docker_returncode": None, "observed_at": datetime.now(timezone.utc).isoformat(),
+              "scope": "Informational tar availability in the already digest-pulled CPU-validated image"}
+    try:
+        result = command(arguments, timeout=TAR_PROBE_TIMEOUT_SECONDS)
+        stdout, stderr = output_text(result.stdout), output_text(result.stderr)
+        record["docker_returncode"] = result.returncode
+        if result.returncode:
+            raise RuntimeError("The post-pull tar observation container failed")
+        observation = json.loads(stdout)
+        if not isinstance(observation, dict) or observation.get("euid") != 1000:
+            raise ValueError("The post-pull tar observation must run as UID1000")
+        path = observation.get("tar_path")
+        if path is not None and (not isinstance(path, str) or not path):
+            raise ValueError("The observed tar path is malformed")
+        if any(not isinstance(observation.get(name), str) for name in ("version_stdout", "version_stderr")):
+            raise ValueError("The tar version output is malformed")
+        fields = {"euid", "tar_path", "version_returncode", "version_stdout", "version_stderr",
+                  "version_error_type", "version_error"}
+        if set(observation) - fields:
+            raise ValueError("Unexpected fields in the tar observation")
+        record.update(observation)
+        if path is None:
+            record["status"] = "MISSING"
+        elif observation.get("version_returncode") == 0:
+            record["status"] = "AVAILABLE"
+        else:
+            record["status"] = "TAR_COMMAND_FAILED"
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = output_text(error.stdout), output_text(error.stderr)
+        record.update(error_type=type(error).__name__, error="Post-pull tar observation exceeded its timeout")
+        try:
+            cleanup = command(["docker", "rm", "--force", container_name], timeout=10)
+            record.update(timeout_cleanup_returncode=cleanup.returncode,
+                          timeout_cleanup_stdout=output_text(cleanup.stdout), timeout_cleanup_stderr=output_text(cleanup.stderr))
+        except Exception as cleanup_error:
+            record["timeout_cleanup_error"] = type(cleanup_error).__name__ + ": " + str(cleanup_error)
+    except Exception as error:
+        record.update(error_type=type(error).__name__, error=str(error))
+    finally:
+        (directory / "tar-validation.stdout.txt").write_text(stdout, encoding="utf-8")
+        (directory / "tar-validation.stderr.txt").write_text(stderr, encoding="utf-8")
+        record["stdout_sha256"] = hashlib.sha256(stdout.encode()).hexdigest()
+        record["stderr_sha256"] = hashlib.sha256(stderr.encode()).hexdigest()
+        dump(directory / "tar-validation.json", record)
+    return record
 
 
 def publish(directory):
@@ -403,6 +529,8 @@ def publish(directory):
         raise ValueError("Published digest pull does not match the tested imageID/platform")
     dump(directory / "published-digest-inspect.json", pulled)
     (directory / "deployment-image.txt").write_text(reference + "\n", encoding="utf-8")
+    tar = observe_tar(directory, reference, candidate["image_id"])
+    record["tar_observation_status"] = tar["status"]
     artifacts = {path.relative_to(directory).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in sorted(directory.rglob("*"))
                  if path.is_file() and path != directory / "publication.json"}

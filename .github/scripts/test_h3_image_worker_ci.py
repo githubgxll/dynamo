@@ -73,6 +73,22 @@ def parent_probe_files(directory):
     return {"status": "PASS"}
 
 
+def native_evidence():
+    path = ROOT / "container/h3-image-worker/native.lock.json"
+    lock = ci.read(path)
+    root = "/site-packages/lmcache"
+    files = [{"path": item["path"], "resolved_path": root + "/" + item["path"].split("/", 1)[1],
+              "sha256": item["sha256"], "bytes": item["bytes"], "record_verified": True} for item in lock["files"]]
+    imports = [{"module": "torch", "origin": "/site-packages/torch/__init__.py"},
+               {"module": "lmcache", "origin": root + "/__init__.py"}]
+    for name in ("lmcache_native", "cuda_ops"):
+        origin = next(item["resolved_path"] for item in files if item["path"].split("/", 1)[1].startswith(name + "."))
+        imports.append({"module": "lmcache." + name, "origin": origin, "locked_origin_verified": True})
+    return {"status": "PASS_STRICT_NATIVE_CPU_LOADER", "distribution": "lmcache", "version": lock["version"],
+            "distribution_root": root, "native_lock_sha256": ci.hashlib.sha256(path.read_bytes()).hexdigest(),
+            "files": files, "imports": imports, "gpu_validation": "NOT_RUN", "driver_error_skips": False}
+
+
 def reports(directory):
     sources = source_inventory(patched=True)
     files = sources["source_sha256"]
@@ -84,11 +100,13 @@ def reports(directory):
                "cpu_checks": {"status": "PASS_CPU_RUNTIME_ONLY", "tests_run": 12,
                               "failures": 0, "errors": 0, "skipped": 0},
                "cli_profiles": [{"profile": item["id"], "status": "PASS", "gpus": item["gpus"],
-                                 "dit_tp": item["dit_tp"], "te_tp": item["te_tp"]} for item in profiles]}
+                                 "dit_tp": item["dit_tp"], "te_tp": item["te_tp"]} for item in profiles],
+               "native_validation": native_evidence()}
     proof = {"status": "PASS", "source_commit": COMMIT, "parent_image": ci.PARENT,
              **sources, "source_manifest_sha256": source_hash}
     ci.dump(directory / "runtime-validation.json", runtime)
     ci.dump(directory / "source-verification.json", proof)
+    ci.dump(directory / "native-validation.json", runtime["native_validation"])
     return runtime, proof
 
 
@@ -353,6 +371,138 @@ class ParentProbe(unittest.TestCase):
         with self.assertRaises(ValueError): ci.validate_package_inventory(inventory)
 
 
+class NativeEvidence(unittest.TestCase):
+    def check(self, directory, evidence):
+        ci.dump(directory / "native-validation.json", evidence)
+        return ci.validate_native_reports(directory, {"native_validation": evidence})
+
+    def test_four_record_verified_artifacts_and_two_actual_imports_pass(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            evidence = native_evidence()
+            self.assertEqual(self.check(Path(temp), evidence), evidence)
+
+    def test_actual_native_file_and_runtime_copy_must_match(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            evidence = native_evidence()
+            ci.dump(Path(temp) / "native-validation.json", evidence)
+            changed = {**evidence, "status": "PENDING"}
+            with self.assertRaises(ValueError): ci.validate_native_reports(Path(temp), {"native_validation": changed})
+
+    def test_native_lock_identity_version_and_no_driver_skip_are_required(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for key, value in (("status", "FAILED_NATIVE_CHECK"), ("distribution", "other"), ("version", "old"),
+                               ("native_lock_sha256", "0" * 64), ("gpu_validation", "PASS"),
+                               ("driver_error_skips", True), ("driver_error_skips", None)):
+                evidence = native_evidence()
+                evidence[key] = value
+                with self.subTest(key=key), self.assertRaises(ValueError): self.check(Path(temp), evidence)
+
+    def test_missing_duplicate_or_extra_native_artifacts_fail(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            original = native_evidence()
+            files = original["files"]
+            for changed in (files[:3], files + [files[0]], [files[0], files[0], files[2], files[3]]):
+                evidence = {**original, "files": changed}
+                with self.subTest(length=len(changed)), self.assertRaises(ValueError): self.check(Path(temp), evidence)
+
+    def test_native_bytes_record_and_active_origin_are_locked(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for key, value in (("sha256", "0" * 64), ("bytes", 1), ("record_verified", False),
+                               ("record_verified", 1), ("resolved_path", "/unrelated/cuda_ops.so")):
+                evidence = native_evidence()
+                evidence["files"][0][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError): self.check(Path(temp), evidence)
+
+    def test_real_cuda_and_native_imports_need_unique_locked_origins(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for field, value in (("origin", "/other/native.so"), ("locked_origin_verified", False),
+                                 ("module", "lmcache.c_ops")):
+                evidence = native_evidence()
+                evidence["imports"][-1][field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError): self.check(Path(temp), evidence)
+            evidence = native_evidence()
+            evidence["imports"].append(copy.deepcopy(evidence["imports"][-1]))
+            with self.assertRaises(ValueError): self.check(Path(temp), evidence)
+
+    def test_active_distribution_root_must_be_canonical_absolute_linux_path(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for root in ("relative/lmcache", "/site/../lmcache", "/site//lmcache", ""):
+                evidence = native_evidence()
+                evidence["distribution_root"] = root
+                with self.subTest(root=root), self.assertRaises(ValueError): self.check(Path(temp), evidence)
+
+
+class TarObservation(unittest.TestCase):
+    def invoke(self, directory, observation=None, error=None, returncode=0, stderr=""):
+        if observation is None:
+            observation = {"euid": 1000, "tar_path": "/usr/bin/tar", "version_returncode": 0,
+                           "version_stdout": "tar (GNU tar) 1.34\n", "version_stderr": ""}
+        result = SimpleNamespace(returncode=returncode, stdout=json.dumps(observation), stderr=stderr)
+        with mock.patch.dict(os.environ, ENV), mock.patch.object(ci, "command", side_effect=error, return_value=result) as command:
+            record = ci.observe_tar(directory, ci.REPOSITORY + "@" + DIGEST, CHILD_ID)
+        return record, command
+
+    def test_available_tar_is_observed_readonly_offline_and_bound_to_pulled_identity(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            record, command = self.invoke(directory)
+            arguments = command.call_args.args[0]
+            self.assertEqual(record["status"], "AVAILABLE")
+            self.assertEqual(record["image_id"], CHILD_ID)
+            self.assertEqual(record["published_image"], ci.REPOSITORY + "@" + DIGEST)
+            self.assertIn(CHILD_ID, arguments)
+            self.assertIn("--read-only", arguments)
+            self.assertIn("1000:1000", arguments)
+            self.assertIn("none", arguments)
+            self.assertEqual(record["tar_path"], "/usr/bin/tar")
+            self.assertIn("GNU tar", record["version_stdout"])
+            self.assertTrue((directory / "tar-validation.json").is_file())
+
+    def test_missing_tar_is_information_and_never_raises(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            missing = {"euid": 1000, "tar_path": None, "version_returncode": None,
+                       "version_stdout": "", "version_stderr": ""}
+            record, _ = self.invoke(Path(temp), observation=missing)
+            self.assertEqual(record["status"], "MISSING")
+
+    def test_docker_failure_is_preserved_without_changing_existing_publication(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            directory = Path(temp)
+            publication = {"status": "PASS_PUBLISHED_AND_PULLED_CPU_VALIDATED", "digest": DIGEST, "image_id": CHILD_ID}
+            ci.dump(directory / "publication.json", publication)
+            record, _ = self.invoke(directory, returncode=125, stderr="OCI runtime unavailable")
+            self.assertEqual(record["status"], "OBSERVATION_ERROR")
+            self.assertEqual(record["docker_returncode"], 125)
+            self.assertEqual((directory / "tar-validation.stderr.txt").read_text(), "OCI runtime unavailable")
+            self.assertEqual(ci.read(directory / "publication.json"), publication)
+
+    def test_timeout_keeps_partial_diagnostics_and_pulled_identity(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            error = subprocess.TimeoutExpired(["docker", "run"], 30, output=b"partial", stderr=b"daemon blocked")
+            record, _ = self.invoke(Path(temp), error=error)
+            self.assertEqual(record["status"], "OBSERVATION_ERROR")
+            self.assertEqual(record["error_type"], "TimeoutExpired")
+            self.assertEqual(record["image_id"], CHILD_ID)
+            self.assertEqual((Path(temp) / "tar-validation.stderr.txt").read_text(), "daemon blocked")
+
+    def test_malformed_json_or_wrong_uid_never_fabricates_tar_availability(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for number, text in enumerate(("not JSON", json.dumps({"euid": 0}))):
+                result = SimpleNamespace(returncode=0, stdout=text, stderr="")
+                directory = Path(temp) / str(number)
+                with mock.patch.dict(os.environ, ENV), mock.patch.object(ci, "command", return_value=result):
+                    record = ci.observe_tar(directory, ci.REPOSITORY + "@" + DIGEST, CHILD_ID)
+                self.assertEqual(record["status"], "OBSERVATION_ERROR")
+
+    def test_container_output_cannot_replace_the_publication_identity(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            observation = {"euid": 1000, "tar_path": None, "version_returncode": None,
+                           "version_stdout": "", "version_stderr": "", "image_id": "injected"}
+            record, _ = self.invoke(Path(temp), observation=observation)
+            self.assertEqual(record["status"], "OBSERVATION_ERROR")
+            self.assertEqual(record["image_id"], CHILD_ID)
+
+
 class Preparation(unittest.TestCase):
     def test_missing_approval_stops_before_registry_or_parent_pull(self):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp, mock.patch.dict(os.environ, ENV), \
@@ -415,15 +565,20 @@ class Preparation(unittest.TestCase):
 
 
 class Publication(unittest.TestCase):
-    def invoke(self, directory, child, reused=False, pull_error=False, tag_state="ABSENT_CONFIRMED"):
+    def invoke(self, directory, child, reused=False, pull_error=False, tag_state="ABSENT_CONFIRMED", tar_status="AVAILABLE"):
         calls = []
         def docker(*args, **kwargs):
             calls.append(args)
             if args[0] == "push": return "worker: digest: " + DIGEST + " size: 123\n"
             if args[0] == "pull" and pull_error: raise RuntimeError("TLS EOF after completed push")
             return "Digest: " + DIGEST + "\n"
+        def tar_observation(directory, reference, image_id):
+            result = {"status": tar_status, "published_image": reference, "image_id": image_id}
+            ci.dump(directory / "tar-validation.json", result)
+            return result
         with mock.patch.dict(os.environ, ENV), mock.patch.object(ci, "inspect", return_value=child), \
-                mock.patch.object(ci, "lookup", return_value=tag_state), mock.patch.object(ci, "docker", side_effect=docker):
+                mock.patch.object(ci, "lookup", return_value=tag_state), mock.patch.object(ci, "docker", side_effect=docker), \
+                mock.patch.object(ci, "observe_tar", side_effect=tar_observation):
             result = ci.publish(directory)
         return result, calls
 
@@ -436,7 +591,18 @@ class Publication(unittest.TestCase):
             self.assertEqual(result["push_count"], 1)
             self.assertEqual(sum(args[0] == "push" for args in calls), 1)
             self.assertIn("deployment-image.txt", result["evidence_sha256"])
+            self.assertIn("tar-validation.json", result["evidence_sha256"])
             self.assertEqual(result["published_image"], ci.REPOSITORY + "@" + DIGEST)
+
+    def test_missing_tar_or_observation_failure_does_not_invalidate_a_published_image(self):
+        with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
+            for status in ("MISSING", "OBSERVATION_ERROR"):
+                directory = Path(temp) / status
+                _, _, _, child = transaction(directory)
+                result, calls = self.invoke(directory, child, tar_status=status)
+                self.assertEqual(result["status"], "PASS_PUBLISHED_AND_PULLED_CPU_VALIDATED")
+                self.assertEqual(result["tar_observation_status"], status)
+                self.assertEqual(sum(args[0] == "push" for args in calls), 1)
 
     def test_existing_publication_is_revalidated_and_reused_without_push(self):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as temp:
