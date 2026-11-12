@@ -53,7 +53,9 @@ async def test_base_recovery_without_sr(tmp_path):
 @pytest.mark.asyncio
 async def test_base_readiness_only_checks_runtime(tmp_path):
     from aiohttp import web
-    app=web.Application();app.router.add_get('/health',lambda request:web.Response())
+    async def health(request):
+        return web.Response()
+    app=web.Application();app.router.add_get('/health',health)
     runner=web.AppRunner(app);await runner.setup()
     site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
     port=site._server.sockets[0].getsockname()[1]

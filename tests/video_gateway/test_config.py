@@ -384,7 +384,7 @@ def test_media_limits_have_safe_defaults_and_derived_budget_weight(tmp_path):
     ("section", "field", "value", "message"),
     [
         ("http", "max_body_bytes", 513 * 1024 * 1024, "hard cap"),
-        ("media", "max_single_file_bytes", 51 * 1024 * 1024, "hard cap"),
+        ("media", "max_single_file_bytes", 129 * 1024 * 1024, "hard cap"),
         ("media", "max_parts", 33, "hard cap"),
         ("media", "max_result_bytes", 129 * 1024 * 1024, "hard cap"),
     ],

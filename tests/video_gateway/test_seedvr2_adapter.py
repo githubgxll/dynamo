@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+"""SR-only upload contracts, actual media probing and safe shared-file staging."""
+import dataclasses
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from dingo.common.video_sr_only import SOURCE_KEY, validate_sr_only
+from dingo.common.video_super_resolution import SR_PAYLOAD_KEY
+from dingo.video_gateway.adapters import create_adapter
+from dingo.video_gateway.adapters.base import UploadedArtifact
+from dingo.video_gateway.errors import GatewayError
+from dingo.vllm.omni.sr_only_handler import stage_source
+
+
+def adapter(make_gateway_config):
+    p=make_gateway_config().pools[0]
+    p=dataclasses.replace(p,execution_mode='detached',adapter=dataclasses.replace(
+        p.adapter,name='seedvr2',workflow='sr_only',options={'storage_id':'test-store'}))
+    return create_adapter(p)
+
+
+def video(tmp_path, *, size=(1344,768), fps=24, frames=2):
+    import av
+    path=tmp_path/'source.mp4'
+    with av.open(str(path),'w') as c:
+        s=c.add_stream('libx264',rate=fps);s.width,s.height=size;s.pix_fmt='yuv420p'
+        s.options={'preset':'ultrafast'}
+        for _ in range(frames):
+            for packet in s.encode(av.VideoFrame.from_image(Image.new('RGB',size,'blue'))):c.mux(packet)
+        for packet in s.encode():c.mux(packet)
+    data=path.read_bytes()
+    return UploadedArtifact('input_references',0,path.name,'video/mp4',path,len(data),hashlib.sha256(data).hexdigest())
+
+
+def fields(**extra):
+    return {k:[v] for k,v in {'model':'public-sr','operation':'sr_only','resolution':'1080P',**extra}.items()}
+
+
+@pytest.mark.parametrize('tier,size',[('1080P',(1920,1080)),('2K',(2560,1440))])
+def test_sr_only_media_and_shared_payload(make_gateway_config,tmp_path,tier,size):
+    a=adapter(make_gateway_config);u=video(tmp_path)
+    n=a.normalize_request(fields(resolution=tier),[u],'public-sr')
+    assert (n['width'],n['height'])==size
+    assert n['num_frames']==2 and n['generate_sound'] is False
+    assert 'seed' not in n and 'prompt' not in n
+    manifest=[{'ordinal':0,'path':'inputs/source.mp4','content_type':'video/mp4','bytes':u.size,'sha256':u.sha256}]
+    (tmp_path/'input-manifest.json').write_text(json.dumps(manifest))
+    payload=a.build_worker_payload(n,manifest,tmp_path)
+    assert SOURCE_KEY in payload and 'input_reference' not in payload
+    assert len(json.dumps(payload))<4096
+    assert validate_sr_only(payload)['output_width']==size[0]
+    assert a.pool.sr_profile=='minimax_h3_seedvr2.v3'
+
+
+@pytest.mark.parametrize('key,value',[('prompt','hello'),('seed','1'),('seconds','4'),('size','1920x1080'),('num_inference_steps','50')])
+def test_sr_only_rejects_generation_parameters(make_gateway_config,tmp_path,key,value):
+    with pytest.raises(GatewayError,match='generation parameters'):
+        adapter(make_gateway_config).normalize_request(fields(**{key:value}),[video(tmp_path)],'public-sr')
+
+
+def test_sr_only_rejects_bad_fps(make_gateway_config,tmp_path):
+    with pytest.raises(GatewayError,match='24 FPS'):
+        adapter(make_gateway_config).normalize_request(fields(),[video(tmp_path,fps=30)],'public-sr')
+
+
+def source_fixture(tmp_path):
+    task=tmp_path/'task';(task/'inputs').mkdir(parents=True)
+    src=task/'inputs/source.mp4';src.write_bytes(b'test source bytes')
+    entry={'ordinal':0,'path':'inputs/source.mp4','content_type':'video/mp4','bytes':src.stat().st_size,'sha256':hashlib.sha256(src.read_bytes()).hexdigest()}
+    raw=json.dumps([entry]).encode();(task/'input-manifest.json').write_bytes(raw)
+    root=task/'attempts/1-token';root.mkdir(parents=True)
+    descriptor={'schema_version':1,'storage_id':'test-store','manifest_sha256':hashlib.sha256(raw).hexdigest(),'media':{},'entry':entry}
+    return root,descriptor,src
+
+
+def test_source_is_task_scoped_and_verified(tmp_path):
+    root,d,src=source_fixture(tmp_path)
+    target=stage_source(root,d,'test-store')
+    assert target.read_bytes()==src.read_bytes()
+
+
+def test_source_symlink_is_rejected(tmp_path):
+    root,d,src=source_fixture(tmp_path)
+    outside=tmp_path/'outside.mp4';outside.write_bytes(src.read_bytes());src.unlink();src.symlink_to(outside)
+    with pytest.raises(OSError):stage_source(root,d,'test-store')
+
+
+def test_source_changed_after_upload_is_rejected(tmp_path):
+    root,d,src=source_fixture(tmp_path);src.write_bytes(b'wrong file bytes!')
+    with pytest.raises(ValueError):stage_source(root,d,'test-store')
+
+
+def test_source_cannot_cross_tasks(tmp_path):
+    root,d,src=source_fixture(tmp_path);d['entry']['path']='../source.mp4'
+    with pytest.raises(ValueError,match='task inputs'):stage_source(root,d,'test-store')

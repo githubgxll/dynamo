@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -174,6 +175,7 @@ class VideoGatewayService:
         # persistence; that random seed was never part of the request digest.
         if digest_request.pop("seed_generated", False):
             digest_request.pop("seed", None)
+        digest_request.pop("seed_source", None)
         digest_payload = {
             "model": model,
             "pool_id": pool.pool_id,
@@ -253,6 +255,21 @@ class VideoGatewayService:
 
         task_root: Path | None = None
         try:
+            # Resolve defaults only for a new H3 task, after the client digest and
+            # replay check. Persist once; dispatch/recovery never resample seeds.
+            if pool.adapter.name == "minimax_h3":
+                if normalized.get("seed") is not None:
+                    normalized["seed_source"] = (
+                        "default_random" if normalized.get("seed_generated") else "request"
+                    )
+                elif self.config.seed_defaults is not None:
+                    defaults = self.config.seed_defaults
+                    random_seed = defaults.strategy == "random"
+                    normalized.update(
+                        seed=secrets.randbits(32) if random_seed else defaults.value,
+                        seed_generated=random_seed,
+                        seed_source="default_random" if random_seed else "default_fixed",
+                    )
             task_id = new_video_id()
             created_at = now_ms()
             expires_at_ms = created_at + int(self.config.lifecycle.queue_ttl_s * 1000)

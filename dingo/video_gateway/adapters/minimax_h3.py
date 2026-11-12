@@ -30,6 +30,9 @@ from dingo.video_gateway.adapters.h3_output_policy import (
     H3_SR_V3_PRESETS,
     plan_h3_output,
 )
+from dingo.video_gateway.adapters.h3_resolution import (
+    RESOLUTION_CANVASES, classify_resolution, plan_fl2va_adaptive,
+)
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
     relative_ratio_error,
@@ -138,6 +141,8 @@ _ALLOWED_FIELDS = {
     "prompt",
     "seconds",
     "size",
+    "resolution",
+    "ratio",
     "width",
     "height",
     "num_frames",
@@ -173,6 +178,7 @@ _KNOWN_UNSUPPORTED_FIELDS = {
     "video_reference",
     "audio_reference",
 }
+_FL2VA_MAX_RATIO_ERROR = 0.03
 _MAX_PROMPT_BYTES = 32 * 1024
 _MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _MAX_VIDEO_BYTES = 50 * 1024 * 1024
@@ -332,6 +338,59 @@ def _parse_size(
             "size",
         ) from exc
     return width, height
+
+
+def _resolve_request_shape(fields, probes, *, workflow, sr_profile):
+    resolution = _one(fields, "resolution")
+    ratio = _one(fields, "ratio")
+    legacy_ratio = _one(fields, "aspect_ratio")
+    if resolution is not None and resolution not in RESOLUTION_CANVASES:
+        raise GatewayError(400, "invalid_resolution", "resolution must be 768P, 1080P or 2K", "resolution")
+    if ratio is not None and ratio not in (*RESOLUTION_CANVASES["768P"], "adaptive"):
+        raise GatewayError(400, "invalid_aspect_ratio", "ratio is not supported", "ratio")
+    if ratio is not None and legacy_ratio is not None and ratio != legacy_ratio:
+        raise GatewayError(400, "conflicting_parameter", "ratio and aspect_ratio must agree", "ratio")
+    requested_ratio = ratio if ratio is not None else legacy_ratio
+    explicit = any(_one(fields, key) is not None for key in ("size", "width", "height"))
+    adaptive = requested_ratio == "adaptive" or (not explicit and requested_ratio is None and workflow == "fl2va" and probes)
+    if adaptive:
+        if workflow != "fl2va" or not probes or any(p.kind != "image" for p in probes):
+            raise GatewayError(400, "unsupported_adaptive_ratio", "adaptive requires FL2VA keyframe images; Ref2VA requires a concrete ratio", "ratio")
+        if not explicit:
+            first = probes[0]
+            assert first.width is not None and first.height is not None
+            if resolution is None:
+                raise GatewayError(400, "missing_size", "provide resolution for FL2VA adaptive dimensions", "size")
+            try:
+                plan = plan_fl2va_adaptive(
+                    first.width, first.height, resolution, sr_profile=sr_profile
+                )
+            except ValueError as exc:
+                raise GatewayError(400, "reference_aspect_ratio_mismatch", str(exc), "ratio") from exc
+            return plan.output_width, plan.output_height, plan
+        if len({(p.width, p.height) for p in probes}) != 1:
+            raise GatewayError(400, "reference_shape_mismatch", "FL2VA keyframe images must have identical dimensions", "input_references")
+        # Match actual delivery geometry, including nominal rounded aspect ratios.
+        canvases = RESOLUTION_CANVASES[resolution or "768P"]
+        source_ratio = probes[0].width / probes[0].height
+        requested_ratio = min(canvases, key=lambda name: relative_ratio_error(*canvases[name], source_ratio))
+        if not explicit and relative_ratio_error(*canvases[requested_ratio], source_ratio) > _FL2VA_MAX_RATIO_ERROR:
+            raise GatewayError(400, "reference_aspect_ratio_mismatch", "no preset matches the keyframe aspect ratio within 3%; provide a compatible image or explicit size", "ratio")
+    if explicit:
+        width, height = _parse_size(fields, sr_profile=sr_profile)
+    else:
+        if resolution is None:
+            raise GatewayError(400, "missing_size", "provide size, width and height, or resolution with a concrete/adaptive ratio", "size")
+        if requested_ratio not in RESOLUTION_CANVASES[resolution]:
+            raise GatewayError(400, "invalid_aspect_ratio", "a concrete ratio is required without FL2VA keyframes", "ratio")
+        width, height = RESOLUTION_CANVASES[resolution][requested_ratio]
+    try:
+        plan = plan_h3_output(width, height, requested_aspect_ratio=requested_ratio, sr_profile=sr_profile)
+    except ValueError as exc:
+        raise GatewayError(400, "invalid_aspect_ratio", str(exc), "ratio" if ratio is not None else "aspect_ratio") from exc
+    if resolution is not None and classify_resolution(width, height, super_resolution=plan.sr_profile is not None) != resolution:
+        raise GatewayError(400, "conflicting_resolution", "explicit size does not belong to the requested resolution tier", "resolution")
+    return width, height, plan
 
 
 def _stream_duration(container: Any, stream: Any) -> float:
@@ -828,6 +887,19 @@ class MiniMaxH3VideoAdapter:
             "max_outputs_per_prompt": 1,
             "max_references": 2 if self.workflow == "fl2va" else 12,
         }
+        presets = {}
+        for tier, canvases in RESOLUTION_CANVASES.items():
+            admitted = {}
+            for ratio, (width, height) in canvases.items():
+                try:
+                    plan_h3_output(width, height, sr_profile=self.pool.sr_profile)
+                except ValueError:
+                    continue
+                admitted[ratio] = f"{width}x{height}"
+            if admitted:
+                presets[tier] = admitted
+        capabilities["resolution_presets"] = presets
+        capabilities["supports_adaptive_ratio"] = self.workflow == "fl2va"
         if self.pool.sr_profile:
             capabilities["super_resolution"] = {
                 "profile": self.pool.sr_profile,
@@ -976,19 +1048,11 @@ class MiniMaxH3VideoAdapter:
                 )
             seconds = num_frames / 24.0
 
-        width, height = _parse_size(fields, sr_profile=self.pool.sr_profile)
-        aspect_ratio = _one(fields, "aspect_ratio")
-        try:
-            resolved_shape = plan_h3_output(
-                width,
-                height,
-                requested_aspect_ratio=aspect_ratio,
-                sr_profile=self.pool.sr_profile,
-            )
-        except ValueError as exc:
-            raise GatewayError(
-                400, "invalid_aspect_ratio", str(exc), "aspect_ratio"
-            ) from exc
+        probes = [_probe_upload(upload, self.limits) for upload in uploads]
+        kinds = [probe.kind for probe in probes]
+        width, height, resolved_shape = _resolve_request_shape(
+            fields, probes, workflow=self.workflow, sr_profile=self.pool.sr_profile
+        )
         short_edge = _integer(_one(fields, "short_edge"), "short_edge")
         if short_edge is not None and short_edge != 768:
             raise GatewayError(
@@ -1060,8 +1124,6 @@ class MiniMaxH3VideoAdapter:
                 "output_format",
             )
 
-        probes = [_probe_upload(upload, self.limits) for upload in uploads]
-        kinds = [probe.kind for probe in probes]
         frame_indices_raw: Any = _coalesce(
             _one(fields, "frame_indices"), extra, "frame_indices"
         )
@@ -1087,7 +1149,16 @@ class MiniMaxH3VideoAdapter:
                 f"pool {self.pool.pool_id} requires task={expected_task}",
                 "task",
             )
-        self._validate_references(kinds, probes, frame_indices_raw, width, height)
+        adaptive_dimensions = (
+            self.workflow == "fl2va"
+            and bool(probes)
+            and not any(_one(fields, key) is not None for key in ("size", "width", "height"))
+            and (_one(fields, "ratio") or _one(fields, "aspect_ratio")) in (None, "adaptive")
+        )
+        self._validate_references(
+            kinds, probes, frame_indices_raw, width, height,
+            adaptive_dimensions=adaptive_dimensions,
+        )
 
         direct_flow_shift = _number(_one(fields, "flow_shift"), "flow_shift")
         direct_audio_shift = _number(
@@ -1174,6 +1245,10 @@ class MiniMaxH3VideoAdapter:
             "audio_flow_shift": 3.0,
             "generate_sound": generate_sound,
         }
+        if adaptive_dimensions and classify_resolution(width, height, super_resolution=resolved_shape.sr_profile is not None) is None:
+            # Carry provenance only for non-preset canvases. Existing preset
+            # requests retain their canonical/idempotent representation.
+            normalized["adaptive_resolution"] = "768P"
         if seed is not None:
             normalized.update(seed=seed, seed_generated=False)
         if uploads and self.options.get("reference_transport") == "shared_files_v1":
@@ -1198,6 +1273,8 @@ class MiniMaxH3VideoAdapter:
         frame_indices: Any,
         width: int,
         height: int,
+        *,
+        adaptive_dimensions: bool = False,
     ) -> None:
         if self.workflow == "fl2va":
             if any(kind != "image" for kind in kinds) or len(kinds) > 2:
@@ -1229,7 +1306,7 @@ class MiniMaxH3VideoAdapter:
                         "frame_indices do not match the FL2VA reference count",
                         "frame_indices",
                     )
-            if probes:
+            if probes and not adaptive_dimensions:
                 dimensions = {(probe.width, probe.height) for probe in probes}
                 if len(dimensions) != 1:
                     raise GatewayError(
@@ -1244,7 +1321,7 @@ class MiniMaxH3VideoAdapter:
                     relative_ratio_error(
                         width, height, reference_width / reference_height
                     )
-                    > 0.02
+                    > _FL2VA_MAX_RATIO_ERROR
                 ):
                     raise GatewayError(
                         400,

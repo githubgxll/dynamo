@@ -99,9 +99,12 @@ class SeedVR2Handler(H3VideoHandler):
         return self.video_ready
 
     def validate_sr_request(self, payload):
-        validate_sr_request(payload, profile=self.sr_profile)
+        self.request_plan(payload)
         if not self.sr_ready:
             raise RuntimeError("SR Worker is quarantined or unavailable")
+
+    def request_plan(self, payload):
+        return validate_sr_request(payload, profile=self.sr_profile)
 
     async def _base(self, payload, root, fingerprint, context):
         # Search only this task's attempts, never other tasks. Reuse is immutable
@@ -185,7 +188,7 @@ class SeedVR2Handler(H3VideoHandler):
             async for chunk in self._generate_base(payload, context):
                 yield chunk
             return
-        sr = validate_sr_request(payload, profile=self.sr_profile)
+        sr = self.request_plan(payload)
         writer = BINARY_RESULT_WRITER.get()
         if writer is None:
             raise RuntimeError("SR requires detached binary results")
@@ -204,7 +207,7 @@ class SeedVR2Handler(H3VideoHandler):
         stages = dict(stages)
         mark = time.monotonic()
         info = await media.probe(base)
-        stages["h3_base_probe_s"] = time.monotonic() - mark
+        stages["sr_source_probe_s" if payload.get("operation") == "sr_only" else "h3_base_probe_s"] = time.monotonic() - mark
         if (info["width"], info["height"]) != (sr["base_width"], sr["base_height"]):
             raise RuntimeError("H3 engine changed requested Base dimensions")
         options = None

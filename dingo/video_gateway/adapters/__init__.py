@@ -16,6 +16,10 @@ def create_adapter(pool: PoolConfig) -> VideoBackendAdapter:
         from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter
 
         return MiniMaxH3VideoAdapter(pool)
+    if pool.adapter.name == "seedvr2":
+        from dingo.video_gateway.adapters.seedvr2 import SeedVR2VideoAdapter
+
+        return SeedVR2VideoAdapter(pool)
     raise ValueError(
         f"unknown video adapter {pool.adapter.name!r} for pool {pool.pool_id!r}"
     )

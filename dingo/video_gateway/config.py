@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dingo.common.video_super_resolution import configured_sr_profile
+from dingo.common.video_super_resolution import configured_sr_profile, H3_SR_PROFILE_V3
 from dingo.video_gateway.context_ir.config import ContextIRConfig, parse_context_ir
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -23,13 +23,14 @@ _LOGGER = logging.getLogger(__name__)
 MINIMAX_H3_PROTOCOL_REVISION = "dingo-vllm-omni-h3-detached-v1"
 _ADAPTER_PROTOCOL_REVISIONS = {
     "minimax_h3": MINIMAX_H3_PROTOCOL_REVISION,
+    "seedvr2": "dingo-seedvr2-sr-only-v1",
 }
 _KNOWN_ADAPTERS = set(_ADAPTER_PROTOCOL_REVISIONS)
 _MIB = 1024 * 1024
 _MAX_BODY_HARD_CAP = 512 * _MIB
 _MEDIA_HARD_CAPS = {
     "max_total_file_bytes": 256 * _MIB,
-    "max_single_file_bytes": 50 * _MIB,
+    "max_single_file_bytes": 128 * _MIB,
     "max_text_field_bytes": 1024 * 1024,
     "max_parts": 32,
     "max_encoded_reference_bytes": 384 * _MIB,
@@ -220,6 +221,8 @@ class PoolConfig:
 
     @property
     def sr_profile(self) -> str | None:
+        if self.adapter.name == "seedvr2":
+            return H3_SR_PROFILE_V3
         return configured_sr_profile(self.adapter.name, self.adapter.options)
 
     def request_configuration_revision(self, normalized: Mapping[str, Any]) -> str:
@@ -233,6 +236,27 @@ class PoolConfig:
     @property
     def endpoint_path(self) -> str:
         return self.backend_target.removeprefix("dyn://")
+
+
+@dataclass(frozen=True, slots=True)
+class SeedDefaultsConfig:
+    strategy: str
+    value: int | None = None
+
+
+def _seed_defaults_config(raw: Any) -> SeedDefaultsConfig:
+    data = _mapping(raw, "seed_defaults")
+    _only(data, {"strategy", "value"}, "seed_defaults")
+    strategy = data.get("strategy")
+    if strategy not in ("fixed", "random"):
+        raise ValueError("seed_defaults.strategy must be fixed or random")
+    value = data.get("value")
+    if strategy == "fixed":
+        if type(value) is not int or not 0 <= value <= 2**32 - 1:
+            raise ValueError("seed_defaults.value must be an unsigned 32-bit integer")
+    elif "value" in data:
+        raise ValueError("seed_defaults.value is only allowed for fixed strategy")
+    return SeedDefaultsConfig(strategy=strategy, value=value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +277,7 @@ class GatewayConfig:
     )
 
     context_ir: ContextIRConfig = field(default_factory=ContextIRConfig)
+    seed_defaults: SeedDefaultsConfig | None = None
 
     def pool_for_model(self, model: str) -> PoolConfig | None:
         return self.pools_by_model.get(model)
@@ -802,6 +827,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "pools",
             "performance_cache",
             "context_ir",
+            "seed_defaults",
         },
         "config",
     )
@@ -857,6 +883,10 @@ def parse_config(raw: Any) -> GatewayConfig:
         pools_by_id=by_id,
         performance_cache=_performance_cache_config(data.get("performance_cache")),
         context_ir=parse_context_ir(data.get("context_ir"), by_model),
+        seed_defaults=(
+            _seed_defaults_config(data["seed_defaults"])
+            if "seed_defaults" in data else None
+        ),
     )
 
 

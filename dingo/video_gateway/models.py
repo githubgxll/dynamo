@@ -159,6 +159,18 @@ class VideoTask:
         height = self.normalized_request.get("height")
         if width is not None and height is not None:
             result["size"] = f"{width}x{height}"
+        if width is not None and height is not None:
+            from dingo.video_gateway.adapters.h3_resolution import classify_resolution
+
+            resolution = classify_resolution(
+                width, height, super_resolution="super_resolution" in self.normalized_request
+            )
+            if resolution is None:
+                resolution = self.normalized_request.get("adaptive_resolution")
+            if resolution is not None:
+                result["resolution"] = resolution
+            if self.normalized_request.get("aspect_ratio") is not None:
+                result["ratio"] = self.normalized_request["aspect_ratio"]
         if self.normalized_request.get("seconds") is not None:
             result["seconds"] = self.normalized_request["seconds"]
         if self.normalized_request.get("num_frames") is not None:
@@ -166,12 +178,13 @@ class VideoTask:
         if self.normalized_request.get("fps") is not None:
             result["fps"] = self.normalized_request["fps"]
         if self.normalized_request.get("seed") is not None:
-            # New tasks only persist explicitly supplied seeds. Keep the flag
-            # for older persisted tasks whose Gateway generated a seed.
+            # Preserve legacy tasks without inventing missing provenance.
             result["seed"] = self.normalized_request["seed"]
             result["seed_generated"] = bool(
                 self.normalized_request.get("seed_generated", False)
             )
+            if self.normalized_request.get("seed_source") is not None:
+                result["seed_source"] = self.normalized_request["seed_source"]
         if self.completed_at_ms is not None:
             result["completed_at"] = self.completed_at_ms // 1000
         if self.status == TaskStatus.COMPLETED:

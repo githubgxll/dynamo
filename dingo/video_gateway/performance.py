@@ -94,6 +94,8 @@ def performance_record(task: VideoTask) -> dict[str, Any]:
                 "num_frames",
                 "num_inference_steps",
                 "generate_sound",
+                "seed",
+                "seed_source",
             )
         },
         "input_type": "+".join(kind for kind, count in counts.items() if count)
