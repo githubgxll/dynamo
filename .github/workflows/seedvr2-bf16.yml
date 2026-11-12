@@ -1,0 +1,90 @@
+name: SeedVR2 DiT BF16 Production
+run-name: "seedvr2-bf16 | ${{ github.ref_name }} | ${{ github.sha }} | attempt ${{ github.run_attempt }}"
+
+on:
+  push:
+    branches: [Dingorouter-H3-vllm-omni-jirx]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seedvr2-bf16-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reviewed-image:
+    if: github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[seedvr2-bf16]')
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 120
+    env:
+      EVIDENCE: .h3-experimental-evidence/seedvr2-bf16/ci/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout the frozen BF16 repair source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Log in with the existing Harbor credentials
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: registry.hd-04.alayanew.com:8443
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Verify frozen approval, source and existing publication state
+        id: recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_bf16_ci.py prepare --directory "${EVIDENCE}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Reuse the persistent group builder
+        if: steps.recipe.outputs.build_required == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
+
+      - name: Build the single final production image without publication
+        if: steps.recipe.outputs.build_required == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: container/seedvr2-bf16-production/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.recipe.outputs.image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.recipe.outputs.base_image }}
+            SEEDVR2_BF16_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Validate the exact imageID offline as UID1000
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_bf16_ci.py validate --directory "${EVIDENCE}"
+
+      - name: Publish or reuse the validated production image and verify its digest pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_bf16_ci.py publish --directory "${EVIDENCE}"
+
+      - name: Record actual Harbor state after every outcome
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/seedvr2_bf16_ci.py outcome --directory "${EVIDENCE}"
+
+      - name: Preserve publication and failure evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: seedvr2-bf16-${{ github.sha }}-${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE }}
+          if-no-files-found: warn
+          retention-days: 30

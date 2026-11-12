@@ -1,0 +1,62 @@
+{
+  "schema": "seedvr2-bf16-release-lock/1",
+  "repository": "https://github.com/githubgxll/dynamo.git",
+  "remote_branch": "Dingorouter-H3-vllm-omni-jirx",
+  "harbor_repository": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:26d3767f090fa2fecb2d5a94cf5b326657dd2fef891a13ded41476056f99fe18",
+  "parent_image_id": "sha256:7b0f8c28d87fe914b1c1061c732746de7171862e6c6da3c6223164b1d9d5fd87",
+  "platform": "linux/amd64",
+  "recipe_base_commit": "a24e3fada566810d3389f00277e8e3b9478f7a25",
+  "tag_prefix": "seedvr2-dit-bf16",
+  "marker": "[seedvr2-bf16]",
+  "model_weights_in_image": false,
+  "parent_source_commit": "e5cf166562b4479112832ad628f3affe6a2e0782",
+  "parent_runtime_path": "/opt/h3-sr/runtime.py",
+  "parent_runtime_sha256": "a08e09c2e3da843ecd41e0b83be3d539d8b2aa4bcf62af37be67f39b5e0752e6",
+  "diagnostic_commit": "b8255f7cfd9c46062d7b9c1842c05caa5fc224ad",
+  "diagnostic_lock_sha256": "fe88b334975aba4fcaec955d0b9d843371a44e6bcfa19f5a246f08c302d1b186",
+  "diagnostic_source_sha256": {
+    "vllm_omni.diffusion.models.seedvr2.pipeline_seedvr2": "bc25563a73707078626826cd665cf2eb7612a7212950a57c2bba32a3f9210658",
+    "vllm_omni.diffusion.models.seedvr2.nadit": "03fd3a0c199305ce3004643f8d1510183b06731099a72bc447c2bd589c1a6f01",
+    "vllm_omni.diffusion.models.seedvr2.vae": "06a2ffa2df5aaac83c1fab78086d8429e2ff02e0c676a3115e793c76ce28a1f3",
+    "vllm_omni.diffusion.models.seedvr2.config": "0debf02936e3f84f737747fd50b4e1448d6294c0ffee11a14a0d83450f6228ea",
+    "vllm_omni.diffusion.ipc": "eda648854822bc739e678c165b6193b3c2c26273c73bd00283b829a27f214781"
+  },
+  "versions": {
+    "vllm": "0.32.0",
+    "vllm-omni": "0.32.0",
+    "torch": "2.13.0+cu130",
+    "cache-dit": "1.5.0",
+    "ai-dingo": "1.3.0",
+    "ai-dingo-runtime": "1.3.0",
+    "gpu-memory-service": "0.9.0"
+  },
+  "expected_environment_additions": {
+    "SEEDVR2_BF16_SOURCE_COMMIT": "{source_commit}",
+    "SEEDVR2_BF16_PARENT_IMAGE": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:26d3767f090fa2fecb2d5a94cf5b326657dd2fef891a13ded41476056f99fe18",
+    "SEEDVR2_DIT_BF16": "1",
+    "H3_SR_PRODUCTION_SOURCE_COMMIT": "{source_commit}",
+    "H3_SR_PRODUCTION_PARENT_IMAGE": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:26d3767f090fa2fecb2d5a94cf5b326657dd2fef891a13ded41476056f99fe18"
+  },
+  "required_precision_cpu_checks": [
+    "real_cpu_parameters_bf16_rope_exact_fp32_cache_cleared_vae_and_rng_unchanged",
+    "real_cpu_dit_only_autocast_scope_and_outer_context_restored",
+    "real_cpu_bf16_65280_explicit_finite_fp16_bridge",
+    "real_cpu_reject_65536",
+    "real_cpu_reject_nan",
+    "real_cpu_reject_inf",
+    "real_cpu_reject_negative_inf",
+    "real_cpu_reject_wrong_dtype",
+    "real_cpu_reject_empty",
+    "real_cpu_large_noncontiguous_bounded_numeric_stats",
+    "real_cpu_nonfinite_across_bounded_blocks_rejected",
+    "real_cpu_precision_conversion_and_bridge_do_not_consume_rng"
+  ],
+  "helper_relative_path": "vllm_omni/diffusion/models/seedvr2/bf16_runtime.py",
+  "helper_sha256": "01929816e1c46e8e216d97e89c110cae6424492ee65c869f094187b7a5a29eab",
+  "pipeline_relative_path": "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py",
+  "pipeline_patched_sha256": "a5d3e19e2c80a2b1bf8c74cc918154cbc45db8d0a7ac607158d30031575614c4",
+  "parent_source_manifest_sha256": "ac9323dfd8cc5952f7c9448f6ee0853fc07919caf87f0384ae9585f163565df5",
+  "expected_source_manifest_sha256": "445d67e4f7f1fb1e05f280c760d538fb54d55406266058d23d6f5c378a83a8e5",
+  "production_gpu_status": "NOT_RUN_SP8_W65_REQUIRES_ACCEPTANCE"
+}

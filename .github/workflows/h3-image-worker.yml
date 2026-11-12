@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   reviewed-image:
-    if: github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[h3-image-worker]')
+    if: (github.event_name == 'push' && github.ref_name == 'Dingorouter-H3-vllm-omni-jirx' && contains(github.event.head_commit.message, '[h3-image-worker]')) && !contains(github.event.head_commit.message, '[seedvr2-bf16]')
     runs-on: [self-hosted, linux, x64, dingo]
     timeout-minutes: 120
     env:

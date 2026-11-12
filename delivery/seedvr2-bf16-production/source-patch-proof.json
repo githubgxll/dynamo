@@ -1,0 +1,41 @@
+{
+  "schema": "seedvr2-dit-bf16-source-patch/1",
+  "pipeline_relative_path": "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py",
+  "original_sha256": "bc25563a73707078626826cd665cf2eb7612a7212950a57c2bba32a3f9210658",
+  "patched_sha256": "a5d3e19e2c80a2b1bf8c74cc918154cbc45db8d0a7ac607158d30031575614c4",
+  "original_ast_sha256": "fde95eaf0c785c52c7414a51935783cf0f812d2ae5ef1046c7e12fa88474c84a",
+  "patched_ast_sha256": "0cf04420cd8294c2ce29c4da0034da0fdfc97aaa2fe0105a3797b50fa355d981",
+  "coverage": {
+    "import_helper": 1,
+    "configure_first_in_forward": 1,
+    "scoped_dit_and_checked_velocity": 1
+  },
+  "changes": [
+    {
+      "name": "import_helper",
+      "original_offset": 884,
+      "removed_bytes": 67,
+      "inserted_bytes": 139,
+      "removed_sha256": "fca3e18bc7a2d77e5332901d8175525835e1666da68dd3ef481bdbe8864c2d63",
+      "inserted_sha256": "91e6ea46a0e61105698ae1affdc81de224a788491463ea874a1c7d35b8f2f979"
+    },
+    {
+      "name": "configure_first_in_forward",
+      "original_offset": 31070,
+      "removed_bytes": 99,
+      "inserted_bytes": 137,
+      "removed_sha256": "488eb6b5090c4282b78ec7d271698695399f07a3d975953a4c24b6a1459fe46c",
+      "inserted_sha256": "e59a76c3f98bb2413d7afe296b4d6fbb1d490a03f895c6de6552c6773721dff6"
+    },
+    {
+      "name": "scoped_dit_and_checked_velocity",
+      "original_offset": 34492,
+      "removed_bytes": 119,
+      "inserted_bytes": 199,
+      "removed_sha256": "8042cf3067362c0c1fcbcb0edd67c062fa39b70a20a2c2f76e50b34466cb28d3",
+      "inserted_sha256": "32229f02ea0ea211f135b90b6af3543d4b7abc0c05a7faeaa38b8ba604bdb7c0"
+    }
+  ],
+  "non_anchor_bytes_unchanged": true,
+  "compile_and_ast_verified": true
+}

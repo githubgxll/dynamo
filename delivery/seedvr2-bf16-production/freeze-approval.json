@@ -1,0 +1,54 @@
+{
+  "schema": "seedvr2-bf16-freeze/1",
+  "status": "READY_FOR_BUILD",
+  "recipe_sha256": "7b21e117e49ec2cd970ca68109134a24caf5ccebb5600ea6c353f6bdd13ff766",
+  "review_tree": "7dadc7aa0d86003ab9235d65c9f5843ec576f55a",
+  "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:26d3767f090fa2fecb2d5a94cf5b326657dd2fef891a13ded41476056f99fe18",
+  "parent_image_id": "sha256:7b0f8c28d87fe914b1c1061c732746de7171862e6c6da3c6223164b1d9d5fd87",
+  "reviews": {
+    "root": "PASS"
+  },
+  "root_review": {
+    "schema": "seedvr2-bf16-root-build-review/1",
+    "status": "PASS",
+    "reviewed_at_utc": "2026-11-12T11:42:31.249928+00:00",
+    "recipe_sha256": "7b21e117e49ec2cd970ca68109134a24caf5ccebb5600ea6c353f6bdd13ff766",
+    "review_tree": "7dadc7aa0d86003ab9235d65c9f5843ec576f55a",
+    "parent_image": "registry.hd-04.alayanew.com:8443/openclaw/ai-dingo-vllm@sha256:26d3767f090fa2fecb2d5a94cf5b326657dd2fef891a13ded41476056f99fe18",
+    "parent_image_id": "sha256:7b0f8c28d87fe914b1c1061c732746de7171862e6c6da3c6223164b1d9d5fd87",
+    "scope": "EXACT_LOCAL_SOURCE_AND_RECIPE_READY_FOR_ONE_BUILD_REQUEST",
+    "reviewer_thread": "01a07986-2afb-77d0-bf33-d9cb8a109cdd",
+    "sole_online_submitter_thread": "01a0eb06-bc59-7ee0-b2d8-b2467e740cd1",
+    "sealed_files_verified": 26,
+    "checks": {
+      "production_local_regressions": 93,
+      "deployment_local_regressions": 55,
+      "deployment_skipped": 0,
+      "independent_review_status": "PASS",
+      "source_delta": "pipeline three anchors modified + BF16 helper added; parent installed Dingo/H3/Gateway retained",
+      "docker_labels": "child revision + exact parent base.name confirmed",
+      "workflow_routes": "one marked BF16 build; prior image jobs exclude marker",
+      "consumer_metadata_lock": "LF normalization verified and final source-lock SHA bound"
+    },
+    "evidence": {
+      "candidate": "../CANDIDATE-READY.json",
+      "independent": "../INDEPENDENT-PRODUCTION-REVIEW.json",
+      "independent_sha256": "23ff5a7527a72ab5c3236c594c0eccec01385ee7022c78868054a854ba41d11f",
+      "consumer": "../k8s/PREPUBLICATION-REVIEW.json",
+      "consumer_sha256": "cae13a1f7e83bfdfe038a9acb967bf0ed79b5034b7c9a949cb8f667250d4c367"
+    },
+    "validation_boundaries": {
+      "new_linux_image": "MUST_PASS_BEFORE_PUBLICATION",
+      "new_production_gpu": "NOT_RUN",
+      "diagnostic_gpu": "SP4 W33 three cases passed; not new SP8 W65 acceptance",
+      "upstream_pr": "NOT_SUBMITTED"
+    },
+    "conditions": [
+      "Sole publisher rechecks remote branch, actual workflow routes, active original runs and Harbor before push.",
+      "Any source/recipe change invalidates this exact binding until affected checks and re-freeze.",
+      "One submitted request at a time for this release; wait for confirmed outcome/publication before a repaired retry."
+    ]
+  },
+  "root_review_sha256": "6a9a570aa6ee26eb72ff6e083d06bb26aa8b303628584efd84adeb1086d2eb6f",
+  "root_review_file_sha256": "f755f816176549b74d0543051fa5f54ad132cbf8226b7ffa5f988c5a73462439"
+}
