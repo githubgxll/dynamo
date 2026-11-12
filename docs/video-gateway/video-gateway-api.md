@@ -88,13 +88,15 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `prompt` | 是 | 无 | UTF-8，不超过 32 KiB |
 | `seconds` | 三选一 | 无 | 与 `num_frames`、`extra_params.duration` 三选一；范围 4–15 秒 |
 | `num_frames` | 三选一 | 无 | 范围 96–360；与另外两种时长写法互斥 |
-| `size` | 二选一 | 无 | `WIDTHxHEIGHT`，也可改用 `width` 与 `height` |
-| `width`、`height` | 二选一 | 无 | 必须同时出现，不能与 `size` 同时使用 |
-| `aspect_ratio` | 否 | 根据尺寸推导 | `21:9`、`16:9`、`4:3`、`1:1`、`3:4`、`9:16`，必须与尺寸一致 |
+| `size` | 尺寸写法之一 | 无 | `WIDTHxHEIGHT`，也可改用 `width` 与 `height` 或 `resolution`＋`ratio` |
+| `width`、`height` | 尺寸写法之一 | 无 | 必须同时出现，不能与 `size` 同时使用 |
+| `resolution` | 无显式尺寸时必填 | 无 | `768P`、`1080P`、`2K`；显式尺寸同时提供时校验档位一致 |
+| `ratio` | 无显式尺寸且不能自适应时必填 | FL2VA 有关键帧时可自适应 | 六种命名比例或 `adaptive`；Ref2VA 暂不支持自适应 |
+| `aspect_ratio` | 否 | 根据尺寸推导 | `ratio` 的兼容名称；同时提供必须相同，`adaptive` 适用相同限制 |
 | `fps` | 否 | `24` | MiniMax-H3 当前只接受 24 |
 | `num_inference_steps` | 否 | `50` | 2–200；别名为 `steps`，两者不能同时提供 |
 | `guidance_scale` | 否 | 模型默认值 | 0–20 |
-| `seed` | 否 | 不设置 | 无符号 32 位整数（含 0）；指定时原值下传，未指定时 Gateway 不生成、不下传 |
+| `seed` | 否 | 不设置 | 无符号 32 位整数（含 0）；指定时原值下传；未指定时按 `seed_defaults` 配置处理，未配置则不补、不传 |
 | `negative_prompt` | 否 | 无 | UTF-8，不超过 32 KiB |
 | `generate_sound` | 否 | `true` | 接受 `true/false/1/0` |
 | `output_format` | 否 | `mp4` | 当前只支持 `mp4` |
@@ -107,11 +109,95 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 - 总像素不超过 `768 × 1344`；
 - 宽高比与支持的命名比例之一相差不超过 5%。
 
+### 分辨率档位与比例快捷入口
+
+```bash
+curl -sS -X POST "$GATEWAY_URL/v1/videos" \
+  -F model=minimax-h3 \
+  -F 'prompt=A cinematic sunrise over snow mountains' \
+  -F seconds=4 -F resolution=2K -F ratio=16:9
+```
+
+| ratio | 768P | 1080P | 2K |
+|---|---|---|---|
+| 16:9 | 1344x768 | 1920x1080 | 2560x1440 |
+| 21:9 | 1536x672 | 2208x936 | 2944x1248 |
+| 4:3 | 1024x768 | 1440x1080 | 1920x1440 |
+| 1:1 | 768x768 | 1080x1080 | 1440x1440 |
+| 3:4 | 768x1024 | 1080x1440 | 1440x1920 |
+| 9:16 | 768x1344 | 1080x1920 | 1440x2560 |
+
+768P 六种比例已按2026-11-10官方API纯文生视频的实际输出尺寸对齐；21:9的短边为672，
+不保证所有画幅短边均为768。2K的16:9、21:9已与官方实测一致，其余组合沿用现有白名单。
+这些交付尺寸与超分内部基础画布分开维护，本次对齐不调整超分基础画布或显式尺寸准入。
+1080P 是 Gateway 扩展；高分辨率执行仍使用配置的 SeedVR2 路径。已有基础画布、超分、
+裁剪和缩放策略不变；关闭超分或无兼容 Worker 时不会降档执行。
+`GET /v1/models` 中 `video_capabilities.resolution_presets` 列出当前配置准入的组合，
+不代表 Worker 当前已就绪或任意输入负载均能成功。
+
+参数优先级与一致性规则：
+
+- 有 `size` 或成对宽高时，以显式尺寸确定画布；同时指定的档位、比例必须一致，否则400。
+- 无显式尺寸时必须提供 `resolution`，不新增默认档位；具体比例按表选尺寸，FL2VA自适应按下述规则处理。
+- `ratio` 和 `aspect_ratio` 同时提供时必须相同。纯文生视频和Ref2VA在无显式尺寸时必须指定具体比例。
+- FL2VA 有关键帧且未显式指定尺寸时，可以省略比例或指定 `ratio=adaptive`：
+  768P 按首帧实际比例计算画布，短边初值768、取整前像素预算768×1344，最后两轴各自四舍五入到32的倍数。
+  支持六种命名比例之外的画布，例如3:2图片得到1152×768。只有尾帧时按尾帧计算。
+  首尾帧可以具有不同尺寸和比例，画布由首帧确定；Worker沿用现有图片处理，不新增裁剪。
+  1080P和2K仍选择当前档位允许的预设，要求输出比例与首帧相差不超过3%；不匹配时拒绝。
+- FL2VA 显式比例与参考图片不匹配时返回错误，不静默忽略。Ref2VA 暂不支持 `adaptive`。
+  显式尺寸、具体比例入口保留首尾同尺寸要求和3%的图片比例校验；768P自动计算画布不受预设比例的3%限制。
+  官方768P的21:9画布为1536x672，严格21:9图片与它的约2.04%误差可以通过。
+  当前H3会直接缩放关键帧到目标画布，允许范围内仍可能有轻微形变；这是Gateway工程阈值，
+  不表示已验证官方图生视频的内部处理方式。
+- 显式基础尺寸只有映射表中的精确尺寸归类为768P；其他合法自定义基础尺寸仍可单独使用，
+  但不能与无法匹配的 `resolution` 混用。1800x1080、2400x1440 等现有兼容尺寸保留显式入口。
+- `short_edge` 保持旧校验，仅允许768，不参与查表，也不是每个档位的实际短边。
+
+新旧写法规范化为相同的宽高、比例和执行计划；例如 `resolution=2K,ratio=16:9` 与
+`size=2560x1440` 在其他参数及参考文件相同时具有相同幂等摘要。自适应结果在创建任务时固定，
+派发、重试和恢复不重新选择尺寸。任务JSON返回最终 `size`、`ratio`，能够明确归类时返回
+`resolution`；未知档位不虚构值。下载仍返回视频文件。
+768P自适应得到的非预设画布也返回 `resolution=768P`，例如1152×768返回 `ratio=3:2`。
+本快捷入口适用于视频生成接口，不改变 `/v1/context-ir` 编译接口的基础画布参数。
+
+### 上传已有视频单独超分（SeedVR2）
+
+这一路径仍使用 `POST /v1/videos`，但 `model` 必须指向配置了 `seedvr2` adapter、
+`sr_only` workflow 和 detached 执行模式的独立 Worker 池。不会执行 H3 基础生成。
+先通过 `GET /v1/models` 确认目标模型的 `video_capabilities.workflow` 为 `sr_only`。
+以下 `seedvr2-3b-sr` 仅为示例名称，以实际部署公开的模型名为准。
+
+```bash
+curl -sS -X POST "$GATEWAY_URL/v1/videos" \
+  -H 'Idempotency-Key: sr-example-001' \
+  -F model=seedvr2-3b-sr \
+  -F operation=sr_only \
+  -F resolution=1080P \
+  -F 'input_references=@source.mp4;type=video/mp4'
+```
+
+| 字段 | 要求 |
+|---|---|
+| `model` | 独立超分池的公开模型名 |
+| `operation` | 必须是 `sr_only` |
+| `resolution` | `1080P` 或 `2K`，输出比例按源视频匹配支持的画幅 |
+| `input_references` | 恰好一个源MP4，也接受单数名称 `input_reference` |
+
+不接收 `prompt`、`seed`、`seconds`、`size`、`ratio` 或 `num_inference_steps` 等生成参数。
+源视频要求MP4、H.264/yuv420p、24 FPS、1–362帧、最多128 MiB；最多一条AAC音轨。
+源宽高各在256–2048之间，总像素不超过1,100,000，宽高比在0.4–2.5之间，且能匹配支持的超分画幅。
+请求还受Gateway配置的单文件、总请求体和存储配额限制；使用128 MiB源文件时需同步配置足够的上传限制。
+
+任务查询、结果下载、取消沿用本文通用接口。输出保留源帧数、帧率及音轨有无，
+不生成新对白；最终画幅以任务响应的 `size` 为准。Gateway和独立Worker需要配置一致的
+`storage_id`并挂载同一任务制品存储，源视频按任务目录及哈希核验后交给Worker。
+
 ### 超分尺寸契约
 
 MiniMax-H3 的超分默认关闭。启用后，`size` 或 `width`＋`height` 表示最终交付尺寸；
-没有新增 `resolution` 或 `output_short_edge` 请求字段。只支持所选策略的精确尺寸，
-不会根据比例自动推导尺寸，也不会把任意高分辨率直接交给基础模型生成。
+`resolution`＋`ratio` 是查表推导最终尺寸的快捷入口；仍只支持所选策略准入的尺寸，
+不会把任意高分辨率直接交给基础模型生成。没有 `output_short_edge` 请求字段。
 
 ```yaml
 adapter:
@@ -149,7 +235,7 @@ v1保留1890x1080、2520x1440及对应竖屏的原比例缩放策略；v2保留1
 `DINGO_VIDEO_BINARY_RESULTS=1`，执行容量为1；包含四卡适配的 v2／v3 实现支持4或8张共享GPU，
 旧镜像仍需8卡。卡数和版本约束见[超分说明](super-resolution.md)。H3和独立的loopback SeedVR2子进程
 共用整个任务的执行许可。v3的1080P／2K分别使用33／65帧窗口，4帧重叠、单步Euler、
-Lab颜色修正；H3未指定seed时继续不传seed，v2／v3的SR服务使用固定seed 7723。
+Lab颜色修正；H3的seed按请求和Gateway默认策略解析，未配置默认策略且请求未指定时不传seed，v2／v3的SR服务使用固定seed 7723。
 
 基础视频检查点绑定完整请求及引擎身份，只能在同一任务后续attempt中验证复用；
 不跨任务复用，也不对未确认结束的SR提交盲目重发。内部失败先暂停接单，由视频恢复
@@ -311,13 +397,45 @@ Gateway 始终检查上传参考文件的签名、声明的 MIME 类型以及媒
   "num_frames": 120,
   "fps": 24,
   "seed": 1101,
-  "seed_generated": false
+  "seed_generated": false,
+  "seed_source": "request"
 }
 ```
 
-新请求未指定 `seed` 时，任务响应不包含 `seed` 和 `seed_generated`；指定时返回原值及
-`seed_generated: false`。旧任务已保存的 seed 和标记仍保留。未指定时随机行为由 Worker/引擎决定，
-Gateway 不保证跨重试的结果可复现；需要复现时请显式指定 seed。
+`seed_source` 表示来源：`request`（请求指定）、`default_fixed`（配置固定值）、
+`default_random`（Gateway 随机生成）。仅随机生成时 `seed_generated: true`。
+旧任务保留已有 seed 和标记，不追溯补充来源。
+
+Gateway 顶层可配置以下两种默认策略之一，适用于 H3 FL2VA 和 Ref2VA：
+
+```yaml
+seed_defaults:
+  strategy: fixed
+  value: 42
+```
+
+或：
+
+```yaml
+seed_defaults:
+  strategy: random
+```
+
+请求显式 seed 始终优先，包括 `0`；非法请求 seed 返回参数错误，不回退到默认值。
+`fixed` 必须提供无符号 32 位整数 `value`（0～4294967295），不接受布尔值、小数或字符串；
+`random` 不允许提供 `value`。空配置、未知策略或字段会导致启动校验失败。
+随机策略使用 `secrets.randbits(32)`，不保证不同任务 seed 唯一。
+
+**不配置 `seed_defaults` 时保持原行为**：未指定 seed 的请求不补、不传，任务响应也不包含
+seed 及来源字段。此时随机行为由 Worker/引擎决定，Gateway 不保证跨重试的结果可复现。
+配置策略后，最终 seed 在新任务创建时保存到 request.json 和任务元数据，并在派发、重试、
+恢复时复用；配置变更只影响新任务。请求摘要不包含默认补入的 seed 或来源；相同幂等键、
+相同原始请求即使经过并发提交或策略变更，仍返回原任务及其 seed。显式传 seed 与省略 seed
+是不同请求。固定 seed 不保证跨硬件、版本的输出逐像素一致。
+
+任务详情、诊断、下载响应头 `X-Video-Seed` 可查看最终 seed；性能记录的 `generation`
+包含 seed 和 seed_source。它们不加入 Prometheus 标签。此配置不改变 ContextIR 的
+`context_ir_seed`、LLM Worker 或 SeedVR2 内部独立的随机参数。
 
 公开状态及含义：
 
@@ -505,7 +623,7 @@ curl -sS "$GATEWAY_URL/v1/videos/$TASK_ID/diagnostics" | jq
 `video/mp4`，常用响应头包括：
 
 - `X-Video-Id`：任务 ID；同步请求也会创建可查询的持久化任务。
-- `X-Video-Seed`：任务保存的 seed；新请求仅在显式指定 seed 时返回，未指定时不返回此头。
+- `X-Video-Seed`：任务保存的最终 seed；请求显式指定或 Gateway 默认策略补入时返回，无 seed 时不返回。
 - `X-Video-Frames`、`X-Video-FPS`、`X-Video-Duration-Seconds`：实际输出信息。
 - `ETag`：基于结果 SHA-256 的实体标签。
 
@@ -630,6 +748,8 @@ Video Gateway 当前不实现最终用户认证和授权，应由上层应用、
 
 
 ## ContextIR 后端并发配置
+
+完整的编译任务接口、字段、调用示例和对接机制见[ContextIR改造与Gateway接口](context-ir/03-customizations-and-gateway-api.md)。
 
 每个 ContextIR 后端的 `max_inflight` 默认值为 `2`，显式配置可以覆盖默认值。
 多个模型绑定到同一后端时共享容量；使用同一 etcd 任务域的多个 Gateway 也共享

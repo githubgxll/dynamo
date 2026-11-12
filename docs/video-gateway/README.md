@@ -85,6 +85,11 @@ queued -> in_progress -> completed
 
 | 文档 | 内容 | 面向对象 |
 |---|---|---|
+| [简明机制](overview.zh-CN.md) | 服务组件、任务状态、执行与预取槽位、单次请求流程 | 希望快速理解整体机制的读者 |
+| [详细设计与机制](detailed-design.zh-CN.md) | Gateway 与 Omni Worker 调用链、多模型与高可用、执行恢复及独立部署图 | 架构、开发和运维人员 |
+| [官方ContextIR接口](context-ir/01-minimax-official-context-ir.md) | MiniMax-H3官方提示词编译接口、异步查询及调用示例 | 接口调用方 |
+| [open-h3-ir介绍](context-ir/02-open-h3-ir.md) | 开源编译器架构、素材分析、校验与纠错 | 架构和开发人员 |
+| [ContextIR改造与Gateway对接](context-ir/03-customizations-and-gateway-api.md) | 已实施修复、异步编译接口、素材管理和配置 | 开发、联调和运维人员 |
 | [接口使用说明](video-gateway-api.md) | 模型查询、任务提交、状态、下载、取消、FL2VA/Ref2VA 输入和错误码 | 接口调用方、联调人员 |
 | [超分画幅契约](super-resolution.md) | 1080P／2K白名单、基础与SR内部尺寸、窗口、裁剪和缩放 | 接口调用方、模型和部署维护人员 |
 | [协议与兼容性](video-gateway-protocol-compatibility.md) | 与 OpenAI Videos API、vLLM-Omni Videos API 的相同点和差异 | 接口调用方、适配开发人员 |

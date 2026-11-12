@@ -89,7 +89,10 @@ libx264、medium、CRF18；外层 Worker 按 v3 要求 stream copy 回封基础�
 
 ## 参数与能力边界
 
-当前入口仅支持精确 `size` 或成对宽高；未实现 `resolution=2K` 加比例的快捷推导。
+768P快捷入口使用官方实测交付尺寸，不能用下表超分基础画布反推768P交付尺寸；
+超分基础画布及处理流程保持不变。
+入口支持精确 `size`、成对宽高，以及 `resolution`＋`ratio` 查表推导。显式尺寸优先确定画布，
+其他显式参数必须一致；具体映射和FL2VA自适应规则见[接口说明](video-gateway-api.md)。
 `short_edge` 只是兼容校验字段，仅允许 768，不能单独推导尺寸。
 
 Gateway 输出策略、Worker 的 SR 配置、Worker 实际就绪能力必须一致。启用方式为

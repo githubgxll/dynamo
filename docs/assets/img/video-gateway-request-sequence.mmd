@@ -1,0 +1,44 @@
+%% SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+%% SPDX-License-Identifier: Apache-2.0
+sequenceDiagram
+    participant C as 客户端
+    participant G as Video Gateway
+    participant E as etcd
+    participant F as 共享制品存储
+    participant W as Omni Worker
+    participant M as AsyncOmni / GPU
+    C->>G: POST /v1/videos + model + 素材 + 幂等键
+    G->>F: 保存上传并校验，提交任务目录
+    G->>E: 事务创建 task、队列、幂等映射
+    G-->>C: task_id / queued
+    G->>E: CAS 预留 task + Worker slot + token
+    G->>F: 读取 request.json 与 input-manifest.json
+    F-->>G: 生成参数、素材路径与校验信息
+    G->>W: submit(identity, 参数 + 素材描述, deadline)
+    W->>F: 读取 _artifact.json，校验任务目录身份
+    F-->>W: 任务目录 manifest
+    W->>F: execution.lock + accepted 状态
+    W-->>G: accepted
+    G->>W: wait(identity)
+    par 准备共享输入
+        W->>F: 读取 input-manifest.json 与 inputs/ 素材
+        F-->>W: 输入清单、图片 / 视频 / 音频文件
+        W->>W: 校验大小与 SHA-256，暂存到本地请求目录
+    and 等待执行许可
+        W->>W: 若执行容量已满，在预取位置等待
+    end
+    W->>W: 输入准备与许可就绪后，解码并构造模型输入
+    W->>M: generate(prompt, sampling_params_list)
+    M-->>W: 视频帧 / 可选音频
+    W->>F: 编码 MP4、同步落盘、发布 completed 描述符
+    W-->>G: terminal status
+    G->>E: 原子 handoff → finalizing，释放 slot
+    Note over G,W: 下一任务可执行；当前任务仍在结果后处理
+    G->>F: 按结果描述符读取本次 attempt 的 MP4
+    F-->>G: Worker 生成的视频文件
+    G->>F: 校验、必要的媒体处理、发布最终 MP4
+    G->>E: CAS → completed
+    C->>G: 查询状态 / GET content
+    G->>F: 读取最终文件
+    F-->>G: 最终 MP4
+    G-->>C: video/mp4

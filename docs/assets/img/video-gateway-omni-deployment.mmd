@@ -1,0 +1,40 @@
+%% SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+%% SPDX-License-Identifier: Apache-2.0
+flowchart TB
+    C[客户端 / 业务应用] <-->|提交、查询、取消、下载| LB[Load Balancer / Ingress]
+    subgraph GW[Video Gateway 多副本主动服务]
+        G1[Gateway A / 节点 A]
+        G2[Gateway B / 节点 B]
+        GN[Gateway N / 可扩容]
+        R[每副本内部：API / Model Router / Dispatcher / Finalizer / Runtime]
+    end
+    LB --> G1 & G2 & GN
+    G1 & G2 & GN --- R
+    R -->|model → pool → endpoint；指定实例 RPC| A & B & S
+    subgraph A[Pool A / H3 FL2VA]
+        A1[Omni Worker 1 / AsyncOmni / GPU]
+        A2[Omni Worker 2 / AsyncOmni / GPU]
+    end
+    subgraph B[Pool B / H3 Ref2VA]
+        B1[Omni Worker 1 / AsyncOmni / GPU]
+        B2[Omni Worker 2 / AsyncOmni / GPU]
+    end
+    subgraph S[Pool C / 可选独立超分池]
+        S1[复合 Omni Worker / H3 / GPU] --> S2[受管 SeedVR2 服务 / GPU]
+    end
+    E[(etcd 集群 / HA 示例 3 成员)]
+    F[(共享制品文件系统 / 同一根目录)]
+    O[Prometheus → Grafana]
+    R <-.->|任务、幂等、队列、owner、slot、重试记账| E
+    A1 & A2 & B1 & B2 & S1 -.->|Runtime 注册发现| E
+    R <-->|输入、结果、恢复与清理| F
+    A1 & A2 & B1 & B2 & S1 <-->|素材、执行状态、MP4| F
+    R & A1 & A2 & B1 & B2 & S1 -.->|指标| O
+    N[新增模型家族需实现 Gateway adapter；每个池独立扩容]
+    R --- N
+    classDef gateway fill:#edf3ff,stroke:#3266c4,color:#20304b
+    classDef worker fill:#eef8f5,stroke:#138775,color:#20304b
+    classDef storage fill:#f4effb,stroke:#8a63b8,color:#20304b
+    class G1,G2,GN,R gateway
+    class A1,A2,B1,B2,S1,S2 worker
+    class E,F storage

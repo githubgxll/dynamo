@@ -276,8 +276,20 @@ navigation:
                 path: observability/prometheus-grafana.md
               - page: Metrics
                 path: observability/metrics.md
+              - page: Video Gateway and Omni Worker Overview
+                path: video-gateway/overview.zh-CN.md
+              - page: Video Gateway and Omni Worker Design
+                path: video-gateway/detailed-design.zh-CN.md
               - page: MiniMax H3 Super Resolution
                 path: video-gateway/super-resolution.md
+              - section: ContextIR
+                contents:
+                  - page: MiniMax H3 Official ContextIR API
+                    path: video-gateway/context-ir/01-minimax-official-context-ir.md
+                  - page: OpenH3-IR Overview
+                    path: video-gateway/context-ir/02-open-h3-ir.md
+                  - page: ContextIR Customizations and Gateway API
+                    path: video-gateway/context-ir/03-customizations-and-gateway-api.md
               - page: Video Gateway Observability
                 path: video-gateway/observability.md
               - page: Video Performance Collection

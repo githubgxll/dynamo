@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="2836" viewBox="0 0 1840 2836" role="img" aria-labelledby="title desc">
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0 -->
+<title id="title">视频生成请求执行时序</title><desc id="desc">客户端提交，Gateway 排队与下发，Worker 从共享存储读取素材并等待执行许可，模型生成和结果落盘，Gateway 交接发布与客户端下载。</desc>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif}</style>
+<defs><marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#3266c4"/></marker><marker id="green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#148476"/></marker></defs>
+<rect x="0" y="0" width="1840" height="2836" rx="0" fill="#fff" stroke="none"/>
+<text x="50" y="53" text-anchor="start" font-size="32" fill="#24364d" font-weight="700">视频生成请求执行时序</text>
+<text x="50" y="89" text-anchor="start" font-size="19" fill="#556982">共享文件输入 · detached 执行 · 1 执行 + 1 预取 · 二进制结果 · 槽位提前释放</text>
+<text x="50" y="119" text-anchor="start" font-size="16" fill="#556982">实线：请求 / 文件操作     虚线：返回     绿色：共享文件交互     蓝色：调度与模型调用</text>
+<path d="M140 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="18" y="151" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="140" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">客户端</text>
+<rect x="18" y="2686" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="140" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">客户端</text>
+<path d="M440 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="318" y="151" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="440" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">Video Gateway</text>
+<rect x="318" y="2686" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="440" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">Video Gateway</text>
+<path d="M740 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="618" y="151" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="740" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">etcd</text>
+<rect x="618" y="2686" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="740" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">etcd</text>
+<path d="M1040 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="918" y="151" width="244" height="45" rx="8" fill="#eaf6f2" stroke="#bdcce0"/>
+<text x="1040" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">共享制品存储</text>
+<rect x="918" y="2686" width="244" height="45" rx="8" fill="#eaf6f2" stroke="#bdcce0"/>
+<text x="1040" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">共享制品存储</text>
+<path d="M1340 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="1218" y="151" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="1340" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">Omni Worker</text>
+<rect x="1218" y="2686" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="1340" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">Omni Worker</text>
+<path d="M1640 196 V2686" stroke="#c3cdd9" stroke-width="1.5" stroke-dasharray="5 6"/>
+<rect x="1518" y="151" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="1640" y="180" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">AsyncOmni / GPU</text>
+<rect x="1518" y="2686" width="244" height="45" rx="8" fill="#eaf0fb" stroke="#bdcce0"/>
+<text x="1640" y="2715" text-anchor="middle" font-size="18" fill="#24364d" font-weight="700">AsyncOmni / GPU</text>
+<rect x="45" y="225" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="250" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">01  提交与排队</text>
+<rect x="160.34375" y="268" width="259.3125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="290.0" y="285" text-anchor="middle" font-size="17" fill="#24364d">POST /v1/videos：model、素材</text>
+<rect x="251.0" y="291" width="78.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="290.0" y="308" text-anchor="middle" font-size="17" fill="#24364d">、幂等键</text>
+<path d="M140 321 H440" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="306" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="322" text-anchor="middle" font-size="13" fill="#64768a">1</text>
+<rect x="616.0" y="346" width="248.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="363" text-anchor="middle" font-size="17" fill="#24364d">保存上传并校验，提交任务目录</text>
+<path d="M440 376 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="361" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="377" text-anchor="middle" font-size="13" fill="#64768a">2</text>
+<rect x="464.6328125" y="401" width="250.734375" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="418" text-anchor="middle" font-size="17" fill="#24364d">事务创建 task、队列、幂等映射</text>
+<path d="M440 431 H740" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="416" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="432" text-anchor="middle" font-size="13" fill="#64768a">3</text>
+<rect x="218.7578125" y="456" width="142.484375" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="290.0" y="473" text-anchor="middle" font-size="17" fill="#24364d">task_id / queued</text>
+<path d="M440 486 H140" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)" stroke-dasharray="7 5"/>
+<rect x="48" y="471" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="487" text-anchor="middle" font-size="13" fill="#64768a">4</text>
+<rect x="45" y="528" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="553" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">02  预留槽位与下发</text>
+<rect x="470.0859375" y="571" width="239.828125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="588" text-anchor="middle" font-size="17" fill="#24364d">CAS 预留 task + Worker slot + </text>
+<rect x="562.3515625" y="594" width="55.296875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="611" text-anchor="middle" font-size="17" fill="#24364d">token</text>
+<path d="M440 624 H740" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="609" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="625" text-anchor="middle" font-size="13" fill="#64768a">5</text>
+<rect x="576.6796875" y="649" width="326.640625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="666" text-anchor="middle" font-size="17" fill="#24364d">读取 request.json 与 input-manifest.json</text>
+<path d="M440 679 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="664" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="680" text-anchor="middle" font-size="13" fill="#64768a">6</text>
+<rect x="616.0" y="704" width="248.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="721" text-anchor="middle" font-size="17" fill="#24364d">生成参数、素材路径与校验信息</text>
+<path d="M1040 734 H440" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)" stroke-dasharray="7 5"/>
+<rect x="48" y="719" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="735" text-anchor="middle" font-size="13" fill="#64768a">7</text>
+<rect x="718.4765625" y="759" width="343.046875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="890.0" y="776" text-anchor="middle" font-size="17" fill="#24364d">submit(identity, 参数 + 素材描述, deadline)</text>
+<path d="M440 789 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="774" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="790" text-anchor="middle" font-size="13" fill="#64768a">8</text>
+<rect x="1054.0859375" y="814" width="271.828125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="831" text-anchor="middle" font-size="17" fill="#24364d">读取 _artifact.json，校验任务目录</text>
+<rect x="1168.0" y="837" width="44.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="854" text-anchor="middle" font-size="17" fill="#24364d">身份</text>
+<path d="M1340 867 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="852" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="868" text-anchor="middle" font-size="13" fill="#64768a">9</text>
+<rect x="1114.5390625" y="892" width="150.921875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="909" text-anchor="middle" font-size="17" fill="#24364d">任务目录 manifest</text>
+<path d="M1040 922 H1340" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)" stroke-dasharray="7 5"/>
+<rect x="48" y="907" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="923" text-anchor="middle" font-size="13" fill="#64768a">10</text>
+<rect x="1058.1953125" y="947" width="263.609375" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="964" text-anchor="middle" font-size="17" fill="#24364d">写 execution.lock 与 accepted 状</text>
+<rect x="1176.5" y="970" width="27.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="987" text-anchor="middle" font-size="17" fill="#24364d">态</text>
+<path d="M1340 1000 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="985" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1001" text-anchor="middle" font-size="13" fill="#64768a">11</text>
+<rect x="849.0625" y="1025" width="81.875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="890.0" y="1042" text-anchor="middle" font-size="17" fill="#24364d">accepted</text>
+<path d="M1340 1055 H440" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)" stroke-dasharray="7 5"/>
+<rect x="48" y="1040" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1056" text-anchor="middle" font-size="13" fill="#64768a">12</text>
+<rect x="831.515625" y="1080" width="116.96875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="890.0" y="1097" text-anchor="middle" font-size="17" fill="#24364d">wait(identity)</text>
+<path d="M440 1110 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="1095" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1111" text-anchor="middle" font-size="13" fill="#64768a">13</text>
+<rect x="45" y="1152" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="1177" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">03  共享输入准备与预取等待</text>
+<rect x="905" y="1194" width="885" height="363" rx="8" fill="#f0faf7" stroke="#93bdb6"/>
+<text x="920" y="1220" text-anchor="start" font-size="17" fill="#148476" font-weight="700">par  并行：准备共享输入</text>
+<rect x="1076.046875" y="1238" width="227.90625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="1255" text-anchor="middle" font-size="17" fill="#24364d">读取 input-manifest.json 与 </text>
+<rect x="1137.7265625" y="1261" width="104.546875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="1278" text-anchor="middle" font-size="17" fill="#24364d">inputs/ 素材</text>
+<path d="M1340 1291 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="1276" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1292" text-anchor="middle" font-size="13" fill="#64768a">14</text>
+<rect x="1060.21875" y="1316" width="259.5625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="1333" text-anchor="middle" font-size="17" fill="#24364d">输入清单、图片 / 视频 / 音频文件</text>
+<path d="M1040 1346 H1340" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)" stroke-dasharray="7 5"/>
+<rect x="48" y="1331" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1347" text-anchor="middle" font-size="13" fill="#64768a">15</text>
+<rect x="1367" y="1371" width="335.875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1370" y="1388" text-anchor="start" font-size="17" fill="#24364d">校验大小与 SHA-256，暂存到本地请求目录</text>
+<path d="M1340 1401 H1363 V1420 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="1386" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1402" text-anchor="middle" font-size="13" fill="#64768a">16</text>
+<path d="M905 1442 H1790" stroke="#93bdb6" stroke-dasharray="6 4"/>
+<text x="920" y="1468" text-anchor="start" font-size="17" fill="#148476" font-weight="700">and  并行：等待执行许可</text>
+<rect x="1367" y="1487" width="265.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1370" y="1504" text-anchor="start" font-size="17" fill="#24364d">若执行容量已满，在预取位置等待</text>
+<path d="M1340 1517 H1363 V1536 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="1502" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1518" text-anchor="middle" font-size="13" fill="#64768a">17</text>
+<rect x="45" y="1581" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="1606" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">04  模型执行与结果落盘</text>
+<rect x="1367" y="1624" width="350.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1370" y="1641" text-anchor="start" font-size="17" fill="#24364d">输入准备与许可就绪后，解码并构造模型输入</text>
+<path d="M1340 1654 H1363 V1673 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="1639" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1655" text-anchor="middle" font-size="13" fill="#64768a">18</text>
+<rect x="1413.1875" y="1691" width="153.625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1490.0" y="1708" text-anchor="middle" font-size="17" fill="#24364d">generate(prompt, </text>
+<rect x="1394.609375" y="1714" width="190.78125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1490.0" y="1731" text-anchor="middle" font-size="17" fill="#24364d">sampling_params_list)</text>
+<path d="M1340 1744 H1640" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="1729" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1745" text-anchor="middle" font-size="13" fill="#64768a">19</text>
+<rect x="1418.359375" y="1769" width="143.28125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1490.0" y="1786" text-anchor="middle" font-size="17" fill="#24364d">视频帧 / 可选音频</text>
+<path d="M1640 1799 H1340" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)" stroke-dasharray="7 5"/>
+<rect x="48" y="1784" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1800" text-anchor="middle" font-size="13" fill="#64768a">20</text>
+<rect x="1079.1875" y="1824" width="221.625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="1841" text-anchor="middle" font-size="17" fill="#24364d">编码 MP4、同步落盘，发布 </text>
+<rect x="1115.078125" y="1847" width="149.84375" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="1190.0" y="1864" text-anchor="middle" font-size="17" fill="#24364d">completed 描述符</text>
+<path d="M1340 1877 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="1862" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1878" text-anchor="middle" font-size="13" fill="#64768a">21</text>
+<rect x="825.625" y="1902" width="128.75" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="890.0" y="1919" text-anchor="middle" font-size="17" fill="#24364d">terminal status</text>
+<path d="M1340 1932 H440" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)" stroke-dasharray="7 5"/>
+<rect x="48" y="1917" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="1933" text-anchor="middle" font-size="13" fill="#64768a">22</text>
+<rect x="45" y="1974" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="1999" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">05  结果交接与发布</text>
+<rect x="459.1640625" y="2017" width="261.671875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="2034" text-anchor="middle" font-size="17" fill="#24364d">原子 handoff → finalizing，释放 </text>
+<rect x="570.421875" y="2040" width="39.15625" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="2057" text-anchor="middle" font-size="17" fill="#24364d">slot</text>
+<path d="M440 2070 H740" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="2055" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2071" text-anchor="middle" font-size="13" fill="#64768a">23</text>
+<rect x="390" y="2104" width="1030" height="44" rx="8" fill="#fff4d9" stroke="#e7cc87"/>
+<text x="905" y="2132" text-anchor="middle" font-size="18" fill="#805d16">下一任务可执行；当前任务仍在 Gateway 结果后处理</text>
+<rect x="587.1328125" y="2164" width="305.734375" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="2181" text-anchor="middle" font-size="17" fill="#24364d">按结果描述符读取本次 attempt 的 MP4</text>
+<path d="M440 2194 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="2179" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2195" text-anchor="middle" font-size="13" fill="#64768a">24</text>
+<rect x="645.15625" y="2219" width="189.6875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="2236" text-anchor="middle" font-size="17" fill="#24364d">Worker 生成的视频文件</text>
+<path d="M1040 2249 H440" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)" stroke-dasharray="7 5"/>
+<rect x="48" y="2234" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2250" text-anchor="middle" font-size="13" fill="#64768a">25</text>
+<rect x="588.59375" y="2274" width="302.8125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="2291" text-anchor="middle" font-size="17" fill="#24364d">校验、必要的媒体处理、发布最终 MP4</text>
+<path d="M440 2304 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="2289" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2305" text-anchor="middle" font-size="13" fill="#64768a">26</text>
+<rect x="514.515625" y="2329" width="150.96875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="590.0" y="2346" text-anchor="middle" font-size="17" fill="#24364d">CAS → completed</text>
+<path d="M440 2359 H740" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="2344" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2360" text-anchor="middle" font-size="13" fill="#64768a">27</text>
+<rect x="45" y="2401" width="1750" height="36" rx="5" fill="#edf2f8" stroke="none"/>
+<text x="62" y="2426" text-anchor="start" font-size="19" fill="#24364d" font-weight="700">06  查询与下载</text>
+<rect x="195.34375" y="2444" width="189.3125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="290.0" y="2461" text-anchor="middle" font-size="17" fill="#24364d">查询状态 / GET content</text>
+<path d="M140 2474 H440" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="48" y="2459" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2475" text-anchor="middle" font-size="13" fill="#64768a">28</text>
+<rect x="684.0" y="2499" width="112.0" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="2516" text-anchor="middle" font-size="17" fill="#24364d">读取最终文件</text>
+<path d="M440 2529 H1040" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)"/>
+<rect x="48" y="2514" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2530" text-anchor="middle" font-size="13" fill="#64768a">29</text>
+<rect x="699.09375" y="2554" width="81.8125" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="740.0" y="2571" text-anchor="middle" font-size="17" fill="#24364d">最终 MP4</text>
+<path d="M1040 2584 H440" fill="none" stroke="#148476" stroke-width="2" marker-end="url(#green)" stroke-dasharray="7 5"/>
+<rect x="48" y="2569" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2585" text-anchor="middle" font-size="13" fill="#64768a">30</text>
+<rect x="241.9140625" y="2609" width="96.171875" height="24" rx="3" fill="#ffffff" stroke="none"/>
+<text x="290.0" y="2626" text-anchor="middle" font-size="17" fill="#24364d">video/mp4</text>
+<path d="M440 2639 H140" fill="none" stroke="#3266c4" stroke-width="2" marker-end="url(#blue)" stroke-dasharray="7 5"/>
+<rect x="48" y="2624" width="30" height="23" rx="5" fill="#eaf0f7" stroke="none"/>
+<text x="63" y="2640" text-anchor="middle" font-size="13" fill="#64768a">31</text>
+<text x="50" y="2777" text-anchor="start" font-size="17" fill="#556982">输入准备只做原始文件读取、校验与本地暂存；许可就绪后再解码并调用模型。</text>
+<text x="50" y="2805" text-anchor="start" font-size="17" fill="#556982">inline 输入路径由 Gateway 将素材编码进 RPC payload；本图展示 shared_files_v1 路径。</text>
+</svg>

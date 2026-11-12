@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1220" viewBox="0 0 1680 1220" role="img" aria-labelledby="title desc">
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0 -->
+<title id="title">Video Gateway 与 Omni Worker 多模型高可用部署架构</title>
+<desc id="desc">入口负载均衡连接多个主动服务的 Gateway 副本，按 model 路由至独立的 H3 FL2VA、H3 Ref2VA 和可选 H3 加 SeedVR2 超分 Worker 池。Gateway 和 Worker 共享 etcd 协调与制品存储，并连接监控系统。新模型家族需要适配器扩展。</desc>
+<defs><marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#3266c4"/></marker><marker id="green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#138775"/></marker><marker id="purple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8Z" fill="#8a63b8"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei","DejaVu Sans",sans-serif;fill:#20304b}.title{font-size:32px;font-weight:700}.section{font-size:22px;font-weight:700}.label{font-size:19px;font-weight:600}.body{font-size:17px}.small{font-size:15px;fill:#53647e}</style>
+<rect width="1680" height="1220" fill="#f4f7fc"/>
+<text x="48" y="57" class="title" text-anchor="start">Video Gateway 与 Omni Worker 部署架构</text>
+<text x="48" y="89" class="body" text-anchor="start">多模型入口  ·  Gateway 多副本主动服务  ·  Worker Pool 独立扩容  ·  共享状态与持久化结果</text>
+<rect x="48" y="117" width="290" height="82" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="193" y="150" class="label" text-anchor="middle">客户端 / 业务应用</text>
+<text x="193" y="179" class="small" text-anchor="middle">提交 · 查询 · 取消 · MP4 下载</text>
+<rect x="440" y="117" width="410" height="82" rx="14" fill="#e9f0ff" stroke="#b7caed" stroke-width="1.5"/>
+<text x="645" y="150" class="label" text-anchor="middle">Load Balancer / Ingress</text>
+<text x="645" y="179" class="small" text-anchor="middle">统一 API 入口 · 就绪探测 · 上层认证</text>
+<path d="M338 158 H440" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<text x="389" y="145" class="small" text-anchor="middle">HTTP</text>
+<rect x="965" y="117" width="665" height="82" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="988" y="148" class="label" text-anchor="start">高可用原则</text>
+<text x="988" y="179" class="body" text-anchor="start">请求无需粘性会话；Gateway 故障后由其他副本接管任务</text>
+<rect x="48" y="234" width="1582" height="226" rx="14" fill="#edf3ff" stroke="#b7caed" stroke-width="1.5"/>
+<text x="70" y="265" class="section" text-anchor="start">入口与调度层  /  Video Gateway Deployment ≥ 2 副本</text>
+<rect x="80" y="284" width="350" height="100" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="255" y="315" class="label" text-anchor="middle">Video Gateway A</text>
+<text x="255" y="342" class="body" text-anchor="middle">API · Model Router · Dispatcher</text>
+<text x="255" y="367" class="small" text-anchor="middle">节点 A · Finalizer · Runtime</text>
+<rect x="470" y="284" width="350" height="100" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="645" y="315" class="label" text-anchor="middle">Video Gateway B</text>
+<text x="645" y="342" class="body" text-anchor="middle">API · Model Router · Dispatcher</text>
+<text x="645" y="367" class="small" text-anchor="middle">节点 B · Finalizer · Runtime</text>
+<rect x="860" y="284" width="350" height="100" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="1035" y="315" class="label" text-anchor="middle">Video Gateway N</text>
+<text x="1035" y="342" class="body" text-anchor="middle">API · Model Router · Dispatcher</text>
+<text x="1035" y="367" class="small" text-anchor="middle">可水平扩容 · Finalizer · Runtime</text>
+<path d="M645 199 V216 H255 V234" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M645 216 V234" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M645 216 H1035 V234" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<rect x="1250" y="284" width="350" height="100" rx="14" fill="#dfeaff" stroke="#b7caed" stroke-width="1.5"/>
+<text x="1425" y="314" class="label" text-anchor="middle">model → pool → endpoint</text>
+<text x="1425" y="343" class="body" text-anchor="middle">同一 model 只映射一个 pool</text>
+<text x="1425" y="370" class="small" text-anchor="middle">多个别名可共享一个 pool</text>
+<text x="80" y="423" class="body" text-anchor="start">HA 协调：etcd CAS + owner lease + slot lease + execution token；本地缓存不作为任务真值</text>
+<path d="M255 460 V496" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M645 460 V496" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M1035 460 V496" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M255 496 H1380" fill="none" stroke="#3266c4" stroke-width="2.5"/>
+<text x="810" y="448" class="small" text-anchor="middle">Dynamo Runtime 定向 RPC：能力探测 / submit / wait / cancel</text>
+<path d="M300 496 V540" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M840 496 V540" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<path d="M1380 496 V540" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<rect x="48" y="540" width="502" height="262" rx="14" fill="#eef8f5" stroke="#acd7c8" stroke-width="1.5"/>
+<text x="70" y="574" class="section" text-anchor="start">Pool A · H3 FL2VA</text>
+<text x="70" y="603" class="body" text-anchor="start">model: h3-fl2va（示意别名）</text>
+<rect x="70" y="621" width="220" height="112" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="180" y="651" class="label" text-anchor="middle">Omni Worker 1</text>
+<text x="180" y="679" class="body" text-anchor="middle">AsyncOmni / GPU</text>
+<text x="180" y="707" class="small" text-anchor="middle">独立注册 · 独立 slot</text>
+<rect x="308" y="621" width="220" height="112" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="418" y="651" class="label" text-anchor="middle">Omni Worker 2</text>
+<text x="418" y="679" class="body" text-anchor="middle">AsyncOmni / GPU</text>
+<text x="418" y="707" class="small" text-anchor="middle">独立注册 · 独立 slot</text>
+<text x="70" y="764" class="body" text-anchor="start">可按该模型负载增加 Worker / GPU 副本</text>
+<rect x="588" y="540" width="502" height="262" rx="14" fill="#eef8f5" stroke="#acd7c8" stroke-width="1.5"/>
+<text x="610" y="574" class="section" text-anchor="start">Pool B · H3 Ref2VA</text>
+<text x="610" y="603" class="body" text-anchor="start">model: h3-ref2va（示意别名）</text>
+<rect x="610" y="621" width="220" height="112" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="720" y="651" class="label" text-anchor="middle">Omni Worker 1</text>
+<text x="720" y="679" class="body" text-anchor="middle">AsyncOmni / GPU</text>
+<text x="720" y="707" class="small" text-anchor="middle">独立注册 · 独立 slot</text>
+<rect x="848" y="621" width="220" height="112" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="958" y="651" class="label" text-anchor="middle">Omni Worker 2</text>
+<text x="958" y="679" class="body" text-anchor="middle">AsyncOmni / GPU</text>
+<text x="958" y="707" class="small" text-anchor="middle">独立注册 · 独立 slot</text>
+<text x="610" y="764" class="body" text-anchor="start">可按该模型负载增加 Worker / GPU 副本</text>
+<rect x="1128" y="540" width="502" height="262" rx="14" fill="#eef8f5" stroke="#acd7c8" stroke-width="1.5"/>
+<text x="1150" y="574" class="section" text-anchor="start">Pool C · H3 + SeedVR2</text>
+<text x="1150" y="603" class="body" text-anchor="start">model: h3-sr（可选独立池）</text>
+<rect x="1150" y="621" width="458" height="112" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="1379" y="651" class="label" text-anchor="middle">复合 Omni Worker × 副本</text>
+<text x="1379" y="680" class="body" text-anchor="middle">H3 / GPU → SeedVR2 服务 / GPU</text>
+<text x="1379" y="709" class="small" text-anchor="middle">同一执行许可覆盖 Base + SR 全链路</text>
+<text x="1150" y="764" class="body" text-anchor="start">按需启用；当前要求每 Worker 执行容量 1</text>
+<path d="M48 350 H22 V921 H48" fill="none" stroke="#8a63b8" stroke-width="2.5" marker-end="url(#purple)" marker-start="url(#purple)" stroke-dasharray="8 5"/>
+<path d="M300 802 V857 H840 V883" fill="none" stroke="#138775" stroke-width="2.5" marker-end="url(#green)" marker-start="url(#green)"/>
+<path d="M840 802 V883" fill="none" stroke="#138775" stroke-width="2.5" marker-end="url(#green)" marker-start="url(#green)"/>
+<path d="M1380 802 V857 H840" fill="none" stroke="#138775" stroke-width="2.5" marker-end="url(#green)"/>
+<path d="M1630 350 H1656 V857 H840" fill="none" stroke="#138775" stroke-width="2.5" marker-end="url(#green)" marker-start="url(#green)"/>
+<rect x="48" y="883" width="502" height="140" rx="14" fill="#f4effb" stroke="#cab7df" stroke-width="1.5"/>
+<text x="70" y="916" class="section" text-anchor="start">etcd 集群</text>
+<text x="70" y="947" class="body" text-anchor="start">任务 / 队列 / 幂等 / owner / slot / 重试额度</text>
+<text x="70" y="976" class="small" text-anchor="start">Runtime 注册发现（逻辑职责与任务存储区分）</text>
+<text x="70" y="1004" class="small" text-anchor="start">HA 部署示意：3 成员，保有法定多数</text>
+<rect x="588" y="883" width="502" height="140" rx="14" fill="#e8f6f1" stroke="#acd7c8" stroke-width="1.5"/>
+<text x="610" y="916" class="section" text-anchor="start">共享制品文件系统</text>
+<text x="610" y="947" class="body" text-anchor="start">上传素材 · request / manifest · Worker status</text>
+<text x="610" y="976" class="small" text-anchor="start">attempt MP4 · durable handoff 对应结果</text>
+<text x="610" y="1004" class="small" text-anchor="start">所有副本挂载同一根目录；文件系统自身需高可用</text>
+<rect x="1128" y="883" width="502" height="140" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5"/>
+<text x="1150" y="916" class="section" text-anchor="start">Prometheus → Grafana</text>
+<text x="1150" y="947" class="body" text-anchor="start">采集 Gateway 与 Worker 指标</text>
+<text x="1150" y="976" class="small" text-anchor="start">排队 / GPU 执行 / 预取 / 后处理 / 容量</text>
+<text x="1150" y="1004" class="small" text-anchor="start">可选性能采集器 → PostgreSQL（逐任务记录）</text>
+<rect x="48" y="1050" width="1582" height="72" rx="14" fill="#fff" stroke="#d7e0ed" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text x="70" y="1080" class="label" text-anchor="start">扩展边界</text>
+<text x="210" y="1080" class="body" text-anchor="start">当前 Gateway adapter 支持 MiniMax-H3；新增模型家族需实现并验证 adapter 与结果契约。</text>
+<text x="210" y="1106" class="small" text-anchor="start">模型池可以独立扩容；新增 Gateway 副本不会自动增加 GPU 执行容量。</text>
+<path d="M70 1160 H130" fill="none" stroke="#3266c4" stroke-width="2.5" marker-end="url(#blue)"/>
+<text x="145" y="1166" class="small" text-anchor="start">请求 / 调度 RPC</text>
+<path d="M355 1160 H415" fill="none" stroke="#138775" stroke-width="2.5" marker-end="url(#green)" marker-start="url(#green)"/>
+<text x="430" y="1166" class="small" text-anchor="start">共享文件读写</text>
+<path d="M650 1160 H710" fill="none" stroke="#8a63b8" stroke-width="2.5" marker-end="url(#purple)" marker-start="url(#purple)" stroke-dasharray="8 5"/>
+<text x="725" y="1166" class="small" text-anchor="start">持久化协调</text>
+<text x="975" y="1166" class="small" text-anchor="start">注册发现与监控连线按层汇总说明，避免交叉遮挡</text>
+<text x="48" y="1200" class="small" text-anchor="start">部署示意，非当前集群实测拓扑。Worker 失联可按策略重试；GPU 中间计算不承诺无损迁移。</text>
+</svg>
