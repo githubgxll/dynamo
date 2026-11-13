@@ -43,6 +43,18 @@ def create_app(service: VideoGatewayService) -> web.Application:
         await service.dispatcher.stop()
 
     app.cleanup_ctx.append(dispatcher_context)
+    if any(pool.pipeline is not None for pool in service.config.pools):
+        from dingo.video_gateway.pipeline import VideoPipelineCoordinator
+
+        async def pipeline_context(_app):
+            task = asyncio.create_task(VideoPipelineCoordinator(service).run(), name="video-pipeline")
+            try:
+                yield
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        app.cleanup_ctx.append(pipeline_context)
     if service.config.context_ir.enabled:
         from dingo.video_gateway.context_ir.service import ContextIRService
         compiler = ContextIRService(service)

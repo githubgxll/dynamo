@@ -152,6 +152,12 @@ class VideoTask:
             "created_at": self.created_at_ms // 1000,
             "expires_at": self.expires_at_ms // 1000,
         }
+        if self.normalized_request.get("operation") == "sr_only":
+            result["operation"] = "sr_only"
+        pipeline = self.normalized_request.get("_pipeline")
+        if pipeline is not None:
+            result["pipeline_stage"] = (
+                "completed" if self.status == TaskStatus.COMPLETED else pipeline["phase"])
         if self.cancel_requested_at_ms is not None:
             result["cancel_requested"] = True
             result["cancel_requested_at"] = self.cancel_requested_at_ms // 1000
@@ -250,6 +256,8 @@ class VideoTask:
         sr_timings = normalize_sr_timings(self.normalized_request.get(SR_TIMINGS_KEY))
         if sr_timings is not None:
             result.setdefault("metrics", {})["super_resolution"] = sr_timings
+        if self.normalized_request.get("_pipeline_metrics") is not None:
+            result.setdefault("metrics", {})["pipeline"] = self.normalized_request["_pipeline_metrics"]
         if self.error is not None:
             result["error"] = asdict(self.error)
         return result

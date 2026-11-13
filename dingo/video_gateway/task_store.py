@@ -88,6 +88,21 @@ def _clone_task(task: VideoTask) -> VideoTask:
     return VideoTask.from_dict(task.to_dict())
 
 
+def _link_pipeline_child(parent: VideoTask, child: VideoTask) -> VideoTask:
+    """Called inside the child admission transaction; fence cancellation/races."""
+    state = copy.deepcopy(parent.normalized_request.get("_pipeline"))
+    link = child.normalized_request.get("_pipeline_child", {})
+    phase = link.get("phase")
+    if (parent.status != TaskStatus.IN_PROGRESS or parent.cancel_requested_at_ms is not None
+            or not isinstance(state, dict) or phase not in {"base", "sr"}
+            or link.get("parent_id") != parent.id or state.get("phase") != phase
+            or state.get("children", {}).get(phase)):
+        raise StoreConflict("pipeline parent no longer permits child admission")
+    state.setdefault("children", {})[phase] = child.id
+    return _apply_patch(parent, {"normalized_request": {
+        **parent.normalized_request, "_pipeline": state}})
+
+
 def _validate_fenced_release(before: VideoTask, after: VideoTask) -> None:
     if after.status == TaskStatus.FINALIZING:
         validate_handoff_transition(before, after)
@@ -229,6 +244,7 @@ class TaskStore(ABC):
         principal_hash: str,
         idempotency_hash: str | None,
         queue_limit: int,
+        pipeline_parent: StoredTask | None = None,
     ) -> tuple[StoredTask, bool]: ...
 
     @abstractmethod
@@ -386,6 +402,7 @@ class MemoryTaskStore(TaskStore):
         principal_hash: str,
         idempotency_hash: str | None,
         queue_limit: int,
+        pipeline_parent: StoredTask | None = None,
     ) -> tuple[StoredTask, bool]:
         task = _apply_patch(
             task,
@@ -409,6 +426,12 @@ class MemoryTaskStore(TaskStore):
                     if stored is None:
                         raise RuntimeError("idempotency index points to a missing task")
                     return stored, False
+            linked_parent = None
+            if pipeline_parent is not None:
+                current_parent = self._tasks.get(pipeline_parent.task.id)
+                if current_parent is None or current_parent[1] != pipeline_parent.revision:
+                    raise StoreConflict("pipeline parent changed before child admission")
+                linked_parent = _link_pipeline_child(pipeline_parent.task, task)
             queue = self._queue.setdefault(task.pool_id, [])
             if len(queue) >= queue_limit:
                 raise GatewayError(429, "queue_full", "video queue is full")
@@ -418,6 +441,9 @@ class MemoryTaskStore(TaskStore):
             task = _apply_patch(task, {"created_seq": self._created_seq})
             revision = self._next_revision()
             self._tasks[task.id] = (_clone_task(task), revision)
+            if linked_parent is not None:
+                self._tasks[linked_parent.id] = (linked_parent, revision)
+                self._publish_task_event(linked_parent.id, revision)
             self._publish_task_event(task.id, revision)
             queue.append(task.id)
             if idempotency_hash is not None:
@@ -1096,6 +1122,7 @@ class EtcdTaskStore(TaskStore):
         principal_hash: str,
         idempotency_hash: str | None,
         queue_limit: int,
+        pipeline_parent: StoredTask | None = None,
     ) -> tuple[StoredTask, bool]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5.0
@@ -1116,6 +1143,7 @@ class EtcdTaskStore(TaskStore):
                 idempotency_hash=idempotency_hash,
                 queue_limit=queue_limit,
                 deadline=deadline,
+                pipeline_parent=pipeline_parent,
             )
         finally:
             self._create_task_lock.release()
@@ -1128,6 +1156,7 @@ class EtcdTaskStore(TaskStore):
         idempotency_hash: str | None,
         queue_limit: int,
         deadline: float,
+        pipeline_parent: StoredTask | None = None,
     ) -> tuple[StoredTask, bool]:
         task = _apply_patch(
             task,
@@ -1176,9 +1205,19 @@ class EtcdTaskStore(TaskStore):
                           *self._counter_compare(
                               self._retry_counter_key(task.pool_id, "waiting"), retry_counter)],
             )
+            if pipeline_parent is not None:
+                linked_parent = _link_pipeline_child(pipeline_parent.task, assigned)
+                compare.append(self.client.compare_mod(
+                    self._task_key(pipeline_parent.task.id), pipeline_parent.revision))
+                success.append(self.client.put(self._task_key(linked_parent.id),
+                                               self._encode(linked_parent.to_dict())))
             succeeded, revision = await self.client.txn(compare, success)
             if succeeded:
                 return StoredTask(assigned, revision), True
+            if pipeline_parent is not None:
+                current_parent = await self.get_task(pipeline_parent.task.id)
+                if current_parent is None or current_parent.revision != pipeline_parent.revision:
+                    raise StoreConflict("pipeline parent changed before child admission")
             # Do not cancel an in-flight txn: its commit result may be ambiguous.
             # The existing client bounds each RPC; this deadline bounds retries.
             remaining = deadline - asyncio.get_running_loop().time()

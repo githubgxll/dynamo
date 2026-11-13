@@ -111,6 +111,9 @@ class VideoGatewayService:
         delivery_mode: str,
         idempotency_key: str | None,
         principal: str = "validation",
+        pipeline_parent: StoredTask | None = None,
+        pipeline_phase: str | None = None,
+        prepared_request: Mapping | None = None,
     ) -> Submission:
         model = self.resolve_request_model(fields)
         pool = self.resolve_pool(model)
@@ -131,9 +134,24 @@ class VideoGatewayService:
         normalized_fields = {key: list(values) for key, values in fields.items()}
         normalized_fields["model"] = [model]
         try:
-            normalized = await run_file_io(
-                adapter.normalize_request, normalized_fields, uploads, model
-            )
+            if prepared_request is not None:
+                if pipeline_parent is None or pipeline_phase != "base":
+                    raise ValueError("prepared input is private to pipeline base admission")
+                normalized = dict(prepared_request)
+            else:
+                normalized = await run_file_io(
+                    adapter.normalize_request, normalized_fields, uploads, model
+                )
+            if pipeline_parent is not None:
+                normalized["_pipeline_child"] = {
+                    "parent_id": pipeline_parent.task.id, "phase": pipeline_phase}
+            if pool.pipeline is not None:
+                normalized["_pipeline"] = {
+                    "version": 1, "phase": "base", "children": {},
+                    **pool.pipeline,
+                    "base_revision": self.config.pools_by_id[pool.pipeline["base_pool"]].configuration_revision,
+                    "sr_revision": self.config.pools_by_id[pool.pipeline["sr_pool"]].configuration_revision,
+                }
         except Exception:
             await self.artifacts.discard(upload_root)
             raise
@@ -318,19 +336,32 @@ class VideoGatewayService:
                 principal_hash=principal_hash,
                 idempotency_hash=idempotency_hash,
                 queue_limit=pool.scheduling.queue_limit,
+                **({"pipeline_parent": pipeline_parent} if pipeline_parent is not None else {}),
             )
-        except Exception:
+        except Exception as exc:
+            if pipeline_parent is not None and task_root is not None:
+                # A timed-out etcd transaction may have committed child+parent.
+                # Preserve files if even the read-back is unavailable.
+                existing = await self.store.get_idempotent(principal_hash, idempotency_hash)
+                if existing is not None and existing.task.id == task_id:
+                    self.dispatcher.notify(pool.pool_id)
+                    return Submission(stored=existing, created=False)
+                if not isinstance(exc, (StoreConflict, GatewayError)):
+                    # An earlier timed-out write can still arrive after this
+                    # read. Orphan GC, not this request, owns its file cleanup.
+                    raise
             await self.artifacts.discard(task_root or upload_root)
             raise
         if not created and task_root is not None:
             await self.artifacts.discard(task_root)
         else:
             self.dispatcher.notify(pool.pool_id)
-        self.telemetry.record_submission(
-            pool.pool_id,
-            "created" if created else "idempotent_replay",
-            delivery_mode,
-        )
+        if pipeline_parent is None:
+            self.telemetry.record_submission(
+                pool.pool_id,
+                "created" if created else "idempotent_replay",
+                delivery_mode,
+            )
         self.telemetry.audit_task(
             "submitted" if created else "idempotent_replay",
             stored.task,

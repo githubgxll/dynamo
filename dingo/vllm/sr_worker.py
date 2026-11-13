@@ -4,7 +4,20 @@ import argparse
 import asyncio
 import contextlib
 import logging
-import os
+
+
+async def supervise_worker(process, handler, endpoint, stop, *, grace_s=5, interval_s=1):
+    """Restart on process loss/quarantine, not a normal cancellation fence."""
+    while not stop.is_set():
+        if not process.healthy() or handler.quarantined:
+            # Give the detached task time to persist its original failure.
+            await asyncio.sleep(grace_s)
+            await endpoint.unregister_endpoint_instance()
+            raise RuntimeError('SR process exited or was quarantined; restarting Worker')
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
+        except asyncio.TimeoutError:
+            pass
 
 
 def parser():
@@ -62,17 +75,9 @@ async def worker(args):
         await register_model(ModelInput.Text,ModelType.Videos,endpoint,args.model,args.served_model_name,
                              kv_cache_block_size=16,worker_type=WorkerType.Aggregated,needs=[])
         registered = True
-        async def supervise():
-            while not stop.is_set():
-                if not process.healthy() or not handler.video_ready:
-                    # Allow the detached task to persist its original failure.
-                    await asyncio.sleep(5)
-                    await endpoint.unregister_endpoint_instance()
-                    raise RuntimeError('SR process exited or was quarantined; restarting Worker')
-                await asyncio.sleep(1)
-        serving = asyncio.create_task(endpoint.serve_endpoint(manager.generate,graceful_shutdown=True,
+        serving = asyncio.ensure_future(endpoint.serve_endpoint(manager.generate,graceful_shutdown=True,
             health_check_payload={ENVELOPE_KEY:{'schema_version':SCHEMA_VERSION,'op':'capabilities'}}))
-        watching = asyncio.create_task(supervise())
+        watching = asyncio.create_task(supervise_worker(process, handler, endpoint, stop))
         try:
             done,_=await asyncio.wait([serving,watching],return_when=asyncio.FIRST_COMPLETED)
             for task in done:await task

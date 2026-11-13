@@ -287,7 +287,7 @@ class GatewayTelemetry:
             payload.update(
                 {key: value for key, value in timing.items() if value is not None}
             )
-        if event in {"completed", "failed", "cancelled"}:
+        if event in {"completed", "failed", "cancelled"} and not task.normalized_request.get("_pipeline_child"):
             log_performance = (
                 os.environ.get("DINGO_VIDEO_PERFORMANCE_RECORDS", "0") == "1"
             )
@@ -345,6 +345,8 @@ class GatewayTelemetry:
         )
         # Only the successful result-handoff transition observes model timings.
         # Polls, CAS retries and FINALIZING -> COMPLETED must not count again.
+        if after.normalized_request.get("_pipeline_child"):
+            return  # Stage tasks are audited; public timings/counts belong to their parent.
         if (
             before.status == TaskStatus.IN_PROGRESS
             and after.status == TaskStatus.FINALIZING

@@ -298,6 +298,7 @@ class VideoDispatcher:
             and all(
                 pool.discovery_healthy and pool.lease_watch_healthy
                 for pool in self.pools.values()
+                if pool.config.pipeline is None
             )
         )
 
@@ -369,6 +370,8 @@ class VideoDispatcher:
             self._loops.append(task_watch)
             await asyncio.wait_for(self._task_watch_ready.wait(), timeout=10.0)
         for pool in self.pools.values():
+            if pool.config.pipeline is not None:
+                continue
             await self._refresh_instances(pool)
             if self.store.lease_watch_supported:
                 await self._resync_lease_cache(pool)
@@ -475,6 +478,8 @@ class VideoDispatcher:
 
     def has_workers(self, pool_id: str) -> bool:
         pool = self.pools[pool_id]
+        if pool.config.pipeline is not None:
+            return self.has_workers(pool.config.pipeline["base_pool"])
         # Registration alone is not capacity; saturation still allows queuing.
         return bool(self._worker_slots(pool))
 
@@ -927,6 +932,10 @@ class VideoDispatcher:
         ]
 
     def has_sr_workers(self, pool_id: str, normalized: Mapping[str, Any]) -> bool:
+        pipeline = self.pools[pool_id].config.pipeline
+        if pipeline is not None:
+            return self.has_sr_workers(pipeline["sr_pool"],
+                                       {"super_resolution": normalized.get("super_resolution")})
         return bool(self._worker_slots(self.pools[pool_id], normalized))
 
     async def _detached_submit_ack(self, pool, task, submit, context, validate):
@@ -1016,6 +1025,8 @@ class VideoDispatcher:
                 truth = await self.store.discovery_instance_snapshot(targets)
                 mature_mismatches: list[str] = []
                 for pool in self.pools.values():
+                    if pool.config.pipeline is not None:
+                        continue
                     runtime_ids = set(pool.client.instance_ids())
                     truth_ids = truth[pool.config.backend_target]
                     if self._record_discovery_match(pool, runtime_ids, truth_ids):
@@ -3175,6 +3186,8 @@ class VideoDispatcher:
     async def _recover_orphaned_active(self, stored: StoredTask) -> None:
         task = stored.task
         pool = self.pools.get(task.pool_id)
+        if pool is not None and pool.config.pipeline is not None:
+            return  # The durable pipeline coordinator resumes parent tasks.
         if task.status == TaskStatus.FINALIZING and read_handoff(task) is not None:
             if pool is None:
                 return

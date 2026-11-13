@@ -3,6 +3,7 @@
 import dataclasses
 import hashlib
 import json
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -62,9 +63,10 @@ def test_sr_only_rejects_generation_parameters(make_gateway_config,tmp_path,key,
         adapter(make_gateway_config).normalize_request(fields(**{key:value}),[video(tmp_path)],'public-sr')
 
 
-def test_sr_only_rejects_bad_fps(make_gateway_config,tmp_path):
+@pytest.mark.parametrize('fps', [30, Fraction(24001, 1000)])
+def test_sr_only_rejects_bad_fps(make_gateway_config,tmp_path,fps):
     with pytest.raises(GatewayError,match='24 FPS'):
-        adapter(make_gateway_config).normalize_request(fields(),[video(tmp_path,fps=30)],'public-sr')
+        adapter(make_gateway_config).normalize_request(fields(),[video(tmp_path,fps=fps)],'public-sr')
 
 
 def source_fixture(tmp_path):
@@ -97,3 +99,76 @@ def test_source_changed_after_upload_is_rejected(tmp_path):
 def test_source_cannot_cross_tasks(tmp_path):
     root,d,src=source_fixture(tmp_path);d['entry']['path']='../source.mp4'
     with pytest.raises(ValueError,match='task inputs'):stage_source(root,d,'test-store')
+
+
+def test_sr_only_public_task_has_operation_without_generation_seed():
+    from tests.video_gateway.test_task_store import _task
+    task = _task('sr-task')
+    task.normalized_request = {'operation': 'sr_only', 'width': 1920, 'height': 1080}
+    public = task.public_dict()
+    assert public['operation'] == 'sr_only'
+    assert 'seed' not in public and 'seed_generated' not in public
+
+
+async def test_sr_only_http_validation_and_no_worker(make_gateway_config, tmp_path):
+    import aiohttp
+    from aiohttp.test_utils import TestClient, TestServer
+    from dingo.video_gateway.app import create_app
+    from tests.video_gateway.test_dispatcher import FakeClient, _stack
+
+    config = make_gateway_config()
+    pool = adapter(make_gateway_config).pool
+    pool = dataclasses.replace(pool, scheduling=dataclasses.replace(
+        pool.scheduling, accept_without_workers=False))
+    config = dataclasses.replace(config, pools=[pool])
+    _, _, _, service = _stack(config, {pool.pool_id: FakeClient(available=False)})
+    upload = video(tmp_path)
+    async with TestClient(TestServer(create_app(service))) as client:
+        for operation, expected in [('generate', 400), ('sr_only', 503)]:
+            form = aiohttp.FormData()
+            for name, value in {'model':pool.served_models[0], 'operation':operation,
+                                'resolution':'1080P'}.items():
+                form.add_field(name, value)
+            form.add_field('input_references', upload.path.read_bytes(),
+                           filename='source.mp4', content_type='video/mp4')
+            response = await client.post('/v1/videos', data=form)
+            body = await response.json()
+            assert response.status == expected, body
+        assert (await (await client.get('/v1/videos')).json())['data'] == []
+
+
+@pytest.mark.parametrize('quarantined,alive', [(True, True), (False, False)])
+async def test_sr_supervisor_exits_after_failure_grace(quarantined, alive):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from dingo.vllm.sr_worker import supervise_worker
+    endpoint = SimpleNamespace(unregister_endpoint_instance=AsyncMock())
+    with pytest.raises(RuntimeError, match='restarting Worker'):
+        await supervise_worker(SimpleNamespace(healthy=lambda: alive),
+            SimpleNamespace(quarantined=quarantined), endpoint, asyncio.Event(),
+            grace_s=0, interval_s=.001)
+    endpoint.unregister_endpoint_instance.assert_awaited_once()
+
+
+async def test_sr_supervisor_does_not_restart_cancellation_pause():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from dingo.vllm.sr_worker import supervise_worker
+    stop = asyncio.Event()
+    endpoint = SimpleNamespace(unregister_endpoint_instance=AsyncMock())
+    handler = SimpleNamespace(quarantined=False, video_ready=False)
+    watcher = asyncio.create_task(supervise_worker(
+        SimpleNamespace(healthy=lambda: True), handler, endpoint, stop,
+        grace_s=0, interval_s=.001))
+    try:
+        await asyncio.sleep(.01)
+        assert not watcher.done()
+        handler.video_ready = True
+        stop.set()
+        await asyncio.wait_for(watcher, timeout=1)
+        endpoint.unregister_endpoint_instance.assert_not_awaited()
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)

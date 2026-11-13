@@ -13,16 +13,22 @@ from dingo.video_gateway.adapters.minimax_h3 import MiniMaxH3VideoAdapter, _one
 from dingo.video_gateway.errors import GatewayError
 
 
-def probe_source(path):
+def probe_source(path, *, enforce_input_bounds=False):
     import av
     with av.open(str(path)) as container:
         videos, audios = list(container.streams.video), list(container.streams.audio)
         if len(videos) != 1 or len(audios) > 1:
             raise ValueError("source must contain one video and at most one audio stream")
         v = videos[0]
+        if enforce_input_bounds and not (
+            256 <= v.width <= 2048 and 256 <= v.height <= 2048
+            and v.width * v.height <= 1100000
+            and 0.4 <= v.width / v.height <= 2.5
+        ):
+            raise ValueError("source canvas is outside SR-only bounds")
         if v.codec_context.name != "h264" or v.codec_context.format.name != "yuv420p":
             raise ValueError("source must be H264/yuv420p MP4")
-        if not v.average_rate or abs(float(v.average_rate) - 24) > 0.01:
+        if v.average_rate != 24:
             raise ValueError("source must be 24 FPS")
         if audios and audios[0].codec_context.name != "aac":
             raise ValueError("source audio must be AAC")
@@ -75,7 +81,7 @@ class SeedVR2VideoAdapter(MiniMaxH3VideoAdapter):
             with upload.path.open('rb') as f:
                 if f.read(12)[4:8] != b'ftyp':
                     raise ValueError('source must be MP4')
-            source = probe_source(upload.path)
+            source = probe_source(upload.path, enforce_input_bounds=True)
             size = (source['width'], source['height'])
             name = next((r for r, s in BASE_CANVASES.items() if s == size), None)
             if name is None:

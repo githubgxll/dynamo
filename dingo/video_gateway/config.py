@@ -218,6 +218,7 @@ class PoolConfig:
     scheduling: SchedulingConfig
     configuration_revision: str
     base_configuration_revision: str | None = None
+    pipeline: Mapping[str, Any] | None = None
 
     @property
     def sr_profile(self) -> str | None:
@@ -686,6 +687,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
             "execution_mode",
             "adapter",
             "scheduling",
+            "pipeline",
         },
         name,
     )
@@ -747,6 +749,18 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         },
     )
     scheduling = _scheduling_config(data.get("scheduling"), pool_id)
+    pipeline = data.get("pipeline")
+    if pipeline is not None:
+        pipeline = dict(_mapping(pipeline, f"{name}.pipeline"))
+        if (set(pipeline) - {"base_pool", "sr_pool", "max_active_parents"}
+                or any(not isinstance(pipeline.get(k), str) or not _SAFE_ID.fullmatch(pipeline[k])
+                       for k in ("base_pool", "sr_pool"))):
+            raise ValueError("pipeline requires base_pool and sr_pool identifiers")
+        maximum = pipeline.setdefault("max_active_parents", 4)
+        if type(maximum) is not int or not 1 <= maximum <= 128:
+            raise ValueError("pipeline.max_active_parents must be between 1 and 128")
+        if adapter.name != "minimax_h3" or execution_mode != "detached":
+            raise ValueError("pipeline requires a detached minimax_h3 pool")
     sr_profile = configured_sr_profile(adapter.name, adapter.options)
     if sr_profile and execution_mode != "detached":
         raise ValueError("super_resolution requires detached execution_mode")
@@ -774,6 +788,8 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
             "execution_timeout_s": scheduling.execution_timeout_s,
         },
     }
+    if pipeline is not None:
+        revision_payload["pipeline"] = pipeline
     revision = (
         "sha256:"
         + hashlib.sha256(
@@ -808,6 +824,7 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
         scheduling=scheduling,
         configuration_revision=revision,
         base_configuration_revision=base_revision,
+        pipeline=pipeline,
     )
 
 
@@ -851,6 +868,20 @@ def parse_config(raw: Any) -> GatewayConfig:
             if model in by_model:
                 raise ValueError(f"served model {model!r} maps to multiple pools")
             by_model[model] = pool
+
+    for pool in pools:
+        if pool.pipeline is None:
+            continue
+        base = by_id.get(pool.pipeline["base_pool"])
+        sr = by_id.get(pool.pipeline["sr_pool"])
+        if (base is None or sr is None or base.pipeline or sr.pipeline
+                or base.pool_id == sr.pool_id or base.execution_mode != "detached"
+                or sr.execution_mode != "detached" or base.adapter.name != "minimax_h3"
+                or base.adapter.workflow != pool.adapter.workflow or base.sr_profile is not None
+                or sr.adapter.name != "seedvr2" or pool.sr_profile != sr.sr_profile):
+            raise ValueError("pipeline must reference a base-only H3 pool and a matching independent SR pool")
+        if pool.backend_target != base.backend_target:
+            raise ValueError("pipeline backend_target must match its base pool")
 
     http = _http_config(data.get("http"))
     media = _media_config(data.get("media"), http)

@@ -342,14 +342,14 @@ async def create_video_sync(request: web.Request) -> web.StreamResponse:
 
 async def get_video(request: web.Request) -> web.Response:
     stored = await _service(request).store.get_task(request.match_info["task_id"])
-    if stored is None:
+    if stored is None or stored.task.normalized_request.get("_pipeline_child"):
         raise GatewayError(404, "video_not_found", "video task was not found")
     return web.json_response(stored.task.public_dict())
 
 
 async def get_video_diagnostics(request: web.Request) -> web.Response:
     stored = await _service(request).store.get_task(request.match_info["task_id"])
-    if stored is None:
+    if stored is None or stored.task.normalized_request.get("_pipeline_child"):
         raise GatewayError(404, "video_not_found", "video task was not found")
     return web.json_response(stored.task.diagnostics_dict())
 
@@ -378,13 +378,17 @@ async def list_videos(request: web.Request) -> web.Response:
         ) from exc
     model = request.query.get("model")
     pool_id = service.resolve_pool(model).pool_id if model is not None else None
-    tasks = await service.store.list_tasks(
-        pool_id=pool_id,
-        status=status,
-        after=request.query.get("after"),
-        limit=limit + 1,
-        descending=order == "desc",
-    )
+    tasks = []
+    cursor = request.query.get("after")
+    while len(tasks) <= limit:
+        page = await service.store.list_tasks(pool_id=pool_id, status=status,
+            after=cursor, limit=limit + 1, descending=order == "desc")
+        if not page:
+            break
+        tasks.extend(item for item in page if not item.task.normalized_request.get("_pipeline_child"))
+        cursor = page[-1].task.id
+        if len(page) < limit + 1:
+            break
     has_more = len(tasks) > limit
     tasks = tasks[:limit]
     data = [stored.task.public_dict() for stored in tasks]
@@ -532,7 +536,7 @@ async def _content_response(
 async def get_video_content(request: web.Request) -> web.StreamResponse:
     service = _service(request)
     stored = await service.store.get_task(request.match_info["task_id"])
-    if stored is None:
+    if stored is None or stored.task.normalized_request.get("_pipeline_child"):
         raise GatewayError(404, "video_not_found", "video task was not found")
     return await _content_response(request, service, stored.task)
 
@@ -541,7 +545,7 @@ async def delete_video(request: web.Request) -> web.Response:
     service = _service(request)
     task_id = request.match_info["task_id"]
     stored = await service.store.get_task(task_id)
-    if stored is None:
+    if stored is None or stored.task.normalized_request.get("_pipeline_child"):
         raise GatewayError(404, "video_not_found", "video task was not found")
     if stored.task.status in {
         TaskStatus.COMPLETED,
