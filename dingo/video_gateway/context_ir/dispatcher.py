@@ -203,6 +203,12 @@ class ContextIRDispatcher:
                 response_hash = await run_file_io(lambda: hashlib.sha256(response_path.read_bytes()).hexdigest())
                 await self.artifacts.write_json(proof_path, {"status": status, "sha256": response_hash, "received_at_ms": now_ms(), "metrics": timings})
                 confirmed = status in {200, 201, 400, 404, 413, 422}
+            from .protocol import response_usage
+            usage = response_usage(response)
+            if usage is not None:
+                current = await self.owned(task.id)
+                if current is not None:
+                    await self.store.update(current, usage=usage)
             if not confirmed:
                 raise UpstreamUnknown("compiler response does not prove execution terminated")
             current = await self.owned(task.id)

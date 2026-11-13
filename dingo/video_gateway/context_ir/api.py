@@ -56,7 +56,7 @@ async def diagnostics(request):
     t = stored.task
     value = {"id": t.id, "status": t.status, "phase": t.phase, "attempt": t.attempt,
                               "adapter": t.model_adapter_id, "adapter_version": t.model_adapter_version,
-                              "metrics": t.metrics, "error": t.error}
+                              "metrics": t.metrics, "error": t.error, "usage": t.usage}
     try:
         normalized = await s.artifacts.read_bounded(t.request_path, s.config.result_max_bytes)
     except FileNotFoundError:

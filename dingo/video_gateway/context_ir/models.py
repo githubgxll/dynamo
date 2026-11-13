@@ -53,6 +53,7 @@ class ContextIRTask:
     error: dict | None = None
     metrics: dict = field(default_factory=dict)
     cleanup_pending: bool = False
+    usage: dict | None = None
 
     def to_dict(self):
         result = asdict(self)
@@ -70,7 +71,7 @@ class ContextIRTask:
                  "created_at": self.created_at_ms // 1000,
                  "completed_at": self.terminal_at_ms // 1000 if self.terminal_at_ms else None,
                  "expires_at": self.expires_at_ms // 1000 if self.expires_at_ms else None,
-                 "metrics": self.metrics}
+                 "metrics": self.metrics, "usage": self.usage}
         if self.status == "queued":
             value["queue_deadline"] = self.queue_deadline_ms // 1000
         if self.error:

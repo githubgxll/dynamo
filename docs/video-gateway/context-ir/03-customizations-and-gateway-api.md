@@ -59,7 +59,7 @@ sequenceDiagram
 2. **按模型路由**：`model_bindings`把公开模型名映射到编译后端。不同模型可以配置不同后端，但当前语义适配实现仍是MiniMax-H3，不能仅加一个新模型名就宣称支持其它模型。
 3. **异步任务管理**：复用公共etcd事务、租约、幂等、文件操作和监控基础设施，另建ContextIR任务状态及专用存储域，不与视频任务混用。
 4. **共享容量**：每个后端的执行槽在同一任务域的多个Gateway之间共享；通过etcd CAS竞争，超过执行槽的任务排队，队列满则拒绝。
-5. **结果契约校验**：检查`ready/written`、非空提示词、模式、帧数、画布、素材标签/哈希/角色及配对音轨策略。拒绝降级或错绑结果。
+5. **结果契约校验**：接受`ready/written`和`degraded/draft`，均检查非空提示词、模式、帧数、画布、素材标签/哈希/角色及配对音轨策略。降级草稿通过现有`content.prompt`返回，并在`warnings`中标明；拒绝状态不一致或素材错绑等结果。
 6. **失败与恢复**：准备阶段允许有限尝试；编译调用一旦已发出，不因结果不明就盲目再次执行。无法确认执行结束时保留物理槽并隔离后端，防止超卖容量。
 7. **诊断与清理**：保存实际发给编译器的JSON、响应和时序数据；按保留时间清理，并通过指标展示排队、执行槽和隔离状态。
 
@@ -145,6 +145,8 @@ curl -sS "${GATEWAY_URL}/v1/context-ir/${TASK_ID}/diagnostics"
 }
 ```
 
+上游返回`degraded/draft`时，只要结果契约校验通过，Gateway任务也返回`status: completed`，`content.prompt`为上游实际返回的回退草稿，现有`warnings`包含`{"code":"context_ir_degraded_result"}`。不新增响应字段，也不返回被上游拒绝的候选提示词。`completed`表示任务已有可读取结果，不代表模型改写已通过全部质量检查；调用方可根据`warnings`决定是否用于生成。上游状态、来源和规则码仍通过现有诊断接口查看。
+
 实际有素材的响应会填充`references`，包括输入index、类型、哈希和模型标签。`target.frames`体现帧网格对齐，可能与名义秒数×fps不同；示例5秒对应124帧。生成时应保留返回的`generation_parameters`语义，不自行改成另一套尺寸/帧数。
 
 读取到`completed`后：取`content.prompt`，携带相同原始素材及顺序，另行调用`POST /v1/videos`，再设置生成用的`seed`和`num_inference_steps`。编译seed不透传为生成seed；一次编译结果可以用不同生成seed做对照。编译成功本身不会占用视频Worker生成槽。
@@ -226,3 +228,72 @@ context_ir:
 当前复审拒绝返回HTTP502；Gateway会将其按执行结果不明处理，并可能隔离该编译后端。
 这一错误分类衔接尚需统一，不能把“模型认为质量不合格”和“无法确认上游是否仍在执行”
 当成同一情况。实验开关、返回诊断及限制以open-h3-ir源码的 `docs/calling-the-api.md` 为准。
+
+
+## Qwen调用用量与上游计费
+
+`POST /v1/context-ir`创建任务、`GET /v1/context-ir/{id}`查询以及诊断接口均提供顶层
+`usage`。创建或尚未收到上游统计时为 `null`；编译返回后保存任务级汇总，查询和同一
+`Idempotency-Key`重放不重新计数。旧任务、旧编译器以及无有效上游统计的任务仍返回 `null`，不能当作零消耗。
+
+```json
+{
+  "id": "context-ir-<task-id>",
+  "status": "completed",
+  "usage": {
+    "prompt_tokens": 12000,
+    "prompt_tokens_details": {"cached_tokens": 9000},
+    "completion_tokens": 1800,
+    "total_tokens": 13800,
+    "llm_requests": 4,
+    "requests_with_usage": 4,
+    "requests_without_usage": 0,
+    "complete": true
+  }
+}
+```
+
+- `prompt_tokens`：各次Qwen响应报告的输入token之和，包含其报告的多模态和前缀缓存token，不自行按缓存命中扣减。
+- `completion_tokens`：各次Qwen响应报告的输出token之和；若模型将思考token计入输出，不额外重复累加。
+- `total_tokens`：前两项之和，是整次编译的模型调用量，不是最终提示词长度。
+- `llm_requests`：实际发起的模型HTTP调用次数，包含素材分析、编译、复审、纠错和重试；已报告用量的截断响应也计入。
+- `requests_with_usage`、`requests_without_usage`：有有效统计和无有效统计的调用次数。
+- `complete`：所有调用是否均拿到有效统计。只有全部已知时为 `true`。
+
+本地素材分析缓存命中且不调用Qwen时不计入；确实没有发起模型调用时可返回完整的零值。
+超时、响应丢失或上游漏报统计时，已有数值只表示已知部分，`complete=false`，不能直接当完整账单结算。
+失败任务如果拿到了上游汇总，也返回已知用量；任务失败并不意味着模型没有执行。
+Gateway本身不扣费，上游应以任务ID做唯一账目，并自行决定失败任务的计费政策。
+旧版编译器没有汇总时，不能拿 `ir.prompt_tokens` 替代，因为它只是最终提示词长度。
+
+这项协议需要同时升级编译器与Gateway；仅升级Gateway无法补出旧编译器未报告的调用用量。
+
+
+### 前缀缓存与多模态输入token
+
+`usage.prompt_tokens_details.cached_tokens` 沿用OpenAI兼容LLM接口的字段名，
+累计各次Qwen调用已报告的缓存命中输入token。它是 `prompt_tokens` 的子集，不再加入
+`total_tokens`。两项都完整时，非缓存输入量为 `prompt_tokens - cached_tokens`。
+
+任一模型调用没有返回有效缓存统计（含null、负数或大于该调用输入量）时，汇总
+`cached_tokens` 返回 `null`，不能将其当成零命中。原有 `complete` 表示基础输入/输出
+用量是否完整；缓存明细是否可用于差异计费，还需单独检查 `cached_tokens` 非null。
+旧编译器未提供该字段时同样按未知处理。vLLM通常需启用 `--enable-prompt-tokens-details`
+来提供请求级缓存明细；仅启用前缀缓存不等于返回了统计。此代码变更不自动重启模型或改变部署参数。
+
+实际送入Qwen的图片及视频抽帧视觉token，按上游 `usage.prompt_tokens` 一并计入，
+不按图片像素、视频字节或文件时长自行估算。视频取帧操作本身不产生模型token；
+已命中本地素材分析缓存而没有发起Qwen请求时不计入旧调用量。
+
+
+### 多模态用量验收项
+
+1. 对真实Qwen发送同一文本的纯文本、单张图片、视频三帧三组请求，保存原始usage。
+2. 确认图片和抽帧组的prompt_tokens增加，并核对整次任务汇总等于各响应用量之和。
+3. 将真实统计证据经本地Gateway HTTP任务流程回放，验证公开查询、诊断及幂等重放原样返回。
+4. 缓存命中明细未知时必须保持null；不能因总输入量已知而声称缓存统计完整。
+
+open-h3-ir的 `tests/test_usage_multimodal_live.py` 执行前两项；Gateway的
+`tests/video_gateway/test_context_ir_usage_live.py` 读取环境变量
+`DINGO_CONTEXTIR_USAGE_EVIDENCE` 指定的证据JSON执行第三项。均为显式启用的验收测试，
+普通单元测试不自动访问远端模型。真实服务升级后仍需补充部署环境的端到端验收。

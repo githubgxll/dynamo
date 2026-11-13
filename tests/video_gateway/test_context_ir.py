@@ -113,7 +113,7 @@ async def test_compiler_queue_timeout_and_reservation_accounting():
     assert int((await c.get(s.key("counters/h3/reserved_bytes"))).value) == 0
 
 
-def test_compiler_result_rejects_wrong_canvas_fallback_and_labels():
+def test_compiler_result_rejects_wrong_canvas_and_inconsistent_status():
     normalized = {"mode": "ref2va", "frames": 124, "canvas": [1344, 768],
                   "references": [], "generation_parameters": {"seconds":5, "size":"1344x768"}}
     response = {"status":"ready", "source":"written", "ir":{"mode":"ref2va", "prompt":"hello", "target":{"frames":124,"canvas":[1344,768]},"manifest":[]}}
@@ -243,3 +243,73 @@ async def test_compiler_explicit_32_slots_shared_across_owners():
     admitted = await s.claim("h3", "b", "b")
     assert admitted is not None and admitted.task.id == "waiting"
     assert int((await c.get(s.key("counters/h3/inflight"))).value) == 32
+
+
+@pytest.mark.parametrize('mutation',[{'total_tokens':9},{'prompt_tokens':True},{'llm_requests':2},{'complete':False},{'completion_tokens':-1}])
+def test_bad_usage_is_not_exposed_as_valid(mutation):
+    from dingo.video_gateway.context_ir.protocol import response_usage
+    good=dict(prompt_tokens=10,completion_tokens=3,total_tokens=13,llm_requests=1,
+              requests_with_usage=1,requests_without_usage=0,complete=True)
+    assert response_usage({'usage':{**good,**mutation}}) is None
+    assert response_usage({}) is None
+    assert response_usage({'detail':{'usage':good}})==good
+
+
+@pytest.mark.parametrize('cached,expected',[(0,0),(8,8),(None,None),(-1,None),(True,None),(11,None)])
+def test_cached_usage_validation_preserves_unknown(cached,expected):
+    from dingo.video_gateway.context_ir.protocol import response_usage
+    good=dict(prompt_tokens=10,completion_tokens=3,total_tokens=13,llm_requests=1,
+              requests_with_usage=1,requests_without_usage=0,complete=True,
+              prompt_tokens_details={'cached_tokens':cached})
+    result=response_usage({'usage':good})
+    assert result['prompt_tokens_details']['cached_tokens']==expected
+    assert result['total_tokens']==13
+
+
+@pytest.mark.parametrize("http_status", [200, 201])
+@pytest.mark.parametrize("reason", [None, "validation_failed"])
+def test_degraded_result_returns_actual_draft_with_existing_schema(http_status, reason):
+    normalized = {"mode": "ref2va", "frames": 124, "canvas": [1344, 768],
+                  "references": [{"kind": "video", "duration_s": 15, "ordinal": 0}],
+                  "generation_parameters": {"seconds": 5, "size": "1344x768"}}
+    ir = {"mode": "ref2va", "prompt": "actual fallback draft",
+          "target": {"frames": 124, "canvas": [1344, 768]}, "manifest": [],
+          "provenance": {"rejected_written": "unvalidated candidate"}}
+    normal = validate_result(normalized, [], http_status,
+                             {"status": "ready", "source": "written", "ir": ir})
+    result = validate_result(normalized, [], http_status,
+                             {"status": "degraded", "source": "draft", "fallback_reason": reason, "ir": ir})
+    assert result.keys() == normal.keys()
+    assert result["content"] == {"prompt": "actual fallback draft"}
+    assert result == {**normal, "warnings": [{"code": "context_ir_degraded_result"},
+                                           {"code": "reference_video_truncated", "index": 0}]}
+
+
+@pytest.mark.parametrize("fault", ["http", "mode", "frames", "canvas", "empty", "missing",
+                                  "duplicate", "hash", "role", "paired_audio", "soundtrack"])
+def test_degraded_result_still_enforces_contract(fault):
+    normalized = {"mode": "ref2va", "frames": 124, "canvas": [1344, 768],
+                  "references": [], "generation_parameters": {"seconds": 5}}
+    expected = [{"index": 0, "kind": "video", "sha256": "video-sha", "role": "edit_source",
+                 "labels": ["<Audio 1>", "<Video 1>"], "paired_audio_sha256": "audio-sha",
+                 "soundtrack_policy": "reuse"}]
+    ir = {"mode": "ref2va", "prompt": "<Audio 1>: partially_copy",
+          "target": {"frames": 124, "canvas": [1344, 768]},
+          "manifest": [{"label": "<Video 1>", "sha256": "video-sha", "role": "edit_source"},
+                       {"label": "<Audio 1>", "sha256": "audio-sha", "paired_with": "<Video 1>"}]}
+    response = {"status": "degraded", "source": "draft", "ir": ir}
+    assert validate_result(normalized, expected, 201, response)["content"]["prompt"] == ir["prompt"]
+    status = 201
+    if fault == "http": status = 503
+    elif fault == "mode": ir["mode"] = "t2va"
+    elif fault == "frames": ir["target"]["frames"] = 120
+    elif fault == "canvas": ir["target"]["canvas"] = [768, 1344]
+    elif fault == "empty": ir["prompt"] = " "
+    elif fault == "missing": ir["manifest"].pop()
+    elif fault == "duplicate": ir["manifest"].append(ir["manifest"][0])
+    elif fault == "hash": ir["manifest"][0]["sha256"] = "wrong"
+    elif fault == "role": ir["manifest"][0]["role"] = "subject"
+    elif fault == "paired_audio": ir["manifest"][1]["paired_with"] = "<Video 2>"
+    elif fault == "soundtrack": ir["prompt"] = "<Audio 1>: weak_reference"
+    with pytest.raises(UpstreamRejected):
+        validate_result(normalized, expected, status, response)

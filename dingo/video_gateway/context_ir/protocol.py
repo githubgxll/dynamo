@@ -87,7 +87,9 @@ def prepare(normalized, task_root, attempt_root, derived_limit):
 def validate_result(normalized, expected, status, response):
     if status not in {200, 201} or not isinstance(response, dict):
         raise UpstreamRejected("context_ir_upstream_rejected")
-    if response.get("status") != "ready" or response.get("source") != "written" or response.get("fallback_reason"):
+    degraded = response.get("status") == "degraded" and response.get("source") == "draft"
+    if not degraded and (response.get("status") != "ready" or response.get("source") != "written"
+                         or response.get("fallback_reason")):
         raise UpstreamRejected("context_ir_degraded_result")
     ir = response.get("ir", {})
     target = ir.get("target", {})
@@ -117,7 +119,9 @@ def validate_result(normalized, expected, status, response):
             allowed = {"weak_reference"} if e["soundtrack_policy"] == "ignore" else {"partially_copy", "fully_copy"}
             if marker is None or marker.group(1) not in allowed:
                 raise UpstreamRejected("context_ir_soundtrack_contract_mismatch")
-    warnings = []
+    # Return the actual fallback draft, never provenance.rejected_written.
+    # Degraded results retain the same public schema and all contract checks.
+    warnings = [{"code": "context_ir_degraded_result"}] if degraded else []
     for e in normalized["references"]:
         if e["kind"] == "video" and (e.get("duration_s") or 0) > normalized["frames"]/24:
             warnings.append({"code": "reference_video_truncated", "index": e["ordinal"]})
@@ -126,3 +130,31 @@ def validate_result(normalized, expected, status, response):
             "references": [{**{k:v for k,v in e.items() if k in {"index", "kind", "sha256", "labels"}},
                             "role": actual[e["labels"][-1]]["role"]} for e in expected],
             "warnings": warnings}
+
+
+def response_usage(response):
+    """Accept only self-consistent aggregate usage; old backends may omit it."""
+    if not isinstance(response, dict):
+        return None
+    detail = response.get("detail")
+    value = response.get("usage")
+    if value is None and isinstance(detail, dict):
+        value = detail.get("usage")
+    keys = ("prompt_tokens", "completion_tokens", "total_tokens", "llm_requests",
+            "requests_with_usage", "requests_without_usage")
+    if not isinstance(value, dict) or any(type(value.get(k)) is not int or not 0 <= value[k] <= 2**63-1 for k in keys):
+        return None
+    if (value["total_tokens"] != value["prompt_tokens"] + value["completion_tokens"]
+            or value["llm_requests"] != value["requests_with_usage"] + value["requests_without_usage"]
+            or type(value.get("complete")) is not bool
+            or value["complete"] != (value["requests_without_usage"] == 0)
+            or (value["requests_with_usage"] == 0 and value["total_tokens"] != 0)):
+        return None
+    result = {k: value[k] for k in (*keys, "complete")}
+    if "prompt_tokens_details" in value:
+        details = value["prompt_tokens_details"]
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        if not value["complete"] or type(cached) is not int or not 0 <= cached <= value["prompt_tokens"]:
+            cached = None
+        result["prompt_tokens_details"] = {"cached_tokens": cached}
+    return result

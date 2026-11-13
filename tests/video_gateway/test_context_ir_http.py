@@ -33,8 +33,11 @@ class Compiler:
             await self.gate.wait()
             w,h=map(int,body['aspect'].split(':'))
             frames=round(body['seconds']*24);frames+=(5-frames%17)%17
-            return web.json_response({'status':'ready','source':'written',
-                'ir':{'mode':'t2va','prompt':'A bird moves through the sky.',
+            return web.json_response({'status':getattr(self,'result_status','ready'),
+                'source':getattr(self,'source','written'), 'fallback_reason':getattr(self,'fallback_reason',None),
+                'usage':getattr(self,'usage',None),
+                'ir':{'mode':'t2va','prompt':getattr(self,'prompt','A bird moves through the sky.'),
+                      'provenance':{'rejected_written':'Unvalidated candidate; do not return.'},
                       'target':{'frames':frames,'canvas':[w,h]},'manifest':[]}},status=self.status)
         finally:
             self.active -= 1
@@ -187,3 +190,72 @@ async def test_durable_response_survives_owner_loss_without_recompile(setup,monk
         assert result['status']=='completed' and compiler.calls==1
     finally:
         await other.stop()
+
+
+@pytest.mark.parametrize('upstream_status,terminal',[(201,'completed'),(502,'failed')])
+async def test_usage_persisted_for_success_failure_and_replay(setup,upstream_status,terminal):
+    compiler,s,client=setup
+    usage=dict(prompt_tokens=100,completion_tokens=30,total_tokens=130,llm_requests=3,
+               requests_with_usage=2,requests_without_usage=1,complete=False)
+    usage['prompt_tokens_details']={'cached_tokens':None}
+    compiler.usage=usage;compiler.status=upstream_status
+    response=await client.post('/v1/context-ir',data=form(),headers={'Idempotency-Key':'usage'})
+    task=await response.json();assert task['usage'] is None
+    result=await wait_task(client,task['id'],terminal)
+    assert result['usage']==usage
+    diag=await (await client.get('/v1/context-ir/'+task['id']+'/diagnostics')).json()
+    assert diag['usage']==usage
+    stored=await s.store.get_task(task['id'])
+    assert stored.task.to_dict()['usage']==usage
+    replay=await client.post('/v1/context-ir',data=form(),headers={'Idempotency-Key':'usage'})
+    assert (await replay.json())['usage']==usage and compiler.calls==1
+
+
+async def test_complete_cached_usage_survives_gateway_query(setup):
+    compiler,s,client=setup
+    usage=dict(prompt_tokens=100,completion_tokens=30,total_tokens=130,llm_requests=2,
+               requests_with_usage=2,requests_without_usage=0,complete=True,
+               prompt_tokens_details={'cached_tokens':80})
+    compiler.usage=usage
+    response=await client.post('/v1/context-ir',data=form())
+    task=await response.json();result=await wait_task(client,task['id'])
+    assert result['usage']==usage
+
+
+async def test_degraded_draft_completes_replays_and_releases_slot_without_new_fields(setup):
+    compiler, s, client = setup
+    normal_task = await (await client.post('/v1/context-ir', data=form())).json()
+    normal = await wait_task(client, normal_task['id'])
+    compiler.result_status = 'degraded'
+    compiler.source = 'draft'
+    compiler.fallback_reason = 'validation_failed'
+    compiler.prompt = 'Actual fallback draft.'
+    compiler.usage = dict(prompt_tokens=100, completion_tokens=30, total_tokens=130, llm_requests=2,
+                          requests_with_usage=2, requests_without_usage=0, complete=True,
+                          prompt_tokens_details={'cached_tokens':80})
+    response = await client.post('/v1/context-ir', data=form(), headers={'Idempotency-Key':'degraded'})
+    assert response.status == 202
+    task = await response.json()
+    result = await wait_task(client, task['id'])
+    assert result.keys() == normal.keys()
+    assert result['content'] == {'prompt':'Actual fallback draft.'}
+    assert result['warnings'] == [{'code':'context_ir_degraded_result'}]
+    assert result['usage'] == compiler.usage
+    assert 'error' not in result
+    diag = await (await client.get('/v1/context-ir/'+task['id']+'/diagnostics')).json()
+    assert diag['upstream'] == {'status':'degraded','source':'draft','rule_codes':[]}
+    assert diag['usage'] == compiler.usage
+    replay = await client.post('/v1/context-ir', data=form(), headers={'Idempotency-Key':'degraded'})
+    assert replay.status == 200
+    assert await replay.json() == result
+    assert compiler.calls == 2
+    for _ in range(100):
+        if not await s.store.records('backends/h3/slots/'): break
+        await asyncio.sleep(.02)
+    assert not await s.store.records('backends/h3/slots/')
+    compiler.result_status = 'ready'
+    compiler.source = 'written'
+    compiler.fallback_reason = None
+    next_task = await (await client.post('/v1/context-ir', data=form())).json()
+    assert (await wait_task(client, next_task['id']))['warnings'] == []
+    assert compiler.calls == 3

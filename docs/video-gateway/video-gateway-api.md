@@ -775,3 +775,11 @@ context_ir:
 同一后端的多个 Gateway 应使用一致配置；后端配置修订不一致时会阻止领取任务。
 升级应安排无在途 ContextIR 任务的窗口，核对所有 Gateway 的配置一致后，
 再验证目标并发下的成功率、排队耗时和资源占用。
+
+
+## ContextIR调用用量
+
+ContextIR异步任务查询返回LLM风格的顶层 `usage`，其中 `prompt_tokens`、
+`completion_tokens`、`total_tokens` 汇总整次任务所有Qwen调用，包含复审、纠错和重试。
+尚未获得统计时为 `null`，统计不完整时 `complete=false`；上游不要按不完整值直接结算。
+字段、幂等计数和失败任务口径见[ContextIR接口说明](context-ir/03-customizations-and-gateway-api.md#qwen调用用量与上游计费)。
