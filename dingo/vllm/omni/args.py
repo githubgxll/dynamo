@@ -91,7 +91,6 @@ class OmniDiffusionKwargs:
     # CLI / env vars without monkey-patching _build_omni_kwargs.
     diffusion_compile_dynamic: bool = False
     enable_diffusion_pipeline_profiler: bool = False
-    diffusion_attention_backend: Optional[str] = None
     diffusion_quantization_config: Optional[dict] = None
     # Opt-in diffusion scheduler controls. None preserves the upstream default.
     step_execution: bool = False
@@ -118,10 +117,6 @@ class OmniParallelKwargs:
     use_hsdp: bool = False
     hsdp_shard_size: int = -1
     hsdp_replicate_size: int = 1
-    # Text-encoder tensor parallelism and VAE parallel mode are DiffusionParallelConfig
-    # fields that Dynamo previously injected via a runtime wrapper.
-    text_encoder_tp_size: int = 1
-    vae_parallel_mode: str = "tile"
 
 
 class OmniArgGroup(ArgGroup):
@@ -397,17 +392,6 @@ class OmniArgGroup(ArgGroup):
         )
         add_argument(
             g,
-            flag_name="--diffusion-attention-backend",
-            env_var="DYN_OMNI_DIFFUSION_ATTENTION_BACKEND",
-            default=None,
-            help=(
-                "Attention backend for the diffusion transformer. Supported "
-                "values: FLASH_ATTN, FLASH_ATTN_3, TORCH_SDPA, CUTLASS, "
-                "TRITON_ATTN"
-            ),
-        )
-        add_argument(
-            g,
             flag_name="--diffusion-quantization-config",
             env_var="DYN_OMNI_DIFFUSION_QUANTIZATION_CONFIG",
             default=None,
@@ -517,25 +501,6 @@ class OmniArgGroup(ArgGroup):
             default=1,
             arg_type=int,
             help="Number of ranks used for VAE patch/tile parallelism during decode/encode.",
-        )
-        add_argument(
-            g,
-            flag_name="--text-encoder-tp-size",
-            env_var="DYN_OMNI_TEXT_ENCODER_TP_SIZE",
-            default=1,
-            arg_type=int,
-            help=(
-                "Number of ranks used to tensor-parallel shard the diffusion "
-                "text encoder."
-            ),
-        )
-        add_argument(
-            g,
-            flag_name="--vae-parallel-mode",
-            env_var="DYN_OMNI_VAE_PARALLEL_MODE",
-            default="tile",
-            arg_type=str,
-            help=("VAE parallelism mode for diffusion stages (for example: tile)."),
         )
         add_negatable_bool_argument(
             g,
@@ -692,6 +657,12 @@ class OmniConfig(DynamoRuntimeConfig):
 
     def validate(self) -> None:
         DynamoRuntimeConfig.validate(self)
+        if self.diffusion.layerwise_num_gpu_layers is not None:
+            raise ValueError(
+                "--layerwise-num-gpu-layers is no longer supported by vLLM-Omni. "
+                "Remove it or unset DYN_OMNI_LAYERWISE_NUM_GPU_LAYERS; use "
+                "--enable-layerwise-offload without a layer-count override."
+            )
         capacity = self.diffusion.max_num_seqs
         if capacity is not None and (
             isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1

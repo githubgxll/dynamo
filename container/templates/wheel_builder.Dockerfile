@@ -685,9 +685,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     uv build --wheel --out-dir /opt/dynamo/dist && \
     cd /opt/dynamo/lib/bindings/python && \
     if [ "$ENABLE_MEDIA_FFMPEG" = "true" ]; then \
-        maturin build --release --locked --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
+        maturin build --release --locked --features "full-runtime,media-ffmpeg,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy,nvtx{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
     else \
-        maturin build --release --locked --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
+        maturin build --release --locked --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy,nvtx{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
     fi && \
     {% if device == "cuda" -%}
     auditwheel repair --exclude 'lib*.so*' \
