@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -16,6 +17,31 @@ from dingo.common.video_timing_schemas import (
     MODEL_EXECUTION_KEY,
     normalize_model_execution,
 )
+
+
+def input_usage(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Uploaded reference usage, independent of generation attempts and output."""
+    metadata = request.get("reference_metadata")
+    references = metadata if isinstance(metadata, list) else []
+    kinds = request.get("reference_kinds")
+    if not isinstance(kinds, list):
+        kinds = [r.get("kind") if isinstance(r, Mapping) else None for r in references] if isinstance(metadata, list) else None
+    if kinds is None or any(k not in ("image", "video", "audio") for k in kinds):
+        return {"image_count": None, "video_duration_seconds": None}
+    videos = [r for r in references if isinstance(r, Mapping) and r.get("kind") == "video"]
+    durations = [r.get("duration_s") for r in videos]
+    seconds = None
+    if not kinds.count("video") and not videos:
+        seconds = 0.0
+    elif len(videos) == kinds.count("video"):
+        try:
+            if all(type(v) in (int, float) and v >= 0 and math.isfinite(v) for v in durations):
+                total = math.fsum(durations)
+                if math.isfinite(total):
+                    seconds = total
+        except (OverflowError, ValueError):
+            pass
+    return {"image_count": kinds.count("image"), "video_duration_seconds": seconds}
 
 
 def now_ms() -> int:
@@ -147,6 +173,8 @@ class VideoTask:
             "id": self.id,
             "object": "video",
             "model": self.model,
+            "task": self.normalized_request.get("task"),
+            "input_usage": input_usage(self.normalized_request),
             "status": public_status.value,
             "progress": 100 if self.status == TaskStatus.COMPLETED else 0,
             "created_at": self.created_at_ms // 1000,
