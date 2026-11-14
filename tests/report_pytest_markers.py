@@ -209,7 +209,7 @@ STUB_MODULES = [
     "sglang.srt.sampling",
     "sglang.srt.sampling.custom_logit_processor",
     "sglang.srt.utils",
-    "sglang.srt.utils.hf_transformers_utils",
+    "sglang.srt.hf_transformers",
     "sglang.srt.utils.network",
     "sglang.srt.utils.server_args_config_parser",
     "sglang.srt.utils.video_decoder",

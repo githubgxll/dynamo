@@ -21,7 +21,7 @@ from dynamo._internal import ModelDeploymentCard
 from dynamo.llm import ModelCardInstanceId, PythonAsyncEngine, RoutedEngine
 from dynamo.llm.exceptions import InvalidArgument, Unknown
 from sglang.srt.parser.conversation import chat_template_exists
-from sglang.srt.utils.hf_transformers_utils import (
+from sglang.srt.hf_transformers import (
     get_config,
     get_generation_config,
     get_tokenizer,

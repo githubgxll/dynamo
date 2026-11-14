@@ -117,7 +117,59 @@ pip install /tmp/ai_dynamo_runtime*.whl
 
 cd /sgl-workspace/dynamo/
 pip install -e .
+python container/deps/sglang/install_dingo_python_bootstrap.py
 ```
+
+## Kimi-K3.1 and custom SGLang images
+
+Kimi-K3.1 requires the native runtime built from this checkout, which includes
+the `kimi_k31` tokenizer dispatch. Installing only the Python application wheel
+does not update the native tokenizer. The model's configuration, vocabulary,
+and special-token IDs must remain unchanged.
+
+When using a vendor SGLang image, retain its SGLang, Torch, and CUDA environment;
+do not install the SGLang extra over that environment. Run the workers with the
+vendor image's Python interpreter. If Dingo is installed in a separate virtual
+environment, its site-packages must be added without taking precedence over the
+vendor SGLang/Torch packages, while the `dynamo` namespace must select the new
+Dingo runtime rather than an older SDK in the base image. An inline `python -c`
+bootstrap is insufficient because spawned SGLang processes start fresh Python
+interpreters.
+
+In engine mode, where SGLang publishes KV events and Dingo subscribes, use:
+
+```bash
+--kv-events-config '{"publisher":"zmq","topic":"kv-events","endpoint":"tcp://*:5557"}'
+```
+
+The wildcard makes SGLang bind its publisher; Dingo connects to the local
+publisher. A non-wildcard endpoint makes SGLang connect instead. Do not apply
+this change blindly to sidecar mode, where a separate publisher may own the
+bind endpoint.
+
+Validate that `/v1/models` advertises the intended model and that an actual
+inference request succeeds; a Ready Pod or an open TCP port alone is not proof
+that model loading and tokenizer initialization succeeded.
+
+
+### Startup hook installation
+
+Fresh SGLang images built from this repository install the startup hook
+automatically. It imports `logging.config` in every interpreter, including
+spawned children. To retrofit an existing image, run the installer with the
+interpreter that will run SGLang:
+
+```bash
+"$SGLANG_PYTHON" container/deps/sglang/install_dingo_python_bootstrap.py
+
+# Optional: select Dingo from a separate, compatible Python environment.
+export DINGO_SITE_PACKAGES="$("$DINGO_PYTHON" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+```
+
+`SGLANG_PYTHON` and `DINGO_PYTHON` are the corresponding interpreter paths.
+Leave `DINGO_SITE_PACKAGES` unset for a normal single-environment installation.
+The environment variable is inherited by spawned children; no per-command
+Python bootstrap or build-specific absolute path is needed.
 
 ## Feature Support Matrix
 

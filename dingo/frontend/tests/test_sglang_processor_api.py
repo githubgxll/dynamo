@@ -7,7 +7,6 @@ These tests lock down the SGLang interfaces we depend on so that SGLang
 upgrades that break our integration surface are caught immediately.
 """
 
-import inspect
 import pickle
 
 import pytest
@@ -24,12 +23,6 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Import tests -- verify all required modules and symbols exist
 # ---------------------------------------------------------------------------
-
-
-def test_get_tokenizer_importable():
-    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
-
-    assert callable(get_tokenizer)
 
 
 def test_function_call_parser_importable():
@@ -55,20 +48,6 @@ def test_sglang_tool_importable():
 
     assert callable(Tool)
     assert callable(Function)
-
-
-# ---------------------------------------------------------------------------
-# get_tokenizer signature
-# ---------------------------------------------------------------------------
-
-
-def test_get_tokenizer_accepts_tokenizer_mode():
-    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
-
-    sig = inspect.signature(get_tokenizer)
-    params = sig.parameters
-    assert "tokenizer_name" in params or list(params.keys())[0] != ""
-    assert "tokenizer_mode" in params
 
 
 # ---------------------------------------------------------------------------

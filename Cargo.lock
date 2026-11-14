@@ -3162,8 +3162,6 @@ dependencies = [
 [[package]]
 name = "dynamo-tokenizers"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cac05c279739c1c192898450ff2445e2e65e0ab99d4682ab664072efb68e45cb"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -3177,6 +3175,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "tempfile",
  "tiktoken-rs 0.9.1",
  "tokenizers 0.21.4",
  "tracing",

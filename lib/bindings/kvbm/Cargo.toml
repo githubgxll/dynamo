@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+[patch.crates-io]
+# This binding is a separate workspace; also redirect transitive tokenizer users.
+dynamo-tokenizers = { path = "../../tokenizers" }
+
 [workspace]
 
 [package]

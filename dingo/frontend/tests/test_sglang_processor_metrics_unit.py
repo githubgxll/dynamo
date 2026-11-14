@@ -139,7 +139,7 @@ def _install_sglang_stubs(install_module):
     _install_module(install_module, "sglang.srt.utils")
     _install_module(
         install_module,
-        "sglang.srt.utils.hf_transformers_utils",
+        "sglang.srt.hf_transformers",
         get_tokenizer=lambda *args, **kwargs: None,
         get_config=lambda *args, **kwargs: None,
         get_generation_config=lambda *args, **kwargs: None,
@@ -166,6 +166,7 @@ class _PostProcessor:
 
 def _load_processor_module(module_stubs):
     install_module, remove_module = module_stubs
+    http_error = type("HttpError", (Exception,), {})
     _install_sglang_stubs(install_module)
     _install_module(install_module, "dynamo._internal", ModelDeploymentCard=object)
     _install_module(install_module, "dingo.common.multimodal")
@@ -198,13 +199,15 @@ def _load_processor_module(module_stubs):
         install_module,
         "dynamo.llm",
         ModelCardInstanceId=object,
+        HttpError=http_error,
+        ModelType=object,
         PythonAsyncEngine=object,
         RoutedEngine=object,
     )
     _install_module(
         install_module,
         "dynamo.llm.exceptions",
-        HttpError=type("HttpError", (Exception,), {}),
+        HttpError=http_error,
         InvalidArgument=type("InvalidArgument", (Exception,), {}),
         Unknown=type("Unknown", (Exception,), {}),
     )

@@ -35,7 +35,7 @@ from sglang.srt.constrained.xgrammar_backend import (
 )
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 from sglang.srt.function_call.json_array_parser import JsonArrayParser
-from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+from sglang.srt.hf_transformers import get_tokenizer
 
 import dingo.frontend.sglang_prepost as sglang_prepost_module
 import dingo.frontend.sglang_processor as sglang_processor_module

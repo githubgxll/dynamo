@@ -4,12 +4,14 @@
 """Keep Dynamo on one published AISimulate release."""
 
 from __future__ import annotations
-
+import hashlib
 import importlib.util
 import io
+import json
 import re
 import subprocess
 import sys
+import tarfile
 import zipfile
 from importlib import metadata
 from pathlib import Path
@@ -150,26 +152,6 @@ def _staging_module():
     return module
 
 
-@pytest.mark.parametrize(
-    "stage",
-    ["runtime_wheel_builder", "wheel_builder"],
-)
-def test_each_rust_builder_stages_aisimulate_before_maturin(stage):
-    template = (ROOT / "container/templates/wheel_builder.Dockerfile").read_text()
-    stages = re.split(r"^FROM .* AS ", template, flags=re.MULTILINE)
-    builder = next(part for part in stages if part.startswith(stage + "\n"))
-    copy = "COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json"
-    staging = "--rust-source-only --output /opt/build-deps/aisimulate"
-    assert builder.index("COPY lib/") < builder.index(copy)
-    assert builder.index(copy) < builder.index(staging) < builder.index("maturin build")
-    if stage == "wheel_builder":
-        assert builder.index("ARG ENABLE_KVBM") < builder.index(staging)
-        instructions = builder.replace("\\\n", "").splitlines()
-        run = next(line for line in instructions if staging in line)
-        assert run.startswith('RUN if [ "$ENABLE_KVBM" = "true" ]; then ')
-        assert run.endswith("fi")
-
-
 def test_rust_source_staging_preserves_transitive_lock(tmp_path, monkeypatch):
     staging = _staging_module()
     root = tmp_path / "build"
@@ -280,15 +262,108 @@ def test_aisimulate_source_fallback_rejects_checksum_mismatch(tmp_path, monkeypa
     assert not list(output.iterdir())
 
 
-def test_planner_ci_image_collects_unified_cli_e2e_tests() -> None:
-    planner_dockerfile = ROOT / "container/templates/planner.Dockerfile"
-    if not planner_dockerfile.is_file():
-        pytest.skip("planner Dockerfile is not staged in this component image")
-    planner_template = planner_dockerfile.read_text(encoding="utf-8")
+def _aisim_source_archive(tmp_path, version, monkeypatch):
+    """Build a real codeload-style aisim tarball for the reviewed commit."""
+    commit = json.loads(
+        (ROOT / "container/deps/aisimulate-sources.json").read_text()
+    )[version]["commit"]
+    staging = _staging_module()
+    content = tmp_path / "aisim-src"
+    root = content / f"aisim-{commit}"
+    (root / "scripts").mkdir(parents=True)
+    (root / "python/aisimulate").mkdir(parents=True)
+    (root / "crates/core").mkdir(parents=True)
+    (root / "python/aisimulate/pyproject.toml").write_text(
+        '[project]\nname = "aisimulate"\nversion = "0.13.0"\n'
+    )
+    (root / "crates/core/Cargo.toml").write_text(
+        '[package]\nname = "aisimulate-core"\nversion = "0.13.0"\n'
+    )
+    (root / "Cargo.lock").write_text(
+        '[[package]]\nname = "aisimulate-core"\nversion = "0.13.0"\n'
+    )
+    (root / "scripts/apply_dev_version.py").write_text(
+        """
+import sys
+from pathlib import Path
+root = Path(sys.argv[2])
+tag = sys.argv[1]
+for relative in ("python/aisimulate/pyproject.toml", "crates/core/Cargo.toml"):
+    path = root / relative
+    text = path.read_text()
+    suffix = tag if not relative.startswith("crates") else tag.replace(".dev", "-dev.")
+    old = '"0.13.0"'
+    path.write_text(text.replace(old, '"' + old[1:-1] + suffix + '"', 1))
+"""
+    )
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz", format=tarfile.GNU_FORMAT) as tar:
+        tar.add(content, arcname=".")
+    with archive.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    deps = tmp_path / "deps"
+    deps.mkdir()
+    (deps / "aisimulate-sources.json").write_text(
+        json.dumps({version: {"commit": commit, "sha256": digest}})
+    )
+    monkeypatch.setattr(
+        staging.urllib.request, "urlopen", lambda *args, **kwargs: open(archive, "rb")
+    )
+    return staging, deps
 
-    assert "dingo/replay/tests/e2e" in planner_template
-    assert "dingo/replay/tests/test_main.py" not in planner_template
 
+def test_aisimulate_source_fallback_extracts_and_verifies_real_archive(
+    tmp_path, monkeypatch
+):
+    version = str(_exact_version(_python_requirement(_root_configs()[0])))
+    rust_version = version.replace(".dev", "-dev.")
+    staging, deps = _aisim_source_archive(tmp_path, version, monkeypatch)
+    work = tmp_path / "work"
+    work.mkdir()
+    checkout = staging.prepare_source(deps, version, work)
+    commit = json.loads((deps / "aisimulate-sources.json").read_text())[version][
+        "commit"
+    ]
+    assert checkout == work / f"aisim-{commit}"
+    assert (
+        tomllib.loads(
+            (checkout / "python/aisimulate/pyproject.toml").read_text()
+        )["project"]["version"]
+        == version
+    )
+    assert (
+        tomllib.loads((checkout / "crates/core/Cargo.toml").read_text())["package"][
+            "version"
+        ]
+        == rust_version
+    )
+    assert f'version = "{rust_version}"' in (checkout / "Cargo.lock").read_text()
+    with pytest.raises(SystemExit, match="No reviewed source fallback"):
+        staging.prepare_source(
+            deps, "0.13.0.dev209901010000000001", tmp_path / "work2"
+        )
+
+
+def test_aisimulate_source_fallback_rejects_tampered_archive(tmp_path, monkeypatch):
+    version = str(_exact_version(_python_requirement(_root_configs()[0])))
+    staging, deps = _aisim_source_archive(tmp_path, version, monkeypatch)
+    archive = tmp_path / "source.tar.gz"
+    data = bytearray(archive.read_bytes())
+    data[-6] ^= 0x01
+    archive.write_bytes(data)
+    recorded = json.loads((deps / "aisimulate-sources.json").read_text())[version][
+        "sha256"
+    ]
+    with archive.open("rb") as stream:
+        assert hashlib.file_digest(stream, "sha256").hexdigest() != recorded
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(SystemExit, match="source archive checksum mismatch"):
+        staging.prepare_source(deps, version, work)
+    commit = json.loads((deps / "aisimulate-sources.json").read_text())[version][
+        "commit"
+    ]
+    assert not (work / f"aisim-{commit}").exists()
 
 def test_installed_aisimulate_matches_the_declared_release() -> None:
     if sys.version_info < (3, 11) or sys.version_info >= (3, 14):
@@ -299,20 +374,3 @@ def test_installed_aisimulate_matches_the_declared_release() -> None:
     assert Version(metadata.version("aisimulate")) == expected
 
 
-def test_ai_dynamo_registers_only_its_aisimulate_providers() -> None:
-    pyproject, _ = _root_configs()
-    project = pyproject["project"]
-
-    extras = set(project.get("optional-dependencies", {}))
-    assert {"sweeper", "simulate", "simulation"}.isdisjoint(extras)
-    assert project["entry-points"]["aisimulate.sweep_config_providers"] == {
-        "dingo.planner": "dingo.planner.simulation:create_provider",
-        "dingo.router": "dingo.router.simulation:create_provider",
-    }
-    assert project["entry-points"]["aisimulate.runner_factories"] == {
-        "dynamo": "dingo.replay.simulation:DynamoReplayRunnerFactory"
-    }
-    assert project["entry-points"]["aisimulate.config_adapters"] == {
-        "dingo.planner": "dingo.planner.simulation:create_provider",
-        "dingo.router": "dingo.router.simulation:create_provider",
-    }

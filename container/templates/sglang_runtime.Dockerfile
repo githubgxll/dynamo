@@ -274,6 +274,11 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 {% endif %}
 {% endif %}
 
+# Initialize logging in fresh/spawned Python processes. Mixed-environment
+# deployments can explicitly select their Dingo SDK with DINGO_SITE_PACKAGES.
+RUN --mount=type=bind,source=./container/deps/sglang/install_dingo_python_bootstrap.py,target=/tmp/install_dingo_python_bootstrap.py,readonly \
+    python3 /tmp/install_dingo_python_bootstrap.py
+
 {% if device == "cuda" %}
 # Copy the local FFmpeg build (NVENC/VP9) from wheel_builder: shared libs
 # (libav*.so*, libsw*.so*) + libvpx + the in-tree CLI binary that imageio targets

@@ -36,7 +36,7 @@ def prepare_source(deps, version, work):
         raise SystemExit("AISimulate source must be an immutable commit")
     print(f"Building AISimulate {version} from {commit}", flush=True)
     archive = work / "source.tar.gz"
-    url = f"https://codeload.github.com/ai-dynamo/aisimulate/tar.gz/{commit}"
+    url = f"https://codeload.github.com/ai-dynamo/aisim/tar.gz/{commit}"
     for attempt in range(3):
         try:
             with (
@@ -62,7 +62,7 @@ def prepare_source(deps, version, work):
             if not set(Path(m.name).parts) & {".agents", ".claude"}
         ]
         tar.extractall(work, members=members, filter="data")
-    checkout = work / f"aisimulate-{commit}"
+    checkout = work / f"aisim-{commit}"
     run(
         sys.executable,
         str(checkout / "scripts/apply_dev_version.py"),
