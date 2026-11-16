@@ -63,6 +63,75 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(data["totals"]["passed"], 5)
 
+    def test_rust_isolated_child_summary_is_not_counted_twice(self):
+        # assert_isolated_success reprints the child libtest report inside the
+        # parent's failure stdout, so the echoed child summary appears BEFORE
+        # the parent binary's own `test result:` summary in the same segment.
+        log = "\n".join(
+            [
+                "running 4090 tests",
+                "test preprocessor::tests::gpt_oss_harmony_isolated ... FAILED",
+                "",
+                "failures:",
+                "---- preprocessor::tests::gpt_oss_harmony_isolated stdout ----",
+                "thread panicked at 'isolated test failed' lib/runtime/src/test_utils.rs:",
+                "running 1 test",
+                "test tests::gpt_oss_harmony_isolated ... FAILED",
+                "failures:",
+                "    tests::gpt_oss_harmony_isolated",
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured;",
+                "note: test exited unsuccessfully",
+                "note: run with `RUST_BACKTRACE=1`...",
+                "test result: FAILED. 4089 passed; 1 failed; 17 ignored; 0 measured; 42 filtered out;",
+            ]
+        )
+        code, data = self.report("rust", [(101, log, None, False)])
+        self.assertEqual(code, 1)
+        self.assertEqual(data["totals"]["passed"], 4089)
+        self.assertEqual(data["totals"]["failed"], 1)
+        self.assertEqual(data["totals"]["ignored"], 17)
+
+    def test_rust_first_segment_owns_child_summary_then_second_binary(self):
+        # First binary fails via an isolated child whose echoed summary precedes
+        # the parent's; a cargo header then starts a second top-level binary
+        # whose own summary must still be counted.
+        log = "\n".join(
+            [
+                "running 10 tests",
+                "test tools::isolated_child ... FAILED",
+                "failures:",
+                "running 1 test",
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
+                "test result: FAILED. 9 passed; 1 failed; 2 ignored;",
+                "     Running `target/debug/deps/dynamo_runtime-xyz`",
+                "running 4 tests",
+                "test result: ok. 4 passed; 0 failed; 0 ignored;",
+            ]
+        )
+        code, data = self.report("rust", [(101, log, None, False)])
+        self.assertEqual(code, 1)
+        self.assertEqual(data["totals"]["passed"], 13)
+        self.assertEqual(data["totals"]["failed"], 1)
+        self.assertEqual(data["totals"]["ignored"], 2)
+
+    def test_rust_binaries_after_cargo_headers_are_counted(self):
+        log = "\n".join(
+            [
+                "running 3 tests",
+                "test result: ok. 3 passed; 0 failed; 1 ignored;",
+                "     Running `target/debug/deps/dynamo_llm-abc`",
+                "running 2 tests",
+                "test result: ok. 2 passed; 0 failed; 0 ignored;",
+                "   Doc-tests dynamo_llm",
+                "running 1 test",
+                "test result: ok. 0 passed; 0 failed; 1 ignored;",
+            ]
+        )
+        code, data = self.report("rust", [(0, log, None, False)])
+        self.assertEqual(code, 0)
+        self.assertEqual(data["totals"]["passed"], 5)
+        self.assertEqual(data["totals"]["ignored"], 2)
+
     def test_pytest_collection_error_is_counted(self):
         code, data = self.report(
             "python",

@@ -27,6 +27,17 @@ mkdir -p "$LOGDIR" || exit 1
 : > "$LOGDIR/commands.jsonl"
 echo "Source: $SRC_ROOT; commit: $(git rev-parse HEAD); toolchain: $TOOLCHAIN; python: $PY"
 echo "日志目录: $LOGDIR"
+if [[ "$TEST_KIND" == rust ]]; then
+    # Download once with the runner's network configuration, not in env-cleared children.
+    if [[ -n "${DYNAMO_TEST_HARMONY_VOCAB:-}" ]]; then
+        export TIKTOKEN_RS_CACHE_DIR="$(dirname "$DYNAMO_TEST_HARMONY_VOCAB")"
+    else
+        export TIKTOKEN_RS_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dynamo-tests/harmony"
+    fi
+    unset TIKTOKEN_ENCODINGS_BASE
+    export DYNAMO_TEST_HARMONY_VOCAB
+    DYNAMO_TEST_HARMONY_VOCAB="$("$PY" "$SCRIPT_DIR/prepare_harmony_vocab.py" "$TIKTOKEN_RS_CACHE_DIR")" || exit 1
+fi
 record() {
     "$PY" - "$LOGDIR/commands.jsonl" "$@" <<'END_RECORD'
 import json, sys

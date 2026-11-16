@@ -88,6 +88,15 @@ pub(crate) fn isolated_command(exact_test_name: &str) -> IsolatedCommand {
         .tempdir()
         .expect("create isolated tokenizer cache");
     command.env("TIKTOKEN_RS_CACHE_DIR", tokenizer_cache.path());
+    if let Some(vocabulary) = std::env::var_os("DYNAMO_TEST_HARMONY_VOCAB") {
+        // Only prepared test data crosses this boundary, never proxy credentials or
+        // arbitrary tokenizer configuration. Each child owns its copy and cache.
+        std::fs::copy(
+            vocabulary,
+            tokenizer_cache.path().join("fb374d419588a4632f3f557e76b4b70aebbca790"),
+        )
+        .expect("copy prepared Harmony test vocabulary");
+    }
     // The parent harness owns ignoring tests; explicitly rerun its selected test in the child.
     command.args([
         "--exact",

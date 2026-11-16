@@ -159,3 +159,30 @@ SKIP_MODEL_DOWNLOAD=1 QUICK_MODE=full bash tests/router/run-all-tests-oneclick.s
 
 > `standard` 模式自动设 `SKIP_MODEL_DOWNLOAD=1`，无需手动指定。
 > `SKIP_MODEL_DOWNLOAD=1` 可单独与 `full` 叠加，跑 Rust 集成 + Python 单元 + Python 集成 04/05，但跳过 06/07/08 和模型下载。
+
+## Harmony 续写测试与结果统计
+
+Rust 测试启动脚本会在测试进程启动前准备 `o200k_base.tiktoken`，
+并校验固定 SHA-256。默认缓存在
+`${XDG_CACHE_HOME:-$HOME/.cache}/dynamo-tests/harmony`；有效缓存可离线复用。
+该词表不是模型权重，`SKIP_RUNTIME_BUILD=1` 不会跳过准备步骤。
+准备失败会在启动测试前报错，不再依赖每个隔离子进程临时联网下载。
+
+隔离子进程仍清空代理、凭据和其他测试的解析配置，只接收
+`DYNAMO_TEST_HARMONY_VOCAB` 指定的固定测试数据，并复制到私有临时目录。
+词表由解析器再次校验；临时目录在子进程结束后清理。
+解析器初始化失败时，流返回明确错误，不再透传可能含推理内容和控制标记的原始文本。
+
+直接运行 GPT-OSS 单用例时，先准备词表：
+
+```bash
+python3 tests/scripts/prepare_harmony_vocab.py /tmp/dynamo-harmony-vocab
+unset TIKTOKEN_ENCODINGS_BASE
+export TIKTOKEN_RS_CACHE_DIR=/tmp/dynamo-harmony-vocab
+export DYNAMO_TEST_HARMONY_VOCAB="$TIKTOKEN_RS_CACHE_DIR/fb374d419588a4632f3f557e76b4b70aebbca790"
+cargo +1.96.1 test --locked -p dynamo-llm --lib \
+  preprocessor::tests::gpt_oss_continuations_keep_the_rendered_channel -- --exact
+```
+
+Rust 统计按 Cargo 的顶层测试二进制边界累计，使用该二进制最后一条
+`test result:`，不再把父进程失败输出中回显的隔离子进程结果重复计入。

@@ -16,13 +16,38 @@ def summarize(directory, kind):
         counts = dict(passed=0, failed=0, errors=0, ignored=0, skipped=0, deselected=0)
         log = Path(row["log"]).read_text(errors="replace")
         if kind == "rust":
-            for match in re.finditer(
-                r"^test result: .*? (\d+) passed; (\d+) failed; (\d+) ignored;",
-                log,
-                re.M,
-            ):
+            # libtest bounds each binary's report with `running N tests` ... `test result:`,
+            # but isolated child reruns (--exact --nocapture) echo their own full report
+            # inside the parent's failure output, with no cargo header in between.
+            # Cargo announces every top-level binary with a `Running`/`Doc-tests` header,
+            # so segments split by those headers are top-level binaries and the LAST
+            # `test result:` line in a segment is the parent binary's own summary; any
+            # child summaries echoed before it are dropped. Legacy logs whose summaries
+            # carry no `running` line at all are accumulated verbatim.
+            summary = re.compile(
+                r"test result: .*? (\d+) passed; (\d+) failed; (\d+) ignored;"
+            )
+            segments = re.split(r"(?=^\s+(?:Running|Doc-tests) )", log, flags=re.M)
+            saw_running = any(re.search(r"^running \d+ tests?\b", seg, re.M) for seg in segments)
+            for segment in segments:
+                if not re.search(r"^running \d+ tests?\b", segment, re.M):
+                    continue  # legacy bare-summary input is handled below
+                candidates = [
+                    line for line in segment.splitlines() if summary.match(line)
+                ]
+                if not candidates:
+                    continue
+                match = summary.match(candidates[-1])
                 for key, number in zip(("passed", "failed", "ignored"), match.groups()):
                     counts[key] += int(number)
+            if not saw_running:
+                for match in re.finditer(
+                    r"^test result: .*? (\d+) passed; (\d+) failed; (\d+) ignored;",
+                    log,
+                    re.M,
+                ):
+                    for key, number in zip(("passed", "failed", "ignored"), match.groups()):
+                        counts[key] += int(number)
         elif not row.get("omitted"):
             row["report_complete"] = False
             if row.get("xml") and Path(row["xml"]).exists():

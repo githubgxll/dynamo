@@ -4311,10 +4311,12 @@ where
                                     error = %error,
                                     family,
                                     choice = original.index,
-                                    "unified parser construction failed; passing choice through"
+                                    "unified parser construction failed"
                                 );
-                                emitted.push(original);
-                                continue;
+                                yield Annotated::from_error(format!(
+                                    "failed to initialize {family} output parser: {error:#}"
+                                ));
+                                return;
                             }
                         }
                     }
@@ -4539,6 +4541,27 @@ pub(crate) mod tests {
             model_eos: Vec::new(),
         };
         Annotated::from_data(response)
+    }
+
+    #[tokio::test]
+    async fn initialization_failure_never_exposes_unparsed_output() {
+        let responses = apply_stream_with_policy(
+            stream::iter([
+                chunk("<|channel|>analysis<|message|>private thought", false),
+                chunk("<|return|>", true),
+            ]),
+            None,
+            GuidedToolConstraint::None,
+            UnifiedParserStartingState::None,
+            "missing-parser-for-test",
+            true,
+            UnifiedRequestPolicy::default(),
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(responses.iter().any(|response| response.is_error()));
+        assert!(logical_events(&responses).is_empty());
     }
 
     fn weather_tools() -> Vec<ToolDefinition> {
