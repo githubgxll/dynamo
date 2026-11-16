@@ -694,6 +694,7 @@ fn serialize_chat_completion_response<S, Inner>(
     nvext: &Option<serde_json::Value>,
     prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
     tool_call_completion: &[ToolCallCompletion],
+    model_eos: &[u32],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -731,6 +732,12 @@ where
             serde_json::to_value(tool_call_completion).map_err(serde::ser::Error::custom)?,
         );
     }
+    if !model_eos.is_empty() {
+        map.insert(
+            "model_eos".to_string(),
+            serde_json::to_value(model_eos).map_err(serde::ser::Error::custom)?,
+        );
+    }
 
     let mut ser_map = serializer.serialize_map(Some(map.len()))?;
     for (key, value) in map {
@@ -746,6 +753,7 @@ impl Serialize for NvCreateChatCompletionResponse {
             &self.nvext,
             self.prompt_logprobs.as_deref(),
             &[],
+            &[],
             serializer,
         )
     }
@@ -753,13 +761,14 @@ impl Serialize for NvCreateChatCompletionResponse {
 
 impl Serialize for NvCreateChatCompletionStreamResponse {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Metrics and prompt logprobs stay internal. Tool completion evidence
-        // crosses transport boundaries and is stripped by the HTTP SSE converter.
+        // Metrics and prompt logprobs stay internal. Tool completion and model EOS
+        // evidence cross transport boundaries; the HTTP SSE converter strips both.
         serialize_chat_completion_response(
             &self.inner,
             &self.nvext,
             None,
             &self.tool_call_completion,
+            &self.model_eos,
             serializer,
         )
     }
@@ -1163,7 +1172,11 @@ impl NvCreateChatCompletionRequest {
         // none for stream_options
         validate::validate_temperature(self.inner.temperature)?;
         validate::validate_top_p(self.compatible_top_p())?;
-        let effective_tools = validate::validated_effective_tools(&self.inner)?;
+        // Responses-origin requests validate tool definitions through the
+        // namespace-aware path (see `validated_effective_tools`): qualified
+        // names are an internal representation whose namespace and leaf parts
+        // must be checked separately from the flat Chat Completions rules.
+        let effective_tools = self.validated_effective_tools()?;
         validate::validate_tool_choice(&self.inner.tool_choice, Some(effective_tools.as_ref()))?;
         // none for parallel_tool_calls
         validate::validate_user(self.inner.user.as_deref())?;

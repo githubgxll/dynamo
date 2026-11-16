@@ -84,29 +84,18 @@ class VideoNvExt(BaseModel):
     aspect_ratio: StrictStr | None = None
     """
     Named output aspect ratio for video generation (e.g. "16:9", "1:1").
-
     Required by some models (e.g. MiniMax-H3 T2VA) when the pipeline cannot
-    derive it from pixel dimensions alone; when provided it is forwarded to the
-    diffusion sampling params as ``extra_args.aspect_ratio``.
+    derive it from pixel dimensions alone; when provided it is forwarded to
+    the diffusion sampling params as ``extra_args.aspect_ratio``.
     """
     frame_indices: list[StrictInt] | None = None
     """
     Per-keyframe semantic indices for FL2VA-style image-to-video generation.
-
     The list length must match the number of reference images and use
     model-native semantics (e.g. ``[0]`` for first frame, ``[-1]`` for last
     frame, ``[0, -1]`` for both). When ``input_references`` carries multiple
     images, the handler attaches them to ``multi_modal_data.image`` in order
     and writes this list to ``extra_args.frame_indices``.
-    """
-
-    input_references: list[StrictStr] | None = None
-    """
-    Ordered image references for image-to-video generation.
-
-    Models that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume the
-    list as first/last frame pairs. Mutually exclusive with ``input_reference``;
-    the handler rejects requests that set both.
     """
 
 
@@ -126,6 +115,13 @@ class NvCreateVideoRequest(BaseModel):
     input_reference: StrictStr | None = None
     """
     Optional image reference that guides generation (for I2V)
+    """
+    input_references: list[StrictStr] | None = None
+    """
+    Optional ordered image references for image-to-video generation.
+    Models that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume
+    the list as first/last frame pairs. Mutually exclusive with
+    ``input_reference``; the handler rejects requests that set both.
     """
     seconds: Annotated[StrictInt | None, Field(ge=1)] = None
     """

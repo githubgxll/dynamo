@@ -38,6 +38,16 @@
             ],
             "description": "Optional image reference that guides generation (for I2V)"
           },
+          "input_references": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional ordered image references for image-to-video generation.\nModels that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume\nthe list as first/last frame pairs. Mutually exclusive with\n``input_reference``; the handler rejects requests that set both."
+          },
           "seconds": {
             "type": [
               "integer",
@@ -292,6 +302,24 @@
             ],
             "format": "float",
             "description": "CFG scale for the low-noise expert (vLLM-Omni I2V dual-guidance)."
+          },
+          "aspect_ratio": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Named output aspect ratio for video generation (e.g. \"16:9\", \"1:1\").\nRequired by some models (e.g. MiniMax-H3 T2VA) when the pipeline cannot\nderive it from pixel dimensions alone; when provided it is forwarded to\nthe diffusion sampling params as ``extra_args.aspect_ratio``."
+          },
+          "frame_indices": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Per-keyframe semantic indices for FL2VA-style image-to-video generation.\nThe list length must match the number of reference images and use\nmodel-native semantics (e.g. ``[0]`` for first frame, ``[-1]`` for last\nframe, ``[0, -1]`` for both). When ``input_references`` carries multiple\nimages, the handler attaches them to ``multi_modal_data.image`` in order\nand writes this list to ``extra_args.frame_indices``."
           }
         }
       }

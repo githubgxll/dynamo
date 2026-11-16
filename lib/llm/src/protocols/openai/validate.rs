@@ -1080,6 +1080,9 @@ mod tests {
         let request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
             "model":"test", "messages":[
                 {"role":"user", "content":[{"type":"text", "text":"question"}]},
+                {"role":"assistant", "tool_calls":[
+                    {"id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{}"}}
+                ]},
                 {"role":"tool", "tool_call_id":"call_1", "content":[{"type":"text", "text":"result"}]}
             ]
         }))

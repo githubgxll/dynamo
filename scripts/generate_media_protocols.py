@@ -47,7 +47,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCHEMAS = REPO / "lib/llm/src/protocols/openai/media_schemas"
-MODELS = REPO / "components/src/dynamo/common/protocols"
+MODELS = REPO / "dingo/common/protocols"
 MODULES = ("audio", "image", "video")
 
 # The enums a request keeps as a Literal, by schema name. A worker reads the
@@ -64,7 +64,7 @@ READ_BY_WORKERS = frozenset({"MediaDelivery"})
 # misses this map fails here.
 WORKER_TYPES = {
     "NvCreateImageRequest.input_reference": (
-        "dynamo.common.protocols.image_references.ImageReferences"
+        "dingo.common.protocols.image_references.ImageReferences"
     ),
 }
 

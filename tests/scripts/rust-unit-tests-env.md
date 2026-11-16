@@ -134,3 +134,55 @@ cargo +1.96.1 test --locked \
   `text_message_content_remains_valid`。本次没有跳过这些测试或修改其断言，
   不能将编译修复表述为全部单元测试通过。
 - `dynamo-mocker` 单独执行：322 passed，0 failed；包含本节修复的四处快照初始化。
+
+## 2026-11-16：05b38d45 的四项测试失败
+
+Actions run `43852384781` / job `133247953771` 已完成编译：
+`dynamo-llm` 为 4086 passed、4 failed、17 ignored；其余三个 smoke 包通过。
+这次退出码 101 来自测试断言，不是 Rust 编译错误。
+
+- `test_chat_typed_metrics_fast_path_observes_without_annotation`：
+  手写响应序列化漏传 `model_eos`，跨组件往返后 `[0]` 变成 `[]`。
+  序列化现同时保留工具完成证据和模型 EOS；HTTP SSE 转换仍移除两者，
+  不向 OpenAI 客户端暴露内部字段。
+- `media_schemas_match_the_committed_files`：
+  视频 Rust 类型新增的 `input_references`、`aspect_ratio`、`frame_indices`
+  未同步到 `video.json` 及 Python 协议模型。
+- `responses_and_chat_accept_qualified_functions_but_reject_invalid_namespaces`：
+  请求入口原来只校验转换后的扁平工具名，遗漏原始 namespace。
+  入口现复用已有的 `validated_effective_tools` 方法，分别校验 namespace
+  和叶子名称；普通 Chat Completions 仍走原有路径。
+- `text_message_content_remains_valid`：
+  测试中的 tool 消息没有对应的前置 assistant 调用。补齐 `call_1` 调用，
+  不放宽对孤立或重复 tool result 的拒绝规则。
+
+在具备完整依赖的 Linux 环境中执行针对性复测：
+
+```bash
+for filter in \
+  test_chat_typed_metrics_fast_path_observes_without_annotation \
+  media_schemas \
+  responses_and_chat_accept_qualified_functions_but_reject_invalid_namespaces \
+  text_message_content_remains_valid \
+  tool_results_require_an_unanswered_preceding_call \
+  test_forced_tool_choice_without_function_tools_is_invalid
+do
+  cargo +1.96.1 test --locked -p dynamo-llm --lib "$filter" || exit "$?"
+done
+```
+
+本次本机验证：
+
+- Rust 1.96.1 隔离程序编译并执行实际源码中的响应序列化、消息历史和
+  工具名称校验函数；EOS 与工具完成证据保留、SGLang 字段提升、空字段省略、
+  有效工具结果接收及孤立结果拒绝均通过。此验证不覆盖完整 HTTP/Responses 调用链。
+- 提取实际视频类型与 schema 生成函数，使用 utoipa 5.5.0 生成的
+  `video.json` 与提交文件逐字节一致。
+- 修正生成器遗留的 `components/src/dynamo` 输出路径及图片类型导入，
+  使用当前 `dingo.common.protocols` 包；固定依赖
+  `datamodel-code-generator==0.83.0` 的 `--check` 通过。
+- Python 实际协议模型验证通过：请求级 `input_references` 往返保留，
+  `nvext.aspect_ratio/frame_indices` 往返保留，`input_references`
+  不再错误地属于 `VideoNvExt`。
+- 未运行完整 Linux `dynamo-llm` 测试：远端 master 的 Teleport 连接被拒绝，
+  本机无完整 Linux 构建依赖。以上局部验证不等同于 Actions 已通过。
