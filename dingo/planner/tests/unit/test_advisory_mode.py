@@ -8,6 +8,7 @@ import pytest
 from dingo.planner.config.defaults import SLAPlannerDefaults
 
 pytestmark = [
+    pytest.mark.planner,
     pytest.mark.gpu_0,
     pytest.mark.pre_merge,
     pytest.mark.unit,

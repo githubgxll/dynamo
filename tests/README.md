@@ -69,7 +69,7 @@ dynamo/
 │   ├── llm/
 │   └── ...
 ```
-- Place **unit/integration tests** for a component in its `tests/` subfolder under `components/src/dynamo/<component>/tests/`.
+- Place **unit/integration tests** for a component in its `tests/` subfolder under `dingo/<component>/tests/`.
 - Place **end-to-end (E2E) tests** and cross-component tests in `tests/`.
 - Name test files as `test_<component>_<flow>.py` for clarity.
 
@@ -86,8 +86,8 @@ dynamo/
 
 | Type               | Description                           | Location                                      |
 |--------------------|---------------------------------------|-----------------------------------------------|
-| Unit               | Single function/class, isolated       | `components/src/dynamo/<component>/tests/`    |
-| Integration        | Interactions between modules/services | `components/src/dynamo/<component>/tests/`    |
+| Unit               | Single function/class, isolated       | `dingo/<component>/tests/`    |
+| Integration        | Interactions between modules/services | `dingo/<component>/tests/`    |
 | End-to-End         | User workflows, CLI, API              | `tests/serve/`, `tests/deploy/`, etc.         |
 | KVBM Integration   | KV block manager integration          | `tests/kvbm_integration/`                     |
 | GPU Memory Service | GPU Memory Service E2E                | `tests/gpu_memory_service/`                   |
@@ -345,7 +345,7 @@ mod kv_cache_tests {
 ```
 
 ### CI Integration
-- CI runs the commands listed in [Running Rust Checks and Tests](#running-rust-checks-and-tests) across 4 workspace directories: `.`, `lib/bindings/python`, `lib/runtime/examples`, `lib/bindings/kvbm`. See [`.github/workflows/pre-merge.yml`](../.github/workflows/pre-merge.yml) for the exact steps.
+- CI runs the commands listed in [Running Rust Checks and Tests](#running-rust-checks-and-tests) across 3 workspace directories: `.`, `lib/bindings/python`, `lib/runtime/examples`. See [`.github/workflows/pre-merge.yml`](../.github/workflows/pre-merge.yml) for the exact steps.
 
 ---
 
@@ -476,7 +476,7 @@ Source workflow files (see [`.github/workflows/`](../.github/workflows/) for the
 
 Two workflows run on every PR. See [`pre-merge.yml`](../.github/workflows/pre-merge.yml) and [`pr.yaml`](../.github/workflows/pr.yaml).
 
-**Rust checks** (only if Rust files changed) -- runs `pre-commit`, then the full sequence from [Running Rust Checks and Tests](#running-rust-checks-and-tests) across 4 workspace dirs (`.`, `lib/bindings/python`, `lib/runtime/examples`, `lib/bindings/kvbm`): format, clippy, cargo-deny, machete, compile, doc tests, unit tests.
+**Rust checks** (only if Rust files changed) -- runs `pre-commit`, then the full sequence from [Running Rust Checks and Tests](#running-rust-checks-and-tests) across 3 workspace dirs (`.`, `lib/bindings/python`, `lib/runtime/examples`): format, clippy, cargo-deny, machete, compile, doc tests, unit tests.
 
 **Python tests** (framework-agnostic, CPU-only, inside a dynamo container):
 
@@ -506,7 +506,7 @@ pytest -m "nightly and vllm and gpu_1" -v --tb=short
 
 ### Reproducing CI locally
 
-All commands shown in the "Local equivalent" columns above are also documented in [Running Rust Checks and Tests](#running-rust-checks-and-tests) and [Running Python Tests](#running-python-tests). Run Rust commands from the repo root, repeating for each workspace dir: `.`, `lib/bindings/python`, `lib/runtime/examples`, `lib/bindings/kvbm`. Run Python commands inside a container.
+All commands shown in the "Local equivalent" columns above are also documented in [Running Rust Checks and Tests](#running-rust-checks-and-tests) and [Running Python Tests](#running-python-tests). Run Rust commands from the repo root, repeating for each workspace dir: `.`, `lib/bindings/python`, `lib/runtime/examples`. Run Python commands inside a container.
 
 ---
 

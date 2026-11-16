@@ -21,15 +21,18 @@ if TYPE_CHECKING:
     )
 
 from dingo.profiler.utils.config_modifiers.sglang import SGLangConfigModifier
+from dingo.profiler.utils.config_modifiers.trtllm import TrtllmConfigModifier
 from dingo.profiler.utils.config_modifiers.vllm import VllmV1ConfigModifier
 
 CONFIG_MODIFIERS: dict[str, type["ConfigModifierProtocol"]] = {
     "vllm": VllmV1ConfigModifier,
     "sglang": SGLangConfigModifier,
+    "trtllm": TrtllmConfigModifier,
 }
 
 __all__ = [
     "VllmV1ConfigModifier",
     "SGLangConfigModifier",
+    "TrtllmConfigModifier",
     "CONFIG_MODIFIERS",
 ]

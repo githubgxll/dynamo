@@ -13,15 +13,18 @@ use crate::engines::ValidateRequest;
 
 use super::{
     OpenAIOutputOptionsProvider, OpenAISamplingOptionsProvider, OpenAIStopConditionsProvider,
-    common_ext::{CommonExt, CommonExtProvider},
+    common_ext::{ChatCommonExt, CommonExt, CommonExtProvider},
     validate,
 };
 use crate::protocols::common::extensions::{
     NvExt, NvExtProvider, validate_completion_token_ids_single_choice,
+    validate_metadata_upload_single_choice, validate_metadata_upload_stop_strings,
 };
 
 pub mod aggregator;
+pub(crate) mod custom_tools;
 mod delta;
+pub(crate) mod tool_call_merge;
 pub mod tool_parser_v2;
 pub(crate) mod unified_parser;
 
@@ -29,10 +32,13 @@ pub use aggregator::DeltaAggregator;
 pub use delta::DeltaGenerator;
 
 use dynamo_parsers::tool_calling::{ToolCallResponse, ToolCallResponseChunk};
+#[cfg(test)]
 use dynamo_protocols::types::{
-    ChatChoiceStream, ChatCompletionMessageContent, ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCallChunk, ChatCompletionStreamResponseDelta, FinishReason,
-    FunctionCall, FunctionCallStream, FunctionType,
+    ChatChoiceStream, ChatCompletionMessageContent, ChatCompletionStreamResponseDelta, FinishReason,
+};
+use dynamo_protocols::types::{
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk, FunctionCall,
+    FunctionCallStream, FunctionType,
 };
 
 /// Map a parser-native [`ToolCallResponse`] onto the protocol/wire
@@ -46,6 +52,7 @@ pub(crate) fn tool_call_response_to_protocol(
     parsed: ToolCallResponse,
 ) -> ChatCompletionMessageToolCall {
     ChatCompletionMessageToolCall {
+        custom: None,
         id: parsed.id,
         r#type: FunctionType::Function,
         function: FunctionCall {
@@ -67,6 +74,7 @@ pub(crate) fn tool_call_response_chunk_to_protocol(
     parsed: ToolCallResponseChunk,
 ) -> ChatCompletionMessageToolCallChunk {
     ChatCompletionMessageToolCallChunk {
+        custom: None,
         index: parsed.index,
         id: parsed.id,
         r#type: parsed.tp.map(|_| FunctionType::Function),
@@ -136,10 +144,10 @@ pub fn split_sglext(
 #[derive(ToSchema, Serialize, Deserialize, Validate, Debug, Clone, Default)]
 pub struct NvCreateChatCompletionRequest {
     #[serde(flatten)]
-    #[schema(value_type = Object)]
     pub inner: dynamo_protocols::types::CreateChatCompletionRequest,
 
     #[serde(flatten, default)]
+    #[schema(value_type = ChatCommonExt)]
     pub common: CommonExt,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,6 +162,11 @@ pub struct NvCreateChatCompletionRequest {
         alias = "chat_template_kwargs"
     )]
     pub chat_template_args: Option<std::collections::HashMap<String, serde_json::Value>>,
+
+    /// Original Responses definitions, retained for template-capable rendering.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub responses_tools: Option<super::responses::ResponsesToolContext>,
 
     /// OpenAI-style thinking control from client request payloads.
     /// Normalized into `chat_template_args` before preprocessing.
@@ -170,6 +183,13 @@ pub struct NvCreateChatCompletionRequest {
     /// accepted but have no effect; generation uses greedy decoding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub do_sample: Option<bool>,
+
+    /// Keep prior assistant reasoning in the rendered history (Beam serving path).
+    /// Beam-route request extension: supplied prior-turn reasoning is always kept in the
+    /// rendered prompt (`true` and omitted are the same); `false` is accepted for
+    /// compatibility and has no effect — omit `reasoning_content` to drop reasoning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_thinking: Option<bool>,
 
     /// Runtime media decoding parameters, forwarded verbatim to the worker when the
     /// worker owns decoding. When the frontend decodes, these override the MDC defaults.
@@ -228,6 +248,18 @@ impl NvCreateChatCompletionRequest {
         {
             self.nvext.get_or_insert_with(NvExt::default).cache_salt = Some(salt);
         }
+    }
+
+    /// The named passthrough fields (`validate::PASSTHROUGH_EXTRA_FIELDS`) this
+    /// request carries. They are not serialized with the request, so a Python
+    /// chat processor receives them through this accessor.
+    /// Unknown fields kept by `DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS` are skipped.
+    pub fn passthrough_extra_fields(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &serde_json::Value)> {
+        validate::PASSTHROUGH_EXTRA_FIELDS
+            .iter()
+            .filter_map(|key| self.unsupported_fields.get(*key).map(|value| (*key, value)))
     }
 
     /// Resolve the request's reasoning controls into `chat_template_args`.
@@ -416,6 +448,11 @@ impl NvCreateChatCompletionRequest {
 const THINKING_TOGGLES: [&str; 2] = ["thinking", "enable_thinking"];
 const THINKING_KEYS: [&str; 3] = ["thinking", "enable_thinking", "thinking_mode"];
 
+/// A `chat_template_kwargs` key that the normalizer reads as a thinking control.
+pub(crate) fn is_thinking_control_key(key: &str) -> bool {
+    THINKING_KEYS.contains(&key) || key == "reasoning_effort"
+}
+
 fn set_thinking(args: &mut HashMap<String, serde_json::Value>, on: bool) {
     args.insert("thinking".to_string(), serde_json::Value::Bool(on));
     args.insert("enable_thinking".to_string(), serde_json::Value::Bool(on));
@@ -479,6 +516,37 @@ fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<Open
     }
 }
 
+/// Frontend-only boundaries supplied by a recipient-aware parser. These never
+/// cross the worker wire or alter Chat Completions JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MessageBoundary {
+    Start(dynamo_protocols::types::responses::MessagePhase),
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseOutputEvent {
+    Reasoning(String),
+    Boundary(MessageBoundary),
+    Text(String),
+    ToolCall(String),
+    /// The next `n` entries of choice 0's aggregated `logprobs.content` arrived at
+    /// this point of the stream on chunks with visible text or no content (EOS),
+    /// so a Responses projection can give each message the scores generated while
+    /// it was open.
+    Scores(usize),
+    /// The next `n` entries arrived on reasoning or tool-call chunks. They are not
+    /// output text, so a Responses projection skips them.
+    HiddenScores(usize),
+}
+
+impl ResponseOutputEvent {
+    /// Score bookkeeping that never changes the projected output items.
+    pub fn is_score(&self) -> bool {
+        matches!(self, Self::Scores(_) | Self::HiddenScores(_))
+    }
+}
+
 /// A response structure for unary chat completion responses, embedding OpenAI's
 /// `CreateChatCompletionResponse` with optional NVIDIA extension metadata.
 ///
@@ -488,6 +556,8 @@ fn openai_thinking_mode(value: &serde_json::Value) -> anyhow::Result<Option<Open
 /// [`split_sglext`] and [`INTERNAL_SGLEXT_KEY`].
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionResponse {
+    #[serde(skip)]
+    pub response_events: Vec<ResponseOutputEvent>,
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionResponse,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -497,6 +567,15 @@ pub struct NvCreateChatCompletionResponse {
 }
 
 /// Parser lifecycle evidence carried between serving components, never to OpenAI clients.
+///
+/// Evidence is keyed by choice and tool index. It may repeat or arrive without
+/// a matching choice or tool-call delta.
+///
+/// In unified-parser output, `complete` reflects parser state after processing
+/// the source chunk. Multiple rewritten children can carry that final state,
+/// including a name-only child before its argument fragments. It is not an
+/// argument-delivery barrier: consumers must not infer that all arguments have
+/// arrived, or interpret empty arguments as a parameterless call, from it alone.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallCompletion {
     pub choice_index: u32,
@@ -511,21 +590,93 @@ pub struct ToolCallCompletion {
 /// reason as [`NvCreateChatCompletionResponse`].
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionStreamResponse {
+    #[serde(skip)]
+    pub message_boundary: Option<MessageBoundary>,
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionStreamResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nvext: Option<serde_json::Value>,
     /// Internal prompt logprobs payload for non-streaming response aggregation.
     /// This must never be serialized to client-facing streams.
-    #[serde(skip)]
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_prompt_logprobs"
+    )]
     pub prompt_logprobs: Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>,
     /// Internal frontend metrics payload. This must never be serialized to
     /// client-facing OpenAI-compatible streams.
     #[serde(default, skip_serializing)]
+    #[schema(ignore)]
     pub llm_metrics: Option<crate::protocols::common::metrics::LLMMetricAnnotation>,
     /// Internal transport evidence; the HTTP chat converter removes it before SSE serialization.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(ignore)]
     pub tool_call_completion: Vec<ToolCallCompletion>,
+    /// Choice indices with confirmed model EOS under an installed Beam turn grammar.
+    /// User stops, unconstrained output and transport EOF never authorize closure.
+    /// Defaulting makes older frontend/worker transports conservative; HTTP removes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(ignore)]
+    pub model_eos: Vec<u32>,
+}
+
+fn deserialize_prompt_logprobs<'de, D>(
+    deserializer: D,
+) -> Result<Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use crate::protocols::common::llm_backend::PromptLogprobEntry;
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Position(
+        #[serde(deserialize_with = "deserialize_position")] HashMap<u32, PromptLogprobEntry>,
+    );
+
+    fn deserialize_position<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<u32, PromptLogprobEntry>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct PositionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for PositionVisitor {
+            type Value = HashMap<u32, PromptLogprobEntry>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map from string token IDs to prompt logprobs")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut position = HashMap::with_capacity(map.size_hint().unwrap_or(0));
+                // pythonize does not coerce string map keys to integers like serde_json.
+                while let Some(token_id) = map.next_key::<String>()? {
+                    let token_id = token_id.parse().map_err(serde::de::Error::custom)?;
+                    position.insert(token_id, map.next_value()?);
+                }
+                Ok(position)
+            }
+        }
+
+        deserializer.deserialize_map(PositionVisitor)
+    }
+
+    Option::<Vec<Option<Position>>>::deserialize(deserializer).map(|positions| {
+        positions.map(|positions| {
+            Arc::new(
+                positions
+                    .into_iter()
+                    .map(|position| position.map(|position| position.0))
+                    .collect(),
+            )
+        })
+    })
 }
 
 /// Serialize a chat completion response (unary or streaming) with the internal
@@ -623,16 +774,15 @@ pub(crate) fn scrub_synthetic_chunk_metadata(
     data.inner.usage = None;
     data.llm_metrics = None;
     data.tool_call_completion.clear();
+    data.message_boundary = None;
+    data.model_eos.clear();
     data.nvext = None;
     data.prompt_logprobs = None;
     Some(())
 }
 
-/// Build one synthetic stream choice from an existing response template.
-///
-/// Both streaming tool-call paths use this constructor when an engine omits a
-/// terminal choice. Accounting data belongs only on the usage chunk and must
-/// not be copied onto the synthetic choice.
+/// Synthetic terminal choices must not repeat accounting from the template's usage chunk.
+#[cfg(test)]
 pub(super) fn stream_choice_chunk_from_template(
     template: &NvCreateChatCompletionStreamResponse,
     index: u32,
@@ -754,6 +904,22 @@ impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
     /// Retrieves the best_of parameter, if set.
     fn get_best_of(&self) -> Option<u8> {
         None // Not supported in chat completions
+    }
+
+    /// Retrieves the logit_bias map with string token-ID keys converted to
+    /// `u32`. Validation rejects non-numeric keys before extraction.
+    fn get_logit_bias(&self) -> Option<HashMap<u32, f32>> {
+        self.inner
+            .logit_bias
+            .as_ref()
+            .filter(|bias| !bias.is_empty())
+            .map(|bias| {
+                bias.iter()
+                    .filter_map(|(token, value)| {
+                        Some((token.parse::<u32>().ok()?, value.as_f64()? as f32))
+                    })
+                    .collect()
+            })
     }
 }
 
@@ -931,6 +1097,13 @@ impl OpenAIOutputOptionsProvider for NvCreateChatCompletionRequest {
 /// allowing us to validate the data.
 impl ValidateRequest for NvCreateChatCompletionRequest {
     fn validate(&self) -> Result<(), anyhow::Error> {
+        // Direct Rust callers must obey the same custom-format admission and
+        // tool-choice contract as HTTP, without changing their replay payload.
+        if self.inner.has_custom_tools() {
+            let mut normalized = self.clone();
+            normalized.inner.normalize_custom_tools()?;
+            return ValidateRequest::validate(&normalized);
+        }
         self.validate_with_history_policy(false)
     }
 }
@@ -965,6 +1138,14 @@ impl NvCreateChatCompletionRequest {
         validate::validate_n(self.inner.n)?;
         validate_completion_token_ids_single_choice(
             self.inner.n.unwrap_or(1) as usize,
+            self.nvext.as_ref(),
+        )?;
+        validate_metadata_upload_single_choice(
+            self.inner.n.unwrap_or(1) as usize,
+            self.nvext.as_ref(),
+        )?;
+        validate_metadata_upload_stop_strings(
+            self.get_stop().is_some_and(|stop| !stop.is_empty()),
             self.nvext.as_ref(),
         )?;
         // none for modalities
@@ -1129,6 +1310,35 @@ mod tests {
     };
     use dynamo_protocols::types::{ChatCompletionTool, ChatCompletionToolType, FunctionObject};
     use serde_json::json;
+
+    #[test]
+    fn test_validate_custom_tools_respects_supported_locations() {
+        let function_tool = json!({"type":"function","function":{"name":"lookup"}});
+        let custom_tool = json!({"type":"custom","custom":{"name":"patch"}});
+        let base = json!({"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[function_tool]});
+        let parse = |value| serde_json::from_value::<NvCreateChatCompletionRequest>(value).unwrap();
+        ValidateRequest::validate(&parse(base.clone())).unwrap();
+        let mut tools = base.clone();
+        tools["tools"] = json!([function_tool, custom_tool]);
+        // The function bridge admits request custom tools and custom history.
+        ValidateRequest::validate(&parse(tools)).unwrap();
+        let mut history = base.clone();
+        history["messages"] = json!([
+            {"role":"user","content":"hi"},
+            {"role":"assistant","tool_calls":[{"id":"c1","type":"custom","custom":{"name":"patch","input":"x"}}]},
+            {"role":"tool","tool_call_id":"c1","content":"ok"}
+        ]);
+        ValidateRequest::validate(&parse(history)).unwrap();
+        let mut choice = base.clone();
+        choice["tool_choice"] = json!({"type":"custom","custom":{"name":"lookup"}});
+        assert!(ValidateRequest::validate(&parse(choice)).is_err());
+        let mut system = base;
+        system["messages"] = json!([
+            {"role":"system","content":"s","tools":[custom_tool]},
+            {"role":"user","content":"hi"}
+        ]);
+        assert!(ValidateRequest::validate(&parse(system)).is_err());
+    }
 
     /// Builds a minimal chat request and merges `extra` into its top-level fields.
     fn chat_request_with(extra: &serde_json::Value) -> NvCreateChatCompletionRequest {
@@ -1761,6 +1971,30 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_extra_fields_skips_ignored_unknown_fields() {
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop_token_ids": [7],
+            "allowed_token_ids": [10, 11],
+        }))
+        .expect("Failed to deserialize request");
+        // DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS keeps unknown fields in the map.
+        request
+            .unsupported_fields
+            .insert("experimental_field".to_string(), json!("value"));
+
+        let fields: Vec<_> = request.passthrough_extra_fields().collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("stop_token_ids", &json!([7])),
+                ("allowed_token_ids", &json!([10, 11])),
+            ]
+        );
+    }
+
+    #[test]
     fn test_stop_sequence_limit_enforced_consistently() {
         use crate::protocols::openai::validate::MAX_STOP_SEQUENCES;
 
@@ -1864,6 +2098,23 @@ mod tests {
 
         let err = ValidateRequest::validate(&request).expect_err("multi-choice token ids");
         assert!(err.to_string().contains("completion_token_ids"));
+    }
+
+    #[test]
+    fn test_logit_bias_reaches_sampling_options() {
+        let request = chat_request_with(&json!({"logit_bias": {"18": -100, "42": 5.5}}));
+        ValidateRequest::validate(&request).expect("valid logit_bias must pass validation");
+
+        let sampling_options = request
+            .extract_sampling_options()
+            .expect("logit_bias extraction failed");
+        let logit_bias = sampling_options
+            .logit_bias
+            .expect("logit_bias must survive extraction");
+
+        assert_eq!(logit_bias.len(), 2);
+        assert_eq!(logit_bias.get(&18), Some(&-100.0));
+        assert_eq!(logit_bias.get(&42), Some(&5.5));
     }
 
     #[test]
@@ -2183,6 +2434,7 @@ mod tests {
     /// fails the test.
     fn legacy_unary(id: &str, name: &str, args: &str) -> ChatCompletionMessageToolCall {
         ChatCompletionMessageToolCall {
+            custom: None,
             id: id.to_string(),
             r#type: FunctionType::Function,
             function: FunctionCall {
@@ -2200,6 +2452,7 @@ mod tests {
         args: &str,
     ) -> ChatCompletionMessageToolCallChunk {
         ChatCompletionMessageToolCallChunk {
+            custom: None,
             index,
             id: Some(id.to_string()),
             r#type: Some(FunctionType::Function),
@@ -2451,12 +2704,15 @@ mod tests {
     fn test_validate_tools_valid_names() {
         fn make_tool(name: &str) -> ChatCompletionTool {
             ChatCompletionTool {
+                custom: None,
                 r#type: ChatCompletionToolType::Function,
+                defer_loading: None,
                 function: FunctionObject {
                     name: name.to_string(),
                     description: None,
                     parameters: Some(json!({"type": "object", "properties": {}})),
                     strict: None,
+                    defer_loading: None,
                 },
             }
         }
@@ -2471,6 +2727,7 @@ mod tests {
             // endpoints; the gateway must not force renames.
             make_tool("chess.rating"),
             make_tool("music_composer.create_mix"),
+            make_tool("my-tool.v2"),
         ];
         assert!(validate::validate_tools(&Some(&tools)).is_ok());
     }
@@ -2483,15 +2740,22 @@ mod tests {
             "func@name",
             "func,name",
             "namespace:action",
+            "func=name",
+            "func\"name",
+            "func:name",
+            "func/name",
             "",
         ] {
             let tools = vec![ChatCompletionTool {
+                custom: None,
                 r#type: ChatCompletionToolType::Function,
+                defer_loading: None,
                 function: FunctionObject {
                     name: name.to_string(),
                     description: None,
                     parameters: Some(json!({"type": "object", "properties": {}})),
                     strict: None,
+                    defer_loading: None,
                 },
             }];
             assert!(
@@ -2505,12 +2769,15 @@ mod tests {
     fn test_validate_tools_rejects_non_object_parameters() {
         for parameters in [json!("not-an-object"), json!([]), json!(42), json!(true)] {
             let tools = vec![ChatCompletionTool {
+                custom: None,
                 r#type: ChatCompletionToolType::Function,
+                defer_loading: None,
                 function: FunctionObject {
                     name: "broken_tool".to_string(),
                     description: None,
                     parameters: Some(parameters),
                     strict: None,
+                    defer_loading: None,
                 },
             }];
 
@@ -2526,17 +2793,55 @@ mod tests {
     #[test]
     fn test_validate_tools_accepts_omitted_parameters() {
         let tools = vec![ChatCompletionTool {
+            custom: None,
             r#type: ChatCompletionToolType::Function,
+            defer_loading: None,
             function: FunctionObject {
                 name: "parameterless_tool".to_string(),
                 description: None,
                 parameters: None,
                 strict: None,
+                defer_loading: None,
             },
         }];
 
         validate::validate_tools(&Some(&tools))
             .expect("omitted function parameters should remain valid");
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_tools_array() {
+        const EMPTY_TOOLS: &str =
+            "tools array cannot be empty; omit the field entirely to disable tool use";
+
+        for tool_choice in [None, Some("required")] {
+            let mut request_json = json!({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tools": []
+            });
+            if let Some(tool_choice) = tool_choice {
+                request_json["tool_choice"] = tool_choice.into();
+            }
+            let request: NvCreateChatCompletionRequest =
+                serde_json::from_value(request_json).expect("Failed to deserialize request");
+
+            let err = ValidateRequest::validate(&request).expect_err("empty tools must fail");
+            assert_eq!(err.to_string(), EMPTY_TOOLS, "tool_choice={tool_choice:?}");
+        }
+
+        let request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+            "model": "test-model",
+            "messages": [
+                {"role": "system", "content": "", "tools": [{"name": "lookup"}]},
+                {"role": "user", "content": "Hello"}
+            ],
+            "tools": [],
+            "tool_choice": "required"
+        }))
+        .expect("Failed to deserialize request");
+        ValidateRequest::validate(&request)
+            .expect("empty tools with system-message tools should validate");
     }
 
     #[test]
@@ -3075,5 +3380,73 @@ mod tests {
             .extract_stop_conditions()
             .expect("Failed to extract stop conditions");
         assert_eq!(stop_conditions.max_thinking_tokens, None);
+    }
+}
+
+#[cfg(test)]
+mod preserve_thinking_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn chat_request_with(extra: &serde_json::Value) -> NvCreateChatCompletionRequest {
+        let mut body = json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 20
+        });
+        for (key, value) in extra.as_object().expect("fixture is an object") {
+            body[key] = value.clone();
+        }
+        serde_json::from_value(body).expect("Failed to deserialize request")
+    }
+
+    #[test]
+    fn preserve_thinking_omitted_is_none_and_not_serialized() {
+        let request = chat_request_with(&json!({}));
+        assert_eq!(request.preserve_thinking, None);
+        assert!(request.unsupported_fields.is_empty());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("preserve_thinking")
+                .is_none()
+        );
+        ValidateRequest::validate(&request).unwrap();
+    }
+
+    #[test]
+    fn preserve_thinking_true_roundtrips_and_validates() {
+        let request = chat_request_with(&json!({"preserve_thinking": true}));
+        assert_eq!(request.preserve_thinking, Some(true));
+        assert!(request.unsupported_fields.is_empty());
+        ValidateRequest::validate(&request).unwrap();
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["preserve_thinking"], json!(true));
+        let back: NvCreateChatCompletionRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(back.preserve_thinking, Some(true));
+    }
+
+    #[test]
+    fn preserve_thinking_false_roundtrips_and_validates() {
+        let request = chat_request_with(&json!({"preserve_thinking": false}));
+        assert_eq!(request.preserve_thinking, Some(false));
+        ValidateRequest::validate(&request).unwrap();
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["preserve_thinking"], json!(false));
+    }
+
+    #[test]
+    fn preserve_thinking_rejects_non_bool_values() {
+        for bad in [json!("true"), json!(1), json!({})] {
+            let body = json!({
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "preserve_thinking": bad,
+            });
+            assert!(
+                serde_json::from_value::<NvCreateChatCompletionRequest>(body).is_err(),
+                "{bad} must not deserialize"
+            );
+        }
     }
 }

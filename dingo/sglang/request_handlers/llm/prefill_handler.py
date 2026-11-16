@@ -21,14 +21,19 @@ from dingo.sglang.engine_generate import (
     native_generate_stream,
     new_sglang_request_id,
 )
+from dingo.sglang.kv_hints import kv_hint_kwargs
 from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.decode_handler import (
+    _apply_model_default_sampling_params,
     _kv_cache_hit_engine_data,
+    _model_default_sampling_params,
     _native_payload_is_batched,
     _ordered_cancellation_request_id,
     _preprocessed_stop_sampling_params,
+    _raise_if_sglang_error,
     _sampling_option_params,
+    _validate_stop_token_ids,
 )
 from dingo.sglang.request_handlers.llm.mm_disagg_utils import (
     build_disagg_mm_kwargs,
@@ -72,6 +77,9 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         self.bootstrap_host, self.bootstrap_port = self._get_bootstrap_info(self.engine)
         super().__init__(engine, config, publisher, generate_endpoint, shutdown_event)
         self._consume_tasks: set[asyncio.Task[Any]] = set()
+        # Prefill samples the first output token, so it needs the same defaults
+        # as decode.
+        self._default_sampling_params = _model_default_sampling_params(self.engine)
         logging.info(
             f"Prefill worker handler initialized - bootstrap host: {self.bootstrap_host}, bootstrap port: {self.bootstrap_port}"
         )
@@ -139,6 +147,12 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             sampling_params = {
                 k: v for k, v in sampling_params.items() if v is not None
             }
+            _apply_model_default_sampling_params(
+                sampling_params,
+                request,
+                self._default_sampling_params,
+                self.config.dynamo_args.enable_rl,
+            )
         native_payload = native_generate_payload(inner_request)
         has_thinking_budget = False
         if native_payload is None:
@@ -186,6 +200,9 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         }
 
         input_param = self._get_input_param(inner_request)
+        # Native requests forward client stop IDs to the prefill engine; rejecting here
+        # also avoids staging KV for a decode leg that would refuse the request.
+        _validate_stop_token_ids(self, inner_request)
 
         # Prefill encodes the media so the KV it transfers carries the vision
         # context; decode extracts the same URLs to match the token layout.
@@ -231,6 +248,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 routed_dp_rank=dp_rank,
                 lora_path=lora_path,
                 cache_salt=request_cache_salt(inner_request),
+                kv_hint=inner_request.get("kv_hint"),
             )
             submitted_request_id = _ordered_cancellation_request_id(
                 sglang_request_id,
@@ -250,7 +268,6 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             # Prompt logprobs are discarded until the handoff carries their metadata.
             logprob_kwargs = _shared_logprobs.build_sglang_logprob_kwargs(
                 {"logprobs": output_options.get("logprobs")},
-                allow_top_logprobs=_shared_logprobs.sglang_top_logprobs_allowed(),
             )
             results = await self.engine.async_generate(
                 **input_param,
@@ -273,6 +290,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 lora_path=lora_path,
                 **priority_kwargs,
                 **agent_session_kwargs(self.engine, inner_request),
+                **kv_hint_kwargs(self.engine, inner_request),
             )
         if inner_request.get(HEALTH_CHECK_KEY):
             # Canary: stream engine output so the Rust canary sees scheduler output.
@@ -298,6 +316,13 @@ class PrefillWorkerHandler(BaseWorkerHandler):
 
         final_meta_info = await task
         if final_meta_info is None:
+            return
+        finish_reason = final_meta_info.get("finish_reason")
+        if isinstance(finish_reason, dict) and finish_reason.get("type") == "abort":
+            # Unsolicited error-bearing aborts raise while consuming the stream.
+            # An ordinary backend cancellation must also terminate decode,
+            # rather than looking like a successful prefill handoff.
+            yield {"token_ids": [], "finish_reason": "cancelled"}
             return
         # Bootstrap happens before prefill runs, so the cache-hit report for
         # this attempt needs its own trailing chunk.
@@ -328,6 +353,8 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         async with self._cancellation_monitor(
             request_id_future, context, submitted_request_id
         ) as cancellation_task:
+            # The shared iterator briefly drains after abort so SGLang can
+            # clean up, then closes a stream that does not terminate.
             async for res in self._stream_until_cancelled(results, cancellation_task):
                 meta_info = res.get("meta_info") or (
                     res.get("engine_data", {})
@@ -342,8 +369,18 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                         request_id_future.set_result(sglang_request_id)
                         logging.debug(f"New Prefill Request ID: {sglang_request_id}")
 
-                # The shared iterator briefly drains after abort so SGLang can
-                # clean up, then closes a stream that does not terminate.
+                finish_reason = meta_info.get("finish_reason")
+                if isinstance(finish_reason, dict):
+                    if cancellation_task.done():
+                        # SGLang reports our bootstrap-queue abort with status 500.
+                        # Keep draining so engine-side request cleanup can finish.
+                        continue
+                    # Bootstrap has already been sent. Surface failures now so
+                    # the router can cancel decode instead of waiting for KV.
+                    _raise_if_sglang_error(finish_reason)
+                    if finish_reason.get("type") == "abort":
+                        break
+
             if cancellation_task.done():
                 return None
         return final_meta_info

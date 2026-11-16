@@ -72,11 +72,11 @@ async def runtime(system_port):
 
 @pytest.fixture
 def relay_factory(runtime):
-    from dynamo.llm import KvDcRelay
+    from dynamo.llm import PoolRelay
 
     @asynccontextmanager
     async def start(*, bind="127.0.0.1:0", **kwargs):
-        relay = KvDcRelay(
+        relay = PoolRelay(
             runtime.endpoint("test.relay.control"),
             "test-dc",
             bind=bind,

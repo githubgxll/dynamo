@@ -15,16 +15,21 @@ from dynamo.runtime import DistributedRuntime
 from vllm_omni.distributed.omni_connectors import initialize_orchestrator_connectors
 
 from dingo.common.model_taints import register_model_taint_route
+from dingo.common.protocols.image_protocol import NvCreateImageRequest
 from dingo.common.storage import get_fs
 from dingo.common.utils.output_modalities import (
     RequestType,
     get_output_modalities,
     parse_request_type,
 )
+from dynamo.llm.exceptions import InvalidArgument
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.args import OmniConfig
 from dingo.vllm.omni.connectors import register_dynamoomni_nixl_connector
-from dingo.vllm.omni.output_formatter import OutputFormatter
+from dingo.vllm.omni.output_formatter import (
+    OutputFormatter,
+    _normalize_image_output_options,
+)
 from dingo.vllm.omni.stage_worker import (
     _connector_key,
     _ensure_stage_connectors,
@@ -99,6 +104,7 @@ class OmniStageRouter:
             media_fs=media_fs,
             media_http_url=config.media_output_http_url,
             default_fps=config.default_video_fps,
+            image_png_compression_level=config.image_png_compression_level,
         )
 
     def set_stage_client(self, model_stage: str, client: Any) -> None:
@@ -111,7 +117,26 @@ class OmniStageRouter:
         context,  # noqa: ARG002 — context unused; router generates its own request_id
     ) -> AsyncGenerator[dict, None]:
         request_id = str(uuid.uuid4())
-        _, request_type = parse_request_type(request, self.config.output_modalities)
+        parsed_request, request_type = parse_request_type(
+            request, self.config.output_modalities
+        )
+        image_output_format = None
+        if request_type == RequestType.IMAGE_GENERATION:
+            if not isinstance(parsed_request, NvCreateImageRequest):
+                raise InvalidArgument("Invalid image-generation request")
+            if parsed_request.input_reference:
+                raise InvalidArgument(
+                    "Image edits are not supported by the Omni stage router"
+                )
+            try:
+                image_output_format = _normalize_image_output_options(
+                    parsed_request.output_format,
+                    parsed_request.response_format,
+                    quality=parsed_request.quality,
+                    background=parsed_request.background,
+                )
+            except ValueError as exc:
+                raise InvalidArgument(str(exc)) from exc
 
         stage_outputs: List[StageOutput] = []
         for stage_idx, stage_cfg in enumerate(self.stage_configs):
@@ -188,7 +213,11 @@ class OmniStageRouter:
         output_format = (
             request.get("response_format")
             if request_type == RequestType.AUDIO_GENERATION
-            else request.get("output_format")
+            else (
+                image_output_format
+                if request_type == RequestType.IMAGE_GENERATION
+                else request.get("output_format")
+            )
         )
         if response_format is not None:
             fmt_ctx["response_format"] = response_format
@@ -322,6 +351,8 @@ async def init_omni_stage_router(
         # Aggregated with no peer dependencies.
         worker_type=WorkerType.Aggregated,
         needs=[],
+        # Stage 0 does not load input_reference into the image prompt.
+        user_data={"image_edits": {"schema_version": 1, "max_input_images": 0}},
     )
     register_model_taint_route(runtime, generate_endpoint)
     logger.info("OmniStageRouter registered at '%s'", generate_endpoint)

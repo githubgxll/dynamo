@@ -72,14 +72,12 @@ def normalize_video_frames(images: list) -> list:
     Returns:
         List of frames suitable for diffusers export_to_video.
     """
-    frames = images[0] if len(images) == 1 else images
-
-    if isinstance(frames, np.ndarray):
+    if len(images) == 1 and getattr(images[0], "ndim", 0) in (4, 5):
+        frames = images[0]
         if frames.ndim == 5:
             frames = frames[0]
         return list(frames)
-
-    return list(frames)
+    return list(images)
 
 
 def frames_to_numpy(images: list) -> np.ndarray:

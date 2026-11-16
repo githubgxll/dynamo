@@ -9,7 +9,10 @@
 
 FROM dynamo_base AS runtime
 
+ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt
+
 ARG PYTHON_VERSION
+ARG ENABLE_KVBM
 
 # Create dynamo user with group 0 for OpenShift compatibility
 RUN userdel -r ubuntu > /dev/null 2>&1 || true \
@@ -61,10 +64,6 @@ COPY --from=wheel_builder /usr/local/include/google/protobuf/ /usr/local/include
 ENV PROTOC=/usr/local/bin/protoc
 RUN protoc --version && test -f /usr/local/include/google/protobuf/struct.proto
 
-{% if target not in ("dev", "local-dev") %}
-# Copy built artifacts (not needed for dev/local-dev; users build from source)
-COPY --chown=dynamo: --from=wheel_builder $CARGO_TARGET_DIR $CARGO_TARGET_DIR
-{% endif %}
 COPY --chown=dynamo: --from=wheel_builder /opt/dynamo/dist/*.whl /opt/dynamo/wheelhouse/
 
 # Install Python for the standalone Dynamo runtime (cuda-dl-base doesn't include Python)
@@ -115,7 +114,6 @@ ENV VIRTUAL_ENV=/opt/dynamo/venv \
 {% if target not in ("dev", "local-dev") %}
 # Install dynamo wheels (runtime packages only, no test dependencies)
 # uv handles its own locking for the cache, no need to add sharing=locked
-ARG ENABLE_KVBM
 RUN --mount=type=cache,id=uv-dynamo-{{ context.dynamo.uv_version }},target=/home/dynamo/.cache/uv,uid=1000,gid=0,mode=0775,sharing=shared \
     export UV_CACHE_DIR=/home/dynamo/.cache/uv && \
     uv pip install \

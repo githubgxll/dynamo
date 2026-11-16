@@ -8,6 +8,7 @@ import logging
 import os
 
 import uvloop
+from vllm_omni.model_extras import get_model_class_name
 from dynamo import prometheus_names
 from dynamo.llm import ModelInput, ModelType, WorkerType, fetch_model, register_model
 from dynamo.runtime import DistributedRuntime
@@ -24,9 +25,13 @@ from dingo.common.utils.runtime_termination import (
     run_with_runtime_termination_guard,
 )
 from dingo.vllm.handlers import get_lora_manager
-from dingo.vllm.health_check import VllmOmniHealthCheckPayload
 from dingo.vllm.main import setup_metrics_collection
 from dingo.vllm.omni.engine_monitor import OmniEngineMonitor
+from dingo.vllm.omni.health_check import build_omni_health_check_payload
+from dingo.vllm.omni.image_edit import image_edit_capability
+from dingo.vllm.omni.realtime_utils import init_omni_realtime
+from dingo.vllm.omni.stage_router import init_omni_stage_router
+from dingo.vllm.omni.stage_worker import init_omni_stage
 
 from .args import OmniConfig, parse_omni_args
 
@@ -73,6 +78,9 @@ async def init_omni(
     """Initialize Omni worker for multi-stage pipeline generation."""
     # Intentional function-local import to avoid omni package import cycles.
     from dingo.vllm.omni import OmniHandler
+
+    # Validate configuration before loading the model or advertising the endpoint.
+    health_check_payload = build_omni_health_check_payload(config.output_modalities)
 
     generate_endpoint = runtime.endpoint(
         f"{config.namespace}.{config.component}.{config.endpoint}"
@@ -166,6 +174,9 @@ async def init_omni(
     model_type = get_output_modalities(config.output_modalities, config.model)
     if model_type is None:
         model_type = ModelType.Images
+    has_image_output = model_type == ModelType.Images or any(
+        modality.lower() == "image" for modality in config.output_modalities
+    )
 
     try:
         await register_model(
@@ -181,13 +192,26 @@ async def init_omni(
             worker_type=WorkerType.Aggregated,
             needs=[],
             max_gpu_lora_count=_base_model_lora_capacity(config, lora_enabled),
+            user_data={
+                "image_edits": image_edit_capability(
+                    get_model_class_name(handler.engine_client),
+                    handler._image_edit_limits,
+                )
+            }
+            if has_image_output
+            else None,
         )
 
         logger.info("Starting to serve Omni worker endpoint...")
 
-        health_check_payload = (
-            await VllmOmniHealthCheckPayload.create(handler.engine_client)
-        ).to_dict()
+        if len(health_check_payload) == 1:
+            logger.info(
+                "Omni canary checks native stage health only; inference completion "
+                "is not verified. Set DYN_HEALTH_CHECK_PAYLOAD to a request verified "
+                "with this model to enable an inference canary."
+            )
+        else:
+            logger.info("Omni canary requires a completed inference response")
 
         model_metrics_labels = [
             (

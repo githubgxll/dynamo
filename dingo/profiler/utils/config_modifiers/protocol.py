@@ -58,7 +58,8 @@ class ConfigModifierProtocol(Protocol):
         component_type: SubComponentType = SubComponentType.DECODE,
         *,
         num_gpus_per_node: int | None = None,
-    ) -> dict: ...
+    ) -> dict:
+        ...
 
     @classmethod
     def set_config_tep_size(
@@ -639,6 +640,17 @@ class BaseConfigModifier:
         setup_worker_component_resources(component, gpus, num_gpus_per_node)
 
     @classmethod
+    def _finalize_disagg_cli_args(
+        cls, args: list[str], role: SubComponentType
+    ) -> list[str]:
+        """Restore the Dynamo runtime arguments omitted by AIC engine tuning.
+
+        Generated args replace the blueprint's wholesale, so backends override
+        this to re-apply per-role flags such as ``--disaggregation-mode``.
+        """
+        return args
+
+    @classmethod
     def _apply_disagg_workers(
         cls,
         cfg: Config,
@@ -660,6 +672,7 @@ class BaseConfigModifier:
             ),
             (SubComponentType.DECODE, decode_cli_args, decode_replicas, decode_gpus),
         ]:
+            cli_args = cls._finalize_disagg_cli_args(cli_args, sct)
             component_name = cls._resolve_component_name(cfg, sct)
             component = (
                 get_component_by_name(cfg, component_name) if component_name else None

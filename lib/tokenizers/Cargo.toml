@@ -1,18 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Vendored from the dynamo-tokenizers 2.0.0 crate published by
-# https://github.com/ai-dynamo/frontend-crates (crate sha256
-# cac05c279739c1c192898450ff2445e2e65e0ab99d4682ab664072efb68e45cb).
-# Upstream license is Apache-2.0; the local patch adds kimi_k31 dispatch on
-# the existing KIMI_PATTERN plus a Unicode/special-token regression test in
-# src/tiktoken.rs. Keep the 2.0.0 version so path and registry resolutions
-# stay interchangeable.
+# Vendored from the dynamo-tokenizers 4.1.2 crate published by
+# https://github.com/ai-dynamo/frontend-crates. Upstream license is
+# Apache-2.0; the local patch adds kimi_k31 dispatch on the existing
+# KIMI_PATTERN plus a Unicode/special-token regression test in
+# src/tiktoken.rs. Keep the 4.1.2 version so the [patch.crates-io]
+# redirect (root Cargo.toml) and registry resolutions stay
+# interchangeable.
 
 [package]
 name = "dynamo-tokenizers"
 description = "Standalone HuggingFace, tiktoken, fastokens, and Baseten tokenizer implementations for LLM inference serving."
-version = "2.0.0"
+version = "4.1.2"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]
@@ -38,7 +38,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 strum.workspace = true
 tiktoken-rs = { version = "0.9", default-features = false }
-tokenizers = { version = "0.21.4", features = [
+tokenizers = { version = "0.23.2", features = [
     "onig",
     "esaxx_fast",
     "rustls-tls",

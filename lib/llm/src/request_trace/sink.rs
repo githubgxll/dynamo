@@ -623,6 +623,7 @@ mod tests {
                 finish_reason_metadata: None,
             }),
             tool: None,
+            selection: None,
             payload: None,
         }
     }

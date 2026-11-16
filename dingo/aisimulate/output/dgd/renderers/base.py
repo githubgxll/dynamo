@@ -42,7 +42,9 @@ def _runtime_version(runtime_image: str, override: str | None) -> str:
 class CandidateLike(Protocol):
     """Public Sweeper result fields used by DGD renderers."""
 
-    config: dict[str, Any]
+    @property
+    def config(self) -> dict[str, Any]:
+        ...
 
 
 class CandidateMaterializationError(ValueError):
@@ -276,6 +278,15 @@ def patch_dgd_manifest(
         )
 
     dgd_index, dgd = indexed_dgds[0]
+
+    # TODO(#13770 follow-up after #14040): Remove this explicit TRT-LLM patch
+    # when required runtime rules run once during base rendering.
+    if candidate.config.get("backend") == "trtllm":
+        from dingo.profiler.utils.config_modifiers.trtllm import (
+            enable_trtllm_chunked_prefill,
+        )
+
+        dgd = enable_trtllm_chunked_prefill(dgd)
 
     # TODO(#13770 follow-up after #14040): Remove this materialize_dgd() call
     # once required runtime rules run during base rendering and optional patches

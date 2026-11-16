@@ -1,61 +1,97 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Generated from lib/llm/src/protocols/openai/media_schemas/video.json by
+# scripts/generate_media_protocols.py. Do not edit.
 
-"""Protocol types for video generation.
+from __future__ import annotations
 
-These types match the Rust protocol types in lib/llm/src/protocols/openai/videos.rs
-to ensure compatibility with the Dynamo HTTP frontend.
-"""
-# TODO: Replace these Pydantic models with Python bindings to the Rust protocol types once PyO3 bindings are available.
+from typing import Annotated, Any, Literal
 
-from typing import Any, Dict, Literal, Optional
+from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
-from pydantic import BaseModel
+
+class VideoData(BaseModel):
+    """
+    Video data in response
+    """
+
+    output_format: StrictStr
+    """
+    Actual container format of this video: "mp4", "webm", "gif"
+    """
+    url: StrictStr | None = None
+    """
+    URL of the generated video (if response_format is "url")
+    """
+    b64_json: StrictStr | None = None
+    """
+    Base64-encoded video (if response_format is "b64_json")
+    """
+    fps: StrictInt | None = None
+    """
+    Actual video frame rate when reported by the model
+    """
+    audio_sample_rate: StrictInt | None = None
+    """
+    Muxed audio sample rate when the generated video contains audio
+    """
 
 
 class VideoNvExt(BaseModel):
-    """NVIDIA extensions for video generation requests.
-
-    Matches Rust NvExt in lib/llm/src/protocols/openai/videos/nvext.rs.
+    """
+    NVIDIA extensions to the OpenAI Videos API
     """
 
-    annotations: Optional[list[str]] = None
-    """Annotations for SSE stream events."""
-
-    fps: Optional[int] = None
-    """Frames per second (default: 24)."""
-
-    num_frames: Optional[int] = None
-    """Number of frames to generate (overrides fps * seconds if set)."""
-
-    negative_prompt: Optional[str] = None
-    """Optional negative prompt."""
-
-    num_inference_steps: Optional[int] = None
-    """Number of denoising steps (default: 50)."""
-
-    guidance_scale: Optional[float] = None
-    """CFG guidance scale (default: 5.0)."""
-
-    seed: Optional[int] = None
-    """Random seed for reproducibility."""
-
-    boundary_ratio: Optional[float] = None
-    """MoE expert switching boundary as a fraction of the denoising schedule (vLLM-Omni I2V)."""
-
-    guidance_scale_2: Optional[float] = None
-    """CFG scale for the low-noise expert (vLLM-Omni I2V dual-guidance)."""
-
-    aspect_ratio: Optional[str] = None
-    """Named output aspect ratio for video generation (e.g. '16:9', '1:1').
+    annotations: list[StrictStr] | None = None
+    """
+    Annotations
+    User requests triggers which result in the request issue back out-of-band information in the SSE
+    stream using the `event:` field.
+    """
+    fps: Annotated[StrictInt | None, Field(ge=1)] = None
+    """
+    Frames per second, at least 1 (default: 24)
+    """
+    num_frames: Annotated[StrictInt | None, Field(ge=1)] = None
+    """
+    Number of frames to generate, at least 1 (overrides fps * seconds if set)
+    """
+    negative_prompt: StrictStr | None = None
+    """
+    A text description of the undesired video content.
+    """
+    num_inference_steps: Annotated[StrictInt | None, Field(ge=1)] = None
+    """
+    The number of denoising steps, at least 1. More steps usually lead to higher quality at the expense of slower inference.
+    """
+    guidance_scale: StrictFloat | None = None
+    """
+    The CFG scale. Higher values usually lead to more coherent output.
+    """
+    seed: StrictInt | None = None
+    """
+    The seed for the random number generator.
+    """
+    boundary_ratio: StrictFloat | None = None
+    """
+    MoE expert switching boundary as a fraction of the denoising schedule (vLLM-Omni I2V).
+    """
+    guidance_scale_2: StrictFloat | None = None
+    """
+    CFG scale for the low-noise expert (vLLM-Omni I2V dual-guidance).
+    """
+    aspect_ratio: StrictStr | None = None
+    """
+    Named output aspect ratio for video generation (e.g. "16:9", "1:1").
 
     Required by some models (e.g. MiniMax-H3 T2VA) when the pipeline cannot
     derive it from pixel dimensions alone; when provided it is forwarded to the
     diffusion sampling params as ``extra_args.aspect_ratio``.
     """
-
-    frame_indices: Optional[list[int]] = None
-    """Per-keyframe semantic indices for FL2VA-style image-to-video generation.
+    frame_indices: list[StrictInt] | None = None
+    """
+    Per-keyframe semantic indices for FL2VA-style image-to-video generation.
 
     The list length must match the number of reference images and use
     model-native semantics (e.g. ``[0]`` for first frame, ``[-1]`` for last
@@ -64,112 +100,103 @@ class VideoNvExt(BaseModel):
     and writes this list to ``extra_args.frame_indices``.
     """
 
-
-class NvCreateVideoRequest(BaseModel):
-    """Request for video generation (/v1/videos endpoint).
-
-    Matches Rust NvCreateVideoRequest in lib/llm/src/protocols/openai/videos.rs.
+    input_references: list[StrictStr] | None = None
     """
-
-    extra_args: Optional[Dict[str, Any]] = None
-    """Worker-boundary passthrough. The frontend nests unknown top-level
-    request fields (an OpenAI client's extra_body) under the
-    "media_passthrough" key."""
-
-    # Required fields
-    prompt: str
-    """The text prompt for video generation."""
-
-    model: str
-    """The model to use for video generation."""
-
-    # Optional fields
-    input_reference: Optional[str] = None
-    """Optional image reference that guides generation (for I2V)."""
-
-    input_references: Optional[list[str]] = None
-    """Ordered image references for image-to-video generation.
+    Ordered image references for image-to-video generation.
 
     Models that accept multiple keyframes (e.g. MiniMax-H3 FL2VA) consume the
     list as first/last frame pairs. Mutually exclusive with ``input_reference``;
     the handler rejects requests that set both.
     """
 
-    seconds: Optional[int] = None
-    """Clip duration in seconds."""
 
-    size: Optional[str] = None
-    """Video size in WxH format (default: '832x480')."""
-
-    user: Optional[str] = None
-    """Optional user identifier."""
-
-    response_format: Optional[Literal["url", "b64_json"]] = None
-    """How the generated data should be returned: 'url' or 'b64_json'.
-    If unset, handlers default to 'url'."""
-
-    output_format: Optional[str] = None
-    """Requested container format (e.g. 'mp4', 'mjpeg').
-    This is a hint; check output_format in the response data for the actual format."""
-
-    stream: Optional[bool] = None
-    """Whether to stream the video generation (default: false)."""
-
-    nvext: Optional[VideoNvExt] = None
-    """NVIDIA extensions."""
-
-
-class VideoData(BaseModel):
-    """Video data in response.
-
-    Matches Rust VideoData in lib/llm/src/protocols/openai/videos.rs.
+class NvCreateVideoRequest(BaseModel):
+    """
+    Request for video generation (/v1/videos endpoint)
     """
 
-    output_format: str
-    """Actual container format of this video."""
-
-    url: Optional[str] = None
-    """URL of the generated video (if response_format is 'url')."""
-
-    b64_json: Optional[str] = None
-    """Base64-encoded video (if response_format is 'b64_json')."""
-
-    fps: Optional[int] = None
-    """Actual video frame rate when reported by the model."""
-
-    audio_sample_rate: Optional[int] = None
-    """Muxed audio sample rate when the generated video contains audio."""
+    prompt: StrictStr
+    """
+    The text prompt for video generation
+    """
+    model: StrictStr
+    """
+    The model to use for video generation
+    """
+    input_reference: StrictStr | None = None
+    """
+    Optional image reference that guides generation (for I2V)
+    """
+    seconds: Annotated[StrictInt | None, Field(ge=1)] = None
+    """
+    Clip duration in seconds, at least 1. The frontend rejects a value
+    outside the range, so a worker never sees one.
+    """
+    size: StrictStr | None = None
+    """
+    Video size in WxH format (default: "832x480")
+    """
+    user: StrictStr | None = None
+    """
+    Optional user identifier
+    """
+    response_format: Literal['url', 'b64_json'] | None = None
+    output_format: StrictStr | None = None
+    """
+    Output container format: "mp4", "webm", "gif", etc.
+    This field is used as model hint and the model may not
+    return the requested format, should check with output_format
+    field in the response data.
+    """
+    stream: StrictBool | None = None
+    """
+    Whether to stream the video generation (default: false)
+    """
+    nvext: VideoNvExt | None = None
+    extra_args: dict[str, Any] | None = None
+    """
+    Worker-boundary passthrough. The frontend nests unknown top-level request fields (an OpenAI client's extra_body) under the "media_passthrough" key.
+    """
 
 
 class NvVideosResponse(BaseModel):
-    """Response structure for video generation.
-
-    Matches Rust NvVideosResponse in lib/llm/src/protocols/openai/videos.rs.
+    """
+    Response structure for video generation
     """
 
-    id: str
-    """Unique identifier for the response."""
-
-    object: str = "video"
-    """Object type (always 'video')."""
-
-    model: str
-    """Model used for generation."""
-
-    status: str = "completed"
-    """Generation status."""
-
-    progress: int = 100
-    """Progress percentage (0-100)."""
-
-    created: int
-    """Unix timestamp of creation."""
-
-    data: list[VideoData] = []
-    """List of generated videos."""
-
-    error: Optional[str] = None
-    """Error message if generation failed."""
-
-    inference_time_s: Optional[float] = None
-    """Inference time in seconds."""
+    id: StrictStr
+    """
+    Unique identifier for the response
+    """
+    object: StrictStr = 'video'
+    """
+    Object type (always "video")
+    """
+    model: StrictStr
+    """
+    Model used for generation
+    """
+    status: StrictStr = 'completed'
+    """
+    Status of the generation ("completed", "failed", etc.)
+    """
+    progress: StrictInt = 100
+    """
+    Progress percentage (0-100)
+    """
+    created: StrictInt
+    """
+    Unix timestamp of creation
+    """
+    data: Annotated[list[VideoData], Field(validate_default=True)] = []
+    """
+    Generated video data
+    """
+    error: StrictStr | None = None
+    """
+    Error message if generation failed
+    """
+    inference_time_s: StrictFloat | None = None
+    """
+    Inference time in seconds
+    """

@@ -1,13 +1,30 @@
 ---
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-title: ThunderAgent Program Scheduler
-subtitle: Program-level scheduling with tool-boundary pause/resume on top of KV-aware routing
+title: Schedule Agents with ThunderAgent
+subtitle: Schedule whole agent runs, and pause idle ones at tool boundaries, to protect KV cache
 ---
 
-**Experimental.** NVIDIA Dynamo includes a native ThunderAgent plugin for program-aware admission and worker placement. It runs inside the frontend and is enabled through router-policy YAML. It ports the scheduler from the [ThunderAgent](https://arxiv.org/abs/2602.13692) paper (Kang et al., 2026).
+By the end of this guide, the frontend schedules each agent session as one program. It pauses sessions that are waiting on tools when KV cache is under pressure, and resumes them when there is room.
+
+<Note>
+ThunderAgent is experimental. Dynamo includes a native plugin that ports the scheduler from the [ThunderAgent](https://arxiv.org/abs/2602.13692) paper (Kang et al., 2026). It runs inside the frontend and is enabled through router-policy YAML.
+</Note>
+
+![Agent sessions feed the ThunderAgent program scheduler in the frontend. Under KV cache pressure it defers the next turn of sessions waiting on tools and resumes them when there is room.](../../../assets/img/thunderagent-scheduling.svg)
+
+## When to Use It
+
+Agentic workloads (SWE-bench, browser-use, anything with a tool loop) make many short LLM calls separated by non-GPU work: `docker exec`, `pytest`, `curl`, waiting on a subagent. Between turns the agent's KV cache stays resident, holding blocks while doing nothing. A request-level router (vLLM's, SGLang's, Dynamo's stock `KvRouter`) sees each turn but not the agent behind it, which costs you two ways:
+
+- **Cache-occupancy blowup.** With N agents at step K, the working set is `N × step_K_context`, most of it idle between turns. The engine evicts useful blocks under pressure or refuses admission, and every next turn pays a re-prefill tax.
+- **No tool-boundary backpressure.** The router can't defer a hot session at a natural pause point — it can only cancel in-flight requests or queue them, both worse than waiting until the agent is between turns.
+
+If your agents run few concurrent sessions, or KV cache is never under pressure, you do not need this. Start with [session affinity](session-affinity.md) and [priority](priority-scheduling.mdx).
 
 ## Native Frontend Plugin
+
+To implement your own admission policy, see [Write an Admission Control Plugin](../../developer-guide/knowledge-base/modular-components/router/custom-admission-control.md).
 
 Use this path for aggregated serving through `dingo.frontend`. It requires a Dynamo build that includes the `thunderagent` builtin plugin; older wheels and images do not recognize that type. The plugin is included in the builtin catalog without a separate ThunderAgent build feature. Admission behavior remains unchanged until the plugin is selected in YAML.
 
@@ -20,9 +37,6 @@ request_classifier:
   type: thunderagent
 worker_selection:
   aggregated: thunderagent
-  instances:
-    - name: thunderagent
-      type: thunderagent
 ```
 
 Start the frontend against your existing aggregated workers, using the same discovery configuration as the workers:
@@ -39,14 +53,7 @@ Send a stable `X-Dynamo-Session-ID` on every turn of an agent's reasoning and to
 
 Select both plugin roles. The classifier owns the program table and delays admission when a session is busy or paused. When it releases a request, it supplies a preferred worker/rank. The worker selector honors that target if it is eligible, falling back to the least-loaded eligible candidate otherwise. Soft session affinity allows this repacking; hard affinity would constrain the request before the selector can move it. The `Sent` event records the worker actually selected.
 
-```mermaid
-flowchart LR
-    A[Request and session ID] --> B[ThunderAgent classifier]
-    B -->|Released request and preferred worker| C[Dynamo policy queue]
-    C --> D[ThunderAgent worker selector]
-    D --> E[Aggregated worker]
-    E -->|Progress and lifecycle events| B
-```
+![A request with a session ID reaches the ThunderAgent classifier, which releases it with a preferred worker into the Dynamo policy queue. The worker selector then picks a worker. The aggregated worker sends progress and lifecycle events back to the classifier.](../../../assets/img/thunderagent-request-flow.svg)
 
 The classifier uses each worker/rank's published GPU KV-block capacity and a logical token estimate from active and retained programs. It observes context growth during generation, then pauses and repacks programs between turns. This estimate is not physical KV occupancy and does not deduplicate shared prefixes or include host/offload capacity. Running generation is allowed to finish.
 
@@ -71,7 +78,7 @@ The default deferral timeout permits waits of roughly 30 minutes under pressure.
 
 Program state is local to each frontend's router instance. This is not a cluster-wide admission budget; keep a session's turns on the same frontend when using multiple replicas. The native plugin has been exercised with aggregated vLLM workers. Standalone EPP and disaggregated deployment guidance are outside this example.
 
-The native plugin's classifier and worker selector register together in Dynamo's builtin catalog. It does not expose the Python prototype's soft-demotion controls, priority boosts, host-cache budget, or separate status endpoints described below.
+The native plugin's classifier and worker selector register together in Dynamo's builtin catalog. It does not expose the Python prototype's soft-demotion controls, priority boosts, host-cache budget, or separate status endpoints described in [ThunderAgent Python Router](thunderagent-python-router.md).
 
 ### Native Plugin Logs
 
@@ -87,7 +94,7 @@ Each changed tick reports counts of active, paused, and marked-for-pause program
 
 ## Python Router Prototype
 
-The remaining sections describe the older standalone Python implementation. Run that prototype from a source checkout. Its CLI flags and observability endpoints differ from the native plugin above.
+An older standalone Python implementation, `dynamo.thunderagent_router`, schedules with the same idea but runs as its own router service with different flags and observability endpoints. Use the native plugin above for new deployments. See [ThunderAgent Python Router](thunderagent-python-router.md) for the prototype.
 
 `dingo.thunderagent_router` is a standalone Dynamo router that schedules at the granularity of an agent run — the whole `LLM turn → tool call → next turn` loop — instead of individual requests. It wraps Dynamo's native KV router and adds a program-level scheduler with tool-boundary pause/resume on top of KV-aware routing, porting the scheduler from the [ThunderAgent](https://arxiv.org/abs/2602.13692) paper (Kang et al., 2026).
 

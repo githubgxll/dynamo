@@ -28,7 +28,7 @@ python -m dingo.frontend --http-port="$HTTP_PORT" &
 # ---------------------------
 # This runs the main model with EAGLE as the draft model for speculative decoding
 DYN_SYSTEM_ENABLED=true DYN_SYSTEM_PORT=${DYN_SYSTEM_PORT:-8081} \
-CUDA_VISIBLE_DEVICES=0 python -m dingo.vllm \
+python -m dingo.vllm \
     --model "$MODEL" \
     --enforce-eager \
     --speculative_config '{

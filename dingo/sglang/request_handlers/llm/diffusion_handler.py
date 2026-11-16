@@ -10,7 +10,10 @@ from dynamo.llm.exceptions import InvalidArgument
 
 from dingo.sglang.args import Config
 from dingo.sglang.publisher import DynamoSglangPublisher
-from dingo.sglang.request_handlers.llm.decode_handler import DecodeWorkerHandler
+from dingo.sglang.request_handlers.llm.decode_handler import (
+    DecodeWorkerHandler,
+    _validate_stop_token_ids,
+)
 from dingo.sglang.request_handlers.llm.mm_disagg_utils import reject_unconsumed_media
 from dingo.sglang.thinking_budget import thinking_budget_requested
 
@@ -82,6 +85,7 @@ class DiffusionWorkerHandler(DecodeWorkerHandler):
 
         # Get input parameters (tokens or text)
         input_param = self._get_input_param(request)
+        _validate_stop_token_ids(self, request)
 
         # Build sampling parameters
         sampling_params = self._build_sampling_params(request)

@@ -30,7 +30,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -83,7 +87,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -157,7 +165,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -210,7 +222,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -284,7 +300,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -337,7 +357,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -411,7 +435,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -464,7 +492,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -538,7 +570,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -591,7 +627,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -665,7 +705,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -718,7 +762,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -792,7 +840,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -845,7 +897,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -919,7 +975,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -972,7 +1032,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1046,7 +1110,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1099,7 +1167,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1173,7 +1245,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1226,7 +1302,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1300,7 +1380,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1353,7 +1437,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1427,7 +1515,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1480,7 +1572,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1554,7 +1650,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1607,7 +1707,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1681,7 +1785,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1734,7 +1842,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1808,7 +1920,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1861,7 +1977,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -1935,7 +2055,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.frontend
+=======
+                - dynamo.frontend
+>>>>>>> main
               args:
                 - --http-port
                 - "8000"
@@ -1988,7 +2112,11 @@ spec:
               command:
                 - python3
                 - -m
+<<<<<<< HEAD
                 - dingo.vllm
+=======
+                - dynamo.vllm
+>>>>>>> main
               args:
                 - --model
                 - /opt/hf-cache/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c

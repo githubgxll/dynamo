@@ -53,24 +53,30 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional, cast
 
 import numpy as np
 import soundfile as sf
 import torch
+from PIL import Image
 
-try:
-    from vllm_omni.diffusion.utils.media_utils import mux_video_audio_bytes
-except (ImportError, OSError):
-    mux_video_audio_bytes = None  # type: ignore[assignment]
 
 from dingo.common.protocols.audio_protocol import AudioData, NvAudioSpeechResponse
-from dingo.common.protocols.image_protocol import ImageData, NvImagesResponse
+from dingo.common.protocols.image_protocol import (
+    ImageAccounting,
+    ImageData,
+    ImagesResponseNvExt,
+    NvImagesResponse,
+)
 from dingo.common.protocols.video_protocol import NvVideosResponse, VideoData
 from dingo.common.storage import upload_to_fs
 from dingo.common.utils.engine_response import normalize_finish_reason
 from dingo.common.utils.output_modalities import RequestType
-from dingo.common.utils.video_utils import frames_to_numpy, normalize_video_frames
+from dingo.common.utils.video_utils import (
+    encode_to_video_bytes,
+    frames_to_numpy,
+    normalize_video_frames,
+)
 from dingo.common.video_encoding import VideoEncoder, frame_conversion_workers
 from dingo.common.video_result_file import BINARY_RESULT_WRITER
 from dingo.vllm.handlers import build_prompt_tokens_details
@@ -80,6 +86,71 @@ from dingo.vllm.omni.utils import is_empty_payload
 logger = logging.getLogger(__name__)
 
 DEFAULT_AUDIO_SAMPLE_RATE = 24000
+
+# The encodings this handler writes, which are the values of
+# `NvImagesResponse.output_format`. `_normalize_image_output_options` returns
+# one of them, so the response model accepts what it returns.
+ImageOutputFormat = Literal["png", "jpeg", "webp"]
+
+_IMAGE_OUTPUT_FORMATS = {
+    "png": ("PNG", "png", "image/png"),
+    "jpeg": ("JPEG", "jpg", "image/jpeg"),
+    "webp": ("WEBP", "webp", "image/webp"),
+}
+
+
+def _normalize_image_output_options(
+    output_format: str | None,
+    response_format: str | None,
+    *,
+    quality: str | None = None,
+    background: str | None = None,
+) -> ImageOutputFormat:
+    if response_format not in (None, "url", "b64_json"):
+        raise ValueError(
+            f"Unsupported response_format: {response_format!r}; "
+            "expected 'url' or 'b64_json'"
+        )
+    if quality is not None:
+        raise ValueError(
+            "quality is not supported by the Dynamo vLLM-Omni image handler"
+        )
+    if background is not None:
+        raise ValueError(
+            "background is not supported by the Dynamo vLLM-Omni image handler"
+        )
+
+    if output_format is None:
+        return "png"
+    if not isinstance(output_format, str):
+        raise ValueError("output_format must be 'png', 'jpeg', or 'webp'")
+
+    normalized = output_format.lower()
+    if normalized not in _IMAGE_OUTPUT_FORMATS:
+        raise ValueError(
+            f"Unsupported output_format: {output_format!r}; "
+            "expected 'png', 'jpeg', or 'webp'"
+        )
+    return cast(ImageOutputFormat, normalized)
+
+
+def _resolved_image_size(images: list) -> str | None:
+    dimensions = []
+    for image in images:
+        size = getattr(image, "size", None)
+        if (
+            not isinstance(size, tuple)
+            or len(size) != 2
+            or any(type(value) is not int or value <= 0 for value in size)
+        ):
+            return None
+        dimensions.append(size)
+
+    if not dimensions or any(size != dimensions[0] for size in dimensions[1:]):
+        return None
+
+    width, height = dimensions[0]
+    return f"{width}x{height}"
 
 
 @dataclass
@@ -190,6 +261,7 @@ class DiffusionFormatter:
         media_fs: Any,
         media_http_url: Optional[str],
         default_fps: int = 16,
+        image_png_compression_level: int = 6,
     ) -> None:
         """Initialize a diffusion formatter.
 
@@ -198,6 +270,7 @@ class DiffusionFormatter:
             media_fs: Storage backend used for URL responses.
             media_http_url: Public base URL for stored media.
             default_fps: Frame rate used when output metadata omits one.
+            image_png_compression_level: Lossless PNG compression level (0-9).
 
         Returns:
             None.
@@ -207,6 +280,7 @@ class DiffusionFormatter:
         self._media_http_url = media_http_url
         self._default_fps = default_fps
         self._video_encoder = VideoEncoder(frame_conversion_workers())
+        self._image_png_compression_level = image_png_compression_level
 
     def close(self) -> None:
         self._video_encoder.close()
@@ -220,7 +294,9 @@ class DiffusionFormatter:
             stage_output: vLLM-Omni stage output containing generated media.
             request_id: Identifier included in the response.
             request_type: Request kind used to distinguish image and video output.
-            **ctx: Response format, output format, and frame-rate overrides.
+            **ctx: Response format, output format, frame-rate overrides, and
+                the image accounting inputs ``input_images`` and
+                ``num_inference_steps``.
 
         Returns:
             Dict[str, Any] | None: Formatted response, or ``None`` for empty images.
@@ -254,6 +330,9 @@ class DiffusionFormatter:
             request_id,
             request_type=request_type,
             response_format=ctx.get("response_format"),
+            output_format=ctx.get("output_format"),
+            input_images=ctx.get("input_images", 0),
+            num_inference_steps=ctx.get("num_inference_steps"),
         )
 
     @staticmethod
@@ -372,10 +451,12 @@ class DiffusionFormatter:
             raise ValueError(
                 f"Unsupported response_format: {response_format!r}; expected 'url' or 'b64_json'"
             )
-        if output_format != "mp4":
+        if output_format not in ("mp4", "webm"):
             raise ValueError(
-                f"Unsupported output_format: {output_format!r}; only 'mp4' is supported"
+                f"Unsupported output_format: {output_format!r}; expected 'mp4' or 'webm'"
             )
+        if output_format == "webm" and audio is not None:
+            raise ValueError("Generated audio requires MP4 output")
         try:
             start_time = time.time()
             output_started = time.perf_counter()
@@ -391,24 +472,35 @@ class DiffusionFormatter:
                         "audio_sample_rate must be a positive integer when audio "
                         "is provided"
                     )
-                encode_kwargs["audio"] = audio
+                audio_np = self._audio_to_numpy(audio)
+                if audio_np.ndim in (1, 2):
+                    video_duration_s = len(frame_list) / fps
+                    audio_duration_s = max(audio_np.shape) / audio_sample_rate
+                    tolerance_s = 1.0 / fps + 1.0 / audio_sample_rate
+                    if abs(video_duration_s - audio_duration_s) > tolerance_s:
+                        raise ValueError(
+                            "Audio/video duration mismatch: "
+                            f"video={video_duration_s:.3f}s, "
+                            f"audio={audio_duration_s:.3f}s, "
+                            f"tolerance={tolerance_s:.3f}s"
+                        )
+                encode_kwargs["audio"] = audio_np
                 encode_kwargs["audio_sample_rate"] = audio_sample_rate
 
-            # vllm-omni's _encode_video_bytes muxes H.264 video and (optional)
-            # AAC audio into an MP4 byte string. It handles the conversion from
-            # normalized frame tensors to the byte format expected by the
-            # frontend, including audio sample rate negotiation for AAC encoding.
-            from vllm_omni.entrypoints.openai import video_api_utils
-            from vllm_omni.entrypoints.openai.serving_video import (
-                OmniOpenAIServingVideo,
-            )
-
-            normalized = OmniOpenAIServingVideo._normalize_video_outputs(frame_list)
-            if len(normalized) != 1:
-                raise ValueError(
-                    f"Expected exactly one video, got {len(normalized)}; "
-                    f"video encoding requires a single normalized video tensor"
+            if audio is not None:
+                # Preserve Dingo's bounded H.264/AAC encoder and its reusable
+                # converter for audio-video output; silent output uses VP9.
+                from vllm_omni.entrypoints.openai import video_api_utils
+                from vllm_omni.entrypoints.openai.serving_video import (
+                    OmniOpenAIServingVideo,
                 )
+
+                normalized = OmniOpenAIServingVideo._normalize_video_outputs(frame_list)
+                if len(normalized) != 1:
+                    raise ValueError(
+                        f"Expected exactly one video, got {len(normalized)}; "
+                        f"video encoding requires a single normalized video tensor"
+                    )
 
             stages["output_normalize_s"] = time.perf_counter() - output_started
             submitted = time.perf_counter()
@@ -417,6 +509,12 @@ class DiffusionFormatter:
                 began = time.perf_counter()
                 stages["encode_queue_s"] = began - submitted
                 try:
+                    if audio is None:
+                        return encode_to_video_bytes(
+                            self._video_to_numpy_frames(frame_list),
+                            fps=fps,
+                            output_format=output_format,
+                        )
                     return self._video_encoder.encode(
                         video_api_utils, normalized[0], fps=fps, **encode_kwargs
                     )
@@ -448,7 +546,7 @@ class DiffusionFormatter:
                     "model": self._model_name,
                     "status": "completed",
                     "progress": 100,
-                    "data": [{"output_format": "mp4", "artifact": artifact}],
+                    "data": [{"output_format": output_format, "artifact": artifact}],
                     "inference_time_s": time.time() - start_time,
                     "stage_durations": stages,
                     **({"model_execution": model_execution} if model_execution else {}),
@@ -796,6 +894,9 @@ class DiffusionFormatter:
         *,
         request_type: Any,
         response_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        input_images: int = 0,
+        num_inference_steps: int | None = None,
     ) -> Dict[str, Any] | None:
         """Encode generated images for chat or image-generation responses.
 
@@ -804,6 +905,12 @@ class DiffusionFormatter:
             request_id: Identifier included in the response and storage path.
             request_type: Request kind selecting the response schema.
             response_format: ``"url"`` or ``"b64_json"`` output representation.
+            output_format: ``"png"``, ``"jpeg"``, or ``"webp"`` encoding.
+            input_images: Reference images the request consumed, reported as
+                image accounting on an image-generation response.
+            num_inference_steps: The step count the request asked for, or
+                ``None`` when the model default applied. vLLM-Omni's stage
+                output does not carry the count the engine ran.
 
         Returns:
             Dict[str, Any] | None: Formatted response or ``None`` for other request kinds.
@@ -812,10 +919,13 @@ class DiffusionFormatter:
             ValueError: If the response format is unsupported.
             OSError: If an image cannot be encoded or uploaded.
         """
+        image_format = _normalize_image_output_options(output_format, response_format)
         if is_empty_payload(images):
             return _error_chunk(request_id, self._model_name, "No images generated")
 
-        data_urls = await self._prepare_images(images, request_id, response_format)
+        data_urls = await self._prepare_images(
+            images, request_id, response_format, image_format
+        )
 
         if request_type == RequestType.CHAT_COMPLETION:
             return {
@@ -853,20 +963,35 @@ class DiffusionFormatter:
                 else:
                     raise ValueError(f"Invalid response format: {response_format}")
             return NvImagesResponse(
-                created=int(time.time()), data=image_data_list
-            ).model_dump()
+                created=int(time.time()),
+                data=image_data_list,
+                output_format=image_format,
+                size=_resolved_image_size(images),
+                nvext=ImagesResponseNvExt(
+                    usage=ImageAccounting(
+                        output_images=len(image_data_list),
+                        input_images=input_images,
+                        num_inference_steps=num_inference_steps,
+                    )
+                ),
+            ).model_dump(exclude_none=True)
 
         return None
 
     async def _prepare_images(
-        self, images: list, request_id: str, response_format: Optional[str] = None
+        self,
+        images: list,
+        request_id: str,
+        response_format: Optional[str] = None,
+        output_format: Optional[str] = None,
     ) -> list:
         """Serialize images as data URLs or upload-backed URLs.
 
         Args:
-            images: Generated image objects supporting PNG serialization.
+            images: Generated image objects supporting image serialization.
             request_id: Identifier used to construct storage paths.
             response_format: ``"url"`` or ``"b64_json"`` output representation.
+            output_format: ``"png"``, ``"jpeg"``, or ``"webp"`` encoding.
 
         Returns:
             list: Encoded data URLs or uploaded media URLs.
@@ -875,22 +1000,39 @@ class DiffusionFormatter:
             ValueError: If the response format is unsupported.
             OSError: If an image cannot be encoded or uploaded.
         """
+        output_format = _normalize_image_output_options(output_format, response_format)
+        image_encoder, file_extension, mime_type = _IMAGE_OUTPUT_FORMATS[output_format]
+        save_kwargs = (
+            {"compress_level": self._image_png_compression_level}
+            if image_encoder == "PNG"
+            else {}
+        )
         outlist = []
         for img in images:
             buf = BytesIO()
-            img.save(buf, format="PNG")
+            encoded_image = img
+            if image_encoder == "JPEG":
+                has_transparency = "transparency" in img.info
+                if img.mode not in ("L", "RGB") or has_transparency:
+                    if "A" in img.getbands() or has_transparency:
+                        rgba = img.convert("RGBA")
+                        encoded_image = Image.new("RGB", rgba.size, "white")
+                        encoded_image.paste(rgba, mask=rgba.getchannel("A"))
+                    else:
+                        encoded_image = img.convert("RGB")
+            encoded_image.save(buf, format=image_encoder, **save_kwargs)
             image_bytes = buf.getvalue()
             if response_format == "url":
                 url = await upload_to_fs(
                     self._media_fs,
-                    f"images/{request_id}/{uuid.uuid4()}.png",
+                    f"images/{request_id}/{uuid.uuid4()}.{file_extension}",
                     image_bytes,
                     self._media_http_url,
                 )
                 outlist.append(url)
             elif response_format == "b64_json" or response_format is None:
                 outlist.append(
-                    f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+                    f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
                 )
             else:
                 raise ValueError(f"Invalid response format: {response_format}")
@@ -942,6 +1084,19 @@ class AudioFormatter:
             if stream_state is not None or aggregate_state is not None:
                 return None
             return self._error_response(request_id, "No audio generated")
+
+        # DELTA output drains the audio key but can retain sample-rate metadata.
+        # It is not a media result or a failure. Aggregate completion and health
+        # probes still require nonempty audio elsewhere in the response stream.
+        if (
+            isinstance(mm_output, Mapping)
+            and set(mm_output) == {"sr"}
+            and (
+                stream_state is not None
+                or (aggregate_state is not None and not aggregate_state.cumulative)
+            )
+        ):
+            return None
 
         response_format = ctx.get("response_format")
         output_format = ctx.get("output_format")
@@ -1550,9 +1705,26 @@ class OutputFormatter:
         media_fs: Any = None,
         media_http_url: Optional[str] = None,
         default_fps: int = 16,
+        image_png_compression_level: int = 6,
     ) -> None:
+        """Initialize modality-specific output formatters.
+
+        Args:
+            model_name: Model identifier included in responses.
+            media_fs: Storage backend used for URL responses.
+            media_http_url: Public base URL for stored media.
+            default_fps: Frame rate used when video metadata omits one.
+            image_png_compression_level: Lossless PNG compression level (0-9).
+
+        Returns:
+            None.
+        """
         diffusion = DiffusionFormatter(
-            model_name, media_fs, media_http_url, default_fps
+            model_name,
+            media_fs,
+            media_http_url,
+            default_fps,
+            image_png_compression_level=image_png_compression_level,
         )
         self._formatters: Dict[str, Any] = {
             "text": TextFormatter(model_name),

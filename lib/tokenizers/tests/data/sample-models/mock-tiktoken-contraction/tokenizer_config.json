@@ -1,0 +1,12 @@
+{
+  "added_tokens_decoder": {
+    "270": {
+      "content": "<|end_of_msg|>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  }
+}

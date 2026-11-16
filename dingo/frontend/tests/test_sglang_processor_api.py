@@ -8,8 +8,11 @@ upgrades that break our integration surface are caught immediately.
 """
 
 import pickle
+import inspect
 
 import pytest
+
+from dingo.frontend.sglang_processor import get_tokenizer
 
 # Needs sglang packages (gpu_1 container), but does not allocate GPU VRAM.
 pytestmark = [
@@ -48,6 +51,19 @@ def test_sglang_tool_importable():
 
     assert callable(Tool)
     assert callable(Function)
+
+
+# ---------------------------------------------------------------------------
+# get_tokenizer signature
+# ---------------------------------------------------------------------------
+
+
+def test_get_tokenizer_accepts_tokenizer_mode():
+    """Require the tokenizer-loading arguments used by the frontend."""
+    sig = inspect.signature(get_tokenizer)
+    params = sig.parameters
+    assert "tokenizer_name" in params or list(params.keys())[0] != ""
+    assert "tokenizer_mode" in params
 
 
 # ---------------------------------------------------------------------------

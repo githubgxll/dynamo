@@ -241,7 +241,7 @@ metadata = {
     "model_revision": os.environ["MODEL_REVISION"],
     "request_time_seconds": request_time_seconds,
     "package_versions": {
-        "ai-dynamo": version("ai-dynamo"),
+        "ai-dingo": version("ai-dingo"),
         "vllm": version("vllm"),
         "vllm-omni": version("vllm-omni"),
         "fastvideo-kernel": version("fastvideo-kernel"),

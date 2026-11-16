@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# DC KV Relay
+# Pool Relay
 
-**Experimental.** The DC KV Relay discovers NVIDIA Dynamo inference endpoints and publishes
+**Experimental.** The Pool Relay discovers NVIDIA Dynamo inference endpoints and publishes
 endpoint-local key-value (KV) pool facts through the universal publisher. Its optional WAN
 adapter exposes pool catalogs, Cuckoo-filter (CKF) streams, serving readiness, and load over
 Protobuf/gRPC. Relay does not merge independent pools or implement cross-data-center routing policy.
@@ -13,16 +13,16 @@ Protobuf/gRPC. Relay does not merge independent pools or implement cross-data-ce
 ## Usage
 
 Match the existing deployment's discovery and event-plane settings using the
-[runtime environment reference](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/reference/components/kv-dc-relay-configuration.md#runtime-environment), then run:
+[runtime environment reference](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/reference/components/pool-relay-configuration.md#runtime-environment), then run:
 
 ```bash
 python -m dingo.kv_dc_relay \
-  --dc-id dc-a \
+  --cluster-id cluster-a \
   --namespaces production-llama \
   --bind 127.0.0.1:5561
 ```
 
-- Keep `--dc-id` stable across restarts.
+- Keep `--cluster-id` stable across restarts.
 - `--namespaces` selects logical Dynamo namespaces. Omit the scope to watch all namespaces
   visible to the configured discovery backend, or use `--watch-all` explicitly.
 - `--endpoint-prefix` narrows the scope; repeat it to include multiple endpoint prefixes.
@@ -36,11 +36,11 @@ optional TLS/mTLS sidecar across trust boundaries, and do not expose the plainte
 ## Documentation
 
 - [Architecture and concepts](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/developer-guide/knowledge-base/modular-components/router/multi-dc-kv-routing.md)
-- [Kubernetes deployment](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/kubernetes/kv-aware-routing/kv-dc-relay.md)
-- [CLI, environment variables, and diagnostics](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/reference/components/kv-dc-relay-configuration.md)
-- [Rust implementation](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/kv_dc_relay/docs/architecture.md)
-- [gRPC contract](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/kv_dc_relay/docs/grpc-contract.md)
-- [Protocol helpers and CBI1](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/kv_dc_relay/wan/grpc/protocol/README.md)
+- [Kubernetes deployment](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/kubernetes/kv-aware-routing/pool-relay.md)
+- [CLI, environment variables, and diagnostics](https://github.com/ai-dynamo/dynamo/blob/main/docs/fern/pages/reference/components/pool-relay-configuration.md)
+- [Rust implementation](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/pool_relay/docs/architecture.md)
+- [gRPC contract](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/pool_relay/docs/grpc-contract.md)
+- [Protocol helpers and CBI1](https://github.com/ai-dynamo/dynamo/blob/main/lib/llm/src/pool_relay/wan/grpc/protocol/README.md)
 
 ## File mode and state
 

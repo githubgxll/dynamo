@@ -1,10 +1,15 @@
-"""Metrics-focused SGLang processor tests with lightweight SGLang stubs."""
+#  SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#  SPDX-License-Identifier: Apache-2.0
+
+"""SGLang processor metrics and import tests with lightweight backend stubs."""
 
 import asyncio
+import builtins
 import importlib
 import json
 import sys
 import types
+from typing import Any
 
 import pytest
 from _routed_engine_fakes import FakeRoutedEngine
@@ -12,13 +17,13 @@ from _routed_engine_fakes import FakeRoutedEngine
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.sglang,
+    pytest.mark.core,
     pytest.mark.gpu_0,
     pytest.mark.pre_merge,
 ]
 
 _MISSING = object()
 
-from typing import Any
 
 
 @pytest.fixture
@@ -54,7 +59,8 @@ def _install_module(install_module, name: str, **attrs):
     return install_module(name, **attrs)
 
 
-def _install_sglang_stubs(install_module):
+def _install_sglang_stubs(install_module, tokenizer_module):
+    """Install lightweight backend modules with the selected tokenizer layout."""
     class _Function:
         pass
 
@@ -139,7 +145,7 @@ def _install_sglang_stubs(install_module):
     _install_module(install_module, "sglang.srt.utils")
     _install_module(
         install_module,
-        "sglang.srt.hf_transformers",
+        tokenizer_module,
         get_tokenizer=lambda *args, **kwargs: None,
         get_config=lambda *args, **kwargs: None,
         get_generation_config=lambda *args, **kwargs: None,
@@ -164,11 +170,24 @@ class _PostProcessor:
         return 1
 
 
-def _load_processor_module(module_stubs):
+def _load_processor_module(
+    module_stubs, tokenizer_module="sglang.srt.hf_transformers"
+):
+    """Import a fresh processor against the selected SGLang module layout."""
     install_module, remove_module = module_stubs
     http_error = type("HttpError", (Exception,), {})
-    _install_sglang_stubs(install_module)
-    _install_module(install_module, "dynamo._internal", ModelDeploymentCard=object)
+    for name in (
+        "sglang.srt.hf_transformers",
+        "sglang.srt.utils.hf_transformers",
+    ):
+        remove_module(name)
+    _install_sglang_stubs(install_module, tokenizer_module)
+    # Importing common.utils initializes native bindings absent from this fixture.
+    _install_module(
+        install_module,
+        "dingo.common.utils.input_params",
+        resolve_thinking_token_budget=lambda *_args, **_kwargs: None,
+    )
     _install_module(install_module, "dingo.common.multimodal")
     _install_module(
         install_module,
@@ -209,7 +228,7 @@ def _load_processor_module(module_stubs):
         "dynamo.llm.exceptions",
         HttpError=http_error,
         InvalidArgument=type("InvalidArgument", (Exception,), {}),
-        Unknown=type("Unknown", (Exception,), {}),
+        WorkerUnavailable=type("WorkerUnavailable", (Exception,), {}),
     )
     remove_module("dingo.frontend.sglang_prepost")
     remove_module("dingo.frontend.sglang_processor")
@@ -637,3 +656,123 @@ def test_empty_token_report_emits_usage_without_waiting_for_finish(module_stubs)
     assert event["data"]["choices"] == []
     assert event["data"]["usage"]["completion_tokens"] == 1
     assert event["data"]["llm_metrics"]["chunk_tokens"] == 0
+
+@pytest.mark.parametrize("stream_interval", [1, 2])
+@pytest.mark.parametrize(
+    "stream_options,intermediate_usage",
+    [
+        (None, False),
+        ({"include_usage": True, "continuous_usage_stats": False}, False),
+        ({"include_usage": False, "continuous_usage_stats": True}, False),
+        ({"include_usage": True, "continuous_usage_stats": True}, True),
+    ],
+)
+
+def test_sparse_usage_survives_flushes(
+    module_stubs, stream_interval, stream_options, intermediate_usage
+):
+    module = _load_processor_module(module_stubs)
+    processor = module.SglangProcessor(
+        tokenizer=None,
+        routed_engine=FakeRoutedEngine(
+            items=[
+                {
+                    "token_ids": [101],
+                    "completion_usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 1,
+                        "total_tokens": 4,
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    },
+                },
+                {
+                    "token_ids": [102],
+                    "completion_usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "total_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 2},
+                    },
+                },
+                {"token_ids": [103]},
+                {"token_ids": [], "finish_reason": "stop"},
+            ]
+        ),
+        tool_call_parser_name=None,
+        reasoning_parser_name=None,
+        eos_token_ids=None,
+    )
+    processor.stream_interval = stream_interval
+
+    async def collect():
+        return [
+            item
+            async for item in processor._generate_and_stream(
+                "req-sparse",
+                {
+                    "model": "test-model",
+                    "stream": True,
+                    "stream_options": stream_options,
+                },
+                {},
+                [1, 2, 3],
+                _PostProcessor(),
+            )
+        ]
+
+    items = asyncio.run(collect())
+    expected_counts = [1, 2, 3, 3] if stream_interval == 1 else [1, 3, 3]
+    assert len(items) == len(expected_counts)
+    for index, (item, count) in enumerate(zip(items, expected_counts)):
+        expected_cache = 0 if index == 0 else 2
+        assert item["data"]["llm_metrics"]["cached_tokens"] == expected_cache
+        assert ("usage" in item["data"]) == (
+            intermediate_usage
+            or (
+                index == len(items) - 1
+                and bool((stream_options or {}).get("include_usage"))
+            )
+        )
+        if "usage" in item["data"]:
+            usage = item["data"]["usage"]
+            assert usage["completion_tokens"] == count
+            assert usage["total_tokens"] == 3 + count
+            assert usage["prompt_tokens_details"] == {"cached_tokens": expected_cache}
+
+
+@pytest.mark.parametrize(
+    "tokenizer_module",
+    [
+        "sglang.srt.hf_transformers",
+        "sglang.srt.utils.hf_transformers",
+    ],
+)
+def test_tokenizer_import_layouts(module_stubs, tokenizer_module):
+    """Resolve the tokenizer from current sources and the pinned releases."""
+    module = _load_processor_module(module_stubs, tokenizer_module)
+    assert module.get_tokenizer is sys.modules[tokenizer_module].get_tokenizer
+
+
+@pytest.mark.parametrize(
+    "tokenizer_module",
+    ["sglang.srt.hf_transformers", "sglang.srt.utils.hf_transformers"],
+)
+def test_tokenizer_import_preserves_dependency_error(
+    module_stubs, monkeypatch, tokenizer_module
+):
+    """Preserve missing dependencies instead of treating them as a layout move."""
+    original_import = builtins.__import__
+    error = ModuleNotFoundError(
+        "No module named 'tokenizer_dependency'", name="tokenizer_dependency"
+    )
+
+    def import_with_missing_dependency(name, *args, **kwargs):
+        """Fail inside the selected tokenizer module while importing others normally."""
+        if name == tokenizer_module:
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_missing_dependency)
+    with pytest.raises(ModuleNotFoundError) as caught:
+        _load_processor_module(module_stubs)
+    assert caught.value is error

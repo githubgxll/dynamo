@@ -23,17 +23,135 @@ def assert_cli_error(
 
 
 def test_default_config() -> None:
-    config = parse_args(["--dc-id", "dc-a"], {})
+    config = parse_args(["--cluster-id", "dc-a"], {})
 
     assert config.watch_all is True
     assert config.namespaces == ()
     assert config.endpoint_prefixes == ()
     assert config.bind is None
+    assert config.global_discovery_url is None
     assert config.tuning == ()
+    assert config.routing_pool is None
+    assert config.routing_pool_region is None
+    assert config.routing_pool_frontends == ()
+
+
+def test_routing_pool_reaches_startup_from_environment() -> None:
+    config = parse_args(
+        [],
+        {
+            "DYN_CLUSTER_ID": "east",
+            "DYN_RELAY_BIND": "127.0.0.1:0",
+            "DYN_RELAY_GLOBAL_DISCOVERY_URL": "http://discovery:8080",
+            "DYN_RELAY_ROUTING_POOL": "east/dynamo/blue",
+            "DYN_RELAY_ROUTING_POOL_REGION": "us-east-1",
+            "DYN_RELAY_ROUTING_POOL_FRONTENDS": "http://blue-a:8000,http://blue-b:8000",
+        },
+    )
+    assert config.routing_pool == "east/dynamo/blue"
+    assert config.routing_pool_region == "us-east-1"
+    assert config.routing_pool_frontends == ("http://blue-a:8000", "http://blue-b:8000")
+
+
+@pytest.mark.parametrize(
+    "pool", ["east/blue", "east//blue", "west/dynamo/blue", "east/dynamo/ blue"]
+)
+def test_routing_pool_rejects_ambiguous_or_mismatched_identity(
+    pool: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert_cli_error(
+        [
+            "--cluster-id",
+            "east",
+            "--bind",
+            "127.0.0.1:0",
+            "--global-discovery-url",
+            "http://discovery:8080",
+            "--routing-pool",
+            pool,
+            "--routing-pool-region",
+            "us-east-1",
+        ],
+        {},
+        capsys,
+        "--routing-pool",
+    )
+
+
+def test_routing_pool_requires_transport_and_discovery(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert_cli_error(
+        ["--cluster-id", "east", "--routing-pool", "east/dynamo/blue"],
+        {},
+        capsys,
+        "requires --global-discovery-url and --bind",
+    )
+
+
+ROUTING_POOL_ARGS = [
+    "--cluster-id",
+    "east",
+    "--bind",
+    "127.0.0.1:0",
+    "--global-discovery-url",
+    "http://discovery:8080",
+    "--routing-pool",
+    "east/dynamo/blue",
+]
+
+
+@pytest.mark.parametrize("region", [[], ["--routing-pool-region", " us-east-1"]])
+def test_routing_pool_requires_a_region(
+    region: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert_cli_error(
+        ROUTING_POOL_ARGS + region,
+        {},
+        capsys,
+        "--routing-pool requires a --routing-pool-region",
+    )
+
+
+@pytest.mark.parametrize(
+    "registration",
+    [
+        ["--routing-pool-region", "us-east-1"],
+        ["--routing-pool-frontends", "http://blue:8000"],
+    ],
+)
+def test_routing_pool_registration_requires_a_routing_pool(
+    registration: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert_cli_error(
+        ["--cluster-id", "east", *registration],
+        {},
+        capsys,
+        "require --routing-pool",
+    )
+
+
+def test_routing_pool_frontends_reject_an_empty_entry(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert_cli_error(
+        ROUTING_POOL_ARGS
+        + [
+            "--routing-pool-region",
+            "us-east-1",
+            "--routing-pool-frontends",
+            "http://blue:8000,",
+        ],
+        {},
+        capsys,
+        "--routing-pool-frontends",
+    )
 
 
 def test_namespace_filter_selects_one_namespace() -> None:
-    config = parse_args(["--dc-id", "dc-a", "--namespace-filter", "production"], {})
+    config = parse_args(
+        ["--cluster-id", "dc-a", "--namespace-filter", "production"], {}
+    )
 
     assert config.namespaces == ("production",)
     assert config.watch_all is False
@@ -42,7 +160,7 @@ def test_namespace_filter_selects_one_namespace() -> None:
 def test_cli_overrides_environment() -> None:
     config = parse_args(
         [
-            "--dc-id",
+            "--cluster-id",
             "cli-dc",
             "--namespaces",
             "cli-a, cli-b",
@@ -54,42 +172,48 @@ def test_cli_overrides_environment() -> None:
             "[::1]:0",
             "--expected-unique-blocks",
             "128",
+            "--global-discovery-url",
+            "http://cli-discovery:8080/",
         ],
         {
-            "DYN_DC_ID": "environment-dc",
+            "DYN_CLUSTER_ID": "environment-dc",
             "DYN_RELAY_NAMESPACES": "environment-a, environment-b",
             "DYN_RELAY_ENDPOINT_PREFIXES": "environment-a.backend",
             "DYN_RELAY_BIND": "127.0.0.1:0",
             "DYN_RELAY_EXPECTED_UNIQUE_BLOCKS": "64",
+            "DYN_RELAY_GLOBAL_DISCOVERY_URL": "http://environment-discovery:8080/",
         },
     )
 
-    assert config.dc_id == "cli-dc"
+    assert config.cluster_id == "cli-dc"
     assert config.namespaces == ("cli-a", "cli-b")
     assert config.watch_all is False
     assert config.endpoint_prefixes == ("cli-a.backend", "cli-b.backend")
     assert config.bind == "[::1]:0"
     assert config.expected_unique_blocks == 128
+    assert config.global_discovery_url == "http://cli-discovery:8080/"
 
 
 def test_config_from_environment() -> None:
     config = parse_args(
         [],
         {
-            "DYN_DC_ID": "dc-a",
+            "DYN_CLUSTER_ID": "dc-a",
             "DYN_RELAY_NAMESPACES": "prod-a, prod-b",
             "DYN_RELAY_ENDPOINT_PREFIXES": "prod-a.backend, prod-b.backend",
             "DYN_RELAY_BIND": "127.0.0.1:0",
             "DYN_RELAY_EXPECTED_UNIQUE_BLOCKS": "64",
+            "DYN_RELAY_GLOBAL_DISCOVERY_URL": "http://discovery:8080/",
         },
     )
 
-    assert config.dc_id == "dc-a"
+    assert config.cluster_id == "dc-a"
     assert config.namespaces == ("prod-a", "prod-b")
     assert config.endpoint_prefixes == ("prod-a.backend", "prod-b.backend")
     assert config.watch_all is False
     assert config.bind == "127.0.0.1:0"
     assert config.expected_unique_blocks == 64
+    assert config.global_discovery_url == "http://discovery:8080/"
 
 
 @pytest.mark.parametrize(
@@ -124,19 +248,19 @@ def test_cli_scope_overrides_environment(
     namespaces: tuple[str, ...],
     watch_all: bool,
 ) -> None:
-    config = parse_args(["--dc-id", "dc-a", *argv], environment)
+    config = parse_args(["--cluster-id", "dc-a", *argv], environment)
     assert config.namespaces == namespaces
     assert config.watch_all is watch_all
 
 
 def test_environment_watch_all_is_normalized() -> None:
-    config = parse_args(["--dc-id", "dc-a"], {"DYN_RELAY_WATCH_ALL": " YES "})
+    config = parse_args(["--cluster-id", "dc-a"], {"DYN_RELAY_WATCH_ALL": " YES "})
     assert config.watch_all is True
     assert config.namespaces == ()
 
 
-def test_dc_id_is_required(capsys: pytest.CaptureFixture[str]) -> None:
-    assert_cli_error([], {}, capsys, "--dc-id or DYN_DC_ID is required")
+def test_cluster_id_is_required(capsys: pytest.CaptureFixture[str]) -> None:
+    assert_cli_error([], {}, capsys, "--cluster-id or DYN_CLUSTER_ID is required")
 
 
 @pytest.mark.parametrize(
@@ -186,7 +310,7 @@ def test_invalid_discovery_scopes(
     diagnostic: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert_cli_error(["--dc-id", "dc-a", *argv], environment, capsys, diagnostic)
+    assert_cli_error(["--cluster-id", "dc-a", *argv], environment, capsys, diagnostic)
 
 
 @pytest.mark.parametrize("source", ["cli", "environment"])
@@ -206,7 +330,7 @@ def test_invalid_namespace_csv(
 ) -> None:
     argv = ["--namespaces", value] if source == "cli" else []
     environment = {"DYN_RELAY_NAMESPACES": value} if source == "environment" else {}
-    assert_cli_error(["--dc-id", "dc-a", *argv], environment, capsys, diagnostic)
+    assert_cli_error(["--cluster-id", "dc-a", *argv], environment, capsys, diagnostic)
 
 
 @pytest.mark.parametrize(
@@ -247,12 +371,12 @@ def test_invalid_endpoint_prefixes(
     diagnostic: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert_cli_error(["--dc-id", "dc-a", *argv], environment, capsys, diagnostic)
+    assert_cli_error(["--cluster-id", "dc-a", *argv], environment, capsys, diagnostic)
 
 
 def test_known_tuning_is_loaded_and_unknown_environment_keys_are_ignored() -> None:
     config = parse_args(
-        ["--dc-id", "dc-a"],
+        ["--cluster-id", "dc-a"],
         {
             "DYN_RELAY_BIND": "127.0.0.1:0",
             "DYN_RELAY_MAX_POOL_STREAMS_TOTAL": "71",
@@ -272,7 +396,7 @@ def test_known_tuning_is_loaded_and_unknown_environment_keys_are_ignored() -> No
 def test_wan_tuning_requires_bind(key: str, capsys: pytest.CaptureFixture[str]) -> None:
     name = f"DYN_RELAY_{key.upper()}"
     assert_cli_error(
-        ["--dc-id", "dc-a"],
+        ["--cluster-id", "dc-a"],
         {name: "1"},
         capsys,
         f"{name} requires --bind or DYN_RELAY_BIND",
@@ -281,7 +405,7 @@ def test_wan_tuning_requires_bind(key: str, capsys: pytest.CaptureFixture[str]) 
 
 def test_producer_tuning_does_not_require_bind() -> None:
     config = parse_args(
-        ["--dc-id", "dc-a"],
+        ["--cluster-id", "dc-a"],
         {
             "DYN_RELAY_PUBLICATION_THRESHOLD": "7",
             "DYN_RELAY_PUBLICATION_DELAY_MS": "20",
@@ -303,7 +427,7 @@ def test_environment_tuning_rejects_zero(
 ) -> None:
     name = f"DYN_RELAY_{key.upper()}"
     assert_cli_error(
-        ["--dc-id", "dc-a", "--bind", "127.0.0.1:0"],
+        ["--cluster-id", "dc-a", "--bind", "127.0.0.1:0"],
         {name: "0"},
         capsys,
         f"{name}: must be a positive integer",
@@ -326,7 +450,7 @@ def test_environment_tuning_rejects_invalid_numbers(
 ) -> None:
     name = f"DYN_RELAY_{key.upper()}"
     assert_cli_error(
-        ["--dc-id", "dc-a", "--bind", "127.0.0.1:0"],
+        ["--cluster-id", "dc-a", "--bind", "127.0.0.1:0"],
         {name: value},
         capsys,
         name,
@@ -357,12 +481,32 @@ def test_expected_unique_blocks_rejects_invalid_numbers(
         argv = []
         name = "DYN_RELAY_EXPECTED_UNIQUE_BLOCKS"
         environment = {name: value}
-    assert_cli_error(["--dc-id", "dc-a", *argv], environment, capsys, name, diagnostic)
+    assert_cli_error(
+        ["--cluster-id", "dc-a", *argv], environment, capsys, name, diagnostic
+    )
+
+
+@pytest.mark.parametrize("source", ["cli", "environment"])
+def test_global_discovery_url_rejects_empty(
+    source: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if source == "cli":
+        argv = ["--global-discovery-url", " "]
+        environment = {}
+    else:
+        argv = []
+        environment = {"DYN_RELAY_GLOBAL_DISCOVERY_URL": " "}
+    assert_cli_error(
+        ["--cluster-id", "dc-a", *argv],
+        environment,
+        capsys,
+        "--global-discovery-url must not be empty",
+    )
 
 
 def test_sources_file_is_explicitly_empty_until_runtime_loads_sources() -> None:
     config = parse_args(
-        ["--dc-id", "dc", "--sources-file", "/etc/relay/sources.json"],
+        ["--cluster-id", "dc", "--sources-file", "/etc/relay/sources.json"],
         {"DYN_RELAY_CONNECTION_REVISION": "connection"},
     )
     assert config.sources_file == "/etc/relay/sources.json"
@@ -391,14 +535,14 @@ def test_sources_file_rejects_ambiguous_or_empty_guard_configuration(
 ) -> None:
     with pytest.raises(SystemExit):
         parse_args(
-            ["--dc-id", "dc", "--sources-file", "/etc/relay/sources.json", *extra],
+            ["--cluster-id", "dc", "--sources-file", "/etc/relay/sources.json", *extra],
             environment,
         )
 
 
 def test_standalone_sources_file_needs_no_connection_guard() -> None:
     config = parse_args(
-        ["--dc-id", "dc", "--sources-file", "/etc/relay/sources.json"], {}
+        ["--cluster-id", "dc", "--sources-file", "/etc/relay/sources.json"], {}
     )
     assert config.connection_revision is None
     assert config.watch_all is False

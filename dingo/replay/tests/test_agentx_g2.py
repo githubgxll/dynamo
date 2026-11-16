@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -201,6 +202,47 @@ def _host_hits(report):
     ]
 
 
+@pytest.mark.parametrize("disagg", [False, True])
+@pytest.mark.parametrize("mode", ["session", "sibling_group"])
+def test_native_conversation_affinity(tmp_path, run_replay, disagg, mode):
+    spec = _spec(tmp_path, "agentic_mooncake", scope=None, disagg=disagg)
+    fixture = (
+        Path(__file__).parent
+        / "e2e/configs/unified_cli/fixtures/traces/agentic-mooncake.jsonl"
+    )
+    rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+    rows.append({**rows[2], "request_id": "sibling", "session_id": "sibling"})
+    Path(spec.workload["trace_path"]).write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n"
+    )
+    spec = replace(
+        spec,
+        backend_deployment=replace(
+            spec.backend_deployment,
+            num_workers=0 if disagg else 2,
+            num_prefill_workers=2 if disagg else 0,
+            num_decode_workers=2 if disagg else 0,
+        ),
+    )
+    spec.runtime_hooks[0].config["conversation_affinity"] = {"mode": mode}
+    report = run_replay(spec)
+    assert report["completed_requests"] == 4
+    routes = {
+        row["request_id"]: [
+            (route["pool"], route["logical_worker_id"], route["dp_rank"])
+            for route in row["routing_history"]
+        ]
+        for row in report["per_request"]
+    }
+    first, second = (
+        ("agent-root", "agent-join")
+        if mode == "session"
+        else ("agent-child", "sibling")
+    )
+    assert routes[first] == routes[second]
+    assert len(routes[first]) == (2 if disagg else 1)
+
+
 @pytest.mark.parametrize(
     "trace_format", ["weka", "dynamo", "mooncake", "mooncake-delta"]
 )
@@ -321,9 +363,9 @@ def test_1p1d_shared_pool_rejects_incompatible_participants(
     tmp_path, run_replay, field, value
 ):
     spec = _spec(tmp_path, scope="cluster_shared", disagg=True)
-    spec.backend_deployment.decode_engine_args["rank"]["native_host_offload"][field] = (
-        value
-    )
+    spec.backend_deployment.decode_engine_args["rank"]["native_host_offload"][
+        field
+    ] = value
     # The existing binding maps native configuration errors to PyException;
     # pin its diagnostic rather than accepting an arbitrary execution failure.
     with pytest.raises(Exception, match="cluster_shared.*incompatible"):

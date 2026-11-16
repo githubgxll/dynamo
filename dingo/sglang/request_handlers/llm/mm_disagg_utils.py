@@ -9,6 +9,11 @@ token layout the transferred KV depends on.
 import logging
 from typing import Any, Dict, Optional
 
+from dingo.common.http.url_validator import (
+    UrlValidationPolicy,
+    check_remote_url_allowed,
+)
+from dingo.common.multimodal.cache_uuid import reject_unsupported_multimodal_uuids
 from dynamo.llm.exceptions import InvalidArgument
 
 from dingo.common.multimodal.cache_uuid import reject_unsupported_multimodal_uuids
@@ -125,7 +130,9 @@ def extract_media_urls(
 ) -> list[str] | None:
     """Return the URLs under ``media_key`` (``{"Url": ...}`` or string items), or
     ``None`` if absent. Raises on malformed or frontend-decoded payloads rather
-    than silently degrading a multimodal request to text.
+    than silently degrading a multimodal request to text, and raises
+    ``UrlValidationError`` for an ``http(s)://`` URL when
+    ``DYN_MM_ALLOW_REMOTE_URLS`` is off.
     """
     if not mm_data:
         return None
@@ -158,6 +165,12 @@ def extract_media_urls(
                     f"{media_key}; use URL-based inputs."
                 )
         raise ValueError(f"Unsupported {media_key} item: {item!r}")
+
+    # These URLs go to SGLang's own downloader, so enforce
+    # DYN_MM_ALLOW_REMOTE_URLS before handing them over.
+    policy = UrlValidationPolicy.from_env()
+    for url in urls:
+        check_remote_url_allowed(url, policy)
 
     return urls or None
 

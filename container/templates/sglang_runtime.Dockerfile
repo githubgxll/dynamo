@@ -7,11 +7,14 @@
 ########## Runtime Image #########
 ##################################
 
-{% if device == "xpu" %}
-FROM framework AS runtime
-{% else %}
 FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
-{% endif %}
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+{% include "templates/verify_ca_certificates.Dockerfile" %}
+
+ENV GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/etc/ssl/certs/ca-certificates.crt
 
 # Apply the selected index to every pip install in this independent stage.
 # ARG keeps the CI mirror out of the final image environment.
@@ -57,6 +60,7 @@ RUN set -eux; \
         gpgsm \
         gpgv \
         keyboxd \
+        libbrotli1 \
         libssl3t64 \
         openssl; \
     rm -rf /var/lib/apt/lists/*; \
@@ -117,6 +121,18 @@ COPY --chown=dynamo:0 --from=wheel_builder /opt/intel/intel_nixl/lib/x86_64-linu
 COPY --chown=dynamo:0 --from=wheel_builder /opt/dynamo/dist/nixl/ /opt/dynamo/wheelhouse/nixl/
 COPY --chown=dynamo:0 --from=wheel_builder /workspace/nixl/build/src/bindings/python/nixl-meta/nixl-*.whl /opt/dynamo/wheelhouse/nixl/
 
+# Install RDMA libraries required for UCX to find RDMA devices
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libibverbs1 \
+        rdma-core \
+        ibverbs-utils \
+        libibumad3 \
+        libnuma1 \
+        librdmacm1 \
+        ibverbs-providers && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV PATH=/usr/local/ucx/bin:$PATH
 
 ENV LD_LIBRARY_PATH=\
@@ -170,6 +186,30 @@ RUN --mount=type=bind,source=./container/deps/requirements.common.txt,target=/tm
     export PIP_CACHE_DIR=/root/.cache/pip && \
     pip install --break-system-packages --no-deps $(grep -E '^nvtx==' /tmp/requirements.common.txt)
 
+{% if device == "xpu" %}
+# The upstream SGLang XPU base installs uv to /root/.local/bin, outside any Python
+# distribution, so requirements.sglang.txt cannot refresh it. Replace every uv on
+# PATH with the pinned release.
+{%- else %}
+# The upstream SGLang base copies a uv binary into /usr/local/bin, outside any
+# Python distribution, so requirements.sglang.txt cannot refresh it. Replace it
+# with the release carrying the current fix line where the base ships one.
+{%- endif %}
+# Nothing on the runtime path runs uv.
+RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:{{ context.dynamo.uv_version }},source=/,target=/tmp/uv-image \
+{%- if device == "xpu" %}
+    for u in $(which -a uv uvx); do \
+        install -m 0755 "/tmp/uv-image/$(basename "$u")" "$u"; \
+    done && \
+{%- else %}
+    if [ -e /usr/local/bin/uv ]; then \
+        install -m 0755 /tmp/uv-image/uv /tmp/uv-image/uvx /usr/local/bin/; \
+    fi && \
+{%- endif %}
+    for u in $(which -a uv uvx); do \
+        "$u" --version | grep -q '^uvx\{0,1\} {{ context.dynamo.uv_version | replace(".", "\\.") }} ' || { echo "unexpected uv at $u" >&2; exit 1; }; \
+    done
+
 # Install SGLang-specific runtime dependencies without changing the upstream
 # dependency solution. imageio-ffmpeg is installed from source (no bundled
 # binary) for the VP9 video-encode path; see requirements.sglang.txt.
@@ -188,11 +228,13 @@ RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tm
 # Assert what the install left. The pin is repeated from the requirements file
 # on purpose; a test asserts the two agree.
 RUN --mount=type=bind,source=./container/compliance,target=/tmp/compliance/compliance \
-    PYTHONPATH=/tmp/compliance python3 -m compliance.check_pynvvideocodec --pinned 2.2.3
+    PYTHONPATH=/tmp/compliance python3 -m compliance.check_pynvvideocodec --pinned 2.2.4
 {% else %}
 # mooncake and PyNvVideoCodec are CUDA-only. The mooncake floor names the CUDA 13
 # distribution, and PyNvVideoCodec decodes on NVDEC through libnvcuvid, so both
-# are inert on the XPU image and neither is present in its base. The patterns are
+# are inert on the XPU image and neither is present in its base. The diffusers pin
+# is stripped too: the published XPU base installs its own diffusion extra, and
+# this pin is tested on CUDA only. The patterns are
 # anchored to the line start so they cannot match inside another requirement, and
 # the checks fail the build if either package arrives by another route -- a filter
 # that silently stopped matching would otherwise look like success. Both checks
@@ -205,13 +247,88 @@ RUN --mount=type=bind,source=./container/compliance,target=/tmp/compliance/compl
 RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tmp/requirements.sglang.txt \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     export PIP_CACHE_DIR=/root/.cache/pip && \
-    grep -v -e '^PyNvVideoCodec' -e '^mooncake-transfer-engine-cuda13' \
+    grep -v -e '^PyNvVideoCodec' -e '^mooncake-transfer-engine-cuda13' -e '^diffusers' \
         /tmp/requirements.sglang.txt > /tmp/requirements.sglang.nonvidia.txt && \
     pip install --break-system-packages --force-reinstall --no-deps \
         --requirement /tmp/requirements.sglang.nonvidia.txt && \
     rm -f /tmp/requirements.sglang.nonvidia.txt && \
     python3 -c "import importlib.util,sys; sys.exit(1 if importlib.util.find_spec('PyNvVideoCodec') else 0)" && \
     python3 -c "import importlib.metadata as m, re, sys; names={re.sub(r'[-_.]+', '-', n).lower() for d in m.distributions() if (n := (d.metadata or {}).get('Name'))}; sys.exit(1 if 'mooncake-transfer-engine-cuda13' in names else 0)"
+{% endif %}
+
+# Remove the codec-bearing video-DECODE components from the upstream SGLang image
+# (PyAV, decord, OpenCV, torchcodec + any base ffmpeg/libav*), then copy the
+# VP9-only in-tree ffmpeg from wheel_builder below for the video-generation
+# encode path. H.264/H.265/AAC encoders must never appear (guarded at the end).
+#
+# Inkling image preprocessing uses Pillow. Its audio feature extractor imports
+# soundfile and uses torchaudio only for resampling, so those paths remain
+# available for formats supported by libsndfile (for example WAV and FLAC).
+# AAC-backed M4A stays removed; video encode is VP9 only.
+# Transitional: this exists only until the base image stops shipping these.
+# The permanent statement of what may ship is
+# tests/dependencies/test_no_software_video_codecs.py -- when this purge
+# becomes redundant, delete it and keep those assertions.
+#
+# CUDA only. On XPU the codec-bearing wheels from the SGLang install are not
+# purged yet; both devices get the in-tree VP9 ffmpeg below. Matches the
+# equivalent purge in vllm_runtime.Dockerfile.
+{% if device == "cuda" %}
+RUN set -eux; \
+    # The upstream runtime image installs Ubuntu's full GPL/LGPL ffmpeg
+    # dependency closure. Remove the packages (and their dpkg metadata) before
+    # copying Dynamo's separately built VP9-only ffmpeg below. File deletion
+    # alone is insufficient because the compliance generator inventories dpkg.
+    purge="$(dpkg-query -W -f='${Package}\n' \
+        ffmpeg \
+        libwayland-server0 \
+        2>/dev/null || true)"; \
+    if [ -n "$purge" ]; then \
+        apt-get purge -y --auto-remove $purge; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 -m pip uninstall --yes \
+        av \
+        decord \
+        decord2 \
+        opencv-python \
+        opencv-python-headless \
+        torchcodec; \
+    SITE_PACKAGES="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"; \
+    rm -rf \
+        "${SITE_PACKAGES}"/av \
+        "${SITE_PACKAGES}"/av-*.dist-info \
+        "${SITE_PACKAGES}"/av.libs \
+        "${SITE_PACKAGES}"/cv2 \
+        "${SITE_PACKAGES}"/decord \
+        "${SITE_PACKAGES}"/decord-*.dist-info \
+        "${SITE_PACKAGES}"/decord.libs \
+        "${SITE_PACKAGES}"/decord2 \
+        "${SITE_PACKAGES}"/decord2-*.dist-info \
+        "${SITE_PACKAGES}"/decord2.libs \
+        "${SITE_PACKAGES}"/opencv_python*.dist-info \
+        "${SITE_PACKAGES}"/opencv_python*.libs \
+        "${SITE_PACKAGES}"/torchcodec \
+        "${SITE_PACKAGES}"/torchcodec-*.dist-info \
+        /usr/local/bin/ffmpeg \
+        /usr/local/bin/ffprobe \
+        /usr/local/include/libav* \
+        /usr/local/include/libsw* \
+        /usr/local/lib/libav* \
+        /usr/local/lib/libpostproc* \
+        /usr/local/lib/libsw* \
+        /usr/local/lib/pkgconfig/libav*.pc \
+        /usr/local/lib/pkgconfig/libpostproc*.pc \
+        /usr/local/lib/pkgconfig/libsw*.pc \
+        /usr/local/src/ffmpeg \
+        /root/.cache/pip; \
+    find /usr /opt /workspace /sgl-workspace -xdev \
+        \( -type f -o -type l \) \
+        \( -name 'libx264*.so*' -o -name 'libx265*.so*' \
+        -o -name 'libopenh264*.so*' -o -name 'libfdk-aac*.so*' \
+        -o -name 'libfaac*.so*' -o -name 'libvo-aacenc*.so*' \
+        -o -name 'libaacplus*.so*' \) -delete; \
+    ldconfig
 {% endif %}
 
 # Drop the Nsight efa_metrics plugin the CUDA floor carries: a Go NIC sampler
@@ -279,10 +396,14 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 RUN --mount=type=bind,source=./container/deps/sglang/install_dingo_python_bootstrap.py,target=/tmp/install_dingo_python_bootstrap.py,readonly \
     python3 /tmp/install_dingo_python_bootstrap.py
 
-{% if device == "cuda" %}
-# Copy the local FFmpeg build (NVENC/VP9) from wheel_builder: shared libs
+{% if device in ("cuda", "xpu") %}
+# Copy the in-tree VP9 ffmpeg from wheel_builder: versioned shared libs
 # (libav*.so*, libsw*.so*) + libvpx + the in-tree CLI binary that imageio targets
-# via IMAGEIO_FFMPEG_EXE. Preserve the local video encoder surface.
+# via IMAGEIO_FFMPEG_EXE. On CUDA the upstream ffmpeg was purged above; the XPU
+# base ships none. Either way this is the only ffmpeg CLI in the image; the
+# video-generation handler (DiffGenerator) encodes libvpx-vp9 with it, and the
+# media-ffmpeg runtime wheel links its libav* for frontend video decoding. Same
+# pattern as vllm_runtime.Dockerfile.
 RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/local/ \
     mkdir -p /usr/local/lib/pkgconfig && \
     cp -rnL /tmp/usr/local/include/libav* /tmp/usr/local/include/libsw* /usr/local/include/ && \
@@ -294,8 +415,14 @@ RUN --mount=type=bind,from=wheel_builder,source=/usr/local/,target=/tmp/usr/loca
     ldconfig
 ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
 
-# Frontend video decoding is part of the shipped SGLang CUDA contract. Fail the
-# image build if the runtime wheel was accidentally compiled without it.
+# Positive codec guard: the shipped ffmpeg MUST expose the VP9 encoder and MUST
+# NOT expose any H.264/H.265/AAC/NVENC encoder. A missing/broken copy (no VP9)
+# or a codec regression fails the build here rather than at runtime — closing the
+# gap where SGLang shipping no encoder passed every PR gate.
+{% include "templates/ffmpeg_encoder_guard.Dockerfile" %}
+
+# Frontend video decoding is part of the shipped SGLang CUDA and XPU contract.
+# Fail the image build if the runtime wheel was accidentally compiled without it.
 {% if target not in ("dev", "local-dev") %}
 RUN python3 -c 'from dynamo.llm import MediaDecoder; assert hasattr(MediaDecoder(), "enable_video")'
 {% endif %}
@@ -338,12 +465,12 @@ ENV SGLANG_FORCE_SHUTDOWN=1
 RUN --mount=type=bind,source=./container/launch_message/runtime.txt,target=/opt/dynamo/launch_message.txt \
     sed '/^#\s/d' /opt/dynamo/launch_message.txt > /opt/dynamo/.launch_screen
 
+{# oneAPI and /opt/venv come through Docker ENV (SETVARS_COMPLETED=1), which every
+   process inherits -- do not move this into a bashrc, which only interactive
+   shells read. #}
 RUN chmod 755 /opt/dynamo/.launch_screen && \
     echo 'cat /opt/dynamo/.launch_screen' >> /etc/bash.bashrc && \
 {%- if device == "xpu" %}
-    echo '. /opt/miniforge3/bin/activate sglang' >> /etc/bash.bashrc && \
-    echo 'source /opt/intel/oneapi/setvars.sh --force' >> /etc/bash.bashrc && \
-    mkdir -p /sgl-workspace && \
     ln -sf /workspace /sgl-workspace/dynamo
 {%- else %}
     ln -s /workspace /sgl-workspace/dynamo && \
@@ -359,14 +486,13 @@ ARG DYNAMO_COMMIT_SHA
 ENV DYNAMO_COMMIT_SHA=${DYNAMO_COMMIT_SHA}
 
 {% if device == "xpu" %}
-CMD ["bash", "-c", "source /etc/bash.bashrc && exec bash"]
+CMD ["bash"]
 {% else %}
 ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
 CMD []
 {% endif %}
 
 
-{% if device != "xpu" %}
 {# Compliance is skipped for dev/local-dev: those images are not shipped (release
    ships runtime/frontend/operator/planner/snapshot-agent), compliance-extract
    already skips them, and their pre_runtime carries no dynamo venv to scan. #}
@@ -380,13 +506,16 @@ CMD []
 #######################################
 
 FROM pre_runtime AS runtime
+{%- if device == "cuda" %}
 # NVDEC (PyNvVideoCodec, added in requirements.sglang.txt) needs the driver
 # "video" capability at runtime so libnvcuvid is exposed; without it
 # PyNvVideoCodec cannot import. Ensure the K8s pod/runtimeClass does not drop it.
 ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+{% endif %}
 {% if target not in ("dev", "local-dev") %}
 COPY --from=licenses /legal /legal
 {% endif %}
+{% if device != "xpu" %}
 ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
 CMD []
 {% endif %}

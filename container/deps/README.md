@@ -35,9 +35,10 @@ the upstream nightly version script, and builds with locked Rust dependencies.
 It checks both Dynamo Rust pins and the final wheel metadata against the Python
 pin; a different version is never substituted.
 
-The `0.13.0.dev202610060000000067` source commit comes from the published
-`aisimulate-core` crate's `.cargo_vcs_info.json`. Its `src/` files were compared
-with that crate and match exactly. This fallback is needed because the matching
+The `0.13.0.dev202610290000000087` source commit `03eadda352afa385b573eff2b4fdb9c9fb371895`
+comes from the published `aisimulate-core` crate's `.cargo_vcs_info.json`
+(Codeload archive SHA-256 `ba87af91d9e49a94ecaa082fec2623d5f7bba7d306604ffa908cb176ebb727a5`).
+This fallback is needed because the matching
 Python wheel is absent from the public NVIDIA index.
 
 The canonical source repository is now `ai-dynamo/aisim`. Codeload archives

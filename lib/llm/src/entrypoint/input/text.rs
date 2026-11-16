@@ -110,6 +110,7 @@ async fn main_loop(
             .build()?;
 
         let req = NvCreateChatCompletionRequest {
+            responses_tools: None,
             inner,
             common: Default::default(),
             nvext: None,
@@ -119,6 +120,7 @@ async fn main_loop(
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            preserve_thinking: None,
             unsupported_fields: Default::default(),
         };
 
