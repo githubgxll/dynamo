@@ -6,6 +6,8 @@ title: "03 · 我们的open-h3-ir改造与Gateway ContextIR接口"
 
 整理日期：2026-11-11。open-h3-ir基于已提交版本`037d793`；Gateway接口根据本地DingoRouter源码核对。部署参数以2026-11-06配置及2026-11-10核对记录为依据，示例地址、资源和目录均为脱敏占位值。
 
+2026-11-14补充：已新增运行时Worker传输模式，见[ContextIR Worker部署与恢复](04-runtime-worker.md)。本文的固定HTTP上传链路作为兼容模式保留；接口字段及其含义继续有效。
+
 关联阅读：[官方接口](01-minimax-official-context-ir.md) · [open-h3-ir介绍](02-open-h3-ir.md)。
 
 ## 1. 我们修改了什么
@@ -80,91 +82,15 @@ sequenceDiagram
 
 这些路径不等价于官方`/v2/h3_context_ir`，也不等价于open-h3-ir的同步`/v1/briefs`。当前接口模块没有独立的新增Bearer鉴权实现，外部访问权限需沿用部署入口的认证授权；不要把内部principal字段视为已实现多租户安全隔离。
 
-### 提交字段
+### 提交字段及返回值
 
-| 字段 | 说明 |
-|---|---|
-| `model`、`prompt` | 必填；模型必须配置ContextIR绑定，提示词不能为空 |
-| `seconds`或`num_frames` | 目标时长/帧数，复用H3适配器校验，不应同时传入矛盾值 |
-| `size`或`width`＋`height` | 基础生成画布，按视频适配器规则校验；当前编译接口拒绝超分请求 |
-| `input_references` | 按顺序上传图片、视频、音频；也可以无附件 |
-| `reference_options` | JSON数组，每项以从0开始的全局上传`index`指定用途；可带`role`、`note`、`soundtrack_policy` |
-| `creativity` | `restrained/balanced/bold/extreme`，默认`balanced` |
-| `context_ir_seed` | 编译随机种子，默认7；与视频生成`seed`不同 |
-| `dialogue` | 可选JSON数组，项为`text`及可选`language`、`speaker` |
-| `silent` | 可选`true/false`，默认false；作为编译意图参与规范与校验 |
-| `Idempotency-Key` | 可选请求头；重试同一业务请求时复用，同键不同内容返回冲突 |
+当前完整参数、推荐最小请求、返回字段及官方对照统一见[ContextIR API参考](05-api-reference.md)。本页保留架构及历史修复说明。
 
-未知参数会被拒绝。视频生成参数`seed`、`num_inference_steps`、`generate_sound`不是编译接口字段；当前也没有官方接口那样的`callback_url`字段或ContextIR任务列表路由。
+### 画幅参数与视频生成的衔接
 
-### 素材用途
+ContextIR只解释比例、时长与素材语义，不检查视频池超分能力。新调用不需要resolution或size；1080P/2K等兼容输入不再触发超分编译拒绝。内部canvas仅用于编译契约，不作为公开画布返回。生成视频时由调用方另行选择分辨率并提交原素材。
 
-| 工作流/素材 | Gateway允许角色 |
-|---|---|
-| FL2VA图片 | `frame_anchor_first`、`frame_anchor_last`，按上传顺序表达首/尾帧 |
-| Ref2VA图片 | `subject`、`environment`、`style` |
-| Ref2VA视频 | `edit_source`、`motion_reference` |
-| Ref2VA音频 | `voice_timbre`、`bgm`，需要明确指定 |
-
-视频自身包含音轨时，必须明确`preserve`或`ignore`。Gateway会提取配对音轨并验证编译输出对音轨的处理；它不能被当作随意多出的一段独立音频。图片/视频/音频标签与全局上传index不是同一编号体系，调用方应保持上传顺序与提示词引用一致。
-
-### 最小调用示例
-
-下面以一张人物图和一段音色参考为例。地址和文件名为占位值；实际鉴权头按部署入口要求添加。示例只做编译，读取成功结果后才另行生成。
-
-```bash
-export GATEWAY_URL='https://gateway.example.com'
-curl -sS "${GATEWAY_URL}/v1/context-ir" \
-  -H 'Idempotency-Key: context-ir-example-001' \
-  -F 'model=minimax-h3-ref2va' \
-  --form-string 'prompt=图1中的人物面对镜头，用音频1的音色说一次：“准备好了，现在开始。”说完闭嘴微笑。' \
-  -F 'seconds=5' -F 'size=1344x768' -F 'context_ir_seed=7' \
-  --form-string 'reference_options=[{"index":1,"role":"voice_timbre"}]' \
-  -F 'input_references=@person.png' \
-  -F 'input_references=@voice.wav'
-
-# TASK_ID填创建响应的id；未完成时继续查询，不重复创建新任务
-curl -sS "${GATEWAY_URL}/v1/context-ir/${TASK_ID}" -o result.json
-curl -sS "${GATEWAY_URL}/v1/context-ir/${TASK_ID}/diagnostics"
-```
-
-成功结果的主要字段如下（节选示意，提示词内容已省略）：
-
-```json
-{
-  "id": "context-ir-<task-id>",
-  "object": "context_ir",
-  "model": "minimax-h3-ref2va",
-  "status": "completed",
-  "phase": "finished",
-  "content": {"prompt": "<compiled H3 prompt>"},
-  "generation_parameters": {"size": "1344x768", "fps": 24, "seconds": 5},
-  "target": {"frames": 124, "fps": 24},
-  "references": [],
-  "warnings": []
-}
-```
-
-上游返回`degraded/draft`时，只要结果契约校验通过，Gateway任务也返回`status: completed`，`content.prompt`为上游实际返回的回退草稿，现有`warnings`包含`{"code":"context_ir_degraded_result"}`。不新增响应字段，也不返回被上游拒绝的候选提示词。`completed`表示任务已有可读取结果，不代表模型改写已通过全部质量检查；调用方可根据`warnings`决定是否用于生成。上游状态、来源和规则码仍通过现有诊断接口查看。
-
-实际有素材的响应会填充`references`，包括输入index、类型、哈希和模型标签。`target.frames`体现帧网格对齐，可能与名义秒数×fps不同；示例5秒对应124帧。生成时应保留返回的`generation_parameters`语义，不自行改成另一套尺寸/帧数。
-
-读取到`completed`后：取`content.prompt`，携带相同原始素材及顺序，另行调用`POST /v1/videos`，再设置生成用的`seed`和`num_inference_steps`。编译seed不透传为生成seed；一次编译结果可以用不同生成seed做对照。编译成功本身不会占用视频Worker生成槽。
-
-### 状态、取消与错误
-
-任务状态包括`queued`、`in_progress`、`completed`、`failed`、`cancelled`、`expired`。`phase`提供准备、上传、编译等内部阶段；状态成功与业务内容符合预期是不同判断。
-
-- 400：字段、角色、素材策略或尺寸等输入错误。
-- 409：同幂等键对应不同请求。
-- 408：上传超时。
-- 429：编译等待队列已满。
-- 503：服务不可接收、存储繁忙、存储预算耗尽或后端隔离等。
-- 404：任务不存在；410：结果已过期。
-
-取消运行中任务不代表底层同步编译已经停止，也不会立即释放仍在占用的物理槽。提交后连接丢失应优先使用相同幂等键或既有任务ID恢复查询，不另发不同键重复任务。
-
-诊断接口提供`metrics`、`error`、素材角色和上游规则码，不把全部内部提示词、文件路径和原始异常默认暴露给普通查询响应。
+首尾帧自动跟随图片；Ref2VA也支持省略ratio或传adaptive，并返回本地选中的具体比例。generation_parameters保留比例、时长和关键帧映射，不再提供具体像素尺寸。已有结果查询会按新公开契约投影，内部任务记录、执行证明和幂等摘要不重写。
 
 ## 4. 部署与配置
 
@@ -297,3 +223,9 @@ open-h3-ir的 `tests/test_usage_multimodal_live.py` 执行前两项；Gateway的
 `tests/video_gateway/test_context_ir_usage_live.py` 读取环境变量
 `DINGO_CONTEXTIR_USAGE_EVIDENCE` 指定的证据JSON执行第三项。均为显式启用的验收测试，
 普通单元测试不自动访问远端模型。真实服务升级后仍需补充部署环境的端到端验收。
+
+## 2026-11-16：输入意图解析
+
+新增独立`intent_resolution`阶段：用一次有界、纯文本Qwen调用，判断未显式指定的首尾帧绑定、独立音频用途及视频音轨策略。显式参数锁定；默认单图首帧、两图顺序首尾、独立音频voice_timbre、视频音轨preserve。识别失败只回退默认并警告，不新增一轮强制需求复审。
+
+冻结的决策用于普通与专业H3输入，并贯通模式、素材标签、首尾映射、内部画布及生成参数校验；不改变Ref2VA/FL2VA模型池。原始素材哈希与上传index保持不变。阶段调用并入既有usage，耗时见metrics.intent_resolution_s。对外字段、必填项及边界以[当前API参考](05-api-reference.md)为准；本文前面的历史统计与HTTP设计不代表最新验证结果。

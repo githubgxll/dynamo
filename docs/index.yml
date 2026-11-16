@@ -290,6 +290,10 @@ navigation:
                     path: video-gateway/context-ir/02-open-h3-ir.md
                   - page: ContextIR Customizations and Gateway API
                     path: video-gateway/context-ir/03-customizations-and-gateway-api.md
+                  - page: ContextIR Runtime Worker
+                    path: video-gateway/context-ir/04-runtime-worker.md
+                  - page: ContextIR API Reference
+                    path: video-gateway/context-ir/05-api-reference.md
               - page: Video Gateway Observability
                 path: video-gateway/observability.md
               - page: Video Performance Collection

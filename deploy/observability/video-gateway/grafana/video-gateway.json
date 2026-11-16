@@ -215,7 +215,7 @@
       "id": 1020,
       "title": "在途请求数",
       "type": "stat",
-      "description": "尚未进入终态的请求，包含Gateway排队、派发、Worker执行/等待和结果收尾。在途＝Gateway排队＋Worker侧（含收尾）。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "description": "尚未进入终态的请求，包含Gateway排队、派发、Worker执行/等待和结果收尾。在途＝Gateway排队＋Worker侧（含收尾）。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。 新版按用户请求去重：父子任务只计一次；等待基础生成或超分派发都归入Gateway排队。原始任务及物理槽位指标仍用于内部诊断。旧版本无此指标时回退到原任务状态统计。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
@@ -229,7 +229,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"queued|dispatching|in_progress|finalizing\"}))",
+          "expr": "sum((sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,stage) (dingo_video_request_stage_active{namespace=~\"$namespace\",pool=~\"$pool\",stage=~\"gateway_queue|worker\"}))) or (sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"queued|dispatching|in_progress|finalizing\"}))))",
           "legendFormat": "在途请求数",
           "instant": false,
           "range": true,
@@ -272,7 +272,7 @@
       "id": 1021,
       "title": "Gateway 排队",
       "type": "stat",
-      "description": "Gateway排队请求数：处于Gateway queued状态的请求，包含普通排队和故障重试等待。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "description": "Gateway排队请求数：等待Gateway派发的用户请求，包含等待基础生成或超分阶段接单、普通排队及故障重试等待。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。 新版按用户请求去重：父子任务只计一次；等待基础生成或超分派发都归入Gateway排队。原始任务及物理槽位指标仍用于内部诊断。旧版本无此指标时回退到原任务状态统计。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
@@ -286,7 +286,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=\"queued\"}))",
+          "expr": "sum((sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,stage) (dingo_video_request_stage_active{namespace=~\"$namespace\",pool=~\"$pool\",stage=~\"gateway_queue\"}))) or (sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=\"queued\"}))))",
           "legendFormat": "Gateway 排队",
           "instant": false,
           "range": true,
@@ -329,7 +329,7 @@
       "id": 1022,
       "title": "Worker 侧请求",
       "type": "stat",
-      "description": "Worker侧请求数（含收尾）：包含派发、执行、预取/内部等待和Gateway结果收尾。按Gateway任务状态统计，不能等同于GPU执行数或实际Worker队列长度。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。",
+      "description": "Worker侧请求数（含收尾）：包含派发、执行、预取/内部等待和Gateway结果收尾。按用户请求去重，不能等同于GPU执行数或实际Worker队列长度。 大号数字显示所选时间范围内最后一个有效采样值，实时查看时用于观察最新采样。下方趋势线展示所选时间范围内各时刻的数量，不是区间累计或滚动平均。按Namespace和Pool筛选，共享状态跨Gateway按部署、Pool和状态取max去重后汇总。缺失显示No data，不补0。 新版按用户请求去重：父子任务只计一次；等待基础生成或超分派发都归入Gateway排队。原始任务及物理槽位指标仍用于内部诊断。旧版本无此指标时回退到原任务状态统计。",
       "datasource": {
         "type": "prometheus",
         "uid": "${data_source}"
@@ -343,7 +343,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"dispatching|in_progress|finalizing\"}))",
+          "expr": "sum((sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,stage) (dingo_video_request_stage_active{namespace=~\"$namespace\",pool=~\"$pool\",stage=~\"worker\"}))) or (sum by(region,namespace,deployment,pool) (max by(region,namespace,deployment,pool,status) (dingo_video_tasks{namespace=~\"$namespace\",pool=~\"$pool\",status=~\"dispatching|in_progress|finalizing\"}))))",
           "legendFormat": "Worker 侧请求",
           "instant": false,
           "range": true,

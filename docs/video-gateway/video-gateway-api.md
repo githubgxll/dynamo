@@ -159,7 +159,7 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 派发、重试和恢复不重新选择尺寸。任务JSON返回最终 `size`、`ratio`，能够明确归类时返回
 `resolution`；未知档位不虚构值。下载仍返回视频文件。
 768P自适应得到的非预设画布也返回 `resolution=768P`，例如1152×768返回 `ratio=3:2`。
-本快捷入口适用于视频生成接口，不改变 `/v1/context-ir` 编译接口的基础画布参数。
+`/v1/context-ir`只做提示词编译，按比例和素材语义处理，不检查超分能力，也不返回像素画布；生成分辨率在视频请求中另行设置。见[ContextIR API参考](context-ir/05-api-reference.md)。
 
 ### 上传已有视频单独超分（SeedVR2）
 
@@ -298,10 +298,12 @@ FL2VA 支持三种输入：
 |---|---|---|
 | 无参考图 | 不上传文件 | 文本生成视频，内部任务为 `t2va` |
 | 一张图片 | `input_reference` 或一个 `input_references` | 默认作为首帧；可用 `frame_indices=[-1]` 指定为尾帧 |
-| 两张图片 | 两个 `input_references` | 分别作为首帧和尾帧，`frame_indices` 为 `[0,-1]` |
+| 两张图片 | 两个 `input_references` | 默认图1首、图2尾，`frame_indices=[0,-1]`；反向对应可显式传`[-1,0]` |
 
 支持 JPEG、PNG、WebP。每张图片不超过 30 MiB，宽高各为 256–5760，宽高比范围
-0.4–2.5。两张关键帧尺寸必须相同；输出尺寸的宽高比必须与关键帧基本一致。
+0.4–2.5。使用显式size或成对宽高时，两张关键帧尺寸必须相同，输出比例须与关键帧基本一致；使用resolution及自适应比例时允许两帧尺寸不同，以实际首帧选幅，反向`[-1,0]`取原上传图2。
+
+视频接口不从prompt推断首尾角色；[ContextIR编译接口](context-ir/05-api-reference.md)可识别提示词用途并返回frame_indices，再由调用方随原素材提交。反向两图在Gateway内部按原生Worker首尾顺序组装，受现有内联消息大小限额约束。
 
 一张首帧图片示例：
 
@@ -810,3 +812,52 @@ ContextIR异步任务查询返回LLM风格的顶层 `usage`，其中 `prompt_tok
 `completion_tokens`、`total_tokens` 汇总整次任务所有Qwen调用，包含复审、纠错和重试。
 尚未获得统计时为 `null`，统计不完整时 `complete=false`；上游不要按不完整值直接结算。
 字段、幂等计数和失败任务口径见[ContextIR接口说明](context-ir/03-customizations-and-gateway-api.md#qwen调用用量与上游计费)。
+
+## 独立Worker编排的耗时与监控
+
+视频生成经基础生成Worker、可选SR Worker执行时，公共任务继续使用原有
+`dingo_video_task_stage_duration_seconds{pool,stage}`，阶段为`queue`、`worker_queue`、
+`execution`、`finalize`。统计按用户请求汇总，内部子任务不再贡献第二份业务耗时或终态计数；
+直接提交到基础池的普通请求仍按原路径统计。模型阶段指标的名称、标签及直方图桶不变。
+
+公共API的`metrics.pipeline`提供以下明细（单位均为秒）：
+
+| 字段 | 含义 |
+|---|---|
+| `parent_queue_wait_s` | 公共任务首次启动前的Gateway队列等待 |
+| `base_queue_s`、`sr_queue_s` | 对应阶段的Gateway等待，包含子任务创建前的交接等待及子任务自身排队 |
+| `base_handoff_wait_s`、`sr_handoff_wait_s` | 阶段已就绪到子任务创建的间隔，包含下游暂不可用及素材准备 |
+| `base_dispatch_queue_s`、`sr_dispatch_queue_s` | 子任务记录自身的Gateway排队耗时 |
+| `base_worker_queue_s`、`sr_worker_queue_s` | 对应Worker确认接收到开始执行的等待，基础图片预处理也包含在其中 |
+| `base_execution_s`、`sr_execution_s` | 对应Worker的完整执行耗时，包含输出处理，不是纯GPU时间 |
+| `base_finalize_s`、`sr_finalize_s` | 各子任务的Gateway结果处理耗时 |
+| `publish_s` | 父任务最终发布视频的文件处理耗时 |
+
+原字段`base_generation_s`、`base_queue_wait_s`、`super_resolution_s`、
+`sr_queue_wait_s`保留，分别对应上述基础执行、基础队列、SR执行、SR队列。
+没有执行SR的任务，其SR字段为空或不返回，不产生SR耗时样本。
+
+父任务的`metrics.queue_wait_s`为初始排队与各阶段Gateway等待之和；
+`worker_queue_wait_s`为各阶段Worker等待之和；`inference_time_s`为各Worker执行之和；
+`finalize_time_s`为子任务结果处理与父任务发布耗时之和。任一必需测量缺失时，相应合计为空，
+不以0代替。重试沿用已持久化的子任务计时口径；这些字段不是全部失败attempt的累计成本。
+总服务端墙钟时间仍使用顶层`inference_time_s`，包含编排、状态交接及重试等额外开销。
+模型与SR内部存在父子阶段和并行阶段，不能把所有细项直接相加。
+
+新增`dingo_video_pipeline_stage_duration_seconds{pool,phase,stage}`，
+`phase`为`base`或`sr`，`stage`为`queue`、`worker_queue`、`execution`、`finalize`。
+SR现有直方图`dingo_video_super_resolution_stage_duration_seconds`同时补充
+`gateway_queue`、`worker_queue`、`worker_execution`、`gateway_finalize`阶段；
+原生SR解码、模型等待、拼接、交付处理和编码等阶段保留原口径。
+
+新增`dingo_video_request_stage_active{pool,stage}`用于业务在途视图。
+`stage=gateway_queue`包含等待基础生成或SR派发的请求；`stage=worker`包含派发、
+Worker内部等待、执行及结果收尾。两者之和为在途请求数，父子任务只计一次。
+该视图只读取当前非终态索引，不扫描历史完成记录；并发状态变更时仍可能存在短暂采样差异。
+原有`dingo_video_tasks`、`dingo_video_queue_depth`和物理槽位指标继续表示内部调度记录，
+含子任务，不能跨所有池直接累加成业务请求数。面板顶部三个数字使用新视图，旧部署回退原查询。
+
+新增父任务汇总及ContextIR统计仅在确认状态迁移成功后上报，轮询、CAS冲突和读取结果不会新增样本。
+Counter/Histogram仍是进程内观测，重启会重置，不承担持久化业务账本的作用；
+不回填历史任务。Gateway接管计数保留`claimed`、`contended`、`failed`，
+事务结果尚不明确时不会提前记为`failed`。

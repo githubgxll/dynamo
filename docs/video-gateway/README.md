@@ -90,6 +90,8 @@ queued -> in_progress -> completed
 | [官方ContextIR接口](context-ir/01-minimax-official-context-ir.md) | MiniMax-H3官方提示词编译接口、异步查询及调用示例 | 接口调用方 |
 | [open-h3-ir介绍](context-ir/02-open-h3-ir.md) | 开源编译器架构、素材分析、校验与纠错 | 架构和开发人员 |
 | [ContextIR改造与Gateway对接](context-ir/03-customizations-and-gateway-api.md) | 已实施修复、异步编译接口、素材管理和配置 | 开发、联调和运维人员 |
+| [ContextIR Worker部署](context-ir/04-runtime-worker.md) | 运行时发现、16槽共享容量、同Pod Qwen与故障恢复 | 开发和运维人员 |
+| [ContextIR API参考](context-ir/05-api-reference.md) | 必要/高级/兼容参数、返回值及与官方接口对照 | 接口调用方 |
 | [接口使用说明](video-gateway-api.md) | 模型查询、任务提交、状态、下载、取消、FL2VA/Ref2VA 输入和错误码 | 接口调用方、联调人员 |
 | [超分画幅契约](super-resolution.md) | 1080P／2K白名单、基础与SR内部尺寸、窗口、裁剪和缩放 | 接口调用方、模型和部署维护人员 |
 | [协议与兼容性](video-gateway-protocol-compatibility.md) | 与 OpenAI Videos API、vLLM-Omni Videos API 的相同点和差异 | 接口调用方、适配开发人员 |
