@@ -115,17 +115,22 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(r.watch(), 2)
         self.assertEqual(calls[-1], ('exit', 70))
 
-    async def test_cancelled_execution_settles_and_readmission_waits_for_health(self):
+    async def test_cancelled_execution_settles_without_overwriting_drain_or_health(self):
         r, calls, _ = self.setup_recovery()
         done = False
         r.manager._running = {'task': N(execution=N(done=lambda: done),
                                          context=N(is_stopped=lambda: True))}
         r.start(); await asyncio.sleep(.02)
-        self.assertFalse(r.manager._accepting)
+        self.assertTrue(r.manager._accepting)
+        self.assertTrue(r.manager.settlement_paused)
+        self.assertTrue(r.manager.components_ready)
+        # An unrelated shutdown must not be undone after cancellation settles.
+        r.manager._accepting = False
         done = True
         await asyncio.sleep(.55); await r.close()
-        self.assertTrue(r.manager._accepting)
-        self.assertFalse(r.manager.components_ready)
+        self.assertFalse(r.manager._accepting)
+        self.assertFalse(r.manager.settlement_paused)
+        self.assertTrue(r.manager.components_ready)
         self.assertEqual(calls, [])
 
     async def test_live_busy_execution_does_not_start_cancellation_deadline(self):

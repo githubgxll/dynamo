@@ -9,7 +9,12 @@ from dingo.video_gateway.task_runtime.transactions import encode
 
 @dataclass(frozen=True)
 class BackendConfig:
-    url: str
+    url: str = ""
+    transport: str = "http"
+    worker_pool: str = ""
+    backend_target: str = ""
+    storage_id: str = ""
+    worker_capacity: int = 16
     adapter: str = "open_h3_ir"
     epoch: str = "initial"
     max_inflight: int = 2
@@ -23,7 +28,11 @@ class BackendConfig:
 
     @property
     def revision(self):
-        return hashlib.sha256(encode(asdict(self)).encode()).hexdigest()
+        data = asdict(self)
+        if self.transport == "http":
+            for key in ("transport","worker_pool","backend_target","storage_id","worker_capacity"):
+                data.pop(key)
+        return hashlib.sha256(encode(data).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -62,14 +71,29 @@ def parse_context_ir(raw, pools):
         if not isinstance(values, dict) or set(values) - set(BackendConfig.__dataclass_fields__):
             raise ValueError("unknown ContextIR backend setting")
         b = BackendConfig(**values)
-        url = urlsplit(b.url)
-        if url.scheme not in {"http", "https"} or not url.netloc or url.username or url.password or url.query or url.fragment:
-            raise ValueError("ContextIR backend requires a credential-free HTTP URL")
+        if b.transport == "http":
+            url = urlsplit(b.url)
+            if url.scheme not in {"http", "https"} or not url.netloc or url.username or url.password or url.query or url.fragment:
+                raise ValueError("ContextIR backend requires a credential-free HTTP URL")
+            if b.worker_pool or b.backend_target or b.storage_id:
+                raise ValueError("HTTP compiler cannot specify worker routing")
+        elif b.transport == "worker":
+            if b.url or not b.worker_pool or not b.storage_id:
+                raise ValueError("Worker compiler needs a pool/storage identity and no URL")
+            for value in (b.worker_pool,b.storage_id):
+                if not isinstance(value,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",value):
+                    raise ValueError("invalid compiler Worker identifier")
+            if not re.fullmatch(r"dyn://[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",b.backend_target):
+                raise ValueError("invalid compiler runtime target")
+            if type(b.worker_capacity) is not int or not 1 <= b.worker_capacity <= 16:
+                raise ValueError("compiler capacity must be between 1 and 16")
+        else:
+            raise ValueError("unknown compiler transport")
         if b.adapter != "open_h3_ir":
             raise ValueError("unregistered ContextIR protocol adapter")
         if not isinstance(b.epoch, str) or not b.epoch or len(b.epoch) > 128:
             raise ValueError("invalid ContextIR backend epoch")
-        canonical_url = b.url.rstrip("/").lower()
+        canonical_url = b.url.rstrip("/").lower() if b.transport == "http" else b.backend_target
         if canonical_url in urls:
             raise ValueError("one compiler capacity domain cannot have duplicate backends")
         urls.add(canonical_url)

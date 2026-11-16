@@ -404,12 +404,12 @@ def test_adaptive_canvas_tracks_first_keyframe_or_sole_tail(make_gateway_config,
     )
     assert (normalized["width"], normalized["height"]) == (672, 1536)
     assert normalized["frame_indices"] == [-1]
-    with pytest.raises(GatewayError) as error:
-        a.normalize_request(
-            fields(resolution="768P", ratio="adaptive", frame_indices="[-1,0]"),
-            [first, tail], "public-fl",
-        )
-    assert error.value.code == "invalid_frame_indices"
+    normalized = a.normalize_request(
+        fields(resolution="768P", ratio="adaptive", frame_indices="[-1,0]"),
+        [first, tail], "public-fl",
+    )
+    assert normalized["frame_indices"] == [-1, 0]
+    assert (normalized["width"], normalized["height"]) == (672, 1536)
 
 
 @pytest.mark.parametrize("tier", ["1080P", "2K"])

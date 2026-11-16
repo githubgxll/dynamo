@@ -16,7 +16,7 @@ from typing import Any
 
 import aiohttp
 
-from dingo.video_gateway.errors import StoreUnavailable
+from dingo.video_gateway.errors import EtcdLeaseNotFound, StoreUnavailable
 from dingo.video_gateway.telemetry import GatewayTelemetry
 
 
@@ -166,6 +166,21 @@ class EtcdHttpClient:
         try:
             async with session.post(endpoint + path, json=payload) as response:
                 body = await response.text()
+                # A structured server rejection is different from losing a
+                # mutation's response. Classify only etcd's exact gRPC error,
+                # never an arbitrary proxy 404 or a substring of an HTML page.
+                try:
+                    rejection = json.loads(body) if body else {}
+                except (ValueError, TypeError):
+                    rejection = {}
+                if (
+                    path in {"/v3/kv/txn", "/v3/kv/put"}
+                    and isinstance(rejection, dict)
+                    and rejection.get("code") == 5
+                    and rejection.get("error")
+                    == "etcdserver: requested lease not found"
+                ):
+                    raise EtcdLeaseNotFound("etcd rejected an absent execution lease")
                 if response.status < 200 or response.status >= 300:
                     raise StoreUnavailable(
                         f"etcd {path} returned HTTP {response.status}: {body[:512]}"

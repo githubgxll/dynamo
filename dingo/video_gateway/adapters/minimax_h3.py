@@ -26,16 +26,18 @@ from dingo.common.h3_reference_order import group_references
 from dingo.common.video_timing_schemas import normalize_model_execution
 from dingo.video_gateway.adapters.base import UploadedArtifact, WorkerVideoResult
 from dingo.video_gateway.adapters.h3_output_policy import (
+    H3OutputPlan,
     H3_SR_BASE_SIZES,
     H3_SR_V3_PRESETS,
     plan_h3_output,
 )
 from dingo.video_gateway.adapters.h3_resolution import (
-    RESOLUTION_CANVASES, classify_resolution, plan_fl2va_adaptive,
+    BASE_CANVASES, RESOLUTION_CANVASES, classify_resolution, plan_fl2va_adaptive,
 )
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
     relative_ratio_error,
+    resolve_output_shape,
 )
 from dingo.video_gateway.config import PoolConfig
 from dingo.video_gateway.errors import GatewayError, worker_execution_error
@@ -292,9 +294,7 @@ def _coalesce(
     return direct if direct is not None else extra.get(key)
 
 
-def _parse_size(
-    fields: Mapping[str, list[str]], *, sr_profile: str | None = None
-) -> tuple[int, int]:
+def _parse_dimensions(fields: Mapping[str, list[str]]) -> tuple[int, int]:
     size = _one(fields, "size")
     width = _integer(_one(fields, "width"), "width")
     height = _integer(_one(fields, "height"), "height")
@@ -328,6 +328,13 @@ def _parse_size(
             "size",
         )
     assert width is not None and height is not None
+    return width, height
+
+
+def _parse_size(
+    fields: Mapping[str, list[str]], *, sr_profile: str | None = None
+) -> tuple[int, int]:
+    width, height = _parse_dimensions(fields)
     try:
         plan_h3_output(width, height, sr_profile=sr_profile)
     except ValueError as exc:
@@ -391,6 +398,63 @@ def _resolve_request_shape(fields, probes, *, workflow, sr_profile):
     if resolution is not None and classify_resolution(width, height, super_resolution=plan.sr_profile is not None) != resolution:
         raise GatewayError(400, "conflicting_resolution", "explicit size does not belong to the requested resolution tier", "resolution")
     return width, height, plan
+
+
+
+def _resolve_compilation_shape(fields, probes, *, workflow):
+    """Choose compiler-local geometry without consulting generation/SR configuration.
+
+    Resolution is a checked compatibility input. Only aspect semantics affect
+    compilation; physical delivery dimensions are decided by video generation.
+    """
+    resolution = _one(fields, "resolution")
+    ratio, alias = _one(fields, "ratio"), _one(fields, "aspect_ratio")
+    if resolution is not None and resolution not in RESOLUTION_CANVASES:
+        raise GatewayError(400, "invalid_resolution", "resolution must be 768P, 1080P or 2K", "resolution")
+    for value in (ratio, alias):
+        if value is not None and value not in (*BASE_CANVASES, "adaptive"):
+            raise GatewayError(400, "invalid_aspect_ratio", "ratio is not supported", "ratio")
+    if ratio is not None and alias is not None and ratio != alias:
+        raise GatewayError(400, "conflicting_parameter", "ratio and aspect_ratio must agree", "ratio")
+    requested = ratio if ratio is not None else alias
+    explicit = any(_one(fields, key) is not None for key in ("size", "width", "height"))
+    if explicit:
+        width, height = _parse_dimensions(fields)
+        known = next((name for canvases in RESOLUTION_CANVASES.values()
+                      for name, size in canvases.items() if size == (width, height)), None)
+        if known is not None:
+            if requested not in (None, "adaptive", known):
+                raise GatewayError(400, "invalid_aspect_ratio", "ratio conflicts with the supplied size", "ratio")
+            width, height = BASE_CANVASES[known]
+            return width, height, H3OutputPlan(width, height, width, height, known), False
+        try:
+            shape = resolve_output_shape(width, height,
+                requested_aspect_ratio=None if requested == "adaptive" else requested)
+        except ValueError as exc:
+            raise GatewayError(400, "invalid_size", str(exc), "size") from exc
+        return width, height, H3OutputPlan(width, height, width, height, shape.aspect_ratio), False
+
+    if workflow == "fl2va" and probes:
+        # The documented ContextIR first/last-frame contract always follows the
+        # image; a supplied valid concrete ratio is ignored in this workflow.
+        if any(p.kind != "image" for p in probes):
+            raise GatewayError(400, "invalid_reference_type", "FL2VA requires image keyframes", "input_references")
+        plan = plan_fl2va_adaptive(probes[0].width, probes[0].height, "768P", sr_profile=None)
+        return plan.output_width, plan.output_height, plan, True
+
+    if workflow == "ref2va" and requested in (None, "adaptive"):
+        # Deterministic local policy: prefer the first video, then first image.
+        # The hosted implementation's complete adaptive algorithm is not public.
+        source = next((p for kind in ("video", "image") for p in probes if p.kind == kind), None)
+        if source is None:
+            requested = "16:9"  # Existing reference validation checks combinations.
+        else:
+            source_ratio = source.width / source.height
+            requested = min(BASE_CANVASES, key=lambda name: relative_ratio_error(*BASE_CANVASES[name], source_ratio))
+    if requested not in BASE_CANVASES:
+        raise GatewayError(400, "invalid_aspect_ratio", "a concrete ratio is required for text-to-video compilation", "ratio")
+    width, height = BASE_CANVASES[requested]
+    return width, height, H3OutputPlan(width, height, width, height, requested), False
 
 
 def _stream_duration(container: Any, stream: Any) -> float:
@@ -918,6 +982,8 @@ class MiniMaxH3VideoAdapter:
         fields: Mapping[str, list[str]],
         uploads: Sequence[UploadedArtifact],
         public_model: str,
+        *,
+        _compiling: bool = False,
     ) -> dict[str, Any]:
         unknown = sorted(set(fields) - _ALLOWED_FIELDS - _KNOWN_UNSUPPORTED_FIELDS)
         if unknown:
@@ -1050,9 +1116,24 @@ class MiniMaxH3VideoAdapter:
 
         probes = [_probe_upload(upload, self.limits) for upload in uploads]
         kinds = [probe.kind for probe in probes]
-        width, height, resolved_shape = _resolve_request_shape(
-            fields, probes, workflow=self.workflow, sr_profile=self.pool.sr_profile
-        )
+        compilation_adaptive = False
+        shape_probes = probes
+        shape_indices = _coalesce(_one(fields, "frame_indices"), extra, "frame_indices")
+        if isinstance(shape_indices, str):
+            try:
+                shape_indices = json.loads(shape_indices)
+            except json.JSONDecodeError:
+                pass  # The existing frame_indices validator gives the public error.
+        if self.workflow == "fl2va" and shape_indices == [-1, 0] and len(probes) == 2:
+            shape_probes = list(reversed(probes))
+        if _compiling:
+            width, height, resolved_shape, compilation_adaptive = _resolve_compilation_shape(
+                fields, shape_probes, workflow=self.workflow
+            )
+        else:
+            width, height, resolved_shape = _resolve_request_shape(
+                fields, shape_probes, workflow=self.workflow, sr_profile=self.pool.sr_profile
+            )
         short_edge = _integer(_one(fields, "short_edge"), "short_edge")
         if short_edge is not None and short_edge != 768:
             raise GatewayError(
@@ -1155,8 +1236,10 @@ class MiniMaxH3VideoAdapter:
             and not any(_one(fields, key) is not None for key in ("size", "width", "height"))
             and (_one(fields, "ratio") or _one(fields, "aspect_ratio")) in (None, "adaptive")
         )
+        if _compiling:
+            adaptive_dimensions = compilation_adaptive
         self._validate_references(
-            kinds, probes, frame_indices_raw, width, height,
+            kinds, shape_probes, frame_indices_raw, width, height,
             adaptive_dimensions=adaptive_dimensions,
         )
 
@@ -1251,7 +1334,8 @@ class MiniMaxH3VideoAdapter:
             normalized["adaptive_resolution"] = "768P"
         if seed is not None:
             normalized.update(seed=seed, seed_generated=False)
-        if uploads and self.options.get("reference_transport") == "shared_files_v1":
+        if (uploads and self.options.get("reference_transport") == "shared_files_v1"
+                and not (self.workflow == "fl2va" and frame_indices == [-1, 0])):
             normalized["shared_inputs"] = {"storage_id": self.options["shared_storage_id"], "protocol": "shared_files_v1"}
         if resolved_shape.sr_profile:
             normalized["super_resolution"] = {
@@ -1265,6 +1349,10 @@ class MiniMaxH3VideoAdapter:
                 "sr_height": resolved_shape.sr_height,
             }
         return normalized
+
+    def normalize_context_ir_request(self, fields, uploads, public_model):
+        """Reuse media and duration validation with a compiler-only shape policy."""
+        return self.normalize_request(fields, uploads, public_model, _compiling=True)
 
     def _validate_references(
         self,
@@ -1298,7 +1386,7 @@ class MiniMaxH3VideoAdapter:
                 elif len(kinds) == 1:
                     allowed = [[0], [-1]]
                 else:
-                    allowed = [[0, -1]]
+                    allowed = [[0, -1], [-1, 0]]
                 if frame_indices not in allowed:
                     raise GatewayError(
                         400,
@@ -1419,7 +1507,8 @@ class MiniMaxH3VideoAdapter:
         if normalized.get("guidance_scale") is not None:
             payload["nvext"]["guidance_scale"] = normalized["guidance_scale"]
 
-        if normalized.get("shared_inputs") and manifest:
+        reverse_anchors = self.workflow == "fl2va" and normalized.get("frame_indices") == [-1, 0]
+        if normalized.get("shared_inputs") and manifest and not reverse_anchors:
             raw_manifest = (task_root / "input-manifest.json").read_bytes()
             artifact = json.loads((task_root / "_artifact.json").read_bytes())
             envelope = {
@@ -1468,6 +1557,8 @@ class MiniMaxH3VideoAdapter:
             )
 
         if self.workflow == "fl2va":
+            if reverse_anchors:
+                references.reverse()
             indices = normalized.get("frame_indices") or []
             if len(references) == 1 and indices == [0]:
                 payload["input_reference"] = references[0][1]

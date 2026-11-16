@@ -10,6 +10,7 @@ import copy
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 import uuid
 
@@ -19,6 +20,7 @@ from dingo.video_gateway.adapters.base import UploadedArtifact
 from dingo.video_gateway.adapters.h3_resolution import classify_resolution
 from dingo.video_gateway.errors import GatewayError, StoreConflict
 from dingo.video_gateway.file_io import run_file_io
+from dingo.video_gateway.pipeline_timings import aggregate, complete_sum
 from dingo.video_gateway.models import TaskStatus, TaskError, TERMINAL_STATUSES, now_ms
 
 LOG = logging.getLogger(__name__)
@@ -103,16 +105,19 @@ class VideoPipelineCoordinator:
 
     async def advance(self, stored, pool):
         task = stored.task
+        if "_pipeline" not in task.normalized_request:
+            return
         state = task.normalized_request['_pipeline']
         if task.status == TaskStatus.QUEUED:
-            counts = await self.store.task_counts(pool.pool_id)
-            active = sum(counts.get(status, 0) for status in
-                         (TaskStatus.DISPATCHING, TaskStatus.IN_PROGRESS, TaskStatus.FINALIZING))
-            if active >= pool.pipeline['max_active_parents']:
-                return  # Bound parent fan-out while downstream queues are full.
-            return await self.transition(stored, {'status':TaskStatus.DISPATCHING,
-                'started_at_ms':now_ms(), 'deadline_at_ms':now_ms()+int(pool.scheduling.execution_timeout_s*1000),
-                'queue_wait_s':max(0, (now_ms()-task.queued_at_ms)/1000)}, 'pipeline_started')
+            started = await self.store.start_pipeline_parent(
+                stored, max_active=pool.pipeline['max_active_parents'],
+                deadline_at_ms=now_ms()+int(pool.scheduling.execution_timeout_s*1000),
+            )
+            if started is not None:
+                self.service.telemetry.record_transition('pipeline_started',
+                    stored.task, started.task, gateway_generation=self.dispatcher.generation,
+                    revision=started.revision)
+            return started
         if task.status == TaskStatus.DISPATCHING:
             return await self.transition(stored, {'status':TaskStatus.IN_PROGRESS}, 'pipeline_started')
 
@@ -168,25 +173,20 @@ class VideoPipelineCoordinator:
         for key, source in ((MODEL_EXECUTION_KEY, base), (SR_TIMINGS_KEY, child.task)):
             if key in source.normalized_request:
                 normalized[key] = source.normalized_request[key]
-        normalized['_pipeline_metrics'] = {
-            'base_generation_s':base.inference_time_s,
-            'base_queue_wait_s':base.queue_wait_s,
-            'super_resolution_s':child.task.inference_time_s if phase == 'sr' else None,
-            'sr_queue_wait_s':child.task.queue_wait_s if phase == 'sr' else None,
-        }
-        stages = {'base_generation': base.inference_time_s or 0}
-        if phase == 'sr':
-            stages['super_resolution'] = child.task.inference_time_s or 0
+        metrics, stages = aggregate(task, {name: c.task for name, c in children.items()})
+        normalized['_pipeline_metrics'] = metrics
         return await self.transition(stored, {'status':TaskStatus.FINALIZING,
-            'normalized_request':normalized,
-            'inference_time_s':sum(stages.values()), 'stage_durations':stages}, 'finalization_started')
+            'normalized_request':normalized, 'queue_wait_s':stages.get('queue'),
+            'inference_time_s':stages.get('execution'),
+            'stage_durations':{**stages, **({'worker_queue_wait':stages['worker_queue']}
+                if 'worker_queue' in stages else {})}}, 'finalization_started')
 
     async def create_child(self, parent, phase, children):
         task = parent.task
         state = task.normalized_request['_pipeline']
         pool = self.config.pools_by_id[state[phase+'_pool']]
         # Avoid reading/copying files on every tick while a stage is unavailable.
-        if not self.dispatcher.has_workers(pool.pool_id):
+        if not self.dispatcher.has_admission_workers(pool.pool_id):
             return
         if await self.store.queue_depth(pool.pool_id) >= pool.scheduling.queue_limit:
             return
@@ -243,12 +243,19 @@ class VideoPipelineCoordinator:
         root = await self.artifacts.resolve_task_root(task.deployment_id,task.pool_id,task.id)
         destination = root / ('result-pipeline-'+uuid.uuid4().hex+'.mp4')
         try:
+            started = time.monotonic()
             source = self.artifacts.result_path(child.result_path)
             await run_file_io(copy_checked,source,destination,child.result_bytes,child.result_sha256)
+            elapsed = time.monotonic() - started
+            metrics = dict(task.normalized_request.get('_pipeline_metrics', {}))
+            metrics['publish_s'] = elapsed
+            phases = task.normalized_request['_pipeline']['children']
+            finalizing = complete_sum([metrics.get(f'{p}_finalize_s') for p in phases] + [elapsed])
             updated = await self.transition(stored, {'status':TaskStatus.COMPLETED,
+                'finalize_time_s':finalizing,
                 'result_path':str(destination),'result_bytes':child.result_bytes,'result_sha256':child.result_sha256,
                 'completed_at_ms':now_ms(),'expires_at_ms':now_ms()+int(self.config.lifecycle.completed_ttl_s*1000),
-                'normalized_request':{**task.normalized_request,'_result_media':child.normalized_request.get('_result_media',{})}},
+                'normalized_request':{**task.normalized_request,'_pipeline_metrics':metrics,'_result_media':child.normalized_request.get('_result_media',{})}},
                 'completed')
             return updated
         except StoreConflict:

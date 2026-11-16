@@ -88,7 +88,6 @@ class CompositeWorkerRecovery:
 
     async def watch(self):
         stopped_since = {}
-        admission_paused = False
         try:
             ranks = (self.ranks_factory(self.sr_process.process, self.sr_process.config['gpus'])
                      if self.sr_process is not None else None)
@@ -119,18 +118,13 @@ class CompositeWorkerRecovery:
                            if not item.execution.done() and item.context.is_stopped()]
                 stopped_since = {id(item.execution): stopped_since.get(id(item.execution), now)
                                  for item in stopped}
-                if stopped and self.manager._accepting:
-                    self.manager._accepting = False
-                    self.manager.components_ready = False
-                    admission_paused = True
+                # Preserve the separate drain and component-health state. A
+                # settling cancellation blocks execution but permits the
+                # Gateway's bounded queue, just like a busy healthy Worker.
+                self.manager.settlement_paused = bool(stopped)
                 if pause_started is None and any(now - started > self.pause_timeout_s for started in stopped_since.values()):
                     await self.recover('cancelled_execution_not_settled')
                     return
-                if not stopped and admission_paused:
-                    if self.shutdown_event is None or not self.shutdown_event.is_set():
-                        self.manager._accepting = True
-                        self.manager.components_ready = False
-                    admission_paused = False
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             raise

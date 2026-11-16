@@ -80,19 +80,14 @@ async def test_next_task_starts_while_previous_gateway_finalization_is_blocked(
             for submitted in [first, second]
         ]
         assert all(item.task.status == TaskStatus.COMPLETED for item in terminals)
-        if prefetch:
-            assert all(
-                item.task.stage_durations is not None
-                and item.task.stage_durations["worker_queue_wait"] >= 0
-                and item.task.public_dict()["metrics"]["worker_queue_wait_s"]
-                == item.task.stage_durations["worker_queue_wait"]
-                for item in terminals
-            )
-        else:
-            assert all(
-                "worker_queue_wait" not in (item.task.stage_durations or {})
-                for item in terminals
-            )
+        # Zero-prefetch Workers also measure admission -> execution now.
+        assert all(
+            item.task.stage_durations is not None
+            and item.task.stage_durations["worker_queue_wait"] >= 0
+            and item.task.public_dict()["metrics"]["worker_queue_wait_s"]
+            == item.task.stage_durations["worker_queue_wait"]
+            for item in terminals
+        )
         assert len(calls) == 2
     finally:
         finish.set()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import hashlib
+import importlib.metadata
 import re
 import os
 import signal
@@ -23,7 +24,7 @@ from dingo.vllm.omni.seedvr2_execution import SeedVR2Execution
 from dingo.vllm.omni.seedvr2_handler import SeedVR2Handler
 
 
-def measurement_source_hashes(package_root, *, include_geometry=False):
+def measurement_source_hashes(package_root, *, include_geometry=False, dingo_root=None):
     # Native /2 validation compares each rank's actual pipeline, telemetry and
     # IPC hashes against the declaration, in addition to request correlation.
     sources = ["vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py",
@@ -36,7 +37,26 @@ def measurement_source_hashes(package_root, *, include_geometry=False):
                     "dingo/video_gateway/adapters/h3_output_policy.py",
                     "dingo/common/video_super_resolution.py",
                     "dingo/vllm/omni/seedvr2_media.py"]
-    return {name: hashlib.sha256((package_root / name).read_bytes()).hexdigest() for name in sources}
+    native_root = Path(package_root)
+    wrapper_root = native_root if dingo_root is None else Path(dingo_root)
+    return {
+        name: hashlib.sha256(
+            ((wrapper_root if name.startswith("dingo/") else native_root) / name).read_bytes()
+        ).hexdigest()
+        for name in sources
+    }
+
+
+def runtime_measurement_source_hashes(*, include_geometry=False):
+    # The native subprocess deliberately drops this Worker's PYTHONPATH. Its
+    # vLLM-Omni package therefore comes from the installed distribution, whereas
+    # Dingo may be loaded from an independently mounted source patch.
+    native_root = Path(importlib.metadata.distribution("vllm-omni").locate_file(""))
+    return measurement_source_hashes(
+        native_root,
+        dingo_root=Path(__file__).resolve().parents[3],
+        include_geometry=include_geometry,
+    )
 
 
 class SeedVR2Process:
@@ -194,10 +214,9 @@ class SeedVR2Process:
                         "VLLM_OMNI_SEEDVR2_LONG_MAX_WINDOW": "65",
                         "VLLM_OMNI_SEEDVR2_LONG_JOB_TTL_SECONDS": "604800",
                         "SEEDVR2_METRICS_DIR": str(metrics_dir)})
-            package_root = Path(__file__).resolve().parents[3]
             measurement_identity = {
                 "image_digest": self.config["image_digest"], "expected_world_size": self.config["gpus"],
-                "source_hashes": measurement_source_hashes(package_root, include_geometry=self.profile == H3_SR_PROFILE_V3),
+                "source_hashes": runtime_measurement_source_hashes(include_geometry=self.profile == H3_SR_PROFILE_V3),
                 "model_manifest_hash": hashlib.sha256((Path(self.config["model"]) / "conversion-manifest.json").read_bytes()).hexdigest(),
             }
         if self.profile == H3_SR_PROFILE_V3:

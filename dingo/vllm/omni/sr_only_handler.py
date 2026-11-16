@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import json
 import os
+import logging
+import re
 from pathlib import Path
 import time
 
@@ -12,6 +14,35 @@ from dingo.vllm.omni.h3_shared_inputs import _open_beneath
 from dingo.vllm.omni.seedvr2_handler import SeedVR2Handler
 from dingo.vllm.omni.seedvr2_execution import read_journal, UnsafeRecovery
 from dingo.vllm.omni import seedvr2_media as media
+
+
+def validate_previous_attempt(previous, previous_root, current_root, current_owner):
+    """Gate only cross-attempt retries; same-attempt POST ambiguity stays fenced.
+
+Gateway owns retry eligibility and result publication. A new native service
+incarnation may compute a new attempt without claiming the old one has died.
+Never erase or rewrite the previous process's journal.
+"""
+    def attempt(path):
+        match = re.fullmatch(r'([1-9][0-9]*)-([0-9a-f]{32,64})', path.name)
+        if not match:
+            raise UnsafeRecovery('invalid SR attempt identity')
+        return int(match.group(1))
+    if attempt(previous_root) >= attempt(current_root):
+        raise UnsafeRecovery('SR retry requires a newer Gateway attempt')
+    if previous.get('phase') in {'completed', 'failed', 'cancelled'}:
+        return
+    if previous.get('phase') not in {'submit_intent', 'submitted'}:
+        raise UnsafeRecovery('SR attempt has an unknown journal state')
+    old_owner = previous.get('owner')
+    if (not isinstance(old_owner, str) or not re.fullmatch(r'[0-9a-f]{32}', old_owner)
+            or not isinstance(current_owner, str) or not re.fullmatch(r'[0-9a-f]{32}', current_owner)):
+        raise UnsafeRecovery('SR attempt has no valid native process identity')
+    if old_owner == current_owner:
+        raise UnsafeRecovery('previous SR attempt has unresolved work in this native process')
+    logging.getLogger(__name__).info(
+        'SR cross-incarnation retry admitted task=%s old_attempt=%s new_attempt=%s old_owner=%s new_owner=%s',
+        current_root.parent.parent.name, attempt(previous_root), attempt(current_root), old_owner, current_owner)
 
 
 def stage_source(attempt_root, descriptor, storage_id):
@@ -79,8 +110,8 @@ class SROnlyHandler(SeedVR2Handler):
             if journal.parent.is_symlink():
                 raise UnsafeRecovery('symlink in SR attempt directory')
             previous = read_journal(journal)
-            if previous and previous.get('phase') not in {'completed','failed','cancelled'}:
-                raise UnsafeRecovery('previous SR attempt has unresolved GPU work')
+            if previous is not None:
+                validate_previous_attempt(previous, journal.parent, root, self.execution.owner)
         source = await asyncio.to_thread(stage_source, root, payload[SOURCE_KEY], self.storage_id)
         info = await media.probe(source)
         expected = payload[SOURCE_KEY]['media']

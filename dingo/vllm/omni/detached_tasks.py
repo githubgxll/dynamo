@@ -18,10 +18,7 @@ import logging
 import os
 import time
 import uuid
-from dingo.common.video_worker_error import classify_worker_error, failed_chunk_error, VideoWorkerFailure
-
 from collections.abc import AsyncGenerator, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +47,14 @@ from dingo.common.video_task_protocol import (
 from dingo.common.video_task_protocol import (
     detached_envelope as detached_envelope,  # retained compatibility re-export
 )
+from dingo.common.video_worker_error import (
+    VideoWorkerFailure,
+    classify_worker_error,
+    failed_chunk_error,
+)
+from dingo.worker.execution import ExecutionContext as _DetachedContext
+from dingo.worker.execution import ExecutionKernel
+from dingo.worker.execution import RunningExecution as _RunningTask
 
 logger = logging.getLogger(__name__)
 
@@ -131,52 +136,6 @@ _DETACHED_EXECUTION_DURATION = Histogram(
 )
 
 
-class _DetachedContext:
-    """Minimal Dynamo Context surface consumed by ``OmniHandler``."""
-
-    def __init__(self, request_id: str) -> None:
-        self._request_id = request_id
-        self._cancelled = asyncio.Event()
-        self._waiters: set[asyncio.Task[bool]] = set()
-
-    def id(self) -> str:
-        return self._request_id
-
-    def stop_generating(self) -> None:
-        self._cancelled.set()
-
-    def is_stopped(self) -> bool:
-        return self._cancelled.is_set()
-
-    def async_killed_or_stopped(self) -> asyncio.Task[bool]:
-        waiter = asyncio.create_task(self._cancelled.wait())
-        self._waiters.add(waiter)
-        waiter.add_done_callback(self._waiters.discard)
-        return waiter
-
-    async def close(self) -> None:
-        """Resolve Context waiters orphaned by a cancelled abort monitor."""
-
-        self._cancelled.set()
-        waiters = list(self._waiters)
-        if waiters:
-            await asyncio.gather(*waiters, return_exceptions=True)
-
-    async def wait_stopped(self) -> None:
-        await self._cancelled.wait()
-
-
-@dataclass(slots=True)
-class _RunningTask:
-    identity: DetachedTaskIdentity
-    context: _DetachedContext
-    execution: asyncio.Task[None]
-    # Published only after the terminal write succeeds. Existing waiters hold
-    # this execution-scoped record; completed tasks are not retained globally.
-    persisted_terminal: dict[str, Any] | None = None
-    started: bool = False
-
-
 class DetachedOmniTaskManager:
     """Persist Omni response streams independently of the submitting Gateway."""
 
@@ -218,13 +177,15 @@ class DetachedOmniTaskManager:
         self.drain_timeout_s = drain_timeout_s
         self.cancel_poll_interval_s = cancel_poll_interval_s
         self.cancel_grace_s = cancel_grace_s
-        self._running: dict[tuple[str, str, str, int, str], _RunningTask] = {}
-        self._lock = asyncio.Lock()
+        self.executions = ExecutionKernel(execution_capacity)
+        self._running = self.executions.records
+        self._lock = self.executions.lock
         self._accepting = True
+        self.settlement_paused = False
         self.components_ready = True
         self.execution_capacity = execution_capacity
         self.prefetch_capacity = prefetch_capacity
-        self._execution_slots = asyncio.Semaphore(execution_capacity)
+        self._execution_slots = self.executions.slots
         self._direct_running = 0
         _DETACHED_EXECUTION_ACTIVE.set(0)
         _DETACHED_PREFETCH_WAITING.set(0)
@@ -246,8 +207,33 @@ class DetachedOmniTaskManager:
             raise ValueError("inline results require binary results")
 
     @property
+    def _accepting(self):
+        return not self.executions.admission.draining
+
+    @_accepting.setter
+    def _accepting(self, value):
+        self.executions.admission.draining = not value
+
+    @property
+    def settlement_paused(self):
+        return self.executions.admission.settlement_paused
+
+    @settlement_paused.setter
+    def settlement_paused(self, value):
+        self.executions.admission.settlement_paused = value
+
+    @property
+    def components_ready(self):
+        return self.executions.admission.components_ready
+
+    @components_ready.setter
+    def components_ready(self, value):
+        self.executions.admission.components_ready = value
+
+    @property
     def accepting(self):
-        return self._accepting and self.components_ready and bool(getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True)))
+        return self.executions.admission.can_execute(
+            getattr(self.handler, "video_ready", getattr(self.handler, "sr_ready", True)))
 
     async def generate(
         self, request: dict[str, Any], context: Any
@@ -310,6 +296,14 @@ class DetachedOmniTaskManager:
                     "storage_id": self.shared_input_adapter.shared_storage_id,
                     "workflow": self.shared_input_adapter.workflow,
                 }
+            # This is permission to queue at the Gateway, never an execution
+            # slot. Draining/unhealthy/quarantined Workers do not grant it.
+            response["capabilities"].append("gateway_queue_admission.v1")
+            response["gateway_queue_admission"] = {
+                "allowed": self.executions.admission.can_queue(
+                    getattr(self.handler, "video_queueable", self.accepting)),
+                "sr_profiles": [self.handler.sr_profile] if hasattr(self.handler, "sr_profile") else [],
+            }
             yield response
             return
         identity = DetachedTaskIdentity.from_envelope(envelope)
@@ -537,15 +531,15 @@ class DetachedOmniTaskManager:
                 return {**current, "accepted": False}
             initial = self._base_status(identity, "accepted")
             queued_at_ms = int(time.time() * 1000)
-            if self.prefetch_capacity:
-                initial["queued_at_ms"] = queued_at_ms
+            initial["queued_at_ms"] = queued_at_ms
             await asyncio.to_thread(self._atomic_json, status_path, initial)
             self._log_task_timing("accepted", identity, initial)
             request_id = (
                 f"{identity.task_id}-{identity.attempt}-{identity.execution_token[:12]}"
             )
             detached_context = _DetachedContext(request_id)
-            execution = asyncio.create_task(
+            self.executions.start(
+                identity.key, identity, detached_context,
                 self._execute(
                     identity,
                     payload,
@@ -556,30 +550,7 @@ class DetachedOmniTaskManager:
                 ),
                 name=f"omni-detached-{identity.task_id}-{identity.attempt}",
             )
-            self._running[identity.key] = _RunningTask(
-                identity=identity,
-                context=detached_context,
-                execution=execution,
-            )
-            execution.add_done_callback(
-                lambda completed, key=identity.key: self._execution_done(key, completed)
-            )
             return {**initial, "accepted": True}
-
-    def _execution_done(
-        self,
-        key: tuple[str, str, str, int, str],
-        execution: asyncio.Task[None],
-    ) -> None:
-        self._running.pop(key, None)
-        if execution.cancelled():
-            return
-        error = execution.exception()
-        if error is not None:
-            logger.error(
-                "detached Omni task escaped its terminal recorder",
-                exc_info=(type(error), error, error.__traceback__),
-            )
 
     async def _watch_cancel(
         self, identity: DetachedTaskIdentity, context: _DetachedContext
@@ -627,10 +598,8 @@ class DetachedOmniTaskManager:
         self, identity: DetachedTaskIdentity, path: Path, status: dict[str, Any]
     ) -> None:
         """Notify local waiters only after the terminal write completes."""
-        await asyncio.to_thread(self._atomic_json, path, status)
-        running = self._running.get(identity.key)
-        if running is not None:
-            running.persisted_terminal = copy.deepcopy(status)
+        await self.executions.publish_terminal(identity.key, status,
+            lambda: asyncio.to_thread(self._atomic_json, path, status))
         state = status.get("state")
         if state in _TERMINAL:
             _DETACHED_TASKS.labels(outcome=state).inc()
@@ -646,10 +615,14 @@ class DetachedOmniTaskManager:
         queued_at_ms=None,
         status_path=None,
     ):
-        from dingo.vllm.omni.h3_shared_inputs import CURRENT, SharedInputSession, descriptor
+        from dingo.vllm.omni.h3_shared_inputs import (
+            CURRENT,
+            SharedInputSession,
+            descriptor,
+        )
         shared = descriptor(payload)
         if not self.prefetch_capacity and shared is None:
-            return await self._execute_started(identity, payload, context)
+            return await self._execute_started(identity, payload, context, queued_at_ms=queued_at_ms)
         # Submission already resolved this path before publishing accepted.
         # Do not insert a filesystem await before acquiring the FIFO permit:
         # two concurrent metadata reads can complete in the opposite order.
@@ -700,6 +673,9 @@ class DetachedOmniTaskManager:
                 )
                 return
             await ready
+            if session is not None and session.image_receipt is not None:
+                await asyncio.to_thread(self._atomic_json,
+                    status_path.parent / "image-preprocess.json", session.image_receipt)
             _DETACHED_PREFETCH_WAITING.dec()
             waiting_metric_active = False
             token = CURRENT.set(session)
@@ -1014,25 +990,7 @@ class DetachedOmniTaskManager:
             return
 
         yield self._base_status(identity, "watching")
-        try:
-            await asyncio.shield(running.execution)
-        except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if (
-                (current is not None and current.cancelling())
-                or not running.execution.cancelled()
-            ):
-                # The wait request itself was cancelled.  Its lifetime never
-                # owns the detached execution, which remains shielded.
-                raise
-            # The detached execution was cancelled after persisting its
-            # durable terminal state.  Return that state below instead of
-            # presenting a normal task cancellation as a broken wait stream.
-        except Exception:
-            # _execute records its terminal failure before it returns. Read
-            # that durable status below instead of leaking an internal task
-            # exception across the private protocol.
-            pass
+        await self.executions.wait(running)
 
         terminal = copy.deepcopy(running.persisted_terminal)
         if terminal is None:
@@ -1053,27 +1011,11 @@ class DetachedOmniTaskManager:
             os.close(descriptor)
 
         await asyncio.to_thread(_write_cancel)
-        running = self._running.get(identity.key)
-        if running is not None:
-            running.context.stop_generating()
+        self.executions.cancel(identity.key)
         return {**self._base_status(identity, "cancel_requested")}
 
     async def shutdown(self) -> None:
         """Drain accepted inference before aborting it at the shutdown deadline."""
 
         self._accepting = False
-        executions = [item.execution for item in self._running.values()]
-        if not executions:
-            return
-        done, pending = await asyncio.wait(executions, timeout=self.drain_timeout_s)
-        del done
-        if not pending:
-            return
-        logger.warning(
-            "detached Omni drain timed out with %d task(s); aborting them", len(pending)
-        )
-        for item in list(self._running.values()):
-            if item.execution in pending:
-                item.context.stop_generating()
-                item.execution.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        await self.executions.drain(self.drain_timeout_s, abort_on_timeout=True)

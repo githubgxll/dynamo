@@ -14,6 +14,7 @@ from dingo.video_gateway.models import TaskStatus
 def _task(*, cancelled=False):
     return SimpleNamespace(
         id="video-test",
+        normalized_request={},
         pool_id="pool",
         status=TaskStatus.DISPATCHING,
         owner_generation="gateway-a",

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+
 from dingo.common.video_worker_error import normalize_internal_error
 
 
@@ -43,6 +44,10 @@ class StoreUnavailable(RuntimeError):
     """Raised when the configured Task Store cannot be reached safely."""
 
 
+class EtcdLeaseNotFound(StoreUnavailable):
+    """etcd explicitly rejected an atomic write to an absent native lease."""
+
+
 class HandoffReservationLost(StoreConflict):
     """Result handoff definitively no longer owns its execution reservation."""
 
@@ -67,13 +72,20 @@ def worker_execution_error(error: object) -> WorkerExecutionFailed:
     substrings, arbitrary RuntimeError, or the generic worker_failed code itself.
     Unknown, parameter, media and model errors are deliberately not retried.
     """
-    if isinstance(error, dict) and error.get("code") == "worker_unavailable_before_execution":
-        failure = WorkerUnavailable(str(error.get("message") or "Worker unavailable before execution"))
+    if (
+        isinstance(error, dict)
+        and error.get("code") == "worker_unavailable_before_execution"
+    ):
+        failure = WorkerUnavailable(
+            str(error.get("message") or "Worker unavailable before execution")
+        )
         if "internal_error" in error:
             failure.internal_error = normalize_internal_error(error["internal_error"])
         return failure
     if isinstance(error, dict) and "internal_error" in error:
-        failure = WorkerExecutionFailed(str(error.get("message") or "Worker generation failed"))
+        failure = WorkerExecutionFailed(
+            str(error.get("message") or "Worker generation failed")
+        )
         failure.internal_error = normalize_internal_error(error["internal_error"])
         return failure
     message = error

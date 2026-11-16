@@ -1,3 +1,4 @@
+from dingo.video_gateway.task_runtime.records import RecordRepository
 """Compiler resource policy on the shared etcd CAS/admission primitives."""
 import asyncio
 from dataclasses import replace, asdict
@@ -7,7 +8,7 @@ from dingo.video_gateway.errors import GatewayError, StoreConflict
 from dingo.video_gateway.models import now_ms
 from dingo.video_gateway.task_runtime.transactions import (
     admission_transaction, compare_snapshot, encode, get_idempotent,
-    get_record, read_counter, sequence_token,
+    read_counter, sequence_token,
 )
 from .models import ContextIRTask, StoredContextIRTask, TERMINAL, failure
 
@@ -24,9 +25,14 @@ class ContextIRStore:
         return self.key(f"tasks/{task_id}")
 
     def queue_key(self, task):
+        backend = self.config.backends[task.backend_id]
+        if backend.transport == "worker":
+            return f"/dingo/task-runtime/v2/{task.deployment_id}/queues/context_ir/{backend.worker_pool}/{sequence_token(task.created_seq)}/{task.id}"
         return self.key(f"backends/{task.backend_id}/queue/{sequence_token(task.created_seq)}/{task.id}")
 
     def slot_key(self, task):
+        if self.config.backends[task.backend_id].transport == "worker":
+            return f"/dingo/task-runtime/v2/{task.deployment_id}/active/context_ir/{task.id}"
         return self.key(f"backends/{task.backend_id}/slots/{task.slot_id}")
 
     async def records(self, suffix):
@@ -38,7 +44,7 @@ class ContextIRStore:
         return StoredContextIRTask(ContextIRTask.from_dict(json.loads(value.value)), value.mod_revision)
 
     async def get_task(self, task_id):
-        return await get_record(self.client, self.task_key(task_id), self.decode)
+        return await RecordRepository(self.client, self.task_key, self.decode).load(task_id)
 
     async def idempotent(self, principal, key_hash, digest):
         if key_hash is None:
@@ -237,12 +243,19 @@ class ContextIRStore:
 
     async def update(self, stored, **patch):
         task = replace(stored.task, **patch)
-        compares = [self.client.compare_mod(self.task_key(task.id), stored.revision)]
+        compares = []
         if task.owner_id:
             compares.append(self.client.compare_value(self.key(f"owners/{task.owner_id}"), task.owner_generation))
             compares.append(self.client.compare_value(self.slot_key(task), encode(self.identity(task))))
-        ok, rev = await self.client.txn(compares, [self.client.put(self.task_key(task.id), encode(task.to_dict()))])
+        ok, rev = await RecordRepository(self.client, self.task_key, self.decode).update(
+            task.id, stored.revision, encode(task.to_dict()), compares=compares)
         return StoredContextIRTask(task, rev) if ok else None
+
+    def record_transition(self, before, after):
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            from .telemetry import record_transition
+            record_transition(telemetry, before, after)
 
     async def finish(self, stored, status, *, error=None, result=None):
         if status not in {"completed", "failed", "cancelled"}:
@@ -273,6 +286,8 @@ class ContextIRStore:
         for kind, stamp_ms in (("expiry", task.expires_at_ms), ("input_cleanup", stamp+int(self.config.input_terminal_retention_s*1000))):
             writes.append(self.client.put(self.key(f"indexes/{kind}/{stamp_ms:020d}/{task.id}"), task.id))
         ok, rev = await self.client.txn(compares, writes)
+        if ok:
+            self.record_transition(old, task)
         return StoredContextIRTask(task, rev) if ok else None
 
     async def release_slot(self, task):

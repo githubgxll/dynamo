@@ -39,6 +39,14 @@ async def init_omni(
     """Initialize Omni worker for multi-stage pipeline generation."""
     from dingo.vllm.omni import OmniHandler
 
+    worker_settings = None
+    if config.detached_video_task_root is not None and config.request_adapter == 'minimax_h3':
+        from dingo.worker.config import load_worker_settings
+        worker_settings = load_worker_settings(os.getenv('DINGO_WORKER_CONFIG'),
+            adapter='h3_generate', execution_capacity=config.diffusion.max_num_seqs or 1,
+            prefetch_capacity=config.detached_video_prefetch_capacity,
+            max_execution_capacity=config.diffusion.max_num_seqs or 1, max_prefetch_capacity=1)
+
     generate_endpoint = runtime.endpoint(
         f"{config.namespace}.{config.component}.{config.endpoint}"
     )
@@ -103,8 +111,8 @@ async def init_omni(
             task_handler,
             config.detached_video_task_root,
             drain_timeout_s=config.detached_video_drain_timeout,
-            execution_capacity=config.diffusion.max_num_seqs or 1,
-            prefetch_capacity=config.detached_video_prefetch_capacity,
+            execution_capacity=worker_settings.execution_capacity if worker_settings else config.diffusion.max_num_seqs or 1,
+            prefetch_capacity=worker_settings.prefetch_capacity if worker_settings else config.detached_video_prefetch_capacity,
         )
         if (sr_process is not None or base_recovery) and os.getenv("DINGO_VIDEO_READINESS_PORT"):
             from dingo.vllm.omni.video_readiness import VideoReadinessServer

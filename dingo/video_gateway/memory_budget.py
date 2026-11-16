@@ -1,13 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fair process-local weighted budget for legacy Base64 media transport."""
+"""Fair process-local media budget, accounting for the persisted transport."""
 
 from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
+
+
+def task_memory_bytes(
+    media, normalized, *, encoded_reference_bytes=None, persisted_estimate=0
+):
+    """Shared inputs fit in fixed overhead; retain result/finalization reserve.
+
+    Persisted transport, rather than today's pool setting, determines whether
+    original media will be encoded. Old shared tasks may carry a legacy-sized
+    estimate: correct it at claim/takeover without rewriting their records.
+    Missing estimates for old inline tasks retain the conservative fallback.
+    """
+    if normalized.get("shared_inputs"):
+        return media.result_task_memory_bytes
+    if encoded_reference_bytes is not None:
+        return 2 * encoded_reference_bytes + media.result_task_memory_bytes
+    return persisted_estimate or media.max_task_memory_bytes
 
 
 @dataclass(frozen=True, slots=True)

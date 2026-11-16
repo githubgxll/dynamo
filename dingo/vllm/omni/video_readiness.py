@@ -18,7 +18,9 @@ class VideoReadinessServer:
         self.monitor = None
 
     async def check_components(self):
-        if not self.manager._accepting or not bool(getattr(self.manager.handler, "video_ready", getattr(self.manager.handler, "sr_ready", True))):
+        # Cancellation settlement removes execution capacity, not component
+        # health. The accepting property still keeps /ready and dispatch false.
+        if not self.manager._accepting or not bool(getattr(self.manager.handler, "video_queueable", getattr(self.manager.handler, "video_ready", getattr(self.manager.handler, "sr_ready", True)))):
             return False
         try:
             async with ClientSession(trust_env=False, timeout=ClientTimeout(total=1.0)) as session:

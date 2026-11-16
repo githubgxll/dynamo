@@ -221,6 +221,14 @@ class PoolConfig:
     pipeline: Mapping[str, Any] | None = None
 
     @property
+    def unified_pipeline(self) -> bool:
+        return self.pipeline is not None and self.pipeline["base_pool"] == self.pool_id
+
+    @property
+    def executes_tasks(self) -> bool:
+        return self.pipeline is None or self.unified_pipeline
+
+    @property
     def sr_profile(self) -> str | None:
         if self.adapter.name == "seedvr2":
             return H3_SR_PROFILE_V3
@@ -752,11 +760,16 @@ def _pool_config(raw: Any, index: int) -> PoolConfig:
     pipeline = data.get("pipeline")
     if pipeline is not None:
         pipeline = dict(_mapping(pipeline, f"{name}.pipeline"))
+        pipeline.setdefault("base_pool", pool_id)
         if (set(pipeline) - {"base_pool", "sr_pool", "max_active_parents"}
                 or any(not isinstance(pipeline.get(k), str) or not _SAFE_ID.fullmatch(pipeline[k])
                        for k in ("base_pool", "sr_pool"))):
             raise ValueError("pipeline requires base_pool and sr_pool identifiers")
-        maximum = pipeline.setdefault("max_active_parents", 4)
+        if pipeline["base_pool"] == pool_id and "max_active_parents" in pipeline:
+            raise ValueError("unified pipeline has no active-parent dispatch limit")
+        maximum = pipeline.get("max_active_parents", 4)
+        if pipeline["base_pool"] != pool_id:
+            pipeline.setdefault("max_active_parents", maximum)
         if type(maximum) is not int or not 1 <= maximum <= 128:
             raise ValueError("pipeline.max_active_parents must be between 1 and 128")
         if adapter.name != "minimax_h3" or execution_mode != "detached":
@@ -874,10 +887,10 @@ def parse_config(raw: Any) -> GatewayConfig:
             continue
         base = by_id.get(pool.pipeline["base_pool"])
         sr = by_id.get(pool.pipeline["sr_pool"])
-        if (base is None or sr is None or base.pipeline or sr.pipeline
+        if (base is None or sr is None or (base.pipeline and base.pool_id != pool.pool_id) or sr.pipeline
                 or base.pool_id == sr.pool_id or base.execution_mode != "detached"
                 or sr.execution_mode != "detached" or base.adapter.name != "minimax_h3"
-                or base.adapter.workflow != pool.adapter.workflow or base.sr_profile is not None
+                or base.adapter.workflow != pool.adapter.workflow or (base.sr_profile is not None and base.pool_id != pool.pool_id)
                 or sr.adapter.name != "seedvr2" or pool.sr_profile != sr.sr_profile):
             raise ValueError("pipeline must reference a base-only H3 pool and a matching independent SR pool")
         if pool.backend_target != base.backend_target:

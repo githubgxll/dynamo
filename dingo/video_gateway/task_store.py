@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import random
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from dingo.video_gateway.models import (
 )
 from dingo.video_gateway.result_handoff import read_handoff, validate_handoff_transition
 from dingo.video_gateway.task_runtime import transactions as task_transactions
+from dingo.video_gateway.task_runtime.records import RecordRepository
 
 _INDEX_SCHEMA_VERSION = 3
 _SEQUENCE_WIDTH = 20
@@ -93,14 +95,21 @@ def _link_pipeline_child(parent: VideoTask, child: VideoTask) -> VideoTask:
     state = copy.deepcopy(parent.normalized_request.get("_pipeline"))
     link = child.normalized_request.get("_pipeline_child", {})
     phase = link.get("phase")
-    if (parent.status != TaskStatus.IN_PROGRESS or parent.cancel_requested_at_ms is not None
-            or not isinstance(state, dict) or phase not in {"base", "sr"}
-            or link.get("parent_id") != parent.id or state.get("phase") != phase
-            or state.get("children", {}).get(phase)):
+    if (
+        parent.status != TaskStatus.IN_PROGRESS
+        or parent.cancel_requested_at_ms is not None
+        or not isinstance(state, dict)
+        or phase not in {"base", "sr"}
+        or link.get("parent_id") != parent.id
+        or state.get("phase") != phase
+        or state.get("children", {}).get(phase)
+    ):
         raise StoreConflict("pipeline parent no longer permits child admission")
     state.setdefault("children", {})[phase] = child.id
-    return _apply_patch(parent, {"normalized_request": {
-        **parent.normalized_request, "_pipeline": state}})
+    return _apply_patch(
+        parent,
+        {"normalized_request": {**parent.normalized_request, "_pipeline": state}},
+    )
 
 
 def _validate_fenced_release(before: VideoTask, after: VideoTask) -> None:
@@ -147,6 +156,12 @@ def _apply_patch(task: VideoTask, patch: Mapping[str, Any]) -> VideoTask:
 
 
 class TaskStore(ABC):
+    async def start_pipeline_parent(
+        self, stored: StoredTask, *, max_active: int, deadline_at_ms: int
+    ) -> StoredTask | None:
+        """Atomically admit a parent against its pool's active-parent limit."""
+        raise NotImplementedError("this TaskStore cannot admit pipeline parents")
+
     async def claim_finalizing(
         self, stored: StoredTask, *, new_owner_generation: str
     ) -> StoredTask | None:
@@ -154,10 +169,12 @@ class TaskStore(ABC):
         raise NotImplementedError("this TaskStore cannot take over finalization")
 
     @abstractmethod
-    async def health(self) -> None: ...
+    async def health(self) -> None:
+        ...
 
     @abstractmethod
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        ...
 
     async def prepare(self) -> None:
         """Prepare optional indexes before the Gateway becomes ready."""
@@ -245,15 +262,19 @@ class TaskStore(ABC):
         idempotency_hash: str | None,
         queue_limit: int,
         pipeline_parent: StoredTask | None = None,
-    ) -> tuple[StoredTask, bool]: ...
+        initial_parent: VideoTask | None = None,
+    ) -> tuple[StoredTask, bool]:
+        ...
 
     @abstractmethod
-    async def get_task(self, task_id: str) -> StoredTask | None: ...
+    async def get_task(self, task_id: str) -> StoredTask | None:
+        ...
 
     @abstractmethod
     async def get_idempotent(
         self, principal_hash: str, idempotency_hash: str
-    ) -> StoredTask | None: ...
+    ) -> StoredTask | None:
+        ...
 
     @abstractmethod
     async def list_tasks(
@@ -264,26 +285,30 @@ class TaskStore(ABC):
         after: str | None = None,
         limit: int = 100,
         descending: bool = False,
-    ) -> list[StoredTask]: ...
+    ) -> list[StoredTask]:
+        ...
 
     @abstractmethod
-    async def list_all_tasks(self) -> list[StoredTask]: ...
+    async def list_all_tasks(self) -> list[StoredTask]:
+        ...
 
     @abstractmethod
-    async def list_queued(
-        self, pool_id: str, *, limit: int = 100
-    ) -> list[StoredTask]: ...
+    async def list_queued(self, pool_id: str, *, limit: int = 100) -> list[StoredTask]:
+        ...
 
     @abstractmethod
-    async def queue_depth(self, pool_id: str) -> int: ...
+    async def queue_depth(self, pool_id: str) -> int:
+        ...
 
     @abstractmethod
-    async def task_counts(self, pool_id: str) -> Mapping[TaskStatus, int]: ...
+    async def task_counts(self, pool_id: str) -> Mapping[TaskStatus, int]:
+        ...
 
     @abstractmethod
     async def list_due_tasks(
         self, before_ms: int, *, limit: int = 256
-    ) -> list[StoredTask]: ...
+    ) -> list[StoredTask]:
+        ...
 
     @abstractmethod
     async def reserve(
@@ -292,7 +317,8 @@ class TaskStore(ABC):
         lease: WorkerLease,
         *,
         deadline_at_ms: int,
-    ) -> StoredTask | None: ...
+    ) -> StoredTask | None:
+        ...
 
     @abstractmethod
     async def transition(
@@ -305,18 +331,22 @@ class TaskStore(ABC):
         release_lease: bool = False,
         release_execution: bool = False,
         quarantine_until_ms: int | None = None,
-    ) -> StoredTask: ...
+    ) -> StoredTask:
+        ...
 
     @abstractmethod
     async def request_cancel(
         self, task_id: str, *, terminal_expires_at_ms: int | None = None
-    ) -> StoredTask: ...
+    ) -> StoredTask:
+        ...
 
     @abstractmethod
-    async def list_leases(self, pool_id: str) -> list[WorkerLease]: ...
+    async def list_leases(self, pool_id: str) -> list[WorkerLease]:
+        ...
 
     @abstractmethod
-    async def release_lease(self, pool_id: str, worker_key_value: str) -> None: ...
+    async def release_lease(self, pool_id: str, worker_key_value: str) -> None:
+        ...
 
     @abstractmethod
     async def heartbeat_lease(
@@ -325,13 +355,16 @@ class TaskStore(ABC):
         worker_key_value: str,
         task_id: str,
         lease_id: int | None = None,
-    ) -> None: ...
+    ) -> None:
+        ...
 
     @abstractmethod
-    async def delete_expired(self, stored: StoredTask) -> bool: ...
+    async def delete_expired(self, stored: StoredTask) -> bool:
+        ...
 
     @abstractmethod
-    async def reconcile_pool(self, pool_id: str) -> None: ...
+    async def reconcile_pool(self, pool_id: str) -> None:
+        ...
 
 
 class MemoryTaskStore(TaskStore):
@@ -346,6 +379,44 @@ class MemoryTaskStore(TaskStore):
         self._revision = 0
         self._created_seq = 0
         self._task_watchers: set[asyncio.Queue[TaskWatchEvent]] = set()
+
+    async def start_pipeline_parent(self, stored, *, max_active, deadline_at_ms):
+        if (
+            isinstance(max_active, bool)
+            or not isinstance(max_active, int)
+            or max_active < 1
+        ):
+            raise ValueError("max_active must be a positive integer")
+        async with self._lock:
+            current = self._tasks.get(stored.task.id)
+            if (
+                current is None
+                or current[1] != stored.revision
+                or current[0].status != TaskStatus.QUEUED
+            ):
+                return None
+            active = sum(
+                t.pool_id == stored.task.pool_id and t.status in ACTIVE_STATUSES
+                for t, _ in self._tasks.values()
+            )
+            if active >= max_active:
+                return None
+            updated = _apply_patch(
+                current[0],
+                {
+                    "status": TaskStatus.DISPATCHING,
+                    "started_at_ms": now_ms(),
+                    "deadline_at_ms": deadline_at_ms,
+                    "queue_wait_s": max(0, (now_ms() - current[0].queued_at_ms) / 1000),
+                },
+            )
+            queue = self._queue.setdefault(updated.pool_id, [])
+            if updated.id in queue:
+                queue.remove(updated.id)
+            revision = self._next_revision()
+            self._tasks[updated.id] = (updated, revision)
+            self._publish_task_event(updated.id, revision)
+            return StoredTask(_clone_task(updated), revision)
 
     def _next_revision(self) -> int:
         self._revision += 1
@@ -403,20 +474,22 @@ class MemoryTaskStore(TaskStore):
         idempotency_hash: str | None,
         queue_limit: int,
         pipeline_parent: StoredTask | None = None,
+        initial_parent: VideoTask | None = None,
     ) -> tuple[StoredTask, bool]:
         task = _apply_patch(
             task,
             {
                 "principal_hash": principal_hash,
-                "idempotency_hash": idempotency_hash,
+                "idempotency_hash": None if initial_parent is not None else idempotency_hash,
             },
         )
+        request = initial_parent or task
         async with self._lock:
             if idempotency_hash is not None:
                 existing = self._idempotency.get((principal_hash, idempotency_hash))
                 if existing is not None:
                     task_id, digest = existing
-                    if digest != task.request_digest:
+                    if digest != request.request_digest:
                         raise GatewayError(
                             409,
                             "idempotency_conflict",
@@ -427,10 +500,21 @@ class MemoryTaskStore(TaskStore):
                         raise RuntimeError("idempotency index points to a missing task")
                     return stored, False
             linked_parent = None
+            if initial_parent is not None:
+                if pipeline_parent is not None or initial_parent.pool_id != task.pool_id:
+                    raise ValueError("initial pipeline must use the same execution pool")
+                if initial_parent.id in self._tasks:
+                    raise StoreConflict("pipeline parent already exists")
+                linked_parent = _link_pipeline_child(initial_parent, task)
             if pipeline_parent is not None:
                 current_parent = self._tasks.get(pipeline_parent.task.id)
-                if current_parent is None or current_parent[1] != pipeline_parent.revision:
-                    raise StoreConflict("pipeline parent changed before child admission")
+                if (
+                    current_parent is None
+                    or current_parent[1] != pipeline_parent.revision
+                ):
+                    raise StoreConflict(
+                        "pipeline parent changed before child admission"
+                    )
                 linked_parent = _link_pipeline_child(pipeline_parent.task, task)
             queue = self._queue.setdefault(task.pool_id, [])
             if len(queue) >= queue_limit:
@@ -442,16 +526,20 @@ class MemoryTaskStore(TaskStore):
             revision = self._next_revision()
             self._tasks[task.id] = (_clone_task(task), revision)
             if linked_parent is not None:
-                self._tasks[linked_parent.id] = (linked_parent, revision)
+                self._tasks[linked_parent.id] = (
+                    _apply_patch(linked_parent, {"created_seq": self._created_seq})
+                    if initial_parent is not None else linked_parent,
+                    revision,
+                )
                 self._publish_task_event(linked_parent.id, revision)
             self._publish_task_event(task.id, revision)
             queue.append(task.id)
             if idempotency_hash is not None:
                 self._idempotency[(principal_hash, idempotency_hash)] = (
-                    task.id,
-                    task.request_digest,
+                    request.id,
+                    request.request_digest,
                 )
-            stored = self._stored(task.id)
+            stored = self._stored(request.id)
             assert stored is not None
             return stored, True
 
@@ -1123,6 +1211,7 @@ class EtcdTaskStore(TaskStore):
         idempotency_hash: str | None,
         queue_limit: int,
         pipeline_parent: StoredTask | None = None,
+        initial_parent: VideoTask | None = None,
     ) -> tuple[StoredTask, bool]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5.0
@@ -1144,6 +1233,7 @@ class EtcdTaskStore(TaskStore):
                 queue_limit=queue_limit,
                 deadline=deadline,
                 pipeline_parent=pipeline_parent,
+                initial_parent=initial_parent,
             )
         finally:
             self._create_task_lock.release()
@@ -1157,14 +1247,16 @@ class EtcdTaskStore(TaskStore):
         queue_limit: int,
         deadline: float,
         pipeline_parent: StoredTask | None = None,
+        initial_parent: VideoTask | None = None,
     ) -> tuple[StoredTask, bool]:
         task = _apply_patch(
             task,
             {
                 "principal_hash": principal_hash,
-                "idempotency_hash": idempotency_hash,
+                "idempotency_hash": None if initial_parent is not None else idempotency_hash,
             },
         )
+        request = initial_parent or task
         task_key = self._task_key(task.id)
         queue_key = self._queue_key(task.pool_id, task.id)
         counter_key = self._counter_key(task.pool_id)
@@ -1177,7 +1269,8 @@ class EtcdTaskStore(TaskStore):
         while asyncio.get_running_loop().time() < deadline:
             if idem_key is not None:
                 existing = await task_transactions.get_idempotent(
-                    self.client, idem_key, task.request_digest, self.get_task)
+                    self.client, idem_key, request.request_digest, self.get_task
+                )
                 if existing is not None:
                     return existing, False
 
@@ -1190,34 +1283,74 @@ class EtcdTaskStore(TaskStore):
                 raise GatewayError(429, "queue_full", "video queue is full")
             assigned = _apply_patch(task, {"created_seq": sequence + 1})
             compare, success = task_transactions.admission_transaction(
-                self.client, task_key=task_key, task_json=assigned.to_dict(),
-                sequence_key=self._sequence_key(), sequence=sequence,
-                sequence_value=sequence_value, queue_counter_key=counter_key,
-                queue_count=count, queue_counter_value=counter,
-                queue_writes=[self.client.put(queue_key, str(assigned.queued_at_ms)),
-                              self.client.put(self._ordered_queue_key(assigned), assigned.id)],
-                index_writes=[*[self.client.put(key, assigned.id)
-                               for key in self._all_task_index_keys(assigned)],
-                              self.client.put(self._expiry_index_key(assigned), assigned.id)],
-                idempotency_key=idem_key, task_id=task.id,
-                request_digest=task.request_digest,
-                compares=[self.client.compare_version(queue_key, 0),
-                          *self._counter_compare(
-                              self._retry_counter_key(task.pool_id, "waiting"), retry_counter)],
+                self.client,
+                task_key=task_key,
+                task_json=assigned.to_dict(),
+                sequence_key=self._sequence_key(),
+                sequence=sequence,
+                sequence_value=sequence_value,
+                queue_counter_key=counter_key,
+                queue_count=count,
+                queue_counter_value=counter,
+                queue_writes=[
+                    self.client.put(queue_key, str(assigned.queued_at_ms)),
+                    self.client.put(self._ordered_queue_key(assigned), assigned.id),
+                ],
+                index_writes=[
+                    *[
+                        self.client.put(key, assigned.id)
+                        for key in self._all_task_index_keys(assigned)
+                    ],
+                    self.client.put(self._expiry_index_key(assigned), assigned.id),
+                ],
+                idempotency_key=idem_key,
+                task_id=request.id,
+                request_digest=request.request_digest,
+                compares=[
+                    self.client.compare_version(queue_key, 0),
+                    *self._counter_compare(
+                        self._retry_counter_key(task.pool_id, "waiting"), retry_counter
+                    ),
+                ],
             )
+            linked_initial = None
+            if initial_parent is not None:
+                if pipeline_parent is not None or initial_parent.pool_id != assigned.pool_id:
+                    raise ValueError("initial pipeline must use the same execution pool")
+                linked_initial = _link_pipeline_child(initial_parent, assigned)
+                linked_initial = _apply_patch(linked_initial, {"created_seq": sequence + 1})
+                compare.append(self.client.compare_version(self._task_key(initial_parent.id), 0))
+                success.extend([
+                    self.client.put(self._task_key(initial_parent.id), self._encode(linked_initial.to_dict())),
+                    *[self.client.put(k, initial_parent.id) for k in self._all_task_index_keys(linked_initial)],
+                    self.client.put(self._expiry_index_key(linked_initial), initial_parent.id),
+                ])
             if pipeline_parent is not None:
                 linked_parent = _link_pipeline_child(pipeline_parent.task, assigned)
-                compare.append(self.client.compare_mod(
-                    self._task_key(pipeline_parent.task.id), pipeline_parent.revision))
-                success.append(self.client.put(self._task_key(linked_parent.id),
-                                               self._encode(linked_parent.to_dict())))
+                compare.append(
+                    self.client.compare_mod(
+                        self._task_key(pipeline_parent.task.id),
+                        pipeline_parent.revision,
+                    )
+                )
+                success.append(
+                    self.client.put(
+                        self._task_key(linked_parent.id),
+                        self._encode(linked_parent.to_dict()),
+                    )
+                )
             succeeded, revision = await self.client.txn(compare, success)
             if succeeded:
-                return StoredTask(assigned, revision), True
+                return StoredTask(linked_initial or assigned, revision), True
             if pipeline_parent is not None:
                 current_parent = await self.get_task(pipeline_parent.task.id)
-                if current_parent is None or current_parent.revision != pipeline_parent.revision:
-                    raise StoreConflict("pipeline parent changed before child admission")
+                if (
+                    current_parent is None
+                    or current_parent.revision != pipeline_parent.revision
+                ):
+                    raise StoreConflict(
+                        "pipeline parent changed before child admission"
+                    )
             # Do not cancel an in-flight txn: its commit result may be ambiguous.
             # The existing client bounds each RPC; this deadline bounds retries.
             remaining = deadline - asyncio.get_running_loop().time()
@@ -1339,14 +1472,15 @@ class EtcdTaskStore(TaskStore):
             lease.reuse_after_ms = quarantine_until_ms
             lease.heartbeat_at_ms = now_ms()
             success.append(self.client.put(lease_key, self._encode(lease.to_dict())))
-        succeeded, revision = await self.client.txn(compare, success)
-        if not succeeded:
+        committed = await self._commit_task_update(updated, compare, success)
+        if committed is None:
             raise StoreConflict("retry admission lost an etcd CAS race")
-        return StoredTask(updated, revision) if succeeded else None
+        return committed
 
     async def get_task(self, task_id: str) -> StoredTask | None:
-        value = await self.client.get(self._task_key(task_id))
-        return self._task(value) if value is not None else None
+        return await RecordRepository(self.client, self._task_key, self._task).load(
+            task_id
+        )
 
     async def get_idempotent(
         self, principal_hash: str, idempotency_hash: str
@@ -1494,6 +1628,59 @@ class EtcdTaskStore(TaskStore):
         )
         return dict(zip(TaskStatus, values, strict=True))
 
+    async def start_pipeline_parent(self, stored, *, max_active, deadline_at_ms):
+        if (
+            isinstance(max_active, bool)
+            or not isinstance(max_active, int)
+            or max_active < 1
+        ):
+            raise ValueError("max_active must be a positive integer")
+        # Every parent start changes this per-pool fence in the SAME txn as
+        # dequeue and status transition. Count existing status indexes at one
+        # MVCC revision; no active-counter bootstrap or terminal cleanup is
+        # needed, and in-flight parents from older code remain countable.
+        key = f"{self.root}/pools/{stored.task.pool_id}/pipeline-start-fence"
+        for _ in range(32):
+            values, revision = await self.client.get_many([key])
+            fence = values[0]
+            counts = await asyncio.gather(
+                *[
+                    self.client.count_prefix(
+                        self._task_index_prefix(
+                            pool_id=stored.task.pool_id, status=status
+                        ),
+                        revision=revision,
+                    )
+                    for status in ACTIVE_STATUSES
+                ]
+            )
+            if sum(counts) >= max_active:
+                return None
+            try:
+                return await self._transition_once(
+                    stored.task.id,
+                    expected={TaskStatus.QUEUED},
+                    expected_revision=stored.revision,
+                    patch={
+                        "status": TaskStatus.DISPATCHING,
+                        "started_at_ms": now_ms(),
+                        "deadline_at_ms": deadline_at_ms,
+                        "queue_wait_s": max(
+                            0, (now_ms() - stored.task.queued_at_ms) / 1000
+                        ),
+                    },
+                    extra_compares=task_transactions.compare_snapshot(
+                        self.client, key, fence
+                    ),
+                    extra_writes=[self.client.put(key, uuid.uuid4().hex)],
+                )
+            except StoreConflict:
+                current = await self.get_task(stored.task.id)
+                if current is None or current.revision != stored.revision:
+                    return None
+                await asyncio.sleep(0)
+        return None
+
     async def list_due_tasks(
         self, before_ms: int, *, limit: int = 256
     ) -> list[StoredTask]:
@@ -1524,6 +1711,63 @@ class EtcdTaskStore(TaskStore):
                 raise RuntimeError("expiry index is inconsistent")
             result.append(stored)
         return result
+
+    async def _commit_task_update(self, updated, compare, writes):
+        return await task_transactions.execute_fenced_transaction(
+            self.client,
+            compare,
+            writes,
+            committed=lambda revision: StoredTask(updated, revision),
+            confirm=lambda: task_transactions.confirm_record_write(
+                self.client,
+                self._task_key(updated.id),
+                self._encode(updated.to_dict()),
+                self._task,
+            ),
+        )
+
+    async def _confirm_reservation(self, updated, lease):
+        task_key = self._task_key(updated.id)
+        lease_key = self._lease_key(lease.pool_id, lease.worker_key)
+        heartbeat_key = self._lease_heartbeat_key(lease.pool_id, lease.worker_key)
+        values, _ = await self.client.get_many(
+            [
+                task_key,
+                lease_key,
+                heartbeat_key,
+                self._gateway_key(lease.owner_generation),
+            ]
+        )
+        task_value, held, heartbeat, owner = values
+        if task_value is None or held is None or owner is None:
+            return None
+        current = self._task(task_value)
+        identity = (
+            "id",
+            "pool_id",
+            "backend_target",
+            "attempt",
+            "owner_generation",
+            "execution_token",
+            "worker_instance_id",
+            "worker_key",
+            "worker_lease_id",
+        )
+        if any(getattr(current.task, k) != getattr(updated, k) for k in identity):
+            return None
+        if held.value != self._encode(lease.to_dict()).encode():
+            return None
+        if heartbeat is not None and (
+            heartbeat.lease != updated.worker_lease_id
+            or json.loads(heartbeat.value)
+            != {"task_id": updated.id, "lease_id": updated.worker_lease_id}
+        ):
+            return None
+        # The persistent task + guard prove commitment even if an outage
+        # expired the heartbeat. _run_reserved checks the heartbeat before
+        # reading inputs or submitting a model, then settles the original
+        # attempt safely instead of silently dropping an owned task.
+        return current
 
     async def reserve(
         self,
@@ -1664,20 +1908,21 @@ class EtcdTaskStore(TaskStore):
                     self.client.put(self._expiry_index_key(updated), updated.id),
                 ]
             )
-        try:
-            succeeded, revision = await self.client.txn(compare, success)
-        except Exception:
+        reserved = await task_transactions.execute_fenced_transaction(
+            self.client,
+            compare,
+            success,
+            committed=lambda revision: StoredTask(updated, revision),
+            confirm=lambda: self._confirm_reservation(updated, lease),
+        )
+        # Only a definite conflict permits revocation. A lost ACK may already
+        # have attached this lease to a live execution guard.
+        if reserved is None:
             try:
                 await self.client.lease_revoke(native_lease.lease_id)
             except Exception:
                 pass
-            raise
-        if not succeeded:
-            try:
-                await self.client.lease_revoke(native_lease.lease_id)
-            except Exception:
-                pass
-        return StoredTask(updated, revision) if succeeded else None
+        return reserved
 
     async def transition(
         self,
@@ -1741,6 +1986,8 @@ class EtcdTaskStore(TaskStore):
         release_execution: bool = False,
         quarantine_until_ms: int | None = None,
         task_hint: StoredTask | None = None,
+        extra_compares=(),
+        extra_writes=(),
     ) -> StoredTask:
         ledger_snapshot: dict[str, EtcdValue | None] | None = None
         # The hint only identifies keys. Re-read the task and its dependent
@@ -1786,9 +2033,13 @@ class EtcdTaskStore(TaskStore):
                     "fenced execution transition must release, never quarantine"
                 )
         task_key = self._task_key(task_id)
-        compare: list[dict] = [self.client.compare_mod(task_key, stored.revision)]
+        compare: list[dict] = [
+            self.client.compare_mod(task_key, stored.revision),
+            *extra_compares,
+        ]
         success: list[dict] = [
-            self.client.put(task_key, self._encode(updated.to_dict()))
+            self.client.put(task_key, self._encode(updated.to_dict())),
+            *extra_writes,
         ]
 
         if stored.task.status != updated.status:
@@ -1960,10 +2211,10 @@ class EtcdTaskStore(TaskStore):
                     ]
                 )
 
-        succeeded, revision = await self.client.txn(compare, success)
-        if not succeeded:
+        committed = await self._commit_task_update(updated, compare, success)
+        if committed is None:
             raise StoreConflict("task transition lost an etcd CAS race")
-        return StoredTask(updated, revision)
+        return committed
 
     async def request_cancel(
         self, task_id: str, *, terminal_expires_at_ms: int | None = None
@@ -2325,21 +2576,19 @@ class EtcdTaskStore(TaskStore):
                 self._owner_task_key(new_owner_generation, task.id), task.id
             ),
         ]
-        try:
-            succeeded, revision = await self.client.txn(compare, success)
-        except Exception:
+        claimed = await task_transactions.execute_fenced_transaction(
+            self.client,
+            compare,
+            success,
+            committed=lambda revision: StoredTask(updated, revision),
+            confirm=lambda: self._confirm_reservation(updated, lease),
+        )
+        if claimed is None:
             try:
                 await self.client.lease_revoke(native_lease.lease_id)
             except Exception:
                 pass
-            raise
-        if not succeeded:
-            try:
-                await self.client.lease_revoke(native_lease.lease_id)
-            except Exception:
-                pass
-            return None
-        return StoredTask(updated, revision)
+        return claimed
 
     async def claim_finalizing(
         self, stored: StoredTask, *, new_owner_generation: str

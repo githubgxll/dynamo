@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 
 
 async def supervise_worker(process, handler, endpoint, stop, *, grace_s=5, interval_s=1):
@@ -35,6 +36,9 @@ def parser():
 
 
 async def worker(args):
+    from dingo.worker.config import load_worker_settings
+    settings = load_worker_settings(os.getenv('DINGO_WORKER_CONFIG'),
+        adapter='seedvr2_sr', execution_capacity=1, max_execution_capacity=1)
     from aiohttp import web
     from dynamo.llm import ModelInput, ModelType, WorkerType, register_model
     from dingo.common.utils.runtime import create_runtime
@@ -70,7 +74,7 @@ async def worker(args):
         nonlocal manager, registered
         base_free_wrapper = await process.start(None)
         handler = SROnlyHandler(base_free_wrapper, storage_id=args.storage_id)
-        manager = DetachedOmniTaskManager(handler,args.artifact_root,execution_capacity=1,prefetch_capacity=0,
+        manager = DetachedOmniTaskManager(handler,args.artifact_root,execution_capacity=settings.execution_capacity,prefetch_capacity=settings.prefetch_capacity,
                                          binary_results=True,inline_results=True,drain_timeout_s=120)
         await register_model(ModelInput.Text,ModelType.Videos,endpoint,args.model,args.served_model_name,
                              kv_cache_block_size=16,worker_type=WorkerType.Aggregated,needs=[])

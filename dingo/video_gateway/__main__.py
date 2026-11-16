@@ -118,6 +118,11 @@ async def run(args: argparse.Namespace) -> None:
             telemetry=telemetry,
         )
         service = VideoGatewayService(config, store, artifacts, dispatcher, adapters)
+        from dingo.video_gateway.dingo_adapter import DingoEndpointClient
+        service.context_ir_clients = {
+            name: DingoEndpointClient(await runtime.endpoint(backend.backend_target.removeprefix("dyn://")).client())
+            for name, backend in config.context_ir.backends.items() if backend.transport == "worker"
+        }
         app = create_app(service)
         runner = web.AppRunner(app, handle_signals=False)
         await runner.setup()

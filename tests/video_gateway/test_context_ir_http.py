@@ -259,3 +259,47 @@ async def test_degraded_draft_completes_replays_and_releases_slot_without_new_fi
     next_task = await (await client.post('/v1/context-ir', data=form())).json()
     assert (await wait_task(client, next_task['id']))['warnings'] == []
     assert compiler.calls == 3
+
+
+@pytest.mark.parametrize('ratio_key',['ratio','aspect_ratio'])
+async def test_resolution_entry_compiles_and_replays_explicit_size(setup,ratio_key):
+    compiler,service,client=setup
+    data=aiohttp.FormData(default_to_multipart=True)
+    for key,value in {'model':'public-fl','prompt':'A bird flies.','seconds':'5',
+                      'resolution':'768P',ratio_key:'16:9'}.items():data.add_field(key,value)
+    response=await client.post('/v1/context-ir',data=data,headers={'Idempotency-Key':'resolution-entry'})
+    assert response.status==202,await response.text()
+    task=await response.json()
+    result=await wait_task(client,task['id'])
+    assert result['generation_parameters']=={'ratio':'16:9','fps':24,'seconds':5.0}
+    replay=await client.post('/v1/context-ir',data=form(),headers={'Idempotency-Key':'resolution-entry'})
+    assert replay.status==200,await replay.text()
+    assert (await replay.json())['id']==task['id']
+    assert compiler.calls==1
+
+
+@pytest.mark.parametrize("tier",[None,"768P","1080P","2K"])
+async def test_compiler_minimal_aspect_contract_and_resolution_compatibility(setup,tier):
+    compiler,service,client=setup
+    data=aiohttp.FormData(default_to_multipart=True)
+    values={"model":"public-fl","prompt":"A bird flies.","seconds":"5","ratio":"16:9"}
+    if tier is not None:values["resolution"]=tier
+    for key,value in values.items():data.add_field(key,value)
+    response=await client.post('/v1/context-ir',data=data)
+    assert response.status==202,await response.text()
+    task=await response.json();result=await wait_task(client,task['id'])
+    assert result['generation_parameters']=={'ratio':'16:9','fps':24,'seconds':5.0}
+    assert 'canvas' not in result['target'] and compiler.calls==1
+
+
+async def test_completed_legacy_task_response_is_projected_without_pixel_sizes(setup):
+    compiler,service,client=setup
+    response=await client.post('/v1/context-ir',data=form(),headers={'Idempotency-Key':'old-result'})
+    task=await response.json();await wait_task(client,task['id'])
+    stored=await service.store.get_task(task['id'])
+    raw=await service.artifacts.read_bounded(stored.task.result_path,service.config.result_max_bytes)
+    assert raw['generation_parameters']['size']=='1344x768'
+    result=await (await client.get('/v1/context-ir/'+task['id'])).json()
+    assert 'size' not in result['generation_parameters']
+    replay=await client.post('/v1/context-ir',data=form(),headers={'Idempotency-Key':'old-result'})
+    assert replay.status==200 and (await replay.json())['id']==task['id'] and compiler.calls==1

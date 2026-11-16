@@ -347,6 +347,32 @@ class GatewayTelemetry:
         # Polls, CAS retries and FINALIZING -> COMPLETED must not count again.
         if after.normalized_request.get("_pipeline_child"):
             return  # Stage tasks are audited; public timings/counts belong to their parent.
+        pipeline = after.normalized_request.get("_pipeline_metrics")
+        if pipeline is not None:
+            from dingo.video_gateway.pipeline_timings import measured
+
+            if before.status == TaskStatus.IN_PROGRESS and after.status == TaskStatus.FINALIZING:
+                for stage, value in {
+                    "queue": after.queue_wait_s,
+                    "worker_queue": (after.stage_durations or {}).get("worker_queue_wait"),
+                    "execution": after.inference_time_s,
+                }.items():
+                    if measured(value) is not None:
+                        self.record_stage_duration(after.pool_id, stage, value)
+                for phase in ("base", "sr"):
+                    for stage in ("queue", "worker_queue", "execution", "finalize"):
+                        value = measured(pipeline.get(f"{phase}_{stage}_s"))
+                        if value is not None:
+                            self.observe("dingo_video_pipeline_stage_duration_seconds", value,
+                                labels={"pool": after.pool_id, "phase": phase, "stage": stage},
+                                buckets=_TASK_DURATION_BUCKETS)
+                            if phase == "sr":
+                                self.record_super_resolution_stage_duration(after.pool_id,
+                                    {"queue":"gateway_queue", "worker_queue":"worker_queue",
+                                     "execution":"worker_execution", "finalize":"gateway_finalize"}[stage], value)
+            if before.status == TaskStatus.FINALIZING and after.status == TaskStatus.COMPLETED:
+                if measured(after.finalize_time_s) is not None:
+                    self.record_stage_duration(after.pool_id, "finalize", after.finalize_time_s)
         if (
             before.status == TaskStatus.IN_PROGRESS
             and after.status == TaskStatus.FINALIZING

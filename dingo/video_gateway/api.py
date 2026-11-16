@@ -219,7 +219,7 @@ async def models(request: web.Request) -> web.Response:
                 "object": "model",
                 "created": 0,
                 "owned_by": "dingo-video-gateway",
-                "available": service.dispatcher.has_workers(pool.pool_id),
+                "available": service.dispatcher.has_admission_workers(pool.pool_id),
                 "video_capabilities": adapter.capabilities(
                     max_result_bytes=service.config.media.max_result_bytes
                 ),
@@ -662,6 +662,13 @@ async def metrics(request: web.Request) -> web.Response:
         f"{artifact.cleanup_failures_total}",
         f"dingo_video_artifact_released_bytes_total {artifact.released_bytes_total}",
     ]
+    from dingo.video_gateway.metric_views import request_stages
+    metric_counts = {p.pool_id: await service.store.task_counts(p.pool_id) for p in service.config.pools}
+    stages = await request_stages(service, metric_counts)
+    lines.append("# TYPE dingo_video_request_stage_active gauge")
+    for pool_id, values in stages.items():
+        for stage, value in values.items():
+            lines.append(f'dingo_video_request_stage_active{{pool="{pool_id}",stage="{stage}"}} {value}')
     for pool in service.config.pools:
         queue = await service.store.queue_depth(pool.pool_id)
         # Dispatch may skip all queue/counter reads when no Worker is free.
@@ -699,7 +706,7 @@ async def metrics(request: web.Request) -> web.Response:
                 "finalization_pending_limit_configured": scheduling.finalization_pending_limit,
             }
         )
-        counts = await service.store.task_counts(pool.pool_id)
+        counts = metric_counts[pool.pool_id]
         for name, value in worker_capacity.items():
             if pool is service.config.pools[0] and name not in {
                 "workers",

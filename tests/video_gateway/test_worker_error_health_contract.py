@@ -80,7 +80,7 @@ class Contracts(unittest.IsolatedAsyncioTestCase):
                 async def stream():yield {'schema_version':1,'capabilities':[EXECUTION_CAPACITY_CAPABILITY], 'execution_capacity':0,'accepting':False}
                 return stream()
         d=VideoDispatcher.__new__(VideoDispatcher);d.context_factory=lambda *a:N(stop_generating=lambda:None)
-        p=N(client=Client(),prefetch_instances=set(),sr_profiles={},config=N(pool_id='p',sr_profile='profile',scheduling=N(worker_capacity=1,worker_prefetch_capacity=0)),instance_ids=[7],capacity_cache={})
+        p=N(client=Client(),prefetch_instances=set(),sr_profiles={},queue_admission={},config=N(pool_id='p',pipeline=None,sr_profile='profile',scheduling=N(worker_capacity=1,worker_prefetch_capacity=0)),instance_ids=[7],capacity_cache={})
         capacity,until=await d._worker_capacity(p,7);self.assertEqual(capacity,0)
         p.capacity_cache[7]=(capacity,until)
         self.assertEqual(d._worker_slots(p),[])

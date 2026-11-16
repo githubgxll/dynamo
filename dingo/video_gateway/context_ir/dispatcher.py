@@ -11,6 +11,8 @@ from dingo.video_gateway.errors import StoreUnavailable, GatewayError
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.models import now_ms
 from dingo.video_gateway.task_runtime.transactions import encode
+from dingo.video_gateway.task_runtime.scheduler import DispatchLoop
+from dingo.video_gateway.task_runtime.coordinator import ExecutionSupervisor
 from .client import CompilerHTTP, UpstreamUnknown, UpstreamRejected
 from .models import TERMINAL, failure
 from .protocol import prepare, validate_result
@@ -25,11 +27,14 @@ class ContextIRDispatcher:
         self.owner = uuid.uuid4().hex
         self.generation = uuid.uuid4().hex
         self.lease_id = None
-        self.running = {}
+        self.supervisor = ExecutionSupervisor(self.execution_error)
+        self.running = self.supervisor.tasks
         self.accepting = False
         self.stopping = False
+        self.dispatch_stop = asyncio.Event()
         self.backend_ready = set()
         self.cpu_slots = asyncio.Semaphore(2)
+        self.worker = None
         self.session = None
         self.loop_task = self.heartbeat_task = None
 
@@ -45,6 +50,10 @@ class ContextIRDispatcher:
         for name, backend in self.config.backends.items():
             if await self.store.ensure_backend(name, backend):
                 self.backend_ready.add(name)
+        if any(b.transport == "worker" for b in self.config.backends.values()):
+            from .worker_dispatcher import WorkerCoordinator
+            self.worker = WorkerCoordinator(self)
+            await self.worker.refresh()
         self.accepting = True
         self.heartbeat_task = asyncio.create_task(self.heartbeat(), name="context-ir-owner")
         self.loop_task = asyncio.create_task(self.run(), name="context-ir-dispatch")
@@ -64,40 +73,45 @@ class ContextIRDispatcher:
 
     def launch(self, stored):
         task_id = stored.task.id
-        if task_id in self.running:
-            return
-        execution = asyncio.create_task(self.execute(stored), name=f"context-ir-{task_id}")
-        self.running[task_id] = execution
-        def done(future):
-            self.running.pop(task_id, None)
-            if not future.cancelled() and future.exception():
-                log.error("context_ir_supervisor_failed task_id=%s", task_id, exc_info=future.exception())
-        execution.add_done_callback(done)
+        return self.supervisor.spawn(
+            task_id, lambda: self.execute(stored), name=f"context-ir-{task_id}"
+        )
+
+    @staticmethod
+    def execution_error(task_id, error):
+        log.error("context_ir_supervisor_failed task_id=%s", task_id,
+                  exc_info=(type(error), error, error.__traceback__))
 
     async def run(self):
         next_sweep = 0
-        while not self.stopping:
-            try:
-                if self.accepting and not self.service.video.dispatcher.draining:
-                    for backend in tuple(self.backend_ready):
-                        try:
-                            stored = await self.store.claim(backend, self.owner, self.generation)
-                            if stored:
-                                self.launch(stored)
-                        except GatewayError:
-                            pass  # Per-backend quarantine does not stop another backend.
-                if time.monotonic() >= next_sweep:
-                    await self.recover()
-                    await self.service.sweep()
-                    next_sweep = time.monotonic() + self.config.sweeper_interval_s
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("context_ir_dispatch_iteration_failed")
-            await asyncio.sleep(.25)
+
+        async def advance():
+            nonlocal next_sweep
+            if self.accepting and not self.service.video.dispatcher.draining:
+                if self.worker is not None:
+                    await self.worker.tick()
+                for backend in tuple(self.backend_ready):
+                    if self.config.backends[backend].transport == "worker":
+                        continue
+                    try:
+                        stored = await self.store.claim(backend, self.owner, self.generation)
+                        if stored:
+                            self.launch(stored)
+                    except GatewayError:
+                        pass  # Per-backend quarantine does not stop another backend.
+            if time.monotonic() >= next_sweep:
+                await self.recover()
+                await self.service.sweep()
+                next_sweep = time.monotonic() + self.config.sweeper_interval_s
+            return False
+
+        await DispatchLoop(stop=self.dispatch_stop, advance=advance, interval_s=.25,
+            on_error=lambda:log.exception("context_ir_dispatch_iteration_failed")).run()
 
     async def recover(self):
         for backend in self.backend_ready:
+            if self.config.backends[backend].transport == "worker":
+                continue
             for slot in await self.store.records(f"backends/{backend}/slots/"):
                 identity = json.loads(slot.value)
                 if await self.store.client.get(self.store.key(f"owners/{identity['owner_id']}")) is not None:
@@ -116,6 +130,8 @@ class ContextIRDispatcher:
         return current
 
     async def execute(self, initial):
+        if self.config.backends[initial.task.backend_id].transport == "worker":
+            return await self.worker.execute(initial)
         task = initial.task
         backend = self.config.backends[task.backend_id]
         http = CompilerHTTP(self.session, backend, self.config.response_max_bytes)
@@ -173,6 +189,8 @@ class ContextIRDispatcher:
                     code, caps = await http.json("GET", "/v1/capabilities")
                     if code != 200 or not caps.get("gateway_contract", {}).get("asset_leases"):
                         raise UpstreamRejected("compiler lacks required in-flight asset protection")
+                    if normalized.get("input_resolution") and caps.get("gateway_contract", {}).get("intent_resolution") != 1:
+                        raise UpstreamRejected("compiler lacks input intent resolution")
                     code, _ = await http.json("PUT", f"/v1/asset-leases/{lease_token}", json={"digests": list(files)})
                     if code not in {200, 201}:
                         raise UpstreamRejected("compiler asset lease could not be reserved")
@@ -232,13 +250,6 @@ class ContextIRDispatcher:
                 "result_path": self.artifacts.relative(result_path), "result_sha256": hashlib.sha256(raw).hexdigest(),
                 "result_bytes": len(raw), "metrics": {**timings, "queue_wait_s": (task.started_at_ms-task.created_at_ms)/1000,
                                                         "execution_time_s": time.monotonic()-started}})
-            if finished:
-                labels={"backend":task.backend_id,"model":task.model,"state":"completed"}
-                self.service.telemetry.increment("dingo_context_ir_terminal_total", labels=labels)
-                for phase,seconds in timings.items():
-                    self.service.telemetry.observe("dingo_context_ir_stage_duration_seconds",seconds,
-                        labels={"backend":task.backend_id,"model":task.model,"stage":phase},
-                        buckets=(.01,.1,1,5,10,30,60,120,300,600,900))
         except asyncio.CancelledError:
             # Process shutdown after call intent is recovered conservatively;
             # never release its slot merely because this coroutine was cancelled.
@@ -259,8 +270,6 @@ class ContextIRDispatcher:
                     else "context_ir_preparation_failed")
                 finished = await self.store.finish(current, "failed", error=failure(code,
                     "compiler execution outcome is unknown" if unknown else "compiler input preparation or result validation failed"))
-                if finished:
-                    self.service.telemetry.increment("dingo_context_ir_terminal_total",labels={"backend":task.backend_id,"model":task.model,"state":"failed"})
             log.warning("context_ir_task_failed task_id=%s attempt=%s unknown=%s error_type=%s", task.id, task.attempt, unknown, type(exc).__name__)
             confirmed = not unknown
         finally:
@@ -278,6 +287,7 @@ class ContextIRDispatcher:
     async def stop(self):
         self.accepting = False
         self.stopping = True
+        self.dispatch_stop.set()
         if self.loop_task:
             self.loop_task.cancel()
             await asyncio.gather(self.loop_task, return_exceptions=True)

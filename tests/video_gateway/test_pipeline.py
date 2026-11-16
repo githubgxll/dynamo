@@ -148,7 +148,7 @@ async def test_cancel_at_stage_boundary_does_not_create_sr(make_gateway_config):
 
 
 def test_pipeline_rejects_recursive_target(make_gateway_config):
-    raw=pools();raw[-1]['pipeline']['base_pool']='pipeline'
+    raw=pools();raw[0]['pipeline']={'base_pool':'pipeline','sr_pool':'sr'}
     with pytest.raises(ValueError,match='base-only'):
         make_gateway_config(pools=raw)
 

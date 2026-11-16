@@ -240,7 +240,8 @@ class ResultFinalizer:
                     gateway_generation=self.generation,
                     revision=completed.revision,
                 )
-                self.telemetry.record_stage_duration(task.pool_id, "finalize", duration)
+                if not task.normalized_request.get("_pipeline_child"):
+                    self.telemetry.record_stage_duration(task.pool_id, "finalize", duration)
                 return
             finally:
                 if final_path is not None:

@@ -19,6 +19,7 @@ from dingo.video_gateway.dispatcher import VideoDispatcher
 from dingo.video_gateway.errors import GatewayError, StoreConflict
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.ids import new_video_id
+from dingo.video_gateway.memory_budget import task_memory_bytes
 from dingo.video_gateway.models import StoredTask, TaskStatus, VideoTask, now_ms
 from dingo.video_gateway.performance_cache import PerformanceCache
 from dingo.video_gateway.task_store import TaskStore
@@ -145,7 +146,7 @@ class VideoGatewayService:
             if pipeline_parent is not None:
                 normalized["_pipeline_child"] = {
                     "parent_id": pipeline_parent.task.id, "phase": pipeline_phase}
-            if pool.pipeline is not None:
+            if pool.pipeline is not None and pipeline_parent is None and (not pool.unified_pipeline or "super_resolution" in normalized):
                 normalized["_pipeline"] = {
                     "version": 1, "phase": "base", "children": {},
                     **pool.pipeline,
@@ -180,11 +181,9 @@ class VideoGatewayService:
             )
         if not normalized.get("shared_inputs"):
             self.dispatcher.record_legacy_input(encoded_reference_bytes)
-        # Reserve two encoded-input copies for mixed-reference JSON assembly.
-        estimated_payload_bytes = (
-            2 * encoded_reference_bytes
-            + self.config.media.max_result_encoded_bytes
-            + self.config.media.task_memory_overhead_bytes
+        estimated_payload_bytes = task_memory_bytes(
+            self.config.media, normalized,
+            encoded_reference_bytes=encoded_reference_bytes,
         )
         digest_request = dict(normalized)
         # Internal input transport must not change the client's request digest.
@@ -237,19 +236,19 @@ class VideoGatewayService:
                         )
                     await self.artifacts.discard(upload_root)
                     return Submission(stored=existing, created=False)
-            if "super_resolution" in normalized and not self.dispatcher.has_sr_workers(
+            if "super_resolution" in normalized and not self.dispatcher.has_sr_admission_workers(
                 pool.pool_id, normalized
             ):
                 raise GatewayError(
                     503,
                     "super_resolution_unavailable",
-                    "no compatible and ready super-resolution Worker is available",
+                    "no compatible super-resolution Worker can accept queued requests",
                     "size",
                     error_type="service_unavailable_error",
                 )
             if (
                 not pool.scheduling.accept_without_workers
-                and not self.dispatcher.has_workers(pool.pool_id)
+                and not self.dispatcher.has_admission_workers(pool.pool_id)
             ):
                 raise GatewayError(
                     503,
@@ -331,18 +330,28 @@ class VideoGatewayService:
                 estimated_payload_bytes=estimated_payload_bytes,
                 normalized_request=normalized,
             )
-            stored, created = await self.store.create_task(
-                task,
-                principal_hash=principal_hash,
-                idempotency_hash=idempotency_hash,
-                queue_limit=pool.scheduling.queue_limit,
-                **({"pipeline_parent": pipeline_parent} if pipeline_parent is not None else {}),
-            )
+            if pool.unified_pipeline and "_pipeline" in normalized:
+                from dataclasses import replace
+                from dingo.video_gateway.unified_pipeline import admit_base
+                task = replace(task, status=TaskStatus.IN_PROGRESS, started_at_ms=created_at,
+                    queue_wait_s=0.0, deadline_at_ms=created_at+int(pool.scheduling.execution_timeout_s*1000))
+                stored, created = await admit_base(self, task, pool)
+            else:
+                stored, created = await self.store.create_task(
+                    task,
+                    principal_hash=principal_hash,
+                    idempotency_hash=idempotency_hash,
+                    queue_limit=pool.scheduling.queue_limit,
+                    **({"pipeline_parent": pipeline_parent} if pipeline_parent is not None else {}),
+                )
         except Exception as exc:
-            if pipeline_parent is not None and task_root is not None:
+            if (pipeline_parent is not None or pool.unified_pipeline) and task_root is not None:
                 # A timed-out etcd transaction may have committed child+parent.
                 # Preserve files if even the read-back is unavailable.
-                existing = await self.store.get_idempotent(principal_hash, idempotency_hash)
+                existing = (await self.store.get_task(task_id)
+                            if pool.unified_pipeline else None)
+                if existing is None and idempotency_hash is not None:
+                    existing = await self.store.get_idempotent(principal_hash, idempotency_hash)
                 if existing is not None and existing.task.id == task_id:
                     self.dispatcher.notify(pool.pool_id)
                     return Submission(stored=existing, created=False)

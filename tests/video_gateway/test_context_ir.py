@@ -161,6 +161,7 @@ def test_video_role_omission_survives_normalization_and_transport(tmp_path, monk
     fields={'model':['m'],'prompt':['<Video 1>只给甲转头的动作方向。'],'seconds':['15']}
     if role is not None:fields['reference_options']=[json.dumps([{'index':0,'role':role}])]
     n=normalize(service,fields,[upload]);assert n['references'][0]['role_stated']==(role is not None)
+    n.pop('input_resolution')  # The legacy transport contract remains supported.
     payload,files,expected=prepare(n,root,root/'attempts/0001',100)
     if role is None:assert 'role' not in payload['assets'][0]
     else:assert payload['assets'][0]['role']==role

@@ -29,6 +29,9 @@ def prepare(normalized, task_root, attempt_root, derived_limit):
             sha = entry["sha256"]
             upload_files[sha] = path
             item = {"sha256": sha, "kind": kind}
+            if normalized.get("input_resolution"):
+                item["provenance"] = {"gateway_index": entry["ordinal"],
+                    "dingo_intent_resolution": normalized["input_resolution"]}
             # Preserve omission: a default must not become an explicit upstream instruction.
             # Older persisted requests lack this flag and retain their original semantics.
             if entry.get("role_stated", True):
@@ -37,7 +40,7 @@ def prepare(normalized, task_root, attempt_root, derived_limit):
                 # The selected checkpoint fixes content-reference versus frame-anchor semantics.
                 # Keep the role omitted while preventing the upstream mode classifier from
                 # moving a Ref2VA request onto I2VA/FL2VA based on ambiguous prose.
-                item["provenance"] = {"intended_role": "reference"}
+                item.setdefault("provenance", {})["intended_role"] = "reference"
             if entry.get("note"):
                 item["note"] = entry["note"]
             if entry.get("duration_s"):
@@ -63,9 +66,13 @@ def prepare(normalized, task_root, attempt_root, derived_limit):
                     upload_files[wav_sha] = wav
                     audio += 1
                     labels.append(f"<Audio {audio}>")
-                    assets.append({"sha256": wav_sha, "kind": "audio", "role": "bgm",
+                    paired_item = {"sha256": wav_sha, "kind": "audio", "role": "bgm",
                                    "paired_video_sha256": sha,
-                                   "soundtrack_policy": entry["soundtrack_policy"]})
+                                   "soundtrack_policy": entry["soundtrack_policy"]}
+                    if normalized.get("input_resolution"):
+                        paired_item["provenance"] = {"gateway_index": entry["ordinal"],
+                            "video_number": video, "dingo_intent_resolution": normalized["input_resolution"]}
+                    assets.append(paired_item)
                 labels.append(f"<Video {video}>")
             else:
                 audio += 1
@@ -92,6 +99,10 @@ def validate_result(normalized, expected, status, response):
                          or response.get("fallback_reason")):
         raise UpstreamRejected("context_ir_degraded_result")
     ir = response.get("ir", {})
+    resolution_warnings = []
+    if normalized.get("input_resolution"):
+        from .intent_contract import resolved_contract
+        normalized, expected, resolution_warnings = resolved_contract(normalized, expected, ir)
     target = ir.get("target", {})
     if (ir.get("mode") != normalized["mode"] or target.get("frames") != normalized["frames"]
             or target.get("canvas") != normalized["canvas"]):
@@ -121,7 +132,7 @@ def validate_result(normalized, expected, status, response):
                 raise UpstreamRejected("context_ir_soundtrack_contract_mismatch")
     # Return the actual fallback draft, never provenance.rejected_written.
     # Degraded results retain the same public schema and all contract checks.
-    warnings = [{"code": "context_ir_degraded_result"}] if degraded else []
+    warnings = ([{"code": "context_ir_degraded_result"}] if degraded else []) + resolution_warnings
     for e in normalized["references"]:
         if e["kind"] == "video" and (e.get("duration_s") or 0) > normalized["frames"]/24:
             warnings.append({"code": "reference_video_truncated", "index": e["ordinal"]})
@@ -158,3 +169,39 @@ def response_usage(response):
             cached = None
         result["prompt_tokens_details"] = {"cached_tokens": cached}
     return result
+
+
+def public_result(result):
+    """Hide compiler-local pixel geometry, including in historical stored results.
+
+    The persistence/worker contract remains unchanged so existing attempts and
+    idempotency keys keep working across the Gateway-only rollout.
+    """
+    from math import gcd
+    from dingo.video_gateway.adapters.h3_resolution import BASE_CANVASES
+    from dingo.video_gateway.adapters.h3_shape import NAMED_ASPECT_RATIOS, relative_ratio_error
+
+    value = dict(result)
+    parameters = value.get("generation_parameters")
+    if isinstance(parameters, dict):
+        public = {key: item for key, item in parameters.items()
+                  if key not in {"size", "width", "height", "canvas", "resolution"}}
+        ratio = parameters.get("ratio")
+        anchors = any(entry.get("role") in {"frame_anchor_first", "frame_anchor_last"}
+                      for entry in value.get("references", []))
+        if anchors:
+            ratio = "adaptive"
+        if ratio is None and isinstance(parameters.get("size"), str):
+            width, height = map(int, parameters["size"].split("x"))
+            ratio = next((name for name, size in BASE_CANVASES.items() if size == (width, height)), None)
+            if ratio is None:
+                nearest = min(NAMED_ASPECT_RATIOS, key=lambda name: relative_ratio_error(width, height, NAMED_ASPECT_RATIOS[name]))
+                divisor = gcd(width, height)
+                ratio = nearest if relative_ratio_error(width, height, NAMED_ASPECT_RATIOS[nearest]) <= .05 else f"{width//divisor}:{height//divisor}"
+        if ratio is not None:
+            public["ratio"] = ratio
+        value["generation_parameters"] = public
+    target = value.get("target")
+    if isinstance(target, dict):
+        value["target"] = {key: item for key, item in target.items() if key not in {"canvas", "size", "width", "height"}}
+    return value

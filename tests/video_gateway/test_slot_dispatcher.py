@@ -34,6 +34,7 @@ def probe_stack(response):
         client=SimpleNamespace(direct=direct, instance_ids=lambda: [7]),
         instance_ids=[],
         capacity_cache={},
+        queue_admission={},
         prefetch_instances=set(),
     )
     return dispatcher, pool, calls

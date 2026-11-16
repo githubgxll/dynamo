@@ -256,3 +256,19 @@ async def test_shutdown_cancels_waiting_task_without_entering_model(tmp_path):
     assert handler.started == ["a"]
     assert (await manager._status(b))["state"] == "cancelled"
     assert manager._execution_slots._value == 1
+
+async def test_no_prefetch_still_records_measured_admission_wait(tmp_path):
+    handler = Handler()
+    manager = DetachedOmniTaskManager(handler, tmp_path, prefetch_capacity=0)
+    value = identity(manager, 'no-prefetch-timing')
+    try:
+        accepted = await manager._submit(value, {'name': 'test'})
+        await until(lambda: handler.running == 1)
+        handler.release.set()
+        await until(lambda: not manager._running)
+        status = await manager._status(value)
+        assert status['worker_queue_wait_s'] == (status['started_at_ms'] - accepted['queued_at_ms']) / 1000
+        assert status['worker_queue_wait_s'] >= 0
+    finally:
+        handler.release.set()
+        await manager.shutdown()

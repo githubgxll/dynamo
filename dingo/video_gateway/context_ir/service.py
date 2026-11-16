@@ -18,6 +18,7 @@ from .task_store import ContextIRStore
 from .models import ContextIRTask, TERMINAL, failure
 from .dispatcher import ContextIRDispatcher
 from .validation import normalize, request_digest
+from .protocol import public_result
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class ContextIRService:
             client = EtcdHttpClient(cfg.task_store.endpoints or cfg.task_store.url,
                                     timeout_s=cfg.task_store.request_timeout_s)
         self.store = ContextIRStore(client, cfg.deployment_id, self.config)
+        self.store.telemetry = self.telemetry
         self.artifacts = ContextIRArtifacts(cfg.artifact_store.root, cfg.deployment_id, self.config.result_max_bytes)
         self.dispatcher = ContextIRDispatcher(self)
 
@@ -87,23 +89,35 @@ class ContextIRService:
         except GatewayError as conflict:
             if conflict.code != "idempotency_conflict":
                 raise
-            legacy = dict(normalized)
-            legacy["references"] = [{k: v for k, v in entry.items() if k != "role_stated"}
-                                    for entry in normalized["references"]]
-            legacy_digest = request_digest(legacy)
-            if legacy_digest == digest:
-                raise
-            # Only the original version lacked role_stated. New tasks must continue to
-            # distinguish omitted roles from explicit roles, even when defaults match.
-            existing = await self.store.idempotent(principal_hash, key_hash, legacy_digest)
-            if existing is None:
-                raise conflict
-            original = await self.artifacts.read_bounded(existing.task.request_path, self.config.result_max_bytes)
-            if any("role_stated" in entry for entry in original.get("references", [])):
-                raise conflict
-            if request_digest(original) != legacy_digest:
-                raise conflict
-            return existing
+            variants = []
+            if normalized.get("input_resolution"):
+                old = dict(normalized);old.pop("input_resolution")
+                old["references"] = [{**entry, **({"role_stated": True} if old["workflow"]=="fl2va" else {})}
+                                     for entry in old["references"]]
+                variants.append(old)
+            legacy = dict(variants[0] if variants else normalized)
+            legacy["references"] = [{k:v for k,v in entry.items() if k!="role_stated"} for entry in legacy["references"]]
+            variants.append(legacy)
+            for candidate in variants:
+                candidate_digest = request_digest(candidate)
+                if candidate_digest == digest:
+                    continue
+                try:
+                    existing = await self.store.idempotent(principal_hash, key_hash, candidate_digest)
+                except GatewayError as mismatch:
+                    if mismatch.code == "idempotency_conflict":
+                        continue
+                    raise
+                if existing is None:
+                    continue
+                original = await self.artifacts.read_bounded(existing.task.request_path, self.config.result_max_bytes)
+                if original.get("input_resolution") or request_digest(original) != candidate_digest:
+                    continue
+                if not any("role_stated" in entry for entry in candidate["references"]):
+                    if any("role_stated" in entry for entry in original.get("references", [])):
+                        continue
+                return existing
+            raise conflict
 
     async def submit(self, parsed, task_id, reserved_bytes, idempotency_key, principal="validation"):
         self.check_accepting()
@@ -124,6 +138,14 @@ class ContextIRService:
         if backend_id not in self.dispatcher.backend_ready:
             raise GatewayError(503, "context_ir_configuration_mismatch", "compiler backend configuration is inconsistent")
         await self.store.backend_compares(backend_id)
+        if backend.transport == "worker":
+            registry=self.dispatcher.worker.registries.get(backend_id)
+            available=registry.eligible(task_kind="context_ir",storage_id=backend.storage_id,
+                model_adapter=("minimax_h3",1),protocol_adapter=("open_h3_ir",1),queue=True) if registry else []
+            if normalized.get("input_resolution"):
+                available = [caps for caps in available if ("intent_resolution", 1) in caps.protocol_adapters]
+            if not available:
+                raise GatewayError(503,"context_ir_worker_unavailable","no healthy compatible compiler Worker is available")
         route = {"backend_id": backend_id, "backend": asdict(backend), "model": normalized["model"],
                  "adapter": "minimax_h3", "adapter_version": 1, "protocol": "open_h3_ir", "protocol_version": 1,
                  "policy": {k:v for k,v in asdict(self.config).items() if k not in {"backends", "model_bindings"}}}
@@ -169,11 +191,37 @@ class ContextIRService:
         for name, backend in self.config.backends.items():
             labels = {"backend": name}
             for kind in ("queued", "inflight", "reserved_bytes"):
-                value = await self.store.client.get(self.store.key(f"counters/{name}/{kind}"))
-                self.telemetry.set_gauge(f"dingo_context_ir_{kind}", int(value.value) if value else 0, labels=labels)
+                if backend.transport == "worker" and kind == "inflight":
+                    prefix=f"/dingo/task-runtime/v2/{self.video.config.deployment_id}/slots/"
+                    slots,_=await self.store.client.range_all(prefix,prefix=True)
+                    count=sum(json.loads(slot.value)["worker"]["pool_id"]==backend.worker_pool for slot in slots)
+                else:
+                    value = await self.store.client.get(self.store.key(f"counters/{name}/{kind}"))
+                    count=int(value.value) if value else 0
+                self.telemetry.set_gauge(f"dingo_context_ir_{kind}", count, labels=labels)
             value = await self.store.client.get(self.store.key(f"backends/{name}/state"))
             self.telemetry.set_gauge("dingo_context_ir_quarantined", int(value is not None and json.loads(value.value).get("state")=="quarantined"), labels=labels)
             self.telemetry.set_gauge("dingo_context_ir_max_inflight", backend.max_inflight, labels=labels)
+            self.telemetry.set_gauge("dingo_context_ir_queue_limit", backend.queue_limit, labels=labels)
+            if backend.transport == "worker":
+                from dingo.video_gateway.task_runtime.capacity import available_candidates
+                coordinator = self.dispatcher.worker
+                workers = []
+                if coordinator is not None:
+                    registry = coordinator.registries.get(name)
+                    records = registry.records if registry is not None else {}
+                    for worker in coordinator.workers.get(name, []):
+                        record = records.get(worker.ref.instance_id)
+                        if record is not None and record.expires_at > time.monotonic():
+                            workers.append(worker)
+                free = len(available_candidates(workers, {slot.key for slot in slots},
+                    deployment_id=self.video.config.deployment_id,
+                    configured_capacity=backend.worker_capacity))
+            else:
+                value = await self.store.client.get(self.store.key(f"counters/{name}/inflight"))
+                free = max(0, backend.max_inflight - (int(value.value) if value else 0))
+            self.telemetry.set_gauge("dingo_context_ir_available_execution_slots", free, labels=labels)
+
         return self.telemetry.render_prometheus()
 
     async def get(self, task_id, principal="validation"):
@@ -195,7 +243,7 @@ class ContextIRService:
                 if latest is None or latest.task.status == "expired":
                     raise GatewayError(410, "context_ir_expired", "compiler task has expired")
                 raise
-        return stored.task.public_dict(result)
+        return stored.task.public_dict(public_result(result) if result is not None else None)
 
     async def delete(self, task_id, principal="validation"):
         for _ in range(30):
@@ -218,7 +266,26 @@ class ContextIRService:
         ok, _ = await self.store.client.txn(
             [self.store.client.compare_mod(self.store.task_key(task.id), stored.revision)],
             [self.store.client.put(self.store.task_key(task.id), encode(task.to_dict()))])
+        if ok:
+            self.store.record_transition(stored.task, task)
         return ok
+
+    async def reconcile_worker_storage(self,stored):
+        task=stored.task
+        if self.config.backends[task.backend_id].transport != "worker" or task.status not in TERMINAL:
+            return
+        if await self.store.client.get(self.store.slot_key(task)) is not None:
+            return  # Cancellation alone never proves physical completion.
+        task_root=self.artifacts.task_root(task.deployment_id,"",task.id)
+        worker_root=self.artifacts.root/task.deployment_id/"v2"/"context_ir"/task.id
+        actual=await run_file_io(lambda: self.artifacts._tree_size(task_root)+self.artifacts._tree_size(worker_root))
+        if actual >= task.reserved_bytes:
+            return
+        await self.store.shrink_reservation(task.reservation_id,actual)
+        changed=replace(task,reserved_bytes=actual)
+        await self.store.client.txn(
+            [self.store.client.compare_mod(self.store.task_key(task.id),stored.revision)],
+            [self.store.client.put(self.store.task_key(task.id),encode(changed.to_dict()))])
 
     async def sweep(self):
         # Scanning is bounded by the managed namespace; each destructive action
@@ -237,6 +304,10 @@ class ContextIRService:
                 continue
             if task.slot_id is not None and await client.get(self.store.slot_key(task)) is not None:
                 continue
+            if self.config.backends[task.backend_id].transport == "worker":
+                await self.reconcile_worker_storage(stored)
+                stored=await self.store.get_task(task.id)
+                task=stored.task
             cleanup_inputs = (task.inputs_cleaned_at_ms is None and
                               now_ms() >= task.terminal_at_ms+int(self.config.input_terminal_retention_s*1000))
             if task.status != "expired" and not cleanup_inputs:
@@ -250,6 +321,9 @@ class ContextIRService:
                 root = self.artifacts.task_root(task.deployment_id, "", task.id)
                 if task.status == "expired":
                     await self.artifacts.discard(root)
+                    if self.config.backends[task.backend_id].transport == "worker":
+                        worker_root=self.artifacts.root/task.deployment_id/"v2"/"context_ir"/task.id
+                        await self.artifacts.discard(worker_root)
                     await self.store.release_reservation(task.reservation_id)
                     changed = replace(task, cleanup_pending=False)
                 else:

@@ -12,7 +12,6 @@ import logging
 import math
 import os
 import random
-import secrets
 import time
 import uuid
 from dingo.common.video_sr_timings import with_sr_timings
@@ -23,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dingo.common.video_result_file import INLINE_RESULT_FORMAT, normalize_inline_result
-from dingo.common.video_super_resolution import negotiated_sr_profiles
+from dingo.common.video_super_resolution import negotiated_sr_profiles, SR_CAPABILITY
 from dingo.common.video_task_protocol import (
     ENVELOPE_KEY,
     EXECUTION_CAPACITY_CAPABILITY,
@@ -49,6 +48,14 @@ from dingo.video_gateway.errors import (
     worker_execution_error,
 )
 from dingo.video_gateway.etcd_http import EtcdWatchIdleTimeout
+from dingo.video_gateway.task_runtime.registry import refresh_instances
+from dingo.video_gateway.task_runtime.scheduler import DispatchLoop
+from dingo.video_gateway.task_runtime.coordinator import (
+    DispatchCoordinator, ExecutionSupervisor, monitor_execution,
+)
+from dingo.video_gateway.task_runtime.video_dispatch import VideoSchedulingAdapter, VideoSelection
+from dingo.video_gateway.task_runtime.transport import control_request
+from dingo.video_gateway.task_runtime.video_capacity import video_worker_slots
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.finalization import ResultFinalizer
 from dingo.video_gateway.memory_budget import (
@@ -67,7 +74,6 @@ from dingo.video_gateway.models import (
 from dingo.video_gateway.result_handoff import HANDOFF_KEY, make_handoff, read_handoff
 from dingo.video_gateway.task_store import (
     TaskStore,
-    retry_excludes_worker,
     terminal_error,
     worker_key,
 )
@@ -189,6 +195,9 @@ class PoolRuntime:
     prefetch_instances: set[int] = field(default_factory=set)
     sr_profiles: dict[int, frozenset[str]] = field(default_factory=dict)
     shared_inputs: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # Admission evidence survives a transient zero execution capacity. It is
+    # bounded, instance-scoped, and invalidated by explicit negative replies.
+    queue_admission: dict[int, tuple[float, frozenset[str], dict[str, Any]]] = field(default_factory=dict)
 
 
 class VideoDispatcher:
@@ -298,7 +307,7 @@ class VideoDispatcher:
             and all(
                 pool.discovery_healthy and pool.lease_watch_healthy
                 for pool in self.pools.values()
-                if pool.config.pipeline is None
+                if pool.config.executes_tasks
             )
         )
 
@@ -370,7 +379,7 @@ class VideoDispatcher:
             self._loops.append(task_watch)
             await asyncio.wait_for(self._task_watch_ready.wait(), timeout=10.0)
         for pool in self.pools.values():
-            if pool.config.pipeline is not None:
+            if not pool.config.executes_tasks:
                 continue
             await self._refresh_instances(pool)
             if self.store.lease_watch_supported:
@@ -478,10 +487,46 @@ class VideoDispatcher:
 
     def has_workers(self, pool_id: str) -> bool:
         pool = self.pools[pool_id]
-        if pool.config.pipeline is not None:
+        if pool.config.pipeline is not None and not pool.config.unified_pipeline:
             return self.has_workers(pool.config.pipeline["base_pool"])
         # Registration alone is not capacity; saturation still allows queuing.
         return bool(self._worker_slots(pool))
+
+    def has_admission_workers(self, pool_id: str) -> bool:
+        pool = self.pools[pool_id]
+        if pool.config.pipeline is not None and not pool.config.unified_pipeline:
+            return self.has_admission_workers(pool.config.pipeline["base_pool"])
+        return self.has_workers(pool_id) or self._has_queue_admission(pool)
+
+    def has_sr_admission_workers(self, pool_id: str, normalized: Mapping[str, Any]) -> bool:
+        pool = self.pools[pool_id]
+        if pool.config.pipeline is not None:
+            return self.has_sr_admission_workers(pool.config.pipeline["sr_pool"],
+                {"super_resolution": normalized.get("super_resolution")})
+        return self.has_sr_workers(pool_id, normalized) or self._has_queue_admission(pool, normalized)
+
+    @staticmethod
+    def _has_queue_admission(pool, normalized=None):
+        if not pool.discovery_healthy:
+            return False
+        options = pool.config.adapter.options
+        required = (normalized or {}).get("shared_inputs")
+        if required is None and options.get("reference_transport") == "shared_files_v1":
+            required = {"storage_id": options.get("shared_storage_id")}
+        sr = (normalized or {}).get("super_resolution")
+        for instance in pool.instance_ids:
+            evidence = pool.queue_admission.get(instance)
+            if evidence is None or evidence[0] <= time.monotonic():
+                continue
+            _, profiles, shared = evidence
+            if required and (shared.get("storage_id") != required.get("storage_id")
+                             or shared.get("workflow") != pool.config.adapter.workflow):
+                continue
+            if sr is not None and (not isinstance(sr, Mapping)
+                    or sr.get("profile") != pool.config.sr_profile or sr.get("profile") not in profiles):
+                continue
+            return True
+        return False
 
     def pool_instances(self, pool_id: str) -> list[int]:
         return list(self.pools[pool_id].instance_ids)
@@ -757,49 +802,27 @@ class VideoDispatcher:
                 backoff_s = min(backoff_s * 2.0, 5.0)
 
     async def _refresh_instances(self, pool: PoolRuntime) -> None:
-        try:
-            pool.instance_ids = sorted(set(pool.client.instance_ids()))
-            pool.discovery_healthy = True
-        except Exception:
-            logger.exception(
-                "failed to refresh Worker instances for pool %s", pool.config.pool_id
-            )
-            pool.instance_ids = []
-            pool.discovery_healthy = False
-        pool.capacity_cache = {
-            i: v for i, v in pool.capacity_cache.items() if i in pool.instance_ids
-        }
-        if hasattr(pool, "prefetch_instances"):
-            pool.prefetch_instances.intersection_update(pool.instance_ids)
-        if hasattr(pool, "sr_profiles"):
-            pool.sr_profiles = {
-                i: v for i, v in pool.sr_profiles.items() if i in pool.instance_ids
-            }
-        if (
-            getattr(pool.config, "sr_profile", None)
-            or pool.config.scheduling.worker_capacity > 1
-            or getattr(pool.config.scheduling, "worker_prefetch_capacity", 0)
-        ):
-            semaphore = asyncio.Semaphore(8)
+        def publish(instances, healthy):
+            pool.instance_ids = instances
+            pool.discovery_healthy = healthy
+            live = set(instances)
+            pool.queue_admission = {i: v for i, v in pool.queue_admission.items() if i in live}
+            if hasattr(pool, "prefetch_instances"):
+                pool.prefetch_instances.intersection_update(live)
+            if hasattr(pool, "sr_profiles"):
+                pool.sr_profiles = {i: v for i, v in pool.sr_profiles.items() if i in live}
+            if hasattr(pool, "shared_inputs"):
+                pool.shared_inputs = {i: v for i, v in pool.shared_inputs.items() if i in live}
 
-            async def probe(instance: int) -> None:
-                # Refresh a healthy SR capability before its five-second
-                # expiry: waiting until expiry creates an admission gap on
-                # every discovery tick. Keep fail-closed expiry in _worker_slots.
-                refresh_ahead = (
-                    3.0 if getattr(pool.config, "sr_profile", None) else 0.0
-                )
-                if (
-                    pool.capacity_cache.get(instance, (0, 0))[1]
-                    > time.monotonic() + refresh_ahead
-                ):
-                    return
-                async with semaphore:
-                    pool.capacity_cache[instance] = await self._worker_capacity(
-                        pool, instance
-                    )
-
-            await asyncio.gather(*(probe(i) for i in pool.instance_ids))
+        await refresh_instances(
+            list_instances=pool.client.instance_ids, cache=pool.capacity_cache,
+            probe=lambda instance: self._worker_capacity(pool, instance), publish=publish,
+            needs_probe=bool(getattr(pool.config, "sr_profile", None)
+                             or pool.config.scheduling.worker_capacity > 1
+                             or getattr(pool.config.scheduling, "worker_prefetch_capacity", 0)),
+            on_error=lambda: logger.exception(
+                "failed to refresh Worker instances for pool %s", pool.config.pool_id),
+        )
 
     async def _worker_capacity(
         self, pool: PoolRuntime, instance: int
@@ -812,36 +835,42 @@ class VideoDispatcher:
         )
 
         async def query() -> int:
-            stream = await pool.client.direct(
-                {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities"}},
+            response = await control_request(
+                pool.client,
                 instance,
+                {ENVELOPE_KEY: {"schema_version": 1, "op": "capabilities"}},
                 context,
             )
-            response = None
-            async for item in stream:
-                if hasattr(item, "is_error") and item.is_error():
-                    raise RuntimeError("Worker capability query failed")
-                value = item.data() if hasattr(item, "data") else item
-                if response is not None or not isinstance(value, dict):
-                    raise ValueError("invalid Worker capabilities response")
-                response = value
             if (
                 response is None
                 or response.get("schema_version") != 1
                 or EXECUTION_CAPACITY_CAPABILITY not in response.get("capabilities", [])
             ):
                 raise ValueError("Worker does not advertise execution capacity")
+            capacity = response.get("execution_capacity")
+            if type(capacity) is not int or capacity < 0:
+                pool.queue_admission.pop(instance, None)
+                raise ValueError("invalid Worker execution capacity")
+            queue = response.get("gateway_queue_admission")
+            if "gateway_queue_admission.v1" in response.get("capabilities", []):
+                profiles = queue.get("sr_profiles") if isinstance(queue, dict) else None
+                if (isinstance(queue, dict) and queue.get("allowed") is True
+                        and isinstance(profiles, list) and all(type(p) is str for p in profiles)
+                        and len(profiles) <= 8
+                        and (not profiles or SR_CAPABILITY in response["capabilities"])
+                        and isinstance(response.get("shared_inputs", {}), dict)):
+                    # Queue lifetime/size remain controlled by task_store and
+                    # queue_ttl_s. This short lease only bounds admission facts.
+                    pool.queue_admission[instance] = (time.monotonic()+15.0,
+                        frozenset(profiles), dict(response.get("shared_inputs", {})))
+                else:
+                    pool.queue_admission.pop(instance, None)
+            else:
+                pool.queue_admission.pop(instance, None)
             if hasattr(pool, "shared_inputs"):
                 pool.shared_inputs.pop(instance, None)
                 if "shared_input_files.v1" in response.get("capabilities", []) and isinstance(response.get("shared_inputs"), dict):
                     pool.shared_inputs[instance] = response["shared_inputs"]
-            capacity = response.get("execution_capacity")
-            if (
-                isinstance(capacity, bool)
-                or not isinstance(capacity, int)
-                or capacity < 0
-            ):
-                raise ValueError("invalid Worker execution capacity")
             if response.get("accepting") is not True:
                 if hasattr(pool, "sr_profiles"):
                     pool.sr_profiles.pop(instance, None)
@@ -884,7 +913,8 @@ class VideoDispatcher:
                 pool.sr_profiles.pop(instance, None)
             # Legacy Workers are still usable as single-slot instances. Never
             # infer N slots from the configured ceiling or a failed RPC.
-            if getattr(pool.config, "sr_profile", None):
+            if (getattr(pool.config, "sr_profile", None)
+                    and not getattr(pool.config, "unified_pipeline", False)):
                 logger.warning("Composite Worker %s capacity unavailable; admission disabled", instance)
                 return 0, time.monotonic() + 5.0
             logger.warning("Worker %s capacity unavailable; using one slot", instance)
@@ -893,43 +923,8 @@ class VideoDispatcher:
             context.stop_generating()
 
     @staticmethod
-    def _worker_slots(
-        pool: PoolRuntime, normalized: Mapping[str, Any] | None = None
-    ) -> list[tuple[int, int]]:
-        sr = (normalized or {}).get("super_resolution")
-        needs_sr = normalized is not None and "super_resolution" in normalized
-        required_shared = (normalized or {}).get("shared_inputs")
-        adapter_options = getattr(getattr(pool.config, "adapter", None), "options", {})
-        if normalized is None and adapter_options.get("reference_transport") == "shared_files_v1":
-            required_shared = {"storage_id": adapter_options.get("shared_storage_id")}
-        ceiling = pool.config.scheduling.worker_capacity + getattr(
-            pool.config.scheduling, "worker_prefetch_capacity", 0
-        )
-        return [
-            (instance, slot)
-            for instance in pool.instance_ids
-            if not required_shared or (
-                getattr(pool, "shared_inputs", {}).get(instance, {}).get("storage_id") == required_shared.get("storage_id")
-                and getattr(pool, "shared_inputs", {}).get(instance, {}).get("workflow") == pool.config.adapter.workflow
-                and pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
-            )
-            if pool.capacity_cache.get(instance, (1, 0))[0] > 0
-            if not getattr(pool.config, "sr_profile", None) or pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
-            if not needs_sr
-            or (
-                isinstance(sr, Mapping)
-                and sr.get("profile") == getattr(pool.config, "sr_profile", None)
-                and sr.get("profile")
-                in getattr(pool, "sr_profiles", {}).get(instance, ())
-                and pool.capacity_cache.get(instance, (0, 0))[0] > 0
-                and pool.capacity_cache.get(instance, (0, 0))[1] > time.monotonic()
-            )
-            for slot in range(
-                1
-                if ceiling == 1
-                else min(ceiling, pool.capacity_cache.get(instance, (0, 0))[0])
-            )
-        ]
+    def _worker_slots(pool, normalized=None):
+        return video_worker_slots(pool, normalized)
 
     def has_sr_workers(self, pool_id: str, normalized: Mapping[str, Any]) -> bool:
         pipeline = self.pools[pool_id].config.pipeline
@@ -943,22 +938,13 @@ class VideoDispatcher:
         while True:
             if task.deadline_at_ms is not None and now_ms() >= task.deadline_at_ms:
                 raise asyncio.TimeoutError("Worker admission deadline exceeded")
-            stream = await pool.client.direct(
-                submit, int(task.worker_instance_id), context
-            )
-            response = None
-            async for item in stream:
-                if hasattr(item, "is_error") and item.is_error():
-                    comments = item.comments() if hasattr(item, "comments") else []
-                    raise RuntimeError(
-                        "; ".join(comments) or "detached Worker submit failed"
-                    )
-                value = item.data() if hasattr(item, "data") else item
-                if response is not None or not isinstance(value, dict):
-                    raise RuntimeError("invalid detached Worker acknowledgement")
-                response = validate(value)
-            if response is None:
-                raise RuntimeError("detached Worker returned no acknowledgement")
+            try:
+                value = await control_request(
+                    pool.client, task.worker_instance_id, submit, context
+                )
+            except ValueError as error:
+                raise RuntimeError("invalid detached Worker acknowledgement") from error
+            response = validate(value)
             if response.get("state") != "busy":
                 return response
             if response.get("accepted") is not False:
@@ -1025,7 +1011,7 @@ class VideoDispatcher:
                 truth = await self.store.discovery_instance_snapshot(targets)
                 mature_mismatches: list[str] = []
                 for pool in self.pools.values():
-                    if pool.config.pipeline is not None:
+                    if not pool.config.executes_tasks:
                         continue
                     runtime_ids = set(pool.client.instance_ids())
                     truth_ids = truth[pool.config.backend_target]
@@ -1149,46 +1135,31 @@ class VideoDispatcher:
 
     async def _pool_loop(self, pool: PoolRuntime) -> None:
         next_discovery = 0.0
-        while not self._stop.is_set():
-            try:
-                if self._draining:
-                    await self._clear_budget_waiter(pool)
-                    await self._stop.wait()
-                    continue
-                now = time.monotonic()
-                if now >= next_discovery:
-                    await self._refresh_instances(pool)
-                    next_discovery = now + pool.config.scheduling.discovery_interval_s
-                await self._release_reusable_leases(pool)
-                dispatched = await self._dispatch_once(pool)
-                if dispatched:
-                    continue
-                pool.wakeup.clear()
-                try:
-                    await asyncio.wait_for(
-                        pool.wakeup.wait(),
-                        timeout=pool.config.scheduling.dispatch_interval_s,
-                    )
-                except asyncio.TimeoutError:
-                    pass
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "pool dispatcher iteration failed and will be retried: %s",
-                    pool.config.pool_id,
-                )
-                pool.wakeup.clear()
-                try:
-                    await asyncio.wait_for(
-                        pool.wakeup.wait(),
-                        timeout=max(
-                            pool.config.scheduling.dispatch_interval_s,
-                            0.1,
-                        ),
-                    )
-                except asyncio.TimeoutError:
-                    pass
+
+        async def advance():
+            nonlocal next_discovery
+            if self._draining:
+                await self._dispatch_once(pool)  # Settle already-owned pending claims.
+                await self._clear_budget_waiter(pool)
+                await self._stop.wait()
+                return False
+            now = time.monotonic()
+            if now >= next_discovery:
+                await self._refresh_instances(pool)
+                next_discovery = now + pool.config.scheduling.discovery_interval_s
+            await self._release_reusable_leases(pool)
+            return await self._dispatch_once(pool)
+
+        await DispatchLoop(
+            stop=self._stop,
+            wakeup=pool.wakeup,
+            advance=advance,
+            interval_s=pool.config.scheduling.dispatch_interval_s,
+            on_error=lambda: logger.exception(
+                "pool dispatcher iteration failed and will be retried: %s",
+                pool.config.pool_id,
+            ),
+        ).run()
 
     async def _release_reusable_leases(self, pool: PoolRuntime) -> None:
         current_time = now_ms()
@@ -1206,182 +1177,24 @@ class VideoDispatcher:
             if expired:
                 await self.store.release_lease(pool.config.pool_id, lease.worker_key)
 
+    def _dispatch_runtime(self):
+        # Lazy creation also supports small dispatcher fixtures and old callers.
+        if not hasattr(self, "_dispatch_coordinator"):
+            self._execution_supervisor = ExecutionSupervisor(
+                self._execution_error, executions=self._executions
+            )
+            self._dispatch_coordinator = DispatchCoordinator(
+                self._execution_supervisor, enabled=lambda: not self._draining
+            )
+            self._scheduling_adapters = {}
+        return self._dispatch_coordinator
+
     async def _dispatch_once(self, pool: PoolRuntime) -> bool:
-        if (
-            sum(
-                p == pool.config.pool_id
-                for p in getattr(self, "_finalizing", {}).values()
-            )
-            >= pool.config.scheduling.finalization_pending_limit
-        ):
-            await self._clear_budget_waiter(pool)
-            return False
-        # A healthy lease view can prove that no instance is usable without
-        # reading queue indexes, task bodies, or shared retry counters. Keep
-        # the later checks and reserve CAS: availability can change while the
-        # awaited queue reads are in flight.
-        skip_reason = None
-        if not pool.instance_ids:
-            skip_reason = "no_workers"
-        elif self.store.lease_watch_supported and not pool.lease_watch_healthy:
-            skip_reason = "lease_watch_unhealthy"
-        else:
-            occupied = {
-                lease.worker_key
-                for lease in await self.pool_leases(pool.config.pool_id)
-            }
-            if all(
-                worker_key(pool.config.backend_target, instance, slot) in occupied
-                for instance, slot in self._worker_slots(pool)
-            ):
-                skip_reason = "no_free_worker"
-        if skip_reason is not None:
-            await self._clear_budget_waiter(pool)
-            self.telemetry.increment(
-                "dingo_video_dispatch_skips_total",
-                labels={"pool": pool.config.pool_id, "reason": skip_reason},
-            )
-            return False
-        ledger = hasattr(self.store, "retry_budget_used")
-        budget_limit = getattr(self, "_retry_budget_limit", 32)
-        queued = await self.store.list_queued(
-            pool.config.pool_id,
-            limit=min(10000, pool.config.scheduling.queue_limit + budget_limit),
+        coordinator = self._dispatch_runtime()
+        adapter = self._scheduling_adapters.setdefault(
+            pool.config.pool_id, VideoSchedulingAdapter(self, pool)
         )
-        used = 0
-        if ledger:
-            waiting = await self.store.retry_queue_depth(pool.config.pool_id)
-            used = await self.store.retry_budget_used(pool.config.pool_id)
-            self.telemetry.set_gauge(
-                "dingo_video_retry_waiting_tasks",
-                waiting,
-                labels={"pool": pool.config.pool_id},
-            )
-            self.telemetry.set_gauge(
-                "dingo_video_retry_credits_used",
-                used,
-                labels={"pool": pool.config.pool_id},
-            )
-            self.telemetry.set_gauge(
-                "dingo_video_normal_queue_depth",
-                max(0, await self.store.queue_depth(pool.config.pool_id) - waiting),
-                labels={"pool": pool.config.pool_id},
-            )
-        if not queued or not pool.instance_ids:
-            await self._clear_budget_waiter(pool)
-            return False
-        if self.store.lease_watch_supported and not pool.lease_watch_healthy:
-            await self._clear_budget_waiter(pool)
-            return False
-        leased = {
-            lease.worker_key for lease in await self.pool_leases(pool.config.pool_id)
-        }
-        selected = None
-        available = []
-        # Retry first, but do not let a retry that excludes the only available
-        # instance block unrelated runnable work behind it.
-        for candidate in sorted(queued, key=lambda item: item.task.attempt == 0):
-            if (
-                candidate.task.id in self.running_calls
-                or candidate.task.expires_at_ms <= now_ms()
-            ):
-                continue
-            if (
-                ledger
-                and getattr(self, "_worker_retry_once", False)
-                and candidate.task.attempt == 0
-                and used >= budget_limit
-            ):
-                continue
-            available = [
-                (instance, slot)
-                for instance, slot in self._worker_slots(
-                    pool, candidate.task.normalized_request
-                )
-                if worker_key(pool.config.backend_target, instance, slot) not in leased
-                and not retry_excludes_worker(
-                    candidate.task, pool.config.backend_target, instance
-                )
-            ]
-            if available:
-                selected = candidate
-                break
-        if selected is None:
-            await self._clear_budget_waiter(pool)
-            return False
-        queued = [selected]
-        task_id = selected.task.id
-        if pool.budget_waiter_id not in {None, task_id}:
-            await self.memory_budget.cancel_waiter(pool.budget_waiter_id)
-            pool.budget_waiter_id = None
-        weight_bytes = (
-            queued[0].task.estimated_payload_bytes
-            or self.config.media.max_task_memory_bytes
-        )
-        if not await self.memory_budget.try_acquire(task_id, weight_bytes):
-            pool.budget_waiter_id = task_id
-            return False
-        pool.budget_waiter_id = None
-        if self._draining:
-            await self.memory_budget.release(task_id)
-            return False
-        index = pool.cursor % len(available)
-        instance_id, slot_id = available[index]
-        pool.cursor = (index + 1) % len(available)
-        key = worker_key(pool.config.backend_target, instance_id, slot_id)
-        lease = WorkerLease(
-            pool_id=pool.config.pool_id,
-            worker_key=key,
-            worker_instance_id=instance_id,
-            backend_target=pool.config.backend_target,
-            task_id=queued[0].task.id,
-            owner_generation=self.generation,
-            execution_token=secrets.token_hex(16),
-            state="reserved",
-            heartbeat_at_ms=now_ms(),
-            owner_expires_at_ms=now_ms() + 15_000,
-        )
-        deadline = now_ms() + int(pool.config.scheduling.execution_timeout_s * 1000)
-        try:
-            retry_options = (
-                {
-                    "reserve_retry": getattr(self, "_worker_retry_once", False)
-                    and pool.config.execution_mode == "detached",
-                    "retry_limit": budget_limit,
-                }
-                if ledger
-                else {}
-            )
-            reserved = await self.store.reserve(
-                queued[0], lease, deadline_at_ms=deadline, **retry_options
-            )
-        except Exception:
-            await self.memory_budget.release(task_id)
-            raise
-        if reserved is None:
-            await self.memory_budget.release(task_id)
-            return True
-        self.telemetry.record_transition(
-            "reserved",
-            queued[0].task,
-            reserved.task,
-            gateway_generation=self.generation,
-            revision=reserved.revision,
-        )
-        if self.store.lease_watch_supported:
-            lease.etcd_lease_id = reserved.task.worker_lease_id
-            pool.lease_cache[lease.worker_key] = lease
-        try:
-            execution = asyncio.create_task(
-                self._run_reserved(pool, reserved),
-                name=f"video-task-{reserved.task.id}",
-            )
-        except Exception:
-            await self.memory_budget.release(task_id)
-            raise
-        self._executions.add(execution)
-        execution.add_done_callback(self._execution_done)
-        return True
+        return await coordinator.dispatch(adapter)
 
     async def _clear_budget_waiter(self, pool: PoolRuntime) -> None:
         if pool.budget_waiter_id is None:
@@ -1389,16 +1202,12 @@ class VideoDispatcher:
         await self.memory_budget.cancel_waiter(pool.budget_waiter_id)
         pool.budget_waiter_id = None
 
-    def _execution_done(self, execution: asyncio.Task) -> None:
-        self._executions.discard(execution)
-        if execution.cancelled():
-            return
-        error = execution.exception()
-        if error is not None:
-            logger.error(
-                "video execution task escaped its error handler",
-                exc_info=(type(error), error, error.__traceback__),
-            )
+    @staticmethod
+    def _execution_error(key, error):
+        logger.error(
+            "video execution controller failed: %s", key,
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     @staticmethod
     def _raise_if_heartbeat_stopped(heartbeat: asyncio.Task) -> None:
@@ -1418,47 +1227,22 @@ class VideoDispatcher:
         cancellation: Any | None = None,
         liveness: Any | None = None,
     ) -> Any:
-        operation_task = asyncio.create_task(operation)
-        cancellation_task = (
-            asyncio.create_task(cancellation) if cancellation is not None else None
+        monitors = []
+        if cancellation is not None:
+            monitors.append(("cancel", cancellation))
+        monitors.append(("ownership", heartbeat))
+        if liveness is not None:
+            monitors.append(("liveness", liveness))
+
+        async def finished(name, task):
+            if name == "ownership":
+                self._raise_if_heartbeat_stopped(task)
+            else:
+                await task
+
+        return await monitor_execution(
+            operation, monitors=monitors, on_monitor_finished=finished
         )
-        liveness_task = asyncio.create_task(liveness) if liveness is not None else None
-        try:
-            monitored = {operation_task, heartbeat}
-            if cancellation_task is not None:
-                monitored.add(cancellation_task)
-            if liveness_task is not None:
-                monitored.add(liveness_task)
-            done, _pending = await asyncio.wait(
-                monitored,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            # A completed Worker stream proves the instance is reusable even
-            # when the lease heartbeat failed at the same instant.
-            if operation_task in done:
-                return await operation_task
-            if cancellation_task is not None and cancellation_task in done:
-                await cancellation_task
-                raise RuntimeError("cancellation monitor ended unexpectedly")
-            # Losing execution ownership takes precedence over a simultaneous
-            # suspicion of Worker loss. An etcd outage is not a Worker crash.
-            if heartbeat in done:
-                self._raise_if_heartbeat_stopped(heartbeat)
-            if liveness_task is not None and liveness_task in done:
-                await liveness_task
-                raise RuntimeError("Worker liveness monitor ended unexpectedly")
-            raise RuntimeError("execution monitor ended unexpectedly")
-        finally:
-            children = [operation_task]
-            children.extend(
-                monitor
-                for monitor in (cancellation_task, liveness_task)
-                if monitor is not None
-            )
-            for child in children:
-                if not child.done():
-                    child.cancel()
-            await asyncio.gather(*children, return_exceptions=True)
 
     def _can_check_missing_worker(self, pool: PoolRuntime, task: Any) -> bool:
         return (
@@ -1656,9 +1440,10 @@ class VideoDispatcher:
                     "dingo_video_artifact_visibility_recoveries_total",
                     labels={"pool": expected.pool_id, "artifact": artifact},
                 )
-                self.telemetry.record_stage_duration(
-                    expected.pool_id, "artifact_visibility", waited
-                )
+                if not expected.normalized_request.get("_pipeline_child"):
+                    self.telemetry.record_stage_duration(
+                        expected.pool_id, "artifact_visibility", waited
+                    )
                 logger.warning(
                     "task %s %s became visible after %s retries and %.3fs",
                     expected.id,
@@ -1754,9 +1539,10 @@ class VideoDispatcher:
                     revision=stored.revision,
                 )
                 if stored.task.queue_wait_s is not None:
-                    self.telemetry.record_stage_duration(
-                        task.pool_id, "queue", stored.task.queue_wait_s
-                    )
+                    if not task.normalized_request.get("_pipeline_child"):
+                        self.telemetry.record_stage_duration(
+                            task.pool_id, "queue", stored.task.queue_wait_s
+                        )
             elif not detached or stored.task.status not in {
                 TaskStatus.IN_PROGRESS,
                 TaskStatus.FINALIZING,
@@ -1896,9 +1682,10 @@ class VideoDispatcher:
                 self._result_oversize_count += 1
                 raise ResultTooLarge("Worker base64 result exceeds configured maximum")
             if inference_time_s is not None:
-                self.telemetry.record_stage_duration(
-                    task.pool_id, "execution", inference_time_s
-                )
+                if not task.normalized_request.get("_pipeline_child"):
+                    self.telemetry.record_stage_duration(
+                        task.pool_id, "execution", inference_time_s
+                    )
             if (
                 detached
                 and binary_artifact is not None
@@ -2004,9 +1791,10 @@ class VideoDispatcher:
             finalize_seconds = time.monotonic() - finalize_started
             self._finalize_count += 1
             self._finalize_seconds += finalize_seconds
-            self.telemetry.record_stage_duration(
-                task.pool_id, "finalize", finalize_seconds
-            )
+            if not task.normalized_request.get("_pipeline_child"):
+                self.telemetry.record_stage_duration(
+                    task.pool_id, "finalize", finalize_seconds
+                )
             latest = await self.store.get_task(task.id)
             if latest is None:
                 raise RuntimeError("task disappeared during finalization")
@@ -2298,9 +2086,10 @@ class VideoDispatcher:
                     "dingo_video_result_handoff_total",
                     labels={"pool": expected.pool_id, "outcome": event},
                 )
-                self.telemetry.record_stage_duration(
-                    expected.pool_id, "result_handoff", time.monotonic() - started
-                )
+                if not expected.normalized_request.get("_pipeline_child"):
+                    self.telemetry.record_stage_duration(
+                        expected.pool_id, "result_handoff", time.monotonic() - started
+                    )
             except Exception:
                 logger.exception("handoff telemetry failed: %s", expected.id)
 
@@ -2472,17 +2261,14 @@ class VideoDispatcher:
                 stored.task.id, self.config.media.result_task_memory_bytes
             ):
                 return
-            execution = asyncio.create_task(
-                self._resume_result_finalizer(pool, stored),
-                name=f"video-finalizing-{stored.task.id}",
+            scheduled = self._dispatch_runtime().supervisor.spawn(
+                f"video-finalizing-{stored.task.id}",
+                lambda: self._resume_result_finalizer(pool, stored),
             )
-            scheduled = True
         finally:
             if not scheduled:
                 await self.memory_budget.release(stored.task.id)
                 self._finalizing.pop(stored.task.id, None)
-        self._executions.add(execution)
-        execution.add_done_callback(self._execution_done)
 
     async def _owned_finalization_recovery_loop(self):
         while not self._stop.is_set():
@@ -2592,9 +2378,10 @@ class VideoDispatcher:
                             "detached Worker returned invalid worker_queue_wait_s"
                         )
                     worker_queue_wait_s = float(queue_wait)
-                    self.telemetry.record_stage_duration(
-                        task.pool_id, "worker_queue", worker_queue_wait_s
-                    )
+                    if not task.normalized_request.get("_pipeline_child"):
+                        self.telemetry.record_stage_duration(
+                            task.pool_id, "worker_queue", worker_queue_wait_s
+                        )
                 execution = worker_status.get("inference_time_s")
                 if execution is not None:
                     if (
@@ -3186,7 +2973,7 @@ class VideoDispatcher:
     async def _recover_orphaned_active(self, stored: StoredTask) -> None:
         task = stored.task
         pool = self.pools.get(task.pool_id)
-        if pool is not None and pool.config.pipeline is not None:
+        if task.normalized_request.get("_pipeline") is not None:
             return  # The durable pipeline coordinator resumes parent tasks.
         if task.status == TaskStatus.FINALIZING and read_handoff(task) is not None:
             if pool is None:
@@ -3208,65 +2995,12 @@ class VideoDispatcher:
             and task.worker_key is not None
             and task.worker_instance_id is not None
         ):
-            weight_bytes = (
-                task.estimated_payload_bytes or self.config.media.max_task_memory_bytes
+            coordinator = self._dispatch_runtime()
+            adapter = self._scheduling_adapters.setdefault(
+                pool.config.pool_id, VideoSchedulingAdapter(self, pool)
             )
-            if not await self.memory_budget.try_acquire(task.id, weight_bytes):
-                return
-            try:
-                claimed = await self.store.claim_orphaned_active(
-                    stored, new_owner_generation=self.generation
-                )
-            except Exception:
-                self.telemetry.increment(
-                    "dingo_video_ha_takeovers_total",
-                    labels={"pool": task.pool_id, "outcome": "failed"},
-                )
-                await self.memory_budget.release(task.id)
-                raise
-            if claimed is None:
-                self.telemetry.increment(
-                    "dingo_video_ha_takeovers_total",
-                    labels={"pool": task.pool_id, "outcome": "contended"},
-                )
-                await self.memory_budget.release(task.id)
-                return
-            if self.store.lease_watch_supported:
-                lease = WorkerLease(
-                    pool_id=claimed.task.pool_id,
-                    worker_key=claimed.task.worker_key,
-                    worker_instance_id=claimed.task.worker_instance_id,
-                    backend_target=claimed.task.backend_target,
-                    task_id=claimed.task.id,
-                    owner_generation=self.generation,
-                    execution_token=claimed.task.execution_token,
-                    state="running",
-                    heartbeat_at_ms=now_ms(),
-                    owner_expires_at_ms=now_ms() + 15_000,
-                    etcd_lease_id=claimed.task.worker_lease_id,
-                )
-                pool.lease_cache[lease.worker_key] = lease
-            execution = asyncio.create_task(
-                self._run_reserved(pool, claimed),
-                name=f"video-recovered-{claimed.task.id}",
-            )
-            self._executions.add(execution)
-            execution.add_done_callback(self._execution_done)
-            self.telemetry.increment(
-                "dingo_video_ha_takeovers_total",
-                labels={"pool": claimed.task.pool_id, "outcome": "claimed"},
-            )
-            self.telemetry.audit_task(
-                "ha_takeover",
-                claimed.task,
-                gateway_generation=self.generation,
-                previous_status=stored.task.status.value,
-                revision=claimed.revision,
-                reason="expired_gateway_owner",
-            )
-            logger.info(
-                "claimed detached task %s from expired Gateway owner",
-                claimed.task.id,
+            await coordinator.claim_one(
+                adapter, VideoSelection(stored, [], False, 0, adopting=True)
             )
             return
         error = (
