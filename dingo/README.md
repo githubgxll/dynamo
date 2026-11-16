@@ -60,3 +60,14 @@ To get started with Dynamo components:
 5. **Monitor performance** using the metrics component
 
 For detailed instructions, see the README files in each component directory and the main [Dynamo documentation](../docs/).
+
+## Native wheel builds
+
+`ai-dingo-runtime` and `kvbm` are built from independent Cargo workspaces in
+`lib/bindings/python` and `lib/bindings/kvbm`. Keep their `Cargo.lock` files aligned
+with local crate patches as well as the root lockfile, and build with `--locked`.
+In particular, the Kimi K3.1 tokenizer patch must resolve to the local
+`lib/tokenizers` crate in all three workspaces.
+
+Chat response types retain `ToSchema` independently of their custom `Serialize`
+implementations: the HTTP OpenAPI document requires those schema implementations.

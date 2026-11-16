@@ -554,7 +554,7 @@ impl ResponseOutputEvent {
 /// extension carrier stashed under `nvext.__dynamo_internal_sglext` can be
 /// promoted to a top-level `sglext` field on the wire — see
 /// [`split_sglext`] and [`INTERNAL_SGLEXT_KEY`].
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(ToSchema, Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionResponse {
     #[serde(skip)]
     pub response_events: Vec<ResponseOutputEvent>,
@@ -588,7 +588,7 @@ pub struct ToolCallCompletion {
 ///
 /// `Serialize` is implemented by hand for the same SGLang `sglext` promotion
 /// reason as [`NvCreateChatCompletionResponse`].
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(ToSchema, Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionStreamResponse {
     #[serde(skip)]
     pub message_boundary: Option<MessageBoundary>,

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pythonize::{depythonize, pythonize};
-use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
