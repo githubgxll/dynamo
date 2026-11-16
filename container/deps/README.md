@@ -77,3 +77,9 @@ independent Cargo lockfiles and relative source patches. Keep all three on the
 same local tokenizer, including transitive users such as `dynamo-renderer`;
 otherwise Rust resolves a second, unpatched tokenizer with incompatible types.
 Do not commit absolute build-Pod patches or depend on an edited registry cache.
+
+Actions run `43907947941` failed because both binding lockfiles still recorded
+`dynamo-tokenizers` 4.1.2 as a registry package despite their local source patches.
+Both locks now resolve the existing path package, matching the root workspace;
+package versions and transitive dependencies are unchanged. Keep `--locked` on
+runtime wheel builds and validate binding metadata with the image's feature set.
