@@ -102,3 +102,35 @@ bash tests/router/run-rust-unit-tests.sh # 串行跑 23 行，日志在 /tmp/din
 | 21 | kvbm-logical | 通过 | 504 |
 | 22 | kvbm-physical | 通过 | 13 |
 | 23 | libdynamo_llm | 通过 | 3 |
+
+## 2026-11-16：响应 schema 与测试接口兼容修复
+
+- `NvCreateChatCompletionResponse` 和 `NvCreateChatCompletionStreamResponse` 恢复
+  `ToSchema` 派生；内部事件、消息边界和流式 prompt logprobs 不进入公开 schema，
+  手写序列化实现保持不变。
+- 响应序列化测试补齐新增的内部字段；稀疏 usage 测试显式使用非权威计数模式，
+  保留跨 chunk 累加的断言。
+- Agentic replay 测试使用 `AgenticSnapshotOptions::seeded(7)`，
+  由依赖库初始化新增快照选项，不改变原有采样种子。
+
+这类 Cargo `101` 编译错误发生在测试执行前，不能将汇总中的 `failed=0`
+解释为通过。针对受影响包的验证命令：
+
+```bash
+cargo +1.96.1 test --locked \
+  -p dynamo-backend-common -p dynamo-llm -p dynamo-mocker --lib
+```
+
+本次隔离 Linux 验证（Rust 1.96.1）：
+
+- `dynamo-backend-common`：165 passed，0 failed。
+- `dynamo-llm`：4086 passed，4 failed，17 ignored；已进入测试执行阶段，
+  本节列出的 schema、字段及参数编译错误均已消除。
+- OpenAPI 自定义路由契约、响应序列化和稀疏 usage 计数测试通过。
+- 仍失败的用例为
+  `test_chat_typed_metrics_fast_path_observes_without_annotation`、
+  `media_schemas_match_the_committed_files`（`video.json`）、
+  `responses_and_chat_accept_qualified_functions_but_reject_invalid_namespaces`、
+  `text_message_content_remains_valid`。本次没有跳过这些测试或修改其断言，
+  不能将编译修复表述为全部单元测试通过。
+- `dynamo-mocker` 单独执行：322 passed，0 failed；包含本节修复的四处快照初始化。

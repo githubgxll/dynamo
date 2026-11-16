@@ -554,9 +554,10 @@ impl ResponseOutputEvent {
 /// extension carrier stashed under `nvext.__dynamo_internal_sglext` can be
 /// promoted to a top-level `sglext` field on the wire — see
 /// [`split_sglext`] and [`INTERNAL_SGLEXT_KEY`].
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(ToSchema, Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionResponse {
     #[serde(skip)]
+    #[schema(ignore)]
     pub response_events: Vec<ResponseOutputEvent>,
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionResponse,
@@ -588,9 +589,10 @@ pub struct ToolCallCompletion {
 ///
 /// `Serialize` is implemented by hand for the same SGLang `sglext` promotion
 /// reason as [`NvCreateChatCompletionResponse`].
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(ToSchema, Deserialize, Debug, Clone, PartialEq)]
 pub struct NvCreateChatCompletionStreamResponse {
     #[serde(skip)]
+    #[schema(ignore)]
     pub message_boundary: Option<MessageBoundary>,
     #[serde(flatten)]
     pub inner: dynamo_protocols::types::CreateChatCompletionStreamResponse,
@@ -603,6 +605,7 @@ pub struct NvCreateChatCompletionStreamResponse {
         skip_serializing,
         deserialize_with = "deserialize_prompt_logprobs"
     )]
+    #[schema(ignore)]
     pub prompt_logprobs: Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>,
     /// Internal frontend metrics payload. This must never be serialized to
     /// client-facing OpenAI-compatible streams.
@@ -1642,6 +1645,8 @@ mod tests {
         // carrier to a top-level `sglext` and strips it from `nvext`.
         let payload = json!({"cached_tokens_details": {"device": 64, "host": 32}});
         let response = NvCreateChatCompletionStreamResponse {
+            message_boundary: None,
+            model_eos: Vec::new(),
             inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
                 id: "chatcmpl-1".to_string(),
                 created: 0,
@@ -1671,6 +1676,8 @@ mod tests {
     fn test_stream_response_without_sglext_has_no_sglext_field() {
         // No carrier -> no top-level sglext field, and no nvext when empty.
         let response = NvCreateChatCompletionStreamResponse {
+            message_boundary: None,
+            model_eos: Vec::new(),
             inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
                 id: "chatcmpl-2".to_string(),
                 created: 0,
@@ -1698,6 +1705,7 @@ mod tests {
     fn test_unary_response_serializes_sglext_promotion() {
         let payload = json!({"cached_tokens_details": {"device": 2, "host": 1}});
         let response = NvCreateChatCompletionResponse {
+            response_events: Vec::new(),
             inner: dynamo_protocols::types::CreateChatCompletionResponse {
                 id: "chatcmpl-3".to_string(),
                 created: 0,

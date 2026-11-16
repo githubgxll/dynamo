@@ -270,7 +270,7 @@ mod tests {
                 .zip([(3, 1, 0), (3, 3, 0), (4, 4, 2), (4, 5, 2), (4, 5, 2)])
         {
             let output: BackendOutput = serde_json::from_value(chunk).unwrap();
-            state.update_usage_from_backend_output(&output);
+            state.update_usage_from_backend_output(&output, false);
             let usage = state.get_usage();
             assert_eq!(usage.prompt_tokens, prompt_tokens);
             assert_eq!(usage.completion_tokens, completion_tokens);
