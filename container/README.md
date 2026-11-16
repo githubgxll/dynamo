@@ -16,6 +16,32 @@ The NVIDIA Dynamo project uses containerized development and deployment to maint
 
 - **`run.sh`** - A container runtime manager that launches Docker containers with proper GPU access, volume mounts, and environment configurations. It supports different development workflows from root-based legacy setups to user-based development environments.
 
+### In-tree FFmpeg codec allowlist
+
+`templates/wheel_builder.Dockerfile` enables VP8/VP9/rawvideo decoding and
+libvpx VP9/PPM/rawvideo encoding. Keep `ffprobe` and the `image2pipe` muxer:
+the video decode path uses them. The post-build codec guard must remain enabled.
+
+`--disable-decoders` alone is insufficient: FFmpeg's independently enabled
+hardware accelerators can select software decoders as dependencies. In
+FFmpeg 9.0.1, H.264/HEVC NVDEC accelerators select the H.264/HEVC decoders,
+which caused Actions run `43871741548` to fail the codec guard after installation.
+The builder disables hardware accelerators, `ffnvcodec` and NVENC explicitly;
+it does not install `nv-codec-headers`. Backend video integrations outside this
+in-tree FFmpeg build are unaffected.
+
+After changing these options, build FFmpeg and inspect `-encoders` and `-decoders`.
+FFmpeg has no `-parsers` CLI option: inspect the enabled `CONFIG_*_PARSER`
+macros in `config_components.h`, requiring VP8/VP9 and rejecting prohibited parsers.
+Then encode a raw frame to VP9, inspect it with `ffprobe`, and decode it to PPM
+via `image2pipe`. Dockerfile rendering alone does not verify the codec dependency
+closure.
+
+Verification for this repair: SGLang CUDA 13.0 wheel-builder rendering succeeded.
+A WSL Linux build of FFmpeg 9.0.1 using the template's configure options passed
+encoder/decoder and enabled-parser checks, VP9 encoding, `ffprobe` inspection,
+and VP9-to-PPM decoding. This is not a full manylinux Docker or Actions rebuild.
+
 ### Stage Summary for Frameworks
 
 <details>

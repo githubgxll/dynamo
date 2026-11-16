@@ -402,8 +402,11 @@ ENV SCCACHE_BUCKET=${USE_SCCACHE:+${SCCACHE_BUCKET}} \
 # MEDIA CODEC ALLOWLIST: the in-tree libavcodec should carry only
 # the media formats we actually build and use, not ffmpeg's full default decoder
 # set. A blanket --disable-decoders/--disable-demuxers/--disable-parsers plus a
-# narrow allowlist keeps the shipped libav*.so limited to that set. The allowlist
-# covers three paths: (1) the encode CLI ingesting rawvideo frames from
+# narrow allowlist keeps the shipped libav*.so limited to that set.
+# Hardware accelerators are a separate configure component class: auto-detected
+# H.264/HEVC NVDEC accelerators can select their software decoders back in even
+# with --disable-decoders. Disable that class and the NVIDIA codec integration.
+# The allowlist covers three paths: (1) the encode CLI ingesting rawvideo frames from
 # imageio over a pipe and encoding with libvpx_vp9, and (2) the Rust media-ffmpeg
 # VideoDecoder decoding VP8/VP9 in mp4/webm/mkv (test fixtures are VP9-in-mp4).
 # No H.264 parser/decoder/encoder is enabled — H.264 is not built at all. Image
@@ -418,7 +421,6 @@ ENV SCCACHE_BUCKET=${USE_SCCACHE:+${SCCACHE_BUCKET}} \
 #
 # Do not delete the source tarball for legal reasons.
 ARG FFMPEG_VERSION
-ARG NV_CODEC_HEADERS_REF
 ARG LIBVPX_REF
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
     --mount=type=secret,id=aws-role-arn,env=AWS_ROLE_ARN \
@@ -444,18 +446,6 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         sleep $((attempt * 3)); \
     done; \
     fi && \
-    # Preserve local hardware video encoding support via nv-codec-headers. \
-    for attempt in 1 2 3 4 5; do \
-        rm -rf nv-codec-headers; \
-        if git -c http.version=HTTP/1.1 clone --depth 1 --branch ${NV_CODEC_HEADERS_REF} \
-            https://github.com/FFmpeg/nv-codec-headers.git; then \
-            break; \
-        fi; \
-        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
-        echo "nv-codec-headers clone attempt ${attempt} failed; retrying..." >&2; \
-        sleep $((attempt * 3)); \
-    done && \
-    make -C nv-codec-headers PREFIX=/usr/local install && \
     # libvpx: BSD-licensed VP9 encoder needed for the WebM output path. Built from
     # source so we don't need to track distro package names (libvpx-dev on Debian
     # vs libvpx-devel via EPEL on RHEL/manylinux).
@@ -497,7 +487,9 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
         --disable-devices \
         --disable-libdrm \
         --enable-shared \
-        --enable-nvenc \
+        --disable-hwaccels \
+        --disable-ffnvcodec \
+        --disable-nvenc \
         --enable-libvpx \
         --disable-encoders \
         --enable-encoder=libvpx_vp9,ppm,rawvideo \
@@ -550,7 +542,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     # implementation is built) and not -bsfs: bitstream filters (e.g.
     # aac_adtstoasc, h264_mp4toannexb) only reframe an already-encoded stream, are
     # pulled in as mov/mp4 muxer dependencies, and carry no codec implementation.
-    for surface in encoders decoders parsers; do \
+    for surface in encoders decoders; do \
         if /usr/local/bin/ffmpeg -hide_banner "-${surface}" 2>/dev/null \
              | grep -qiE 'h\.?264|h\.?265|hevc|(^| )aac|nvenc|cuvid|nvdec'; then \
             echo "ERROR: in-tree ffmpeg exposes a disallowed codec via -${surface}" >&2; \
@@ -559,6 +551,16 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
             exit 1; \
         fi; \
     done && \
+    # FFmpeg has no -parsers CLI option. Check the enabled parser build macros,
+    # with positive VP8/VP9 checks so missing/unreadable configuration fails closed.
+    { grep -qE '^#define CONFIG_VP8_PARSER 1$' config_components.h \
+      && grep -qE '^#define CONFIG_VP9_PARSER 1$' config_components.h \
+      || { echo "ERROR: in-tree ffmpeg lacks its expected VP8/VP9 parser configuration" >&2; \
+           exit 1; }; } && \
+    { if grep -E '^#define CONFIG_.*(H264|H265|HEVC|AAC|NVENC|CUVID|NVDEC).*_PARSER 1$' config_components.h; then \
+        echo "ERROR: in-tree ffmpeg enables a disallowed parser" >&2; \
+        exit 1; \
+      fi; } && \
     /tmp/use-sccache.sh show-stats "FFMPEG" && \
     mkdir -p /usr/local/src/ffmpeg && \
     find /tmp/ffmpeg-${FFMPEG_VERSION} \( -name config.log -o -name config.status \) -delete && \

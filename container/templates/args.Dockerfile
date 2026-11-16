@@ -53,7 +53,6 @@ ARG ETCD_VERSION={{ context.dynamo.etcd_version }}
 ARG ETCD_COMMIT={{ context.dynamo.etcd_commit }}
 
 ARG ENABLE_MEDIA_FFMPEG={{ context[framework].enable_media_ffmpeg }}
-ARG NV_CODEC_HEADERS_REF={{ context.dynamo.nv_codec_headers_ref }}
 ARG FFMPEG_VERSION={{ context.dynamo.ffmpeg_version }}
 ARG LIBVPX_REF={{ context.dynamo.libvpx_ref }}
 {% if device in ("cuda", "xpu") -%}
