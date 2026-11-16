@@ -168,6 +168,13 @@ Override it with `docker build --build-arg GOPROXY=https://your-go-proxy ...`
 when using an internal module proxy. Go checksum verification remains enabled.
 Setting `GOPROXY` only on the runner host does not configure the Docker build.
 
+Before installing Debian packages, this stage rewrites the base image's
+`/etc/apt/sources.list.d/debian.sources` to use
+`https://repo.huaweicloud.com/debian` and
+`https://repo.huaweicloud.com/debian-security`. The existing suites, components
+and Debian signing key configuration are preserved. This does not change the
+Ubuntu package sources in other build stages or on the runner host.
+
 #### BuildKit cache mounts in Dockerfiles
 
 The framework Dockerfiles use BuildKit cache mounts (`RUN --mount=type=cache,...`) to reduce repeated downloads across builds. These caches are stored in Docker/BuildKit’s cache storage on the host (not in your host `~/.cache`), and are shared across builds that use the same builder.

@@ -17,7 +17,11 @@ ARG ETCD_COMMIT
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=local
 ARG GOPROXY=https://goproxy.cn
 ENV GOPROXY=${GOPROXY}
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+RUN sed -i \
+        -e 's|https\?://deb.debian.org/debian-security|https://repo.huaweicloud.com/debian-security|g' \
+        -e 's|https\?://deb.debian.org/debian|https://repo.huaweicloud.com/debian|g' \
+        /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 {% include "templates/verify_ca_certificates.Dockerfile" %}
