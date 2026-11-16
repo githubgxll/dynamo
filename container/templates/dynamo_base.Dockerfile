@@ -15,6 +15,8 @@ ARG NATS_COMMIT
 ARG ETCD_VERSION
 ARG ETCD_COMMIT
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=local
+ARG GOPROXY=https://goproxy.cn
+ENV GOPROXY=${GOPROXY}
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 

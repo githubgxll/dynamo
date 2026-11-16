@@ -160,6 +160,14 @@ The `render.py` script is responsible for generating Dockerfiles for different A
 - **Build Caching**: Docker layer caching and sccache support
 - **GPU Optimization**: CUDA, EFA, and NIXL support
 
+#### Go module download proxy
+
+The `go_tools_builder` stage builds the bundled NATS and etcd binaries with
+`GOPROXY=https://goproxy.cn` to avoid depending on access to `proxy.golang.org`.
+Override it with `docker build --build-arg GOPROXY=https://your-go-proxy ...`
+when using an internal module proxy. Go checksum verification remains enabled.
+Setting `GOPROXY` only on the runner host does not configure the Docker build.
+
 #### BuildKit cache mounts in Dockerfiles
 
 The framework Dockerfiles use BuildKit cache mounts (`RUN --mount=type=cache,...`) to reduce repeated downloads across builds. These caches are stored in Docker/BuildKit’s cache storage on the host (not in your host `~/.cache`), and are shared across builds that use the same builder.
