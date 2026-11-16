@@ -83,3 +83,16 @@ Actions run `43907947941` failed because both binding lockfiles still recorded
 Both locks now resolve the existing path package, matching the root workspace;
 package versions and transitive dependencies are unchanged. Keep `--locked` on
 runtime wheel builds and validate binding metadata with the image's feature set.
+
+## Ubuntu certificate bootstrap
+
+Actions run `43921856904` failed fetching Ubuntu indexes through the CI HTTP
+proxy before installing `ca-certificates`. The `dynamo_base` bootstrap now uses
+the same Huawei Cloud Ubuntu mirror as the SGLang runtime package stage, for
+both legacy `.list` and deb822 `.sources` entries. Third-party repositories,
+suites, components and signature-key settings are preserved.
+
+Index refresh uses `APT::Update::Error-Mode=any` and the existing bounded retry
+policy. Persistent refresh failures stop before installation; certificate
+installation failures remain fatal. No TLS or repository-signature check is
+disabled. This does not guarantee availability of the CI proxy or mirror.
