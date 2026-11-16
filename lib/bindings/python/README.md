@@ -46,6 +46,13 @@ uv pip install 'maturin[patchelf]'
 maturin develop --uv
 ```
 
+### Native build fixes
+
+The duplicate `Arc` import in `rust/llm/routed_engine.rs` was removed after
+Actions run `43912662577` failed with Rust `E0252`. This was a source compilation
+error; the parallel image-pull stages were canceled as a consequence.
+
+
 ## Run Examples
 
 ### Prerequisite
