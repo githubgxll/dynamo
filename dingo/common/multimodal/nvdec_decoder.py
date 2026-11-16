@@ -163,12 +163,13 @@ def _gpu_id() -> int:
 
 
 def _frame_to_rgb_hwc(frame) -> np.ndarray:
-    """Return host ``(H, W, 3)`` uint8 pixels independent of decoder storage.
+    """Copy a decoded (device) RGB frame to a host ``(H, W, 3)`` uint8 array.
 
-    With ``use_device_memory=False``, DLPack exposes host memory, so ``.cpu()``
-    does not copy and ``.numpy()`` still aliases the decoder's buffer. Copy
-    before another decode can reuse that storage. CUDA-to-host transfer and
-    dtype conversion already allocate independent storage.
+    A 2.x ``DecodedFrame`` (``output_color_type=RGB``) supports DLPack and may
+    expose reusable CPU or CUDA storage. Always copy to owned host storage before
+    decoding the next frame. Returns a single frame: ``decode_video_nvdec`` stacks
+    these into ``(num_frames, H, W, 3)``, so a batched replacement here has to drop
+    that stack too.
     """
     import torch
 
@@ -176,7 +177,7 @@ def _frame_to_rgb_hwc(frame) -> np.ndarray:
         tensor = torch.from_dlpack(frame)
     except Exception:  # noqa: BLE001 - fall back to the CUDA-array-interface path
         tensor = torch.as_tensor(frame, device="cuda")
-    arr = tensor.cpu().numpy()
+    arr = tensor.to(device="cpu", copy=True).numpy()
     if arr.dtype != np.uint8:
         arr = arr.astype(np.uint8)
     elif tensor.device.type == "cpu":
