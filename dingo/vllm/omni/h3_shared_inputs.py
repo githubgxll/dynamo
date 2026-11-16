@@ -12,13 +12,13 @@ import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import shutil
 import stat
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 TYPE = "dingo_h3_shared_inputs_v1"
 CAPABILITY = "shared_input_files.v1"
@@ -261,6 +261,7 @@ class SharedInputSession:
         self.root = None
         self.owned_bytes = 0
         self.prepared = False
+        self.image_receipt = None
 
     async def prepare(self, timeout=120):
         self.capacity.reserve(self.total)
@@ -302,6 +303,9 @@ class SharedInputSession:
                     stderr.decode(errors="replace")[-2048:],
                 )
                 raise ValueError("shared input file preparation failed")
+            if getattr(self.adapter, "image_preprocess_profile", "off") != "off":
+                remaining = max(0.001, timeout - (time.monotonic() - started))
+                await asyncio.wait_for(self._prepare_images(), timeout=remaining)
             self.prepared = True
             logging.getLogger(__name__).info(
                 "shared_input_prepared task=%s attempt=%s bytes=%s elapsed_s=%.3f gpu_started=false",
@@ -315,6 +319,65 @@ class SharedInputSession:
                 process.kill()
                 await process.wait()
 
+    async def _prepare_images(self):
+        from dingo.vllm.omni import h3_image_preprocess
+
+        images = [
+            e for e in self.value["entries"] if e["content_type"].startswith("image/")
+        ]
+        if not images:
+            return
+        async with h3_image_preprocess.group_permits(
+            self.adapter.image_prepare_slots,
+            self.adapter.image_preprocess_parallelism,
+            self.adapter.image_prepare_group_lock,
+        ):
+            reserve = len(images) * h3_image_preprocess.MAX_DERIVED_BYTES
+            self.capacity.reserve(reserve)
+            self.owned_bytes += reserve
+            spawn = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-I",
+                    str(Path(h3_image_preprocess.__file__).resolve()),
+                    str(self.root),
+                    str(self.adapter.image_preprocess_parallelism),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            )
+            try:
+                process = await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                process = await spawn
+                await h3_image_preprocess.kill_and_wait(process)
+                raise
+            try:
+                _, stderr = await process.communicate(json.dumps(images).encode())
+                if process.returncode:
+                    logging.getLogger(__name__).warning(
+                        "h3_image_prepare_failed detail=%s",
+                        stderr.decode(errors="replace")[-2048:],
+                    )
+                    raise ValueError("H3 image preprocessing failed")
+                receipt = json.loads((self.root / "image-preprocess.json").read_text())
+                actual = receipt["derived_bytes"]
+                if not 0 <= actual <= reserve:
+                    raise ValueError("invalid image preparation byte count")
+                self.capacity.release(reserve - actual)
+                self.owned_bytes -= reserve - actual
+                self.image_receipt = receipt
+                logging.getLogger(__name__).info(
+                    "h3_image_prepared task=%s attempt=%s receipt=%s",
+                    self.value["task_id"],
+                    self.value["attempt"],
+                    json.dumps(receipt),
+                )
+            finally:
+                if process.returncode is None:
+                    await h3_image_preprocess.kill_and_wait(process)
+
     def cleanup(self):
         if self.root is not None:
             shutil.rmtree(self.root)
@@ -326,6 +389,10 @@ class SharedInputSession:
     def path(self, ordinal):
         if not self.prepared or self.root is None:
             raise ValueError("shared inputs not prepared")
+        if self.image_receipt:
+            for row in self.image_receipt["images"]:
+                if row["ordinal"] == ordinal and row["resized"]:
+                    return self.root / row["path"]
         return self.root / str(ordinal)
 
 

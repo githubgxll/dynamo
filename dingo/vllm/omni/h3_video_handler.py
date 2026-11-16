@@ -42,6 +42,11 @@ class H3VideoHandler:
     def video_ready(self):
         return not self.quarantined and self.pause_started is None and self.healthy()
 
+    @property
+    def video_queueable(self):
+        """Gateway may queue while cancellation settles; it still must not dispatch."""
+        return not self.quarantined and self.healthy()
+
     async def _confirm_failed_base_settled(self):
         """Cancellation fence only; OOM never attempts engine reuse.
 

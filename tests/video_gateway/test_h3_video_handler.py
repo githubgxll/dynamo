@@ -63,7 +63,15 @@ async def test_base_readiness_only_checks_runtime(tmp_path):
         handler=H3VideoHandler(Engine());manager=DetachedOmniTaskManager(handler,tmp_path)
         server=VideoReadinessServer(manager,handler.handler.engine_client,port=18082,runtime_port=port,sr_port=None)
         assert await server.check_components()
-        handler.pause();assert not await server.check_components()
+        handler.pause()
+        manager.components_ready = await server.check_components()
+        assert manager.components_ready
+        assert (await server.ready(None)).status == 503
+        caps=[x async for x in manager.generate({ENVELOPE_KEY:{'schema_version':1,'op':'capabilities'}},N())][0]
+        assert caps['execution_capacity'] == 0
+        assert caps['gateway_queue_admission']['allowed']
+        handler.quarantine('dead engine')
+        assert not await server.check_components()
     finally:await runner.cleanup()
 
 @pytest.mark.asyncio

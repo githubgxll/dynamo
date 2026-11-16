@@ -265,6 +265,14 @@ class MiniMaxH3RequestAdapter:
             media_max_bytes, _managed_media_size(self.requests_root)
         )
         self._deferred_cleanups: set[asyncio.Task[None]] = set()
+        self.image_preprocess_profile = os.getenv("DINGO_H3_IMAGE_PREPROCESS_PROFILE", "off")
+        if self.image_preprocess_profile not in {"off", "fit_1080p_v1"}:
+            raise ValueError("invalid H3 image preprocessing profile")
+        self.image_preprocess_parallelism = int(os.getenv("DINGO_H3_IMAGE_PREPROCESS_CONCURRENCY", "1"))
+        if not 1 <= self.image_preprocess_parallelism <= 3:
+            raise ValueError("H3 image preprocessing concurrency must be in [1, 3]")
+        self.image_prepare_slots = asyncio.Semaphore(self.image_preprocess_parallelism)
+        self.image_prepare_group_lock = asyncio.Lock()
         self.shared_inputs_enabled = os.getenv("DINGO_H3_SHARED_INPUTS_ENABLED") == "1"
         self.shared_storage_id = os.getenv("DINGO_H3_SHARED_INPUTS_STORAGE_ID", "")
         if self.shared_inputs_enabled and (not self.shared_storage_id or len(self.shared_storage_id) > 160):
@@ -353,6 +361,9 @@ class MiniMaxH3RequestAdapter:
         loader: Any,
         request_scope: _RequestMediaScope | None = None,
     ) -> Any | None:
+        if self.image_preprocess_profile != "off":
+            from dingo.vllm.omni.h3_image_preprocess import SizingLoader
+            loader = SizingLoader(loader, self.image_prepare_slots)
         from dingo.vllm.omni.h3_shared_inputs import CURRENT, descriptor
         shared = descriptor({"input_reference": req.input_reference,
                              "input_references": req.input_references})
