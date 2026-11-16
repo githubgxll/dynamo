@@ -65,7 +65,7 @@ def prepare_source(deps, version, work):
     checkout = work / f"aisim-{commit}"
     run(
         sys.executable,
-        str(checkout / "scripts/apply_dev_version.py"),
+        str(checkout / "scripts/release/apply_dev_version.py"),
         ".dev" + version.split(".dev", 1)[1],
         str(checkout),
     )

@@ -31,7 +31,8 @@ so each image only installs what it needs.
 `stage_aisimulate.py` first downloads the exact wheel from NVIDIA's public index.
 If unavailable, it builds only a version listed in `aisimulate-sources.json`.
 The fallback uses a full source commit and SHA-256 archive checksum, applies
-the upstream nightly version script, and builds with locked Rust dependencies.
+the pinned commit's `scripts/release/apply_dev_version.py`, and builds with
+locked Rust dependencies.
 It checks both Dynamo Rust pins and the final wheel metadata against the Python
 pin; a different version is never substituted.
 
@@ -45,6 +46,17 @@ The canonical source repository is now `ai-dynamo/aisim`. Codeload archives
 extract to `aisim-<commit>`; the reviewed archive digest and extraction prefix
 must be updated together when the upstream repository is renamed. The pinned
 commit and Python/Rust versions are unchanged.
+
+Actions run `43883086595` failed because staging still invoked the former
+`scripts/apply_dev_version.py` path, which is absent from the reviewed commit.
+The release-script path and archive test fixture now match that commit; the
+commit, archive digest, Python/Rust pins and transitive lock entries are unchanged.
+
+Verification: the four source-fallback/Rust-source-staging regression tests pass
+on Linux. The existing extraction test covers the release-script layout and
+version checks; checksum rejection and transitive-lock preservation remain covered.
+A separate real-archive staging probe timed out downloading the upstream archive
+after 240 seconds. The full runtime image build has not been rerun locally.
 
 When updating the dependency, update the Python and both Rust pins together.
 For an unpublished wheel, also review the corresponding source commit and archive

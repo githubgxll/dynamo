@@ -273,7 +273,7 @@ def _aisim_source_archive(tmp_path, version, monkeypatch):
     staging = _staging_module()
     content = tmp_path / "aisim-src"
     root = content / f"aisim-{commit}"
-    (root / "scripts").mkdir(parents=True)
+    (root / "scripts/release").mkdir(parents=True)
     (root / "python/aisimulate").mkdir(parents=True)
     (root / "crates/core").mkdir(parents=True)
     (root / "python/aisimulate/pyproject.toml").write_text(
@@ -285,7 +285,7 @@ def _aisim_source_archive(tmp_path, version, monkeypatch):
     (root / "Cargo.lock").write_text(
         '[[package]]\nname = "aisimulate-core"\nversion = "0.13.0"\n'
     )
-    (root / "scripts/apply_dev_version.py").write_text(
+    (root / "scripts/release/apply_dev_version.py").write_text(
         """
 import sys
 from pathlib import Path
