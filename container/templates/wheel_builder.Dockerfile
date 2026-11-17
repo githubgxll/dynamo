@@ -161,11 +161,6 @@ RUN apt-get update -y \
 {% endif %}
 
 {% if device == "cuda" %}
-# Keep the CA floor in this RUN so its version participates in the layer cache key.
-# dnf fails when no package at or above the floor is available.
-RUN dnf -y --setopt=tsflags=nocontexts install 'ca-certificates >= 2026.2.92_v9.0.319-81.3.el8_10' && \
-    dnf clean all
-
 # Install system dependencies
 # Cache dnf downloads; sharing=locked avoids dnf/rpm races with concurrent builds.
 # --setopt=tsflags=nocontexts: skip SELinux file-context labeling. The manylinux
@@ -196,6 +191,18 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
         done; \
     }; \
     configure_dnf_repos; \
+    # Install the pinned CA floor only after selecting the fixed mirror. \
+    # The package lives in BaseOS; unrelated Extras/EPEL outages must not block it. \
+    for attempt in 1 2 3 4 5; do \
+        if dnf -y --setopt=tsflags=nocontexts --disablerepo='*' --enablerepo=baseos \
+            install 'ca-certificates >= 2026.2.92_v9.0.319-81.3.el8_10'; then \
+            break; \
+        fi; \
+        dnf clean metadata; \
+        if [ "${attempt}" -eq 5 ]; then exit 1; fi; \
+        echo "CA certificate install attempt ${attempt} failed; retrying..." >&2; \
+        sleep $((attempt * 3)); \
+    done; \
     for attempt in 1 2 3 4 5; do \
         if dnf install -y --setopt=tsflags=nocontexts almalinux-release-synergy; then \
             break; \

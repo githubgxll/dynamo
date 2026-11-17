@@ -96,3 +96,14 @@ Index refresh uses `APT::Update::Error-Mode=any` and the existing bounded retry
 policy. Persistent refresh failures stop before installation; certificate
 installation failures remain fatal. No TLS or repository-signature check is
 disabled. This does not guarantee availability of the CI proxy or mirror.
+
+## AlmaLinux builder certificate bootstrap
+
+Configure the fixed AlmaLinux/EPEL mirrors before the first DNF installation,
+including the CA bootstrap. Its minimum remains
+`ca-certificates >= 2026.2.92_v9.0.319-81.3.el8_10`; this command enables only
+BaseOS, which supplies the package, so unrelated Extras/EPEL metadata cannot
+block certificate installation. Repository selection is per-command, not a
+persistent disablement. Transient failures use the existing bounded retries;
+exhaustion stops the build before other dependencies are installed. TLS and
+RPM signature verification remain enabled.
