@@ -481,6 +481,7 @@ class SglangPreprocessWorkerResult:
     # a reasoning parser in that case so the pool path matches the inline
     # path byte-for-byte.
     effective_reasoning_parser_name: str | None = None
+    effective_tools: Any = None
 
 
 def _init_worker(
@@ -561,6 +562,7 @@ def _preprocess_worker(
         response_format_guided_active=pre.response_format_guided_active,
         tool_guided_active=pre.tool_guided_active,
         effective_reasoning_parser_name=effective_reasoning_parser_name,
+        effective_tools=pre.effective_tools,
         named_zero_arg_tool=pre.named_zero_arg_tool,
     )
 
@@ -869,7 +871,9 @@ class SglangProcessor:
             history_tool_calls_count=_get_history_tool_calls_count(
                 request.get("messages", [])
             ),
-            sglang_tools=convert_tools(request.get("tools")),
+            sglang_tools=pre.effective_tools
+            if pre.effective_tools is not None
+            else convert_tools(request.get("tools")),
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=self.reasoning_parser_name,
             named_zero_arg_tool=pre.named_zero_arg_tool,
@@ -940,6 +944,7 @@ class SglangProcessor:
             request,
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=preproc_result.effective_reasoning_parser_name,
+            sglang_tools=preproc_result.effective_tools,
             force_reasoning=preproc_result.force_reasoning,
             response_format_guided_active=(
                 preproc_result.response_format_guided_active
@@ -957,7 +962,9 @@ class SglangProcessor:
             history_tool_calls_count=_get_history_tool_calls_count(
                 request.get("messages", [])
             ),
-            sglang_tools=convert_tools(request.get("tools")),
+            sglang_tools=preproc_result.effective_tools
+            if preproc_result.effective_tools is not None
+            else convert_tools(request.get("tools")),
             tool_call_parser_name=self.tool_call_parser_name,
             reasoning_parser_name=self.reasoning_parser_name,
             named_zero_arg_tool=preproc_result.named_zero_arg_tool,

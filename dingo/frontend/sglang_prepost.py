@@ -34,6 +34,12 @@ from sglang.srt.parser.reasoning_parser import GptOssDetector, ReasoningParser
 from dingo.common.utils.engine_response import trailing_stop_prefix_len
 from dingo.common.utils.guided_json import admits_only_empty_object
 
+from .kimi_k3 import (
+    KIMI_K3_LEVEL_BY_TIER,
+    KIMI_K31_LEVEL_BY_TIER,
+    kimi_k3_template_kwargs,
+    normalize_kimi_k3_request,
+)
 from .structural_tag_policy import (
     ToolChoiceKind,
     effective_tool_strict,
@@ -81,6 +87,7 @@ class SglangPreprocessResult:
     tool_guided_active: bool = False
     require_reasoning: bool = False
     named_zero_arg_tool: str | None = None
+    effective_tools: list[SglangTool] | None = None
 
 
 # --- force_reasoning detection (mirrors sglang's template_manager) -------
@@ -1079,6 +1086,7 @@ def build_tool_call_guided_decoding(
     tool_call_parser_name: str | None,
     tokenizer: Any | None = None,
     sglang_tools: list[SglangTool] | None,
+    raw_tools: list[dict[str, Any]] | None = None,
     structural_tag_mode: str = "off",
     structural_tag_scope: str = "auto",
     structural_tag_schema: str = "auto",
@@ -1124,7 +1132,8 @@ def build_tool_call_guided_decoding(
         if tool_choice == "auto"
         else "other"
     )
-    raw_tools = request.get("tools") or []
+    if raw_tools is None:
+        raw_tools = request.get("tools") or []
     attempt_structural_tag = should_attempt_structural_tag(
         mode=structural_tag_mode,
         scope=structural_tag_scope,
@@ -1339,6 +1348,29 @@ def preprocess_chat_request(
     request = _with_thinking_template_kwargs(request, default_thinking_mode)
     legacy_guidance = legacy_guided_decoding(request)
     messages = _materialize_messages(request.get("messages", []))
+    is_kimi = _is_kimi_k3_request(
+        request,
+        tokenizer=tokenizer,
+        tool_call_parser_name=tool_call_parser_name,
+        reasoning_parser_name=reasoning_parser_name,
+    )
+    kimi = None
+    if is_kimi:
+        # Keep declaration positions and field presence separate from guidance.
+        request["messages"] = messages
+        if request.get("tools") is not None:
+            request["tools"] = copy.deepcopy(request["tools"])
+        model_hint = str(
+            request.get("model") or getattr(tokenizer, "name_or_path", "")
+        ).lower().replace("-", "_").replace(".", "")
+        kimi = normalize_kimi_k3_request(
+            request,
+            level_by_tier=(
+                KIMI_K31_LEVEL_BY_TIER
+                if "k31" in model_hint
+                else KIMI_K3_LEVEL_BY_TIER
+            ),
+        )
 
     # Generation mode is independent from response placement.  A client can
     # request separate_reasoning=False while SGLang still needs the reasoning
@@ -1353,7 +1385,9 @@ def preprocess_chat_request(
     )
 
     # Convert tools to SGLang format (done once, shared with parser creation)
-    sglang_tools = convert_tools(request.get("tools"))
+    sglang_tools = convert_tools(
+        kimi.effective_tools if kimi is not None else request.get("tools")
+    )
 
     # Reject a forced tool_choice that cannot be satisfied by the provided tools.
     # Otherwise the chat template and guided decoding cannot enforce the request.
@@ -1381,10 +1415,14 @@ def preprocess_chat_request(
             "structural_tag response format"
         )
 
-    template_tools = _filter_template_tools(
-        request,
-        sglang_tools=sglang_tools,
-        exclude_tools_when_tool_choice_none=exclude_tools_when_tool_choice_none,
+    template_tools = (
+        kimi.raw_global_tools
+        if kimi is not None
+        else _filter_template_tools(
+            request,
+            sglang_tools=sglang_tools,
+            exclude_tools_when_tool_choice_none=exclude_tools_when_tool_choice_none,
+        )
     )
 
     if _should_use_deepseek_v4_encoding(
@@ -1419,12 +1457,10 @@ def preprocess_chat_request(
         if (reasoning_effort := request.get("reasoning_effort")) is not None:
             template_kwargs["reasoning_effort"] = reasoning_effort
 
-        if _is_kimi_k3_request(
-            request,
-            tokenizer=tokenizer,
-            tool_call_parser_name=tool_call_parser_name,
-            reasoning_parser_name=reasoning_parser_name,
-        ):
+        if is_kimi:
+            template_kwargs.update(kimi_k3_template_kwargs(kimi))
+            template_kwargs["add_generation_prompt"] = True
+            template_kwargs["tokenize"] = True
             _reject_kimi_k3_reserved_image_placeholder(messages)
             image_prompt_count = _kimi_k3_image_prompt_count(messages)
             template_kwargs["image_prompts"] = ["<|media_pad|>"] * image_prompt_count
@@ -1446,6 +1482,7 @@ def preprocess_chat_request(
         request,
         tool_call_parser_name=tool_call_parser_name,
         sglang_tools=sglang_tools,
+        raw_tools=kimi.effective_tools if kimi is not None else None,
         structural_tag_mode=structural_tag_mode,
         structural_tag_scope=structural_tag_scope,
         structural_tag_schema=structural_tag_schema,
@@ -1533,6 +1570,7 @@ def preprocess_chat_request(
         response_format_guided_active=response_format_guided_active,
         tool_guided_active=tool_guided_active,
         require_reasoning=require_reasoning,
+        effective_tools=sglang_tools,
         named_zero_arg_tool=(
             named_closed_zero_arg_tool(request)
             if guided_decoding == {"regex": r"\{\}"}
