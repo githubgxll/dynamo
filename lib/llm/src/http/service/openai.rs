@@ -1635,8 +1635,29 @@ fn convert_anthropic_user_tool_results(
     Ok(Some(converted))
 }
 
-/// Middleware that normalizes Anthropic content blocks in OpenAI chat
-/// completion requests before deserialization.
+fn contains_unsupported_chat_file(request: &serde_json::Value) -> bool {
+    request
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            matches!(
+                                part.get("type").and_then(serde_json::Value::as_str),
+                                Some("file" | "input_file")
+                            )
+                        })
+                    })
+            })
+        })
+}
+
+/// Normalize compatible content and reject unsupported chat attachments before
+/// typed deserialization, reusing the existing bounded body read.
 pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
 
@@ -1675,6 +1696,20 @@ pub async fn anthropic_content_compat_middleware(request: Request<Body>, next: N
                 .await;
         }
     };
+
+    // Keep unsupported Content-Type handling with the normal request reader.
+    // Inspect only message content parts, never text, metadata or tool arguments.
+    if ensure_json_content_type(&parts.headers).is_ok() && contains_unsupported_chat_file(&json) {
+        return ErrorMessage::from_http_error(
+            ErrorClass::InvalidRequest,
+            HttpError {
+                code: StatusCode::BAD_REQUEST.as_u16(),
+                message: "Unsupported custom files in chat messages content (file/input_file)"
+                    .to_string(),
+            },
+        )
+        .into_response();
+    }
 
     // Walk messages, convert assistant blocks first, then split user tool
     // results. This keeps assistant tool_calls ahead of the resulting tool
@@ -14337,6 +14372,37 @@ mod tests {
     // -----------------------------------------------------------------------
     // Middleware integration tests: real HTTP server + JSON echo downstream
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_file_detection_is_limited_to_content_parts() {
+        for kind in ["file", "input_file"] {
+            for role in ["user", "assistant", "system", "tool"] {
+                assert!(contains_unsupported_chat_file(&serde_json::json!({
+                    "messages": [{"role": role, "content": [{"type": kind}]}]
+                })));
+            }
+        }
+        for content in [
+            serde_json::json!("file input_file"),
+            serde_json::json!([{"type": "text", "text": "{\"type\":\"file\"}"}]),
+            serde_json::json!([{"type": "image_url", "image_url": {"url": "https://example.com/file.png"}}]),
+            serde_json::json!([{"type": "unknown"}]),
+            serde_json::json!(null),
+            serde_json::json!(42),
+        ] {
+            assert!(!contains_unsupported_chat_file(&serde_json::json!({
+                "messages": [{"role": "user", "content": content}],
+                "metadata": {"type": "file"}
+            })));
+        }
+        assert!(!contains_unsupported_chat_file(&serde_json::json!({
+            "messages": [{"role": "assistant", "tool_calls": [{
+                "id": "1", "type": "function", "function": {
+                    "name": "save", "arguments": "{\"type\":\"file\"}"
+                }
+            }]}]
+        })));
+    }
 
     /// Spin up a throwaway HTTP server running only the compat middleware in
     /// front of a JSON echo handler, and return its chat-completions URL.

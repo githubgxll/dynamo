@@ -247,6 +247,99 @@ async fn chat_custom_unsupported_grammar_and_wrong_choice_do_not_reach_engine() 
     .await;
 }
 
+#[tokio::test]
+#[serial]
+async fn chat_file_attachments_fail_explicitly_without_dispatch_or_data_leaks() {
+    temp_env::async_with_vars(BASE_ENV, async {
+        let svc = HarnessService::start(Vec::new()).await;
+        for stream in [false, true] {
+            for part in [
+                json!({"type": "file", "file": {"file_id": "private-file-id"}}),
+                json!({"type": "file", "file": {
+                    "filename": "private.pdf", "file_data": "private-encoded-data"
+                }}),
+                json!({"type": "input_file", "file_url": "https://private.example/report.pdf"}),
+            ] {
+                let response = post_json(
+                    &svc,
+                    "/v1/chat/completions",
+                    json!({
+                        "model": MODEL, "stream": stream,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": "read this"}, part
+                        ]}]
+                    }),
+                )
+                .await;
+                assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+                let error: Value = response.json().await.unwrap();
+                assert_eq!(error["code"], 400);
+                assert_eq!(
+                    error["message"],
+                    "Unsupported custom files in chat messages content (file/input_file)"
+                );
+                assert!(!error.to_string().contains("private"));
+            }
+        }
+        assert!(svc.engine.take_requests().await.is_empty());
+        svc.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn chat_file_rejection_preserves_json_content_type_and_body_limit_errors() {
+    let mut env = BASE_ENV.to_vec();
+    env.push((
+        dynamo_runtime::config::environment_names::llm::DYN_HTTP_BODY_LIMIT_MB,
+        Some("1"),
+    ));
+    temp_env::async_with_vars(env, async {
+        let svc = HarnessService::start(Vec::new()).await;
+        let payload = json!({"model": MODEL, "messages": [{"role": "user",
+            "content": [{"type": "file", "file": {"file_id": "file-1"}}]}]});
+        let response = svc
+            .client
+            .post(format!("{}/v1/chat/completions", svc.base_url))
+            .header("content-type", "text/plain")
+            .body(payload.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let mut oversized = payload.clone();
+        oversized["messages"][0]["content"][0]["file"]["file_data"] =
+            json!("x".repeat(1024 * 1024));
+        let response = post_json(&svc, "/v1/chat/completions", oversized).await;
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+
+        let response = svc
+            .client
+            .post(format!("{}/v1/chat/completions", svc.base_url))
+            .header("content-type", "application/json")
+            .body(r#"{"messages":[{"content":[{"type":"file"}]}],"model": "#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(
+            !response
+                .text()
+                .await
+                .unwrap()
+                .contains("Unsupported custom files")
+        );
+        assert!(svc.engine.take_requests().await.is_empty());
+        svc.shutdown().await;
+    })
+    .await;
+}
+
 #[derive(Clone, Copy)]
 enum ExpectedError {
     Validation,

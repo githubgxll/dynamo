@@ -850,6 +850,17 @@ always use the system allocator.
   a Kubernetes manifest.
 </ParamField>
 
+## Chat request compatibility
+
+### Unsupported chat file attachments
+
+`/v1/chat/completions` rejects `file` and `input_file` message content parts with
+HTTP 400 and the message `Unsupported custom files in chat messages content
+(file/input_file)`. It does not read or decode the attached file. Filenames, URLs
+and encoded file contents are not included in the error. This check does not
+change supported text or image content, the request body limit, or the
+`/v1/responses` contract.
+
 ## HTTP endpoints
 
 The frontend exposes the following HTTP endpoints.

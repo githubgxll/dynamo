@@ -662,6 +662,32 @@ class NixlWriteEmbeddingReceiver(AbstractEmbeddingReceiver):
 
         self.id_counter = MonolithicCounter()
         self.to_buffer_id = {}
+        # Once advertised to a sender, an address cannot be reused until its
+        # WRITE completion notification arrives, even if its caller has gone away.
+        self._quarantined_buffers: dict[tuple[str, int], int] = {}
+
+    def _poll_write_completions(self):
+        notifs = self.nixl_agent.update_notifs()
+        # Reap lazily during receives (including buffer-allocation waits). This
+        # needs no background task retaining the receiver indefinitely. A peer
+        # that never completes deliberately keeps its slot unavailable: a local
+        # timeout is not an RDMA abort, and this receiver owns no sender handle.
+        for (sender_id, tensor_id), buffer_id in list(
+            self._quarantined_buffers.items()
+        ):
+            done_signal = str(tensor_id).encode()
+            if done_signal in notifs.get(sender_id, ()):
+                self.nixl_agent.notifs[sender_id].remove(done_signal)
+                self.ring_buffer.release_buffer(buffer_id)
+                del self._quarantined_buffers[(sender_id, tensor_id)]
+                logger.info(
+                    "Released quarantined NIXL WRITE buffer after completion: "
+                    "sender=%s tensor_id=%s buffer_id=%s",
+                    sender_id,
+                    tensor_id,
+                    buffer_id,
+                )
+        return notifs
 
     async def receive_embeddings(
         self, request: TransferRequest, receive_timeout=60
@@ -695,10 +721,12 @@ class NixlWriteEmbeddingReceiver(AbstractEmbeddingReceiver):
         # Allocate tensor to be written into.
         start_time = time.perf_counter()
         while True:
+            self._poll_write_completions()
             buffer_id, transfer_tensor = self.ring_buffer.get_buffer(
                 nixl_request.tensor_size
             )
             if transfer_tensor is not None:
+                assert buffer_id is not None
                 break
 
             # No available buffer, wait for a short period and retry.
@@ -720,66 +748,81 @@ class NixlWriteEmbeddingReceiver(AbstractEmbeddingReceiver):
             if time.perf_counter() - start_time > receive_timeout:
                 raise TimeoutError("Timeout while waiting for available buffer.")
             await asyncio.sleep(0.005)
-        # view as tensor matching the source tensor..
-        embeddings_shape = request.embeddings_shape
-        embeddings_dtype = torch_dtype_from_string(request.embedding_dtype_str)
-        embedding_tensor = transfer_tensor.view(dtype=embeddings_dtype).view(
-            embeddings_shape
-        )
-
-        # Request for transfer
         tensor_id = self.id_counter.get_next_id()
-        notif_msg = msgspec.msgpack.encode(
-            (
-                nixl_request.tensor_id,
-                (
-                    transfer_tensor.data_ptr(),
-                    nixl_request.tensor_size,
-                    # torch returns -1 for CPU device, need to normalized there
-                    max(transfer_tensor.get_device(), 0),
-                    "cuda" if str(transfer_tensor.device).startswith("cuda") else "cpu",
-                ),
-                tensor_id,
-                # side channel handshake fallback for receiver API consistency,
-                # this will increase message size for the first few transfers before handshake
-                self.agent_metadata if nixl_request.agent_metadata else b"",
+        published = False
+        completed = False
+        try:
+            # view as tensor matching the source tensor..
+            embeddings_shape = request.embeddings_shape
+            embeddings_dtype = torch_dtype_from_string(request.embedding_dtype_str)
+            embedding_tensor = transfer_tensor.view(dtype=embeddings_dtype).view(
+                embeddings_shape
             )
-        )
-        self.nixl_agent.send_notif(nixl_request.sender_agent_id, notif_msg=notif_msg)
 
-        # await for write notification
-        start_time = time.perf_counter()
-        done_signal = str(tensor_id).encode()
-        found = False
-        while not found:
-            # parse notifications to find done signal, we can't use 'check_remote_xfer_done' API
-            # because it match requested string pattern in substring of the notifications instead
-            # of exact match, which is not what we want, i.e. for two done signal "1" and "11",
-            # 'check_remote_xfer_done("1")' will return True for both signal and "11" will be cleared
-            # as a result, leading the subsequent 'check_remote_xfer_done("1")' returns False.
-            notifs = self.nixl_agent.update_notifs()
-            if nixl_request.sender_agent_id in notifs:
-                for notif in notifs[nixl_request.sender_agent_id]:
-                    if notif == done_signal:
-                        self.nixl_agent.notifs[nixl_request.sender_agent_id].remove(
-                            notif
-                        )
-                        found = True
-                        break
-
-            await asyncio.sleep(0.001)
-            # Waited for too long without transfer completion, log for debugging
-            if (time.perf_counter() - start_time) > receive_timeout:
-                self.ring_buffer.release_buffer(buffer_id)
-                raise TimeoutError(
-                    f"Timeout while waiting for transfer completion for tensor_id {tensor_id} for more than {receive_timeout} seconds"
+            # Request for transfer
+            notif_msg = msgspec.msgpack.encode(
+                (
+                    nixl_request.tensor_id,
+                    (
+                        transfer_tensor.data_ptr(),
+                        nixl_request.tensor_size,
+                        # torch returns -1 for CPU device, need to normalized there
+                        max(transfer_tensor.get_device(), 0),
+                        "cuda" if str(transfer_tensor.device).startswith("cuda") else "cpu",
+                    ),
+                    tensor_id,
+                    # side channel handshake fallback for receiver API consistency,
+                    # this will increase message size for the first few transfers before handshake
+                    self.agent_metadata if nixl_request.agent_metadata else b"",
                 )
-        logger.debug(
-            f"Transfer completed for tensor_id {tensor_id}, total wait time: {time.perf_counter() - start_time:.2f} seconds"
-        )
+            )
+            # Even a failing send_notif may have published the destination address.
+            published = True
+            self.nixl_agent.send_notif(nixl_request.sender_agent_id, notif_msg=notif_msg)
 
-        self.to_buffer_id[tensor_id] = buffer_id
-        return tensor_id, embedding_tensor
+            # await for write notification
+            start_time = time.perf_counter()
+            done_signal = str(tensor_id).encode()
+            while True:
+                # Match the sender and exact ID: substring matching would confuse
+                # signals such as "1" and "11". Leave other receives' signals intact.
+                notifs = self._poll_write_completions()
+                if done_signal in notifs.get(nixl_request.sender_agent_id, ()):
+                    self.nixl_agent.notifs[nixl_request.sender_agent_id].remove(
+                        done_signal
+                    )
+                    completed = True
+                    break
+                if (time.perf_counter() - start_time) > receive_timeout:
+                    raise TimeoutError(
+                        f"Timeout while waiting for transfer completion for tensor_id {tensor_id} for more than {receive_timeout} seconds"
+                    )
+                await asyncio.sleep(0.001)
+            logger.debug(
+                f"Transfer completed for tensor_id {tensor_id}, total wait time: {time.perf_counter() - start_time:.2f} seconds"
+            )
+
+            # No await between consuming completion and handing ownership to the caller.
+            self.to_buffer_id[tensor_id] = buffer_id
+            return tensor_id, embedding_tensor
+        except BaseException:
+            # Includes CancelledError. A timeout/cancel does not revoke the remote
+            # address; reusing it could let a late WRITE corrupt another request.
+            if published and not completed:
+                self._quarantined_buffers[
+                    (nixl_request.sender_agent_id, tensor_id)
+                ] = buffer_id
+                logger.warning(
+                    "Quarantined NIXL WRITE buffer pending remote completion: "
+                    "sender=%s tensor_id=%s buffer_id=%s bytes=%s",
+                    nixl_request.sender_agent_id,
+                    tensor_id,
+                    buffer_id,
+                    nixl_request.tensor_size,
+                )
+            else:
+                self.ring_buffer.release_buffer(buffer_id)
+            raise
 
     def release_tensor(self, tensor_id: int) -> None:
         """
