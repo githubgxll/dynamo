@@ -7,3 +7,5 @@ With explicit user approval, both manifests select the published `0.13.0-dev.2`,
 The KVV frontend build does not enable the optional AIS forward-pass feature, although AIS types are still compiled through the mocker dependency. AIS-specific runtime behavior is not verified by KVV; deployments using those functions must run their own compatibility checks. No placeholder crate, forged version, dropped lifecycle event or disabled protocol validation is used.
 
 The native baseline also referenced `self.logit_bias` after that field had moved into the inner OpenAI request in dynamo-protocols 6.1.0. Validation now reads `self.inner.logit_bias`; the validation rule and client field remain unchanged. Linux build prerequisites include the standard protobuf headers (`libprotobuf-dev`), not just the protoc executable.
+
+The Python EntrypointArgs signature and runtime-config setter already exposed `tokenizer_fallback`, but the Rust constructor argument was missing. Restoring its `Option<bool>` argument aligns the existing API and setter; it does not add a new fallback policy.

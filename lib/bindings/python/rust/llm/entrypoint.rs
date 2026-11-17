@@ -527,6 +527,7 @@ impl EntrypointArgs {
         glm_history_arguments_models: Option<Vec<String>>,
         kimi_history_arguments_models: Option<Vec<String>>,
         tokenizer_backend: Option<String>,
+        tokenizer_fallback: Option<bool>,
     ) -> PyResult<Self> {
         let endpoint_id_obj: Option<EndpointId> = endpoint_id.as_deref().map(EndpointId::from);
         if (tls_cert_path.is_some() && tls_key_path.is_none())
