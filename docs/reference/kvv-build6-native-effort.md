@@ -5,3 +5,5 @@ Build6 cases 023/046 (`test_reasoning_effort_ignored_when_effort_present`, nonst
 The Kimi-specific native branch now resolves nested effort before dropping the object, synchronizes the downstream root effort and exports the encoder-level decision through template arguments. Explicit disabled thinking wins. Kimi effort-only objects are accepted consistently with the Kimi adapter; other model families retain their previous normalization order.
 
 Rust regressions cover nested-vs-top precedence, effort-only Kimi payloads, disabled precedence and non-Kimi isolation. The Kimi Python adapter consumes the normalized result without reinstating a stale root value. Real build6 case results are tracked in the workspace per-case documentation, separately from local/module test results.
+
+The native implementation borrows the extracted grade while normalizing the root enum, then moves its owned string into the JSON template map. Disabled-mode matching uses the enum discriminant rather than requiring an unrelated equality implementation. Parsing the enum from a borrowed string avoids an extra allocated JSON value; the downstream template value remains an explicit JSON string.

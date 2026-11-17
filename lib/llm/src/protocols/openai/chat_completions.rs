@@ -273,21 +273,24 @@ impl NvCreateChatCompletionRequest {
         // `reasoning_effort`, except that `thinking.type=disabled` wins over
         // any grade. The router only lifts the client's own string into the
         // canonical fields; it never maps or invents a level.
-        let kimi_nested_effort = if is_kimi_k3_model_id(&self.inner.model) {
+        let kimi_disabled = matches!(
+            thinking_mode.as_ref(),
+            Some(OpenAiThinkingMode::Disabled)
+        );
+        let kimi_nested_effort = if !kimi_disabled && is_kimi_k3_model_id(&self.inner.model) {
             kimi_thinking_effort(&self.thinking)
         } else {
             None
         };
-        let kimi_disabled = thinking_mode.as_ref() == Some(&OpenAiThinkingMode::Disabled);
-        if let Some(effort) = kimi_nested_effort
-            && !kimi_disabled
-        {
+        if let Some(effort) = &kimi_nested_effort {
             reasoning_effort = Some(serde_json::Value::String(effort.clone()));
             // Keep the top-level field in sync so the Python preprocessor's
             // copy step re-states the winning value instead of resurrecting a
             // losing top-level grade.
-            self.inner.reasoning_effort = serde_json::from_value(
-                serde_json::Value::String(effort),
+            self.inner.reasoning_effort = serde::Deserialize::deserialize(
+                serde::de::value::StrDeserializer::<serde::de::value::Error>::new(
+                    effort.as_str(),
+                ),
             )
             .ok();
         }
@@ -358,7 +361,7 @@ impl NvCreateChatCompletionRequest {
             && matches!(effort.as_str(), "low" | "high" | "max")
             && args.get("thinking").and_then(|v| v.as_bool()) != Some(false)
         {
-            args.insert("thinking_effort".to_string(), effort);
+            args.insert("thinking_effort".to_string(), serde_json::Value::String(effort));
         }
 
         // The raw `thinking` payload has been folded into `chat_template_args`;
