@@ -4246,7 +4246,7 @@ async fn chat_completions(
     // Handle Rest of Validation Errors
     if let Err(err_response) = validate_chat_completion_fields_with_history_policy(
         &request,
-        state.allows_invalid_history_arguments(&request.inner.model),
+        state.history_arguments_policy(&request.inner.model),
     ) {
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
@@ -4719,10 +4719,10 @@ pub fn validate_chat_completion_fields_generic(
 
 fn validate_chat_completion_fields_with_history_policy(
     request: &NvCreateChatCompletionRequest,
-    allow_invalid_history_arguments: bool,
+    history_arguments_policy: crate::protocols::openai::validate::HistoryArgumentsPolicy,
 ) -> Result<(), ErrorResponse> {
     validation_result_response(
-        request.validate_with_history_policy(allow_invalid_history_arguments),
+        request.validate_with_history_policy(history_arguments_policy),
         "chat completion",
     )
 }
@@ -4982,9 +4982,9 @@ async fn responses(
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
-    if let Err(error) = chat_request.validate_with_history_policy(
-        state.allows_invalid_history_arguments(&chat_request.inner.model),
-    ) {
+    if let Err(error) = chat_request
+        .validate_with_history_policy(state.history_arguments_policy(&chat_request.inner.model))
+    {
         let err_response = ErrorMessage::from_anyhow(
             invalid_argument(error.to_string()).into(),
             "Invalid responses request",

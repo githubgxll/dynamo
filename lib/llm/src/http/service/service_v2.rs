@@ -688,10 +688,11 @@ impl State {
             .reasoning_dispatch()
     }
 
-    /// Response field used for emitted OpenAI-compatible reasoning content.
-    pub fn allows_invalid_history_arguments(&self, model: &str) -> bool {
-        self.frontend_api_config
-            .allows_invalid_history_arguments(model)
+    pub fn history_arguments_policy(
+        &self,
+        model: &str,
+    ) -> crate::protocols::openai::validate::HistoryArgumentsPolicy {
+        self.frontend_api_config.history_arguments_policy(model)
     }
 
     pub fn reasoning_field(&self) -> ReasoningField {

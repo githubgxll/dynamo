@@ -340,7 +340,9 @@ def convert_tools(
     return sglang_tools
 
 
-def _materialize_messages(messages: list[Any]) -> list[dict[str, Any]]:
+def _materialize_messages(
+    messages: list[Any], *, parse_tool_arguments: bool = True
+) -> list[dict[str, Any]]:
     """Convert message objects to plain dicts for apply_chat_template.
 
     Returns deep-copied dicts so subsequent in-place normalization (e.g.
@@ -356,7 +358,8 @@ def _materialize_messages(messages: list[Any]) -> list[dict[str, Any]]:
             normalized.append(copy.deepcopy(msg))
         else:
             normalized.append(copy.deepcopy(dict(msg)))
-    _normalize_assistant_tool_call_arguments(normalized)
+    if parse_tool_arguments:
+        _normalize_assistant_tool_call_arguments(normalized)
     return normalized
 
 
@@ -1353,12 +1356,14 @@ def preprocess_chat_request(
     """
     request = _with_thinking_template_kwargs(request, default_thinking_mode)
     legacy_guidance = legacy_guided_decoding(request)
-    messages = _materialize_messages(request.get("messages", []))
     is_kimi = _is_kimi_k3_request(
         request,
         tokenizer=tokenizer,
         tool_call_parser_name=tool_call_parser_name,
         reasoning_parser_name=reasoning_parser_name,
+    )
+    messages = _materialize_messages(
+        request.get("messages", []), parse_tool_arguments=not is_kimi
     )
     kimi = None
     if is_kimi:

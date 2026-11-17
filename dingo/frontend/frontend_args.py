@@ -98,6 +98,7 @@ class FrontendConfig(RouterConfigBase, KvRouterConfigBase, AisPerfConfigBase):
     enable_streaming_reasoning_dispatch: bool
     reasoning_field_name: str
     glm_history_arguments_models: list[str]
+    kimi_history_arguments_models: list[str]
     exclude_tools_when_tool_choice_none: bool
     preprocess_workers: int
     tokenizer_backend: str
@@ -111,6 +112,10 @@ class FrontendConfig(RouterConfigBase, KvRouterConfigBase, AisPerfConfigBase):
         if self.glm_history_arguments_models and self.chat_processor != "sglang":
             raise ValueError(
                 "--glm-history-arguments-models requires --dyn-chat-processor sglang"
+            )
+        if self.kimi_history_arguments_models and self.chat_processor != "sglang":
+            raise ValueError(
+                "--kimi-history-arguments-models requires --dyn-chat-processor sglang"
             )
         if self.load_aware:
             self.router_mode = "kv"
@@ -619,6 +624,21 @@ class FrontendArgGroup(ArgGroup):
             help=(
                 "Comma-separated canonical GLM model names permitting malformed historical "
                 "tool arguments. Adapts the verified GLM Jinja in memory; default is strict."
+            ),
+        )
+        add_argument(
+            g,
+            flag_name="--kimi-history-arguments-models",
+            env_var="DYN_KIMI_HISTORY_ARGUMENTS_MODELS",
+            default=[],
+            arg_type=lambda value: [
+                name.strip() for name in value.split(",") if name.strip()
+            ],
+            help=(
+                "Comma-separated canonical Kimi model names whose encoder contract "
+                "renders historical tool arguments as sent (malformed, array, or "
+                "scalar JSON included). Native validation accepts the raw string; "
+                "default is strict."
             ),
         )
         # NOTE: This flag also exists in DynamoRuntimeArgGroup (runtime_args.py).

@@ -931,7 +931,7 @@ impl OpenAIOutputOptionsProvider for NvCreateChatCompletionRequest {
 /// allowing us to validate the data.
 impl ValidateRequest for NvCreateChatCompletionRequest {
     fn validate(&self) -> Result<(), anyhow::Error> {
-        self.validate_with_history_policy(false)
+        self.validate_with_history_policy(validate::HistoryArgumentsPolicy::Strict)
     }
 }
 
@@ -939,21 +939,21 @@ impl NvCreateChatCompletionRequest {
     /// Deployment-owned policy, never controllable through request JSON.
     pub fn validate_with_history_policy(
         &self,
-        allow_invalid_history_arguments: bool,
+        history_arguments_policy: validate::HistoryArgumentsPolicy,
     ) -> Result<(), anyhow::Error> {
         validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
         validate::validate_guided_decoding(self)?;
         validate::validate_chat_template_args(self.chat_template_args.as_ref())?;
         validate::validate_messages_with_history_policy(
             &self.inner.messages,
-            allow_invalid_history_arguments,
+            history_arguments_policy,
         )?;
         validate::validate_model(&self.inner.model)?;
         // none for store
         validate::validate_reasoning_effort(&self.inner.reasoning_effort)?;
         // none for metadata
         validate::validate_frequency_penalty(self.inner.frequency_penalty)?;
-        validate::validate_logit_bias(&self.inner.logit_bias)?;
+        validate::validate_logit_bias(&self.logit_bias)?;
         // none for logprobs
         validate::validate_top_logprobs(self.inner.top_logprobs)?;
         // `max_tokens` is deprecated in favor of `max_completion_tokens`, but
@@ -1036,16 +1036,16 @@ mod tests {
     #[test]
     fn history_arguments_policy_is_narrow_and_does_not_rewrite() {
         use crate::engines::ValidateRequest;
-        for (arguments, strict_ok, tolerant_ok) in [
-            (r#"{"a":1}"#, true, true),
-            ("{}", true, true),
-            ("", true, true),
-            (r#"{"a":1"#, false, true),
-            ("not json", false, true),
-            ("[]", false, false),
-            ("null", false, false),
-            ("1", false, false),
-            (r#""text""#, false, false),
+        for (arguments, strict_ok, tolerant_ok, as_sent_ok) in [
+            (r#"{"a":1}"#, true, true, true),
+            ("{}", true, true, true),
+            ("", true, true, true),
+            (r#"{"a":1"#, false, true, true),
+            ("not json", false, true, true),
+            ("[]", false, false, true),
+            ("null", false, false, true),
+            ("1", false, false, true),
+            (r#""text""#, false, false, true),
         ] {
             let request: super::NvCreateChatCompletionRequest =
                 serde_json::from_value(serde_json::json!({
@@ -1063,8 +1063,17 @@ mod tests {
                 "{arguments}"
             );
             assert_eq!(
-                request.validate_with_history_policy(true).is_ok(),
+                request
+                    .validate_with_history_policy(validate::HistoryArgumentsPolicy::MalformedTolerant)
+                    .is_ok(),
                 tolerant_ok,
+                "{arguments}"
+            );
+            assert_eq!(
+                request
+                    .validate_with_history_policy(validate::HistoryArgumentsPolicy::AsSent)
+                    .is_ok(),
+                as_sent_ok,
                 "{arguments}"
             );
             assert_eq!(serde_json::to_value(&request).unwrap(), before);

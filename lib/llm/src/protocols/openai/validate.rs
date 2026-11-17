@@ -505,18 +505,38 @@ pub fn validate_stop(stop: &Option<dynamo_protocols::types::Stop>) -> Result<(),
 // Chat Completion Specific
 //
 
+/// Deployment-owned policy for historical assistant ``tool_calls[].function.arguments``
+/// strings. Never controllable through request JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistoryArgumentsPolicy {
+    /// Reject any non-empty arguments string that is not a valid JSON object.
+    /// This is the OpenAI wire contract and stays the default for every model.
+    #[default]
+    Strict,
+    /// Accept JSON that fails to parse (truncated/literal history), but still
+    /// reject valid JSON with a non-object shape. No input is rewritten.
+    /// Used for GLM history compatibility.
+    MalformedTolerant,
+    /// Accept any non-empty string verbatim (``as_sent``): malformed,
+    /// truncated, array, or scalar JSON included. The model's own encoder
+    /// (e.g. the Kimi K3 ``normalize_tool_arguments`` fallback) renders the
+    /// raw bytes into the prompt. No input is rewritten.
+    AsSent,
+}
+
 /// Validates messages array
 pub fn validate_messages(
     messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
 ) -> Result<(), anyhow::Error> {
-    validate_messages_with_history_policy(messages, false)
+    validate_messages_with_history_policy(messages, HistoryArgumentsPolicy::Strict)
 }
 
-/// Allow malformed JSON syntax only for explicitly configured historical tool calls.
-/// Valid JSON with a non-object shape is still rejected. No input is rewritten.
+/// Validates messages array under a deployment-owned history-arguments policy.
+/// tool_call_id ordering and per-assistant id uniqueness are always enforced,
+/// independent of the policy.
 pub fn validate_messages_with_history_policy(
     messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
-    allow_invalid_history_arguments: bool,
+    history_arguments_policy: HistoryArgumentsPolicy,
 ) -> Result<(), anyhow::Error> {
     if messages.is_empty() {
         anyhow::bail!("Messages array cannot be empty");
@@ -544,9 +564,9 @@ pub fn validate_messages_with_history_policy(
                         "`messages[{message_index}].tool_calls[{tool_call_index}].id` must be unique within the assistant message"
                     );
                 }
-                validate_json_object_string(
+                validate_history_arguments_string(
                     &tool_call.function.arguments,
-                    allow_invalid_history_arguments,
+                    history_arguments_policy,
                     format!(
                         "`messages[{message_index}].tool_calls[{tool_call_index}].function.arguments`"
                     ),
@@ -557,17 +577,22 @@ pub fn validate_messages_with_history_policy(
     Ok(())
 }
 
-fn validate_json_object_string(
+fn validate_history_arguments_string(
     value: &str,
-    allow_invalid_history_arguments: bool,
+    policy: HistoryArgumentsPolicy,
     field: String,
 ) -> Result<(), anyhow::Error> {
     if value.trim().is_empty() {
         return Ok(());
     }
+    if policy == HistoryArgumentsPolicy::AsSent {
+        // The bound model's encoder owns rendering of the raw bytes; the
+        // router never parses, never rewrites, and never fabricates history.
+        return Ok(());
+    }
     let parsed: serde_json::Value = match serde_json::from_str(value) {
         Ok(parsed) => parsed,
-        Err(_) if allow_invalid_history_arguments => return Ok(()),
+        Err(_) if policy == HistoryArgumentsPolicy::MalformedTolerant => return Ok(()),
         Err(error) => anyhow::bail!("{field} must be a valid JSON object string: {error}"),
     };
     if !parsed.is_object() {
@@ -1209,6 +1234,63 @@ mod tests {
                 validate_no_unsupported_fields_with_ignore(&fields.fields, false).unwrap_err();
             assert!(err.to_string().contains(field), "{err}");
         }
+    }
+
+    #[test]
+    fn history_arguments_string_follows_policy_without_rewriting() {
+        for (arguments, strict_ok, malformed_ok, as_sent_ok) in [
+            (r#"{"a":1}"#, true, true, true),
+            ("{}", true, true, true),
+            ("", true, true, true),
+            (" \n\t ", true, true, true),
+            (r#"{"a":1"#, false, true, true),
+            ("not json", false, true, true),
+            ("[]", false, false, true),
+            ("null", false, false, true),
+            ("1", false, false, true),
+            (r#""text""#, false, false, true),
+            // k3_tool_bad_arguments: truncated object missing the closing brace.
+            (r#"{"location":"北京""#, false, true, true),
+            // k3_tool_arguments_non_object_array: valid JSON array.
+            (r#"[1,2]"#, false, false, true),
+            // k3_tool_arguments_non_object_scalar: valid JSON scalar.
+            (r#"123"#, false, false, true),
+        ] {
+            for (policy, ok) in [
+                (HistoryArgumentsPolicy::Strict, strict_ok),
+                (HistoryArgumentsPolicy::MalformedTolerant, malformed_ok),
+                (HistoryArgumentsPolicy::AsSent, as_sent_ok),
+            ] {
+                let messages: Vec<dynamo_protocols::types::ChatCompletionRequestMessage> =
+                    serde_json::from_value(json!([
+                        {"role": "user", "content": "weather?"},
+                        {"role": "assistant", "tool_calls": [{
+                            "id": "call_1", "type": "function",
+                            "function": {"name": "get_weather", "arguments": arguments}
+                        }]},
+                        {"role": "tool", "tool_call_id": "call_1", "content": "sunny"}
+                    ]))
+                    .unwrap();
+                let result = validate_messages_with_history_policy(&messages, policy);
+                assert_eq!(result.is_ok(), ok, "{arguments:?} under {policy:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn as_sent_policy_still_enforces_tool_call_id_ordering() {
+        let messages: Vec<dynamo_protocols::types::ChatCompletionRequestMessage> =
+            serde_json::from_value(json!([
+                {"role": "user", "content": "hi"},
+                {"role": "tool", "tool_call_id": "call_missing", "content": "sunny"}
+            ]))
+            .unwrap();
+        let err = validate_messages_with_history_policy(
+            &messages,
+            HistoryArgumentsPolicy::AsSent,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("tool_call_id"));
     }
 
     #[test]

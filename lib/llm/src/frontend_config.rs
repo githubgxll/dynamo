@@ -171,6 +171,7 @@ pub struct FrontendApiConfig {
     streaming_dispatch: StreamingDispatchConfig,
     reasoning_field: ReasoningField,
     glm_history_arguments_models: Vec<String>,
+    kimi_history_arguments_models: Vec<String>,
 }
 
 impl FrontendApiConfig {
@@ -184,6 +185,7 @@ impl FrontendApiConfig {
             streaming_dispatch,
             reasoning_field,
             glm_history_arguments_models: Vec::new(),
+            kimi_history_arguments_models: Vec::new(),
         }
     }
 
@@ -202,6 +204,7 @@ impl FrontendApiConfig {
             ),
             reasoning_field,
             glm_history_arguments_models: Vec::new(),
+            kimi_history_arguments_models: Vec::new(),
         }
     }
 
@@ -253,14 +256,30 @@ impl FrontendApiConfig {
         self.reasoning_field
     }
 
-    pub fn allows_invalid_history_arguments(&self, model: &str) -> bool {
-        self.glm_history_arguments_models
-            .iter()
-            .any(|name| name == model)
+    /// Resolve the per-model history-arguments policy. Models not listed in
+    /// either opt-in list keep the strict OpenAI wire contract; an exact name
+    /// match is required (no prefix matching), and the Kimi ``as_sent`` list
+    /// takes precedence over the GLM malformed-tolerant list.
+    pub fn history_arguments_policy(
+        &self,
+        model: &str,
+    ) -> crate::protocols::openai::validate::HistoryArgumentsPolicy {
+        use crate::protocols::openai::validate::HistoryArgumentsPolicy;
+        if self.kimi_history_arguments_models.iter().any(|name| name == model) {
+            HistoryArgumentsPolicy::AsSent
+        } else if self.glm_history_arguments_models.iter().any(|name| name == model) {
+            HistoryArgumentsPolicy::MalformedTolerant
+        } else {
+            HistoryArgumentsPolicy::Strict
+        }
     }
 
     pub fn set_glm_history_arguments_models(&mut self, models: Vec<String>) {
         self.glm_history_arguments_models = models;
+    }
+
+    pub fn set_kimi_history_arguments_models(&mut self, models: Vec<String>) {
+        self.kimi_history_arguments_models = models;
     }
 
     pub fn set_reasoning_field(&mut self, reasoning_field: ReasoningField) {
@@ -275,6 +294,7 @@ impl Default for FrontendApiConfig {
             streaming_dispatch: Default::default(),
             reasoning_field: default_reasoning_field(),
             glm_history_arguments_models: Vec::new(),
+            kimi_history_arguments_models: Vec::new(),
         }
     }
 }
@@ -282,17 +302,67 @@ impl Default for FrontendApiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::openai::validate::HistoryArgumentsPolicy;
 
     #[test]
     fn history_arguments_policy_is_explicit_and_model_scoped() {
         let mut config = FrontendApiConfig::default();
-        assert!(!config.allows_invalid_history_arguments("glm-5.3"));
+        assert_eq!(
+            config.history_arguments_policy("glm-5.3"),
+            HistoryArgumentsPolicy::Strict
+        );
         config.set_glm_history_arguments_models(vec!["glm-5.3".to_string()]);
-        assert!(config.allows_invalid_history_arguments("glm-5.3"));
-        assert!(!config.allows_invalid_history_arguments("other-glm-5.3"));
-        assert!(!config.allows_invalid_history_arguments("qwen"));
+        assert_eq!(
+            config.history_arguments_policy("glm-5.3"),
+            HistoryArgumentsPolicy::MalformedTolerant
+        );
+        assert_eq!(
+            config.history_arguments_policy("other-glm-5.3"),
+            HistoryArgumentsPolicy::Strict
+        );
+        assert_eq!(
+            config.history_arguments_policy("qwen"),
+            HistoryArgumentsPolicy::Strict
+        );
         config.set_glm_history_arguments_models(Vec::new());
-        assert!(!config.allows_invalid_history_arguments("glm-5.3"));
+        assert_eq!(
+            config.history_arguments_policy("glm-5.3"),
+            HistoryArgumentsPolicy::Strict
+        );
+    }
+
+    #[test]
+    fn kimi_history_arguments_policy_is_model_scoped_and_takes_precedence() {
+        let mut config = FrontendApiConfig::default();
+        assert_eq!(
+            config.history_arguments_policy("kimi-k3.1"),
+            HistoryArgumentsPolicy::Strict
+        );
+        config.set_kimi_history_arguments_models(vec!["kimi-k3.1".to_string()]);
+        assert_eq!(
+            config.history_arguments_policy("kimi-k3.1"),
+            HistoryArgumentsPolicy::AsSent
+        );
+        // Exact-name only: no prefix or suffix matching.
+        assert_eq!(
+            config.history_arguments_policy("kimi-k3"),
+            HistoryArgumentsPolicy::Strict
+        );
+        assert_eq!(
+            config.history_arguments_policy("kimi-k3.1-thinking"),
+            HistoryArgumentsPolicy::Strict
+        );
+        // Other models keep the strict contract.
+        assert_eq!(
+            config.history_arguments_policy("glm-5.3"),
+            HistoryArgumentsPolicy::Strict
+        );
+        // Kimi takes precedence when a name appears in both lists.
+        config.set_glm_history_arguments_models(vec!["kimi-k3.1".to_string()]);
+        assert_eq!(
+            config.history_arguments_policy("kimi-k3.1"),
+            HistoryArgumentsPolicy::AsSent
+        );
     }
 
     #[test]
