@@ -14,6 +14,7 @@ from typing import Any, TypeAlias
 
 from dynamo.llm.exceptions import InvalidArgument
 from jinja2.exceptions import TemplateError
+from sglang.srt.entrypoints.openai.kimi_k3_wire import GENERATION_STUB_TOKENS
 from sglang.srt.entrypoints.openai.protocol import Function as SglangFunction
 from sglang.srt.entrypoints.openai.protocol import Tool as SglangTool
 from sglang.srt.entrypoints.openai.protocol import ToolChoice as SglangToolChoice
@@ -88,6 +89,7 @@ class SglangPreprocessResult:
     require_reasoning: bool = False
     named_zero_arg_tool: str | None = None
     effective_tools: list[SglangTool] | None = None
+    uncounted_prompt_tokens: int = 0
 
 
 # --- force_reasoning detection (mirrors sglang's template_manager) -------
@@ -1571,6 +1573,7 @@ def preprocess_chat_request(
         tool_guided_active=tool_guided_active,
         require_reasoning=require_reasoning,
         effective_tools=sglang_tools,
+        uncounted_prompt_tokens=GENERATION_STUB_TOKENS if is_kimi else 0,
         named_zero_arg_tool=(
             named_closed_zero_arg_tool(request)
             if guided_decoding == {"regex": r"\{\}"}

@@ -110,6 +110,36 @@ def _cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     return cached_tokens if isinstance(cached_tokens, int) else None
 
 
+def _deduct_uncounted_prompt_tokens(
+    usage: dict[str, Any],
+    uncounted_prompt_tokens: int,
+) -> dict[str, Any]:
+    """Deduct the model's uncounted prompt-stub tokens from reported usage.
+
+    Models with a native encoding contract (Kimi K3's ``GENERATION_STUB_TOKENS``)
+    prepend generation-scaffold tokens the encoder itself never counts toward
+    usage. The physical prompt sent to the worker and its internal cached-token
+    statistics are untouched; only the reported ``prompt_tokens`` and the
+    derived ``total_tokens`` reflect the model's counting contract.
+
+    Mirrors sglang's ``reported_prompt_tokens`` (``max(0, prompt - uncounted)``).
+    The engine dict is copied so the raw engine value stays observable upstream.
+    """
+    if uncounted_prompt_tokens <= 0:
+        return usage
+    prompt_tokens = usage.get("prompt_tokens")
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool):
+        return usage
+    reported = max(0, prompt_tokens - uncounted_prompt_tokens)
+    adjusted = dict(usage)
+    adjusted["prompt_tokens"] = reported
+    if isinstance(usage.get("total_tokens"), int) and not isinstance(
+        usage.get("total_tokens"), bool
+    ):
+        adjusted["total_tokens"] = reported + usage.get("completion_tokens", 0)
+    return adjusted
+
+
 def _continuous_usage_requested(request: dict[str, Any]) -> bool:
     options = request.get("stream_options") or {}
     return bool(
@@ -481,7 +511,16 @@ class SglangPreprocessWorkerResult:
     # a reasoning parser in that case so the pool path matches the inline
     # path byte-for-byte.
     effective_reasoning_parser_name: str | None = None
+    # Effective tools for parser initialization: top-level ``tools`` merged
+    # with validated per-message dynamic tools (Kimi path). ``None`` means
+    # "use convert_tools(request.tools)" — i.e. no dynamic tools were
+    # declared, so the caller keeps its legacy fallback.
     effective_tools: Any = None
+    # Prompt tokens the bound model's encoder does not count toward the
+    # reported usage (e.g. the Kimi generation-stub scaffold). Reported by
+    # ``preprocess_chat_request``; the processor deducts it from usage only,
+    # never from the physical prompt sent to the worker.
+    uncounted_prompt_tokens: int = 0
 
 
 def _init_worker(
@@ -562,8 +601,9 @@ def _preprocess_worker(
         response_format_guided_active=pre.response_format_guided_active,
         tool_guided_active=pre.tool_guided_active,
         effective_reasoning_parser_name=effective_reasoning_parser_name,
-        effective_tools=pre.effective_tools,
         named_zero_arg_tool=pre.named_zero_arg_tool,
+        effective_tools=pre.effective_tools,
+        uncounted_prompt_tokens=pre.uncounted_prompt_tokens,
     )
 
 
@@ -901,7 +941,13 @@ class SglangProcessor:
         )
 
         async for item in self._generate_and_stream(
-            request_id, request, dynamo_preproc, tokens, post, context=context
+            request_id,
+            request,
+            dynamo_preproc,
+            tokens,
+            post,
+            context=context,
+            uncounted_prompt_tokens=pre.uncounted_prompt_tokens,
         ):
             yield item
 
@@ -1007,6 +1053,7 @@ class SglangProcessor:
             preproc_result.prompt_token_ids,
             post,
             context=context,
+            uncounted_prompt_tokens=preproc_result.uncounted_prompt_tokens,
         ):
             yield item
 
@@ -1018,6 +1065,7 @@ class SglangProcessor:
         tokens: list[int],
         post: SglangStreamingPostProcessor,
         context: Any | None = None,
+        uncounted_prompt_tokens: int = 0,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Shared streaming logic for both single-process and pool paths."""
         token_count = 0
@@ -1085,10 +1133,11 @@ class SglangProcessor:
                 choice = post.process_output(mapped_response)
 
                 if post.locally_finished and pending_usage is None:
+                    reported_prompt = max(0, input_tokens - uncounted_prompt_tokens)
                     pending_usage = {
-                        "prompt_tokens": input_tokens,
+                        "prompt_tokens": reported_prompt,
                         "completion_tokens": cumulative_output_tokens,
-                        "total_tokens": input_tokens + cumulative_output_tokens,
+                        "total_tokens": reported_prompt + cumulative_output_tokens,
                     }
                 usage_for_metrics = pending_usage
 
@@ -1269,7 +1318,9 @@ class SglangProcessor:
                 stop_terminated = raw_finish_reason in {"eos", "stop"}
 
                 if usage := engine_response.get("completion_usage"):
-                    pending_usage = usage
+                    pending_usage = _deduct_uncounted_prompt_tokens(
+                        usage, uncounted_prompt_tokens
+                    )
                 pending_token_ids.extend(new_ids)
                 if log_probs is not None:
                     if pending_log_probs is None:
