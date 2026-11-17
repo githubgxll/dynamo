@@ -75,6 +75,7 @@ use crate::protocols::openai::{
     chat_completions::{
         NvCreateChatCompletionRequest, NvCreateChatCompletionResponse,
         NvCreateChatCompletionStreamResponse,
+        is_kimi_k3_model_id,
     },
     classify::{NvCreateClassifyRequest, NvCreateClassifyResponse},
     completions::{NvCreateCompletionRequest, NvCreateCompletionResponse},
@@ -4348,15 +4349,18 @@ async fn chat_completions(
         // Inspect the first non-annotation event for a synchronous backend
         // error (e.g. `Backend(InvalidArgument)` from a text-only model
         // receiving image content) before committing HTTP 200, so we can
-        // return the typed 4xx that the non-streaming path returns. How long
-        // to wait is service configuration; with a bounded window and no
-        // signal, fall through to SSE, and `monitor_for_disconnects` owns the
-        // long backend-inactivity timeout from there. That monitor arms only
-        // once the response is built, so it does not bound this wait:
-        // `UntilFirstEvent` ends on the first event or on the client
-        // disconnecting, and on nothing else.
+        // return the typed 4xx that the non-streaming path returns. Kimi's
+        // request contract requires deterministic admission errors, not a
+        // timing-dependent peek: wait through annotations to the first
+        // backend event. Other model families keep their configured policy.
+        // Client disconnection still cancels the pre-commit wait.
+        let error_check = if is_kimi_k3_model_id(&model) {
+            BackendErrorCheck::UntilFirstEvent
+        } else {
+            state.streaming_backend_error_check()
+        };
         let stream = until_client_disconnects(
-            check_for_backend_error_info(stream, state.streaming_backend_error_check()),
+            check_for_backend_error_info(stream, error_check),
             &ctx,
         )
         .await

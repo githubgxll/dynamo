@@ -463,7 +463,7 @@ impl NvCreateChatCompletionRequest {
 
 /// Kimi K3/K3.1 model detection for the nested `thinking.effort` contract.
 /// Exact family match on the last path segment, dash/underscore-insensitive.
-fn is_kimi_k3_model_id(model: &str) -> bool {
+pub(crate) fn is_kimi_k3_model_id(model: &str) -> bool {
     let mut name = model
         .rsplit('/')
         .next()
