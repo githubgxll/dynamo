@@ -107,3 +107,16 @@ block certificate installation. Repository selection is per-command, not a
 persistent disablement. Transient failures use the existing bounded retries;
 exhaustion stops the build before other dependencies are installed. TLS and
 RPM signature verification remain enabled.
+
+## Runtime wheel repair branches
+
+With `ENABLE_MEDIA_FFMPEG=true`, repair `target/wheels/ai_dingo_runtime-*.whl`
+once into `/opt/dynamo/dist`, retaining the explicit `_dynamo` FFmpeg soname
+exclusions. Only the non-FFmpeg branch consumes `runtime-wheel-unrepaired`:
+CUDA repairs that wheel with its existing external-library policy, while
+CPU/XPU copy it into the wheelhouse. Do not run the non-FFmpeg repair after
+the media branch; that directory is not produced by the media build.
+
+The regression executes both branches for CUDA, CPU and XPU against a compiled
+ELF wheel fixture and real `auditwheel`, checking platform tags and that the
+external media library is not bundled. It does not compile the Dynamo extension.

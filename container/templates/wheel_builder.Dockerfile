@@ -804,15 +804,15 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
             --wheel-dir /opt/dynamo/dist \
             target/wheels/ai_dingo_runtime-*.whl; \
     else \
-        maturin build --release --locked --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy,nvtx{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired; \
-    fi && \
+        maturin build --release --locked --features "full-runtime,kv-indexer,slot-tracker,select-service,mm-routing,ais-forward-pass,request-trace-s3,custom-policy,nvtx{% if framework == "sglang" and device == "cuda" and target in ("runtime", "dev", "local-dev") %},nixl-dynamic{% endif %}" --auditwheel skip --compatibility linux --out /opt/dynamo/runtime-wheel-unrepaired && \
     {% if device == "cuda" -%}
     auditwheel repair --exclude 'lib*.so*' \
         --plat manylinux_2_28_$(uname -m) \
-        --wheel-dir /opt/dynamo/dist /opt/dynamo/runtime-wheel-unrepaired/*.whl && \
+        --wheel-dir /opt/dynamo/dist /opt/dynamo/runtime-wheel-unrepaired/*.whl; \
     {% else -%}
-    cp /opt/dynamo/runtime-wheel-unrepaired/*.whl /opt/dynamo/dist/ && \
+    cp /opt/dynamo/runtime-wheel-unrepaired/*.whl /opt/dynamo/dist/; \
     {% endif -%}
+    fi && \
     /tmp/use-sccache.sh show-stats "Dynamo Runtime"
 
 # Complete the root Cargo workspace after the expensive runtime build. Planner
