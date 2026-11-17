@@ -970,6 +970,10 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     git remote add origin https://github.com/ai-dynamo/nixl.git && \
     git fetch --depth 1 origin "${NIXL_REF}" && \
     git checkout -q FETCH_HEAD && \
+    # Use WrapDB's GitHub release asset; preserve the wrap's checksum pin. \
+    sed -i \
+        's|^patch_url = https://wrapdb.mesonbuild.com/v2/\([^/]*\)/get_patch$|patch_url = https://github.com/mesonbuild/wrapdb/releases/download/\1/\1_patch.zip|' \
+        subprojects/abseil-cpp.wrap && \
     if [ "$DEVICE" = "cuda" ]; then \
         PKG_NAME="nixl-cu${CUDA_MAJOR}"; \
     else \

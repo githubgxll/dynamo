@@ -16,6 +16,14 @@ The NVIDIA Dynamo project uses containerized development and deployment to maint
 
 - **`run.sh`** - A container runtime manager that launches Docker containers with proper GPU access, volume mounts, and environment configurations. It supports different development workflows from root-based legacy setups to user-based development environments.
 
+### NIXL Abseil dependency
+
+The NIXL source build rewrites the Abseil wrap's patch URL from the WrapDB
+endpoint to the matching `mesonbuild/wrapdb` GitHub release asset before Meson
+setup. This avoids WrapDB TLS connection failures while preserving the pinned
+patch version and SHA256 verification. Change the template, not generated
+Dockerfiles.
+
 ### In-tree FFmpeg codec allowlist
 
 `templates/wheel_builder.Dockerfile` enables VP8/VP9/rawvideo decoding and
