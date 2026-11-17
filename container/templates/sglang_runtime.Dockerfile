@@ -213,9 +213,9 @@ RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:{{ context.dynamo.uv_version }},
 # Install SGLang-specific runtime dependencies without changing the upstream
 # dependency solution. imageio-ffmpeg is installed from source (no bundled
 # binary) for the VP9 video-encode path; see requirements.sglang.txt.
-# This public dependency set includes mooncake-transfer-engine-cuda13, which
-# is absent from some mirrors. Consult official PyPI as well; keep the CUDA 13
-# distribution and version constraints instead of substituting the CUDA 12 wheel.
+# Only Mooncake needs the official PyPI supplement: some mirrors omit its CUDA
+# distribution. Keep it out of the remaining install so isolated source builds
+# (imageio-ffmpeg) fetch build dependencies through the configured index.
 {% if device == "cuda" %}
 RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tmp/requirements.sglang.txt \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
@@ -223,7 +223,11 @@ RUN --mount=type=bind,source=./container/deps/requirements.sglang.txt,target=/tm
     [ "$CUDA_MAJOR" = "13" ] || { echo "ERROR: requirements.sglang.txt hardcodes the mooncake-transfer-engine-cuda13 distribution; got CUDA_MAJOR=$CUDA_MAJOR" >&2; exit 1; } && \
     pip install --break-system-packages --force-reinstall --no-deps \
         --extra-index-url https://pypi.org/simple \
-        --requirement /tmp/requirements.sglang.txt
+        $(grep -E '^mooncake-transfer-engine-cuda13[<=>]' /tmp/requirements.sglang.txt) && \
+    grep -v -e '^mooncake-transfer-engine-cuda13' /tmp/requirements.sglang.txt > /tmp/requirements.sglang.mirrored.txt && \
+    pip install --break-system-packages --force-reinstall --no-deps \
+        --requirement /tmp/requirements.sglang.mirrored.txt && \
+    rm -f /tmp/requirements.sglang.mirrored.txt
 
 # Assert what the install left. The pin is repeated from the requirements file
 # on purpose; a test asserts the two agree.

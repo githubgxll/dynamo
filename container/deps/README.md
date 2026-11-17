@@ -16,6 +16,21 @@ so each image only installs what it needs.
 | `requirements.dev.txt` | Dev-only tools |
 | `sglang/install_dingo_python_bootstrap.py` | Install the per-interpreter logging and optional mixed-environment Dingo startup hook |
 
+## SGLang runtime package indexes
+
+The CUDA runtime installs `mooncake-transfer-engine-cuda13` separately with
+official PyPI as a supplemental index because some mirrors omit that distribution.
+The remaining SGLang requirements use only the configured indexes: pip merges
+primary and supplemental indexes rather than treating the latter as a fallback.
+Keeping the supplement out of this install also keeps imageio-ffmpeg's isolated
+build dependencies on the configured mirror. Preserve `--no-binary imageio-ffmpeg`
+so its source wheel does not bundle an FFmpeg executable.
+
+Verification: imageio-ffmpeg 0.8.1 and its isolated build dependencies downloaded
+from the Tsinghua index and built a pure-Python wheel without a bundled FFmpeg
+executable on Windows. The SGLang CUDA 13.0 amd64 Dockerfile rendered successfully;
+the complete Linux image build still requires CI verification.
+
 ## Version Pinning Strategy
 
 - Use `==` for packages that are pure Python and well-tested.
