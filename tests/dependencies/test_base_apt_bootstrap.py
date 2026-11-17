@@ -18,9 +18,15 @@ pytestmark = [
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def bootstrap(tmp_path, failures, install_status=0):
-    template = (ROOT / "container/templates/dynamo_base.Dockerfile").read_text()
-    stage = template.split(" AS dynamo_base", 1)[1]
+@pytest.fixture(params=["dynamo_base", "sglang_runtime"])
+def bootstrap_stage(request):
+    return request.param
+
+
+def bootstrap(tmp_path, failures, install_status=0, *, stage_name):
+    template = (ROOT / f"container/templates/{stage_name}.Dockerfile").read_text()
+    stage_marker = "pre_runtime" if stage_name == "sglang_runtime" else "dynamo_base"
+    stage = template.split(f" AS {stage_marker}", 1)[1]
     command = stage.split("RUN ", 1)[1].split("\n\n", 1)[0].replace("\\\n", "\n")
     sources = tmp_path / "sources"
     sources.mkdir()
@@ -65,8 +71,8 @@ def bootstrap(tmp_path, failures, install_status=0):
     return result, legacy, deb822, vendor
 
 
-def test_temporary_index_failure_recovers_without_changing_signing_policy(tmp_path):
-    result, legacy, deb822, vendor = bootstrap(tmp_path, failures=2)
+def test_temporary_index_failure_recovers_without_changing_signing_policy(tmp_path, bootstrap_stage):
+    result, legacy, deb822, vendor = bootstrap(tmp_path, failures=2, stage_name=bootstrap_stage)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "installed").exists()
     assert (tmp_path / "attempts").read_text().strip() == "3"
@@ -79,13 +85,13 @@ def test_temporary_index_failure_recovers_without_changing_signing_policy(tmp_pa
     assert vendor.read_text() == "deb https://developer.download.nvidia.com/example /\n"
 
 
-def test_persistent_index_failure_never_installs_from_stale_lists(tmp_path):
-    result, *_ = bootstrap(tmp_path, failures=100)
+def test_persistent_index_failure_never_installs_from_stale_lists(tmp_path, bootstrap_stage):
+    result, *_ = bootstrap(tmp_path, failures=100, stage_name=bootstrap_stage)
     assert result.returncode != 0
     assert (tmp_path / "attempts").read_text().strip() == "5"
     assert not (tmp_path / "installed").exists()
 
 
-def test_certificate_install_failure_is_not_hidden(tmp_path):
-    result, *_ = bootstrap(tmp_path, failures=0, install_status=100)
+def test_certificate_install_failure_is_not_hidden(tmp_path, bootstrap_stage):
+    result, *_ = bootstrap(tmp_path, failures=0, install_status=100, stage_name=bootstrap_stage)
     assert result.returncode == 100

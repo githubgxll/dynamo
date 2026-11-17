@@ -9,7 +9,17 @@
 
 FROM ${RUNTIME_IMAGE}:${RUNTIME_IMAGE_TAG} AS pre_runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+RUN set -eux; \
+    for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$source" ] || continue; \
+        sed -i 's|archive.ubuntu.com|mirrors.huaweicloud.com|g; s|security.ubuntu.com|mirrors.huaweicloud.com|g' "$source"; \
+    done; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update; then break; fi; \
+        if [ "$attempt" -eq 5 ]; then exit 1; fi; \
+        sleep "$((attempt * 10))"; \
+    done; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates; \
     rm -rf /var/lib/apt/lists/*
 
 {% include "templates/verify_ca_certificates.Dockerfile" %}

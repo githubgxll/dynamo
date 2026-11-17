@@ -112,6 +112,13 @@ policy. Persistent refresh failures stop before installation; certificate
 installation failures remain fatal. No TLS or repository-signature check is
 disabled. This does not guarantee availability of the CI proxy or mirror.
 
+The SGLang `pre_runtime` stage inherits a separate upstream image and must also
+switch Ubuntu sources before its first CA installation. Its bootstrap uses the
+same strict index refresh and bounded retry policy as `dynamo_base`; a failed
+refresh never proceeds to installation from stale indexes. The six bootstrap
+regression cases pass on Linux and exercise both stages, including legacy/deb822
+source rewriting, temporary/persistent update failures and installation failure.
+
 ## AlmaLinux builder certificate bootstrap
 
 Configure the fixed AlmaLinux/EPEL mirrors before the first DNF installation,
