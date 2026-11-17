@@ -234,14 +234,27 @@ impl NvCreateChatCompletionRequest {
     /// Runs once at the HTTP boundary, so every render path reads one answer.
     /// Model-specific overrides still apply later in the default preprocessor.
     pub fn normalize_reasoning_template_args(&mut self) -> anyhow::Result<()> {
-        let thinking_mode = self
-            .thinking
-            .as_ref()
-            .map(openai_thinking_mode)
-            .transpose()?
-            .flatten();
+        let thinking_mode = match self.thinking.as_ref().map(openai_thinking_mode).transpose() {
+            Ok(mode) => mode.flatten(),
+            // Kimi K3/K3.1 accepts `thinking: {"effort": ...}` without a
+            // `type` field (SGLang's `_KIMI_K3_THINKING_TYPES` includes
+            // `None`); only the effort grade is present. Treat the missing
+            // mode as undecided for that family instead of rejecting the
+            // request; every other model keeps the strict contract.
+            Err(_) if is_kimi_k3_model_id(&self.inner.model)
+                && self.thinking.as_ref().is_some_and(|value| {
+                    value.is_object()
+                        && value
+                            .get("type")
+                            .is_none_or(|t| t.is_null() || t.as_str().is_none())
+                }) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
         // vLLM's order: an explicit top-level grade wins, else the nested one.
-        let reasoning_effort = self
+        let mut reasoning_effort = self
             .inner
             .reasoning_effort
             .as_ref()
@@ -254,6 +267,30 @@ impl NvCreateChatCompletionRequest {
                     .filter(|effort| !effort.is_null())
                     .cloned()
             });
+
+        // Kimi K3/K3.1 contract (mirrors SGLang's protocol validator):
+        // a nested `thinking.effort` grade outranks the top-level
+        // `reasoning_effort`, except that `thinking.type=disabled` wins over
+        // any grade. The router only lifts the client's own string into the
+        // canonical fields; it never maps or invents a level.
+        let kimi_nested_effort = if is_kimi_k3_model_id(&self.inner.model) {
+            kimi_thinking_effort(&self.thinking)
+        } else {
+            None
+        };
+        let kimi_disabled = thinking_mode.as_ref() == Some(&OpenAiThinkingMode::Disabled);
+        if let Some(effort) = kimi_nested_effort
+            && !kimi_disabled
+        {
+            reasoning_effort = Some(serde_json::Value::String(effort.clone()));
+            // Keep the top-level field in sync so the Python preprocessor's
+            // copy step re-states the winning value instead of resurrecting a
+            // losing top-level grade.
+            self.inner.reasoning_effort = serde_json::from_value(
+                serde_json::Value::String(effort),
+            )
+            .ok();
+        }
 
         self.validate_glm53_reasoning_controls(thinking_mode.as_ref(), reasoning_effort.as_ref())?;
 
@@ -309,6 +346,19 @@ impl NvCreateChatCompletionRequest {
         }
         if let Some(effort) = reasoning_effort {
             args.insert("reasoning_effort".to_string(), effort);
+        }
+
+        // Kimi K3/K3.1: surface the winning effort as the explicit
+        // `thinking_effort` dialect too, but only when it is already a valid
+        // Kimi level shared by every K3 variant ("low", "high", "max").
+        // Tier names that need per-variant mapping ("minimal", "medium",
+        // "xhigh") stay on `reasoning_effort`, where the model-side adapter
+        // maps them; writing them here could be rejected downstream.
+        if let Some(effort) = kimi_nested_effort
+            && matches!(effort.as_str(), "low" | "high" | "max")
+            && args.get("thinking").and_then(|v| v.as_bool()) != Some(false)
+        {
+            args.insert("thinking_effort".to_string(), effort);
         }
 
         // The raw `thinking` payload has been folded into `chat_template_args`;
@@ -409,6 +459,43 @@ impl NvCreateChatCompletionRequest {
         self.inner.stop = Some(dynamo_protocols::types::Stop::StringArray(stop_sequences));
         Ok(())
     }
+}
+
+/// Kimi K3/K3.1 model detection for the nested `thinking.effort` contract.
+/// Exact family match on the last path segment, dash/underscore-insensitive.
+fn is_kimi_k3_model_id(model: &str) -> bool {
+    let mut name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .bytes()
+        .filter(|byte| !matches!(*byte, b'-' | b'_'));
+    if !b"kimik3"
+        .iter()
+        .all(|expected| name.next().is_some_and(|byte| byte.to_ascii_lowercase() == *expected))
+    {
+        return false;
+    }
+    match name.next() {
+        None => true,
+        Some(b'1') => name.next().is_none(),
+        Some(b'.') => name.next() == Some(b'1') && name.next().is_none(),
+        _ => false,
+    }
+}
+
+/// Kimi's nested effort grade from `thinking.effort`, when it is a valid
+/// OpenAI tier string. Numeric grades and other shapes are left to the
+/// model-side adapter to reject; the router does not invent values.
+fn kimi_thinking_effort(thinking: &Option<serde_json::Value>) -> Option<String> {
+    let value = thinking.as_ref()?;
+    let effort = value.as_object()?.get("effort")?;
+    let effort = effort.as_str()?;
+    matches!(
+        effort,
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+    )
+    .then(|| effort.to_string())
 }
 
 /// The two boolean dialects, in precedence order. `thinking_mode` carries the
@@ -2548,6 +2635,107 @@ mod tests {
             .expect("omitted function parameters should remain valid");
     }
 
+    #[test]
+    fn test_kimi_nested_thinking_effort_outranks_top_level() {
+        let json_str = json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "low",
+            "thinking": {"type": "enabled", "effort": "max"}
+        });
+
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_str).expect("Failed to deserialize request");
+        request
+            .normalize_reasoning_template_args()
+            .expect("kimi nested effort should normalize");
+
+        let args = request
+            .chat_template_args
+            .as_ref()
+            .expect("chat_template_args should be populated");
+        assert_eq!(args.get("reasoning_effort"), Some(&json!("max")));
+        assert_eq!(args.get("thinking_effort"), Some(&json!("max")));
+        assert_eq!(args.get("thinking"), Some(&json!(true)));
+        assert!(request.thinking.is_none());
+        // The top-level field is synced so the Python copy step re-states
+        // the winning grade.
+        assert_eq!(
+            serde_json::to_value(request.inner.reasoning_effort.as_ref()).ok(),
+            Some(json!("max"))
+        );
+    }
+
+    #[test]
+    fn test_kimi_nested_thinking_effort_without_type_is_accepted() {
+        let json_str = json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"effort": "high"}
+        });
+
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_str).expect("Failed to deserialize request");
+        request
+            .normalize_reasoning_template_args()
+            .expect("typeless kimi thinking should normalize");
+
+        let args = request
+            .chat_template_args
+            .as_ref()
+            .expect("chat_template_args should be populated");
+        assert_eq!(args.get("reasoning_effort"), Some(&json!("high")));
+        assert_eq!(args.get("thinking"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn test_kimi_disabled_thinking_wins_over_nested_effort() {
+        let json_str = json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "disabled", "effort": "max"}
+        });
+
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_str).expect("Failed to deserialize request");
+        request
+            .normalize_reasoning_template_args()
+            .expect("disabled kimi thinking should normalize");
+
+        let args = request
+            .chat_template_args
+            .as_ref()
+            .expect("chat_template_args should be populated");
+        assert_eq!(args.get("thinking"), Some(&json!(false)));
+        // The disabled mode suppresses the grade entirely.
+        assert_eq!(args.get("thinking_effort"), None);
+        assert_eq!(args.get("reasoning_effort"), None);
+    }
+
+    #[test]
+    fn test_non_kimi_thinking_effort_is_not_lifted() {
+        // Other model families keep their precedence: the nested effort is
+        // not read, and a typeless thinking object stays rejected.
+        let json_str = json!({
+            "model": "qwen3",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "low",
+            "thinking": {"type": "enabled", "effort": "max"}
+        });
+
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(json_str).expect("Failed to deserialize request");
+        request
+            .normalize_reasoning_template_args()
+            .expect("thinking payload should normalize");
+
+        let args = request
+            .chat_template_args
+            .as_ref()
+            .expect("chat_template_args should be populated");
+        assert_eq!(args.get("reasoning_effort"), Some(&json!("low")));
+        assert_eq!(args.get("thinking_effort"), None);
+    }
     #[test]
     fn test_openai_thinking_payload_normalizes_to_template_args() {
         let json_str = json!({
