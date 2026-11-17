@@ -24,6 +24,10 @@ from sglang.srt.entrypoints.openai.protocol import (
 from sglang.srt.environ import ToolStrictLevel, envs
 from sglang.srt.function_call.core_types import ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
+from sglang.srt.function_call.kimi_schema_canonical import (
+    KimiSchemaCanonicalError,
+    validate_kimi_tool_schema,
+)
 from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.function_call.utils import get_json_schema_constraint
 from sglang.srt.parser.jinja_template_utils import (
@@ -1373,6 +1377,16 @@ def preprocess_chat_request(
                 else KIMI_K3_LEVEL_BY_TIER
             ),
         )
+        # Input rejection must not be swallowed by the grammar capability probe.
+        for tool in kimi.effective_tools:
+            function = tool["function"]
+            if "parameters" in function:
+                try:
+                    function["parameters"] = validate_kimi_tool_schema(
+                        function["parameters"]
+                    )
+                except KimiSchemaCanonicalError as exc:
+                    raise PreprocessError(str(exc)) from exc
 
     # Generation mode is independent from response placement.  A client can
     # request separate_reasoning=False while SGLang still needs the reasoning
