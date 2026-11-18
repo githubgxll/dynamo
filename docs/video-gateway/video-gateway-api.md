@@ -18,7 +18,7 @@ SPDX-License-Identifier: Apache-2.0
 先设置 Gateway 地址并查询模型：
 
 ```bash
-export GATEWAY_URL=http://<gateway-or-load-balancer>:8000
+export GATEWAY_URL='https://gateway.example.com'
 curl -sS "$GATEWAY_URL/v1/models" | jq
 ```
 
@@ -39,7 +39,7 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 成功后返回任务 JSON，响应头 `Location` 指向任务查询地址。保存返回的 `id`：
 
 ```bash
-export TASK_ID=<video-task-id>
+export TASK_ID='video-01M00000000000000000000000'
 curl -sS "$GATEWAY_URL/v1/videos/$TASK_ID" | jq
 ```
 
@@ -57,7 +57,8 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `GET` | `/v1/models` | 查询模型、可用状态和媒体能力 |
 | `POST` | `/v1/videos` | 异步提交任务，返回任务 JSON |
 | `POST` | `/v1/videos/sync` | 同步提交任务，成功时直接返回 MP4 |
-| `POST` | `/v1/videos/regenerate` | 上传已有视频，异步创建独立超分任务 |
+| `POST` | `/v1/videos/regenerate` | 上传已有视频并创建独立超分任务，见 [独立超分 API](video-regeneration-api.md) |
+| `POST` | `/v1/context-ir` | 异步编译提示词，见 [ContextIR API 参考](context-ir/05-api-reference.md) |
 | `GET` | `/v1/videos/{task_id}` | 查询单个任务状态和阶段耗时 |
 | `GET` | `/v1/videos/{task_id}/diagnostics` | 查询相同任务信息及当前 attempt 的诊断明细 |
 | `GET` | `/v1/videos` | 分页查询任务列表 |
@@ -130,9 +131,7 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 
 768P 六种比例已按2026-11-10官方API纯文生视频的实际输出尺寸对齐；21:9的短边为672，
 不保证所有画幅短边均为768。2K的16:9、21:9已与官方实测一致，其余组合沿用现有白名单。
-这些交付尺寸与超分内部基础画布分开维护，本次对齐不调整超分基础画布或显式尺寸准入。
-1080P 是 Gateway 扩展；高分辨率执行仍使用配置的 SeedVR2 路径。已有基础画布、超分、
-裁剪和缩放策略不变；关闭超分或无兼容 Worker 时不会降档执行。
+交付尺寸和超分内部基础画布分别由档位及超分配置决定。视频生成接口的 1080P 和 2K 使用配置的 SeedVR2 路径。关闭超分或无兼容 Worker 时，提交会返回错误。
 `GET /v1/models` 中 `video_capabilities.resolution_presets` 列出当前配置准入的组合，
 不代表 Worker 当前已就绪或任意输入负载均能成功。
 
@@ -166,69 +165,8 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 
 ### 视频重生成
 
-视频重生成使用 `POST /v1/videos/regenerate`，与基础生成的创建接口分开。请求使用
-`multipart/form-data`，只接受三个必填参数，每个只出现一次：
-
-| 字段 | 要求 |
-|---|---|
-| `model` | 公开生成模型名，例如 `minimax-h3`；不区分 T2VA、FL2VA、Ref2VA |
-| `resolution` | `1080P` 或 `2K`，无默认值 |
-| `base_video` | 恰好上传一个源 MP4 文件，不接受 URL、路径或 Base64 文本 |
-
-```bash
-curl -sS -X POST "$GATEWAY_URL/v1/videos/regenerate" \
-  -H 'Idempotency-Key: regenerate-example-001' \
-  -F model=minimax-h3 \
-  -F resolution=2K \
-  -F 'base_video=@source.mp4;type=video/mp4'
-```
-
-普通 768P 生成的六种画幅可作为源视频。Gateway 按画幅和目标档位选择交付尺寸。
-例如，21:9 的 `1536x672` 源先在 Gateway 调整到超分池要求的 `1504x640`，再进入现有超分流程。
-调整时重编码视频轨，AAC 音轨原样封装。源宽高已经符合要求时直接使用原文件。
-畸形的 multipart 请求返回 `400 invalid_multipart`。
-具体尺寸见[超分画幅契约](super-resolution.md#参数与能力边界)。
-
-不接收 `operation`、`input_reference`、`input_references` 或 `prompt`、`seed`、
-`seconds`、`fps`、`size`、`ratio`、`num_inference_steps` 等生成参数。未知参数及文件字段
-返回 400，不静默忽略。普通视频生成和 ContextIR 的素材字段保持原契约。
-
-Gateway 配置通过公开模型显式选择已有的独立 SR Worker 池：
-
-```yaml
-upscale_routes:
-  minimax-h3: seedvr2-sr-only
-```
-
-映射值是 `pools` 中的 `pool_id`，目标必须为 detached 模式的 `seedvr2/sr_only` 池。
-键必须为已配置的公开生成模型；不接受 SR 后台模型别名。映射缺省为空，未配置的模型
-不能使用独立超分；它与基础生成后的 `pipeline.sr_pool` 配置独立，不相互推导。
-多个公开模型可按需映射到同一个池，源任务来自哪种生成模式不参与路由。
-独立超分不会执行基础生成，也不要求基础生成 Worker 在线。
-
-`GET /v1/models` 在公开模型的 `video_capabilities.regeneration` 下返回支持状态、独立 SR
-可用状态、创建路径和媒体/分辨率能力；顶层 `available` 仍表示生成池的状态。
-SeedVR2 后台池的模型别名不再作为公开模型列出。`available=true` 不表示当前空闲。
-
-独立超分的 `base_video` 按 H3 768P 源视频规格校验。文件为 H.264/yuv420p MP4，
-包含一条 AAC 音轨。视频固定 24 FPS，时间戳从零开始，宽高均为 32 的倍数，
-每帧像素数在 589,824–1,032,192 之间。合法帧数为 107、124、141，依次每档递增 17 帧，
-最多 362 帧（对应约 4–15 秒）。
-文件大小上限以 `GET /v1/models` 返回的 `video_capabilities.regeneration.max_video_bytes` 为准。
-Gateway 取部署上传配置和 SR Worker 上限的较小值。
-输出比例按源视频匹配支持的画幅，最终尺寸以任务响应 `size` 为准。
-
-异步任务的状态码、幂等、查询、下载、取消、诊断和超分耗时沿用通用视频任务接口。
-任务的 `model` 保持请求中的公开模型，响应保留 `operation: sr_only`、`task: null`，
-不生成或返回 H3 seed。重生成和视频生成共用 `video-<ULID>` 任务 ID，并通过
-`GET /v1/videos/{task_id}` 查询。调用方可以用 `operation: sr_only` 识别重生成任务。
-输出保留源帧数和帧率，AAC 音轨以流复制保留音频包内容、时间戳及包时长。
-Gateway 与独立 Worker 继续使用一致的 `storage_id` 和共享制品存储，输入通过任务目录和哈希核验。
-
-`POST /v1/videos` 和 `/v1/videos/sync` 不再接受客户端独立 SR 创建请求，返回 400 并提示
-使用新路径。已经创建的旧任务仍可查询、下载和取消。基础生成后由 Gateway 调度 SR 的
-内部 pipeline 不受外部入口迁移影响。没有兼容就绪 SR Worker 时返回 503；忙碌时按原队列
-限额排队，满队列返回 429。源文件验证失败或上传断连会清理暂存文件。
+`POST /v1/videos/regenerate` 接收一条已有视频，异步生成 1080P 或 2K 成片。
+任务查询和下载沿用视频任务接口。请求参数、源视频限制和返回字段见 [独立超分 API](video-regeneration-api.md)。
 
 ### 超分尺寸契约
 
@@ -719,7 +657,7 @@ curl -sS "$GATEWAY_URL/v1/videos?model=minimax-h3&status=completed&limit=20&orde
 
 查询参数：
 
-- `model`：按模型对应的 pool 过滤；
+- `model`：按模型对应的 Worker pool 过滤。独立重生成任务由单独的 SR 池执行，按公开视频模型过滤会漏掉这些任务。查询重生成任务请使用任务 ID，或查询不带 `model` 的列表。
 - `status`：按任务状态过滤；
 - `limit`：1–100，默认 20；
 - `order`：`asc` 或 `desc`，默认 `desc`；
@@ -813,42 +751,10 @@ Video Gateway 当前不实现最终用户认证和授权，应由上层应用、
 增加指标和媒体元数据而不破坏客户端。
 
 
-## ContextIR 后端并发配置
+## ContextIR 提示词编译
 
-完整的编译任务接口、字段、调用示例和对接机制见[ContextIR改造与Gateway接口](context-ir/03-customizations-and-gateway-api.md)。
-
-每个 ContextIR 后端的 `max_inflight` 默认值为 `2`，显式配置可以覆盖默认值。
-多个模型绑定到同一后端时共享容量；使用同一 etcd 任务域的多个 Gateway 也共享
-该后端的执行槽。该参数不改变视频生成 Worker 的执行容量。
-
-```yaml
-context_ir:
-  enabled: true
-  backends:
-    h3-ir:
-      url: http://context-ir:8420
-      max_inflight: 2
-  model_bindings:
-    minimax-h3: h3-ir
-    minimax-h3-ref2va: h3-ir
-```
-
-模型名应与实际 Gateway 模型池保持一致。需要提高并发时显式配置 `max_inflight`，
-升级代码不会覆盖显式配置。等待队列 `queue_limit` 默认仍为 `32`，
-素材预处理并发仍为 `2`。Gateway 的 ContextIR HTTP 连接池总上限为 `64`，
-单后端地址上限为 `32`，为编译期间的素材上传等调用保留连接余量。
-
-同一后端的多个 Gateway 应使用一致配置；后端配置修订不一致时会阻止领取任务。
-升级应安排无在途 ContextIR 任务的窗口，核对所有 Gateway 的配置一致后，
-再验证目标并发下的成功率、排队耗时和资源占用。
-
-
-## ContextIR调用用量
-
-ContextIR异步任务查询返回LLM风格的顶层 `usage`，其中 `prompt_tokens`、
-`completion_tokens`、`total_tokens` 汇总整次任务所有Qwen调用，包含复审、纠错和重试。
-尚未获得统计时为 `null`，统计不完整时 `complete=false`；上游不要按不完整值直接结算。
-字段、幂等计数和失败任务口径见[ContextIR接口说明](context-ir/03-customizations-and-gateway-api.md#qwen调用用量与上游计费)。
+提示词编译的参数、状态查询、用量和错误处理见 [ContextIR API 参考](context-ir/05-api-reference.md)。
+后端发现、队列和执行容量见 [ContextIR Worker 部署](context-ir/04-runtime-worker.md)。
 
 ## 独立Worker编排的耗时与监控
 

@@ -282,6 +282,8 @@ navigation:
                 path: video-gateway/detailed-design.zh-CN.md
               - page: MiniMax H3 Super Resolution
                 path: video-gateway/super-resolution.md
+              - page: MiniMax H3 Video Regeneration API
+                path: video-gateway/video-regeneration-api.md
               - section: ContextIR
                 contents:
                   - page: MiniMax H3 Official ContextIR API

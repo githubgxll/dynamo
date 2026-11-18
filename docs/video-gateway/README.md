@@ -93,6 +93,7 @@ queued -> in_progress -> completed
 | [ContextIR Worker部署](context-ir/04-runtime-worker.md) | 运行时发现、16槽共享容量、同Pod Qwen与故障恢复 | 开发和运维人员 |
 | [ContextIR API参考](context-ir/05-api-reference.md) | 必要/高级/兼容参数、返回值及与官方接口对照 | 接口调用方 |
 | [接口使用说明](video-gateway-api.md) | 模型查询、任务提交、状态、下载、取消、FL2VA/Ref2VA 输入和错误码 | 接口调用方、联调人员 |
+| [独立超分 API](video-regeneration-api.md) | 重生成参数、源视频限制、输出尺寸和异步调用示例 | 接口调用方、联调人员 |
 | [超分画幅契约](super-resolution.md) | 1080P／2K白名单、基础与SR内部尺寸、窗口、裁剪和缩放 | 接口调用方、模型和部署维护人员 |
 | [协议与兼容性](video-gateway-protocol-compatibility.md) | 与 OpenAI Videos API、vLLM-Omni Videos API 的相同点和差异 | 接口调用方、适配开发人员 |
 | [可观测性与指标](observability.md) | Prometheus 指标、标签、HA 聚合、诊断接口及日志开关 | 部署、运维和面板开发人员 |
