@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::http::HeaderValue;
 use axum::http::Response;
 use axum::response::IntoResponse;
 
@@ -66,6 +67,99 @@ async fn echo_request_id_header(
     if let Some(value) = x_request_id {
         response.headers_mut().insert("x-request-id", value);
     }
+    response
+}
+
+/// The response header carrying the provider deployment ID.
+///
+/// Set by the unified response layer on every HTTP response — non-streaming,
+/// SSE (before the SSE headers are written), and error responses alike — so
+/// callers can trace which deployment served a request. The value comes from
+/// `DYN_HTTP_PROVIDER_DEPLOY_ID` when configured, otherwise from a deterministic
+/// software build fingerprint; it is never taken from client request headers.
+pub(crate) const PROVIDER_DEPLOY_ID_HEADER: &str = "x-msh-providerdeployid";
+
+/// Deterministic source fingerprint computed at build time by `lib/llm/build.rs`
+/// over the frontend-relevant source tree. Serves as the default
+/// `X-Msh-ProviderDeployId` value when no explicit deployment ID is configured.
+pub(crate) const DYN_BUILD_SOURCE_FINGERPRINT: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/source_fingerprint.txt"
+));
+
+/// The provider deployment ID, validated once at service construction and
+/// cloned into each response.
+#[derive(Clone, Debug)]
+struct ProviderDeployId(HeaderValue);
+
+impl ProviderDeployId {
+    /// Resolve the deployment ID from `DYN_HTTP_PROVIDER_DEPLOY_ID` or the
+    /// build fingerprint, validating the value is a legal HTTP header field
+    /// value. Returns a diagnostic error for blank or invalid values so a bad
+    /// configuration fails startup instead of silently dropping the header.
+    fn from_env() -> Result<Self, anyhow::Error> {
+        Self::from_var(var(env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID))
+    }
+
+    /// Validate an already-read `DYN_HTTP_PROVIDER_DEPLOY_ID` value. Pure, so
+    /// tests can exercise malformed values without touching the process
+    /// environment (keeping parallel test runs safe).
+    fn from_var(value: Result<String, std::env::VarError>) -> Result<Self, anyhow::Error> {
+        let raw = match value {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => DYN_BUILD_SOURCE_FINGERPRINT.to_string(),
+            Err(error @ std::env::VarError::NotUnicode(_)) => {
+                return Err(anyhow::anyhow!(
+                    "invalid {}: value is not valid Unicode ({error})",
+                    env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID
+                ));
+            }
+        };
+
+        if raw.bytes().any(|byte| byte.is_ascii_control()) {
+            return Err(anyhow::anyhow!(
+                "invalid {}: control characters are not allowed",
+                env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID
+            ));
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!(
+                "invalid {}: value is blank; unset the variable to fall back \
+                 to the build fingerprint, or set a non-empty deployment ID",
+                env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID
+            ));
+        }
+        HeaderValue::from_str(trimmed).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid {}: {:?} is not a valid header value ({error})",
+                env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID,
+                trimmed
+            )
+        })
+        .map(Self)
+    }
+
+    /// The validated header value, cloned per response.
+    fn header_value(&self) -> HeaderValue {
+        self.0.clone()
+    }
+}
+
+/// Middleware that stamps `X-Msh-ProviderDeployId` onto every response.
+///
+/// Runs inside the response pipeline before the body is produced, so the
+/// header is present on the SSE response headers before any SSE body byte is
+/// written and the streaming body itself is never buffered.
+async fn stamp_provider_deploy_id_header(
+    axum::extract::State(deploy_id): axum::extract::State<Arc<ProviderDeployId>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(PROVIDER_DEPLOY_ID_HEADER, deploy_id.header_value());
     response
 }
 
@@ -1503,6 +1597,18 @@ impl HttpServiceConfigBuilder {
             );
         let router = router.fallback_service(unmatched_router);
 
+        // Resolve and validate the deployment ID once per service build; the
+        // middleware below clones the stored HeaderValue per response.
+        let provider_deploy_id = Arc::new(ProviderDeployId::from_env()?);
+
+        // Stamp X-Msh-ProviderDeployId on every response — JSON, SSE (before
+        // headers are written; the body is never buffered), and error
+        // responses — using the startup-resolved value, never a client header.
+        let router = router.layer(axum::middleware::from_fn_with_state(
+            provider_deploy_id.clone(),
+            stamp_provider_deploy_id_header,
+        ));
+
         // Echo x-request-id from request to response headers for client correlation
         let router = router.layer(axum::middleware::from_fn(echo_request_id_header));
 
@@ -1520,11 +1626,16 @@ impl HttpServiceConfigBuilder {
                 "RL worker discovery enabled at /v1/rl/workers"
             );
             Some(
-                router.layer(
-                    TraceLayer::new_for_http()
-                        .make_span_with(make_system_request_span)
-                        .on_response(on_response),
-                ),
+                router
+                    .layer(axum::middleware::from_fn_with_state(
+                        provider_deploy_id.clone(),
+                        stamp_provider_deploy_id_header,
+                    ))
+                    .layer(
+                        TraceLayer::new_for_http()
+                            .make_span_with(make_system_request_span)
+                            .on_response(on_response),
+                    ),
             )
         } else {
             None
@@ -2905,6 +3016,78 @@ mod tests {
     fn generate_route_path_validation_rejects_invalid_paths() {
         for path in ["", "native/vllm", "/:model", "/*path"] {
             assert!(validate_generate_route_path(path).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_deploy_id_header_is_on_all_response_surfaces() {
+        use axum::http::{Request, StatusCode};
+        use axum::response::sse::{Event, Sse};
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        for config in [
+            Ok("k31-router-release-20261118".to_string()),
+            Err(std::env::VarError::NotPresent),
+        ] {
+            let deploy_id = Arc::new(ProviderDeployId::from_var(config).unwrap());
+            let expected = deploy_id.header_value();
+            assert!(!expected.is_empty());
+            let router = axum::Router::new()
+                .route("/json", get(|| async { axum::Json(serde_json::json!({"ok": true})) }))
+                .route(
+                    "/stream",
+                    get(|| async {
+                        Sse::new(futures::stream::pending::<
+                            Result<Event, std::convert::Infallible>,
+                        >())
+                    }),
+                )
+                .layer(axum::middleware::from_fn_with_state(
+                    deploy_id,
+                    stamp_provider_deploy_id_header,
+                ));
+
+            for (path, status, content_type) in [
+                ("/json", StatusCode::OK, Some("application/json")),
+                ("/stream", StatusCode::OK, Some("text/event-stream")),
+                ("/missing", StatusCode::NOT_FOUND, None),
+            ] {
+                let response = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    router.clone().oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(PROVIDER_DEPLOY_ID_HEADER, "client-spoofed-id")
+                            .body(Body::empty())
+                            .unwrap(),
+                    ),
+                )
+                .await
+                .expect("headers must not wait for the pending SSE body")
+                .unwrap();
+                assert_eq!(response.status(), status);
+                assert_eq!(response.headers()[PROVIDER_DEPLOY_ID_HEADER], expected);
+                if let Some(content_type) = content_type {
+                    assert_eq!(response.headers()["content-type"], content_type);
+                }
+                if path == "/json" {
+                    let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+                    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                        serde_json::json!({"ok": true}));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn provider_deploy_id_rejects_blank_and_control_characters() {
+        for value in ["", "   ", "bad\u{0007}id", "\r\nrelease", "release\n", "a\tb", "a\u{007f}b"] {
+            let error = ProviderDeployId::from_var(Ok(value.to_string())).unwrap_err();
+            assert!(
+                error.to_string().contains(env_llm::DYN_HTTP_PROVIDER_DEPLOY_ID),
+                "{value:?}: {error}"
+            );
         }
     }
 }

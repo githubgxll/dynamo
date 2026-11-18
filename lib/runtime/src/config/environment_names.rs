@@ -504,6 +504,21 @@ pub mod llm {
     /// `HttpServiceConfigBuilder::streaming_backend_error_check` replaces it.
     pub const DYN_HTTP_PRE_COMMIT_ERROR_PEEK_MS: &str = "DYN_HTTP_PRE_COMMIT_ERROR_PEEK_MS";
 
+    /// Explicit provider deployment/release ID returned in the
+    /// `X-Msh-ProviderDeployId` response header on every HTTP response
+    /// (non-streaming, SSE, and error responses alike).
+    ///
+    /// Production deployments SHOULD set this to their full release ID.
+    /// When unset, the frontend falls back to a deterministic software build
+    /// fingerprint derived from the served source tree (Rust and Python
+    /// sources, manifests, and lockfiles), so an unconfigured service still
+    /// reports a traceable build identity. Blank values or values containing
+    /// control characters fail service construction with a diagnostic error
+    /// instead of silently dropping the header.
+    ///
+    /// The value is read and validated once when the HTTP service is built.
+    pub const DYN_HTTP_PROVIDER_DEPLOY_ID: &str = "DYN_HTTP_PROVIDER_DEPLOY_ID";
+
     /// Enable the LoRA allocation controller (set to "true" to enable)
     pub const DYN_LORA_ALLOCATION_ENABLED: &str = "DYN_LORA_ALLOCATION_ENABLED";
 
@@ -1121,6 +1136,7 @@ mod tests {
             llm::DYN_HTTP_OVERLOAD_STATUS_CODE,
             llm::DYN_HTTP_BACKEND_STREAM_TIMEOUT_SECS,
             llm::DYN_HTTP_PRE_COMMIT_ERROR_PEEK_MS,
+            llm::DYN_HTTP_PROVIDER_DEPLOY_ID,
             llm::DYN_LORA_ENABLED,
             llm::DYN_LORA_PATH,
             llm::DYN_ENABLE_ANTHROPIC_API,

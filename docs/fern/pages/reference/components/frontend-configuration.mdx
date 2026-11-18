@@ -95,6 +95,29 @@ The Rust HTTP server also reads these environment variables, which are not expos
   Unset, `0`, invalid, or unrepresentable values disable keep-alive comments.
 </ParamField>
 
+<ParamField path="DYN_HTTP_PROVIDER_DEPLOY_ID" type="string" default="build fingerprint">
+  Deployment ID reported in the `X-Msh-ProviderDeployId` response header on **every** HTTP
+  response — non-streaming JSON, SSE (the header is written before the first SSE body byte), and
+  error responses. The value is resolved and validated once at startup and never taken from a
+  client-supplied header of the same name.
+
+  When unset, the frontend reports a **software build fingerprint**: a deterministic SHA-256 over
+  the served source tree (Rust and Python sources, manifests, and lockfiles). This identifies
+  *which software build* is running — it is **not** a model or configuration release ID, and it
+  does not distinguish two deployments of the same image with different model weights or
+  configuration.
+
+  Production deployments **should** set this variable to their full release/deployment ID (for
+  example a release name, image tag plus rollout identifier, or deployment pipeline ID). The
+  default build fingerprint exists so that an unconfigured router still reports a traceable,
+  non-empty identity rather than a request ID or pod UID, which would not be traceable to source.
+  Update the configured value whenever a release is a breaking change.
+
+  Gateway deployments should pass the backend-reported header through to their own clients
+  unchanged. A value that is blank or contains control characters fails startup with a
+  diagnostic error instead of silently omitting the header.
+</ParamField>
+
 ## Router
 
 This section is the canonical CLI and environment-variable reference for the frontend's embedded

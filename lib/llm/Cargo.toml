@@ -279,6 +279,7 @@ path = "src/bin/generate_frontend_openapi.rs"
 
 [build-dependencies]
 tonic-build = { version = "0.13.1" }
+sha2 = "0.10"
 
 [[bin]]
 name = "bench_local_transfer_v2"

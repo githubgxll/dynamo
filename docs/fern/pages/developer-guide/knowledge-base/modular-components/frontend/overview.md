@@ -50,6 +50,13 @@ Frontend will download the files it needs from Hugging Face, no setup is require
 
 If the model is not available on Hugging Face, such as a private or customized model, you will need to make the model files available locally at the same file path as on the backend. The backend's `--model-path <here>` will need to exist on the frontend and contain at least the configuration (JSON) files.
 
+Chat Completions accepts image content parts in both `user` and `tool` messages.
+The canonical form is `{"type":"image_url","image_url":{"url":"https://example.com/image.png","detail":"auto"}}`.
+A bare string in `image_url` is also accepted and normalized to the canonical
+object before typed request validation. Message roles, content-part order,
+`tool_call_id`, and fields on existing image objects are preserved; malformed
+image values still return HTTP 400.
+
 ### KServe gRPC Frontend
 
 ```bash

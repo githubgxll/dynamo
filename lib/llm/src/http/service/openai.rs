@@ -106,6 +106,9 @@ use dynamo_protocols::types::responses::{
 use dynamo_runtime::logging::get_distributed_tracing_context;
 use tracing::Instrument;
 
+#[path = "openai_bare_media_url.rs"]
+mod bare_media_url;
+
 pub const DYNAMO_REQUEST_ID_HEADER: &str = "x-dynamo-request-id";
 
 /// Dynamo Annotation for the request ID
@@ -3310,7 +3313,7 @@ where
     match serde_json::from_slice(body) {
         Ok(request) => Ok(request),
         Err(original_error) => {
-            if let Some(escaped_body) = escape_json_string_control_chars(body) {
+            let repaired = if let Some(escaped_body) = escape_json_string_control_chars(body) {
                 match serde_json::from_slice(&escaped_body) {
                     Ok(request) => {
                         tracing::warn!(
@@ -3325,7 +3328,18 @@ where
             } else {
                 parse_json_request_lossy(endpoint, body)
                     .map_err(|_| json_deserialize_error(original_error))
-            }
+            };
+            repaired.or_else(|error| {
+                if endpoint != "chat completions" {
+                    return Err(error);
+                }
+                let lossy_body = String::from_utf8_lossy(body);
+                let escaped_body = escape_json_string_control_chars(lossy_body.as_bytes());
+                bare_media_url::parse_compatible(
+                    escaped_body.as_deref().unwrap_or(lossy_body.as_bytes()),
+                )
+                .ok_or(error)
+            })
         }
     }
 }
@@ -7017,6 +7031,25 @@ mod tests {
                 .unwrap_err();
         assert_eq!(chat_error.0, StatusCode::BAD_REQUEST);
         assert!(chat_error.1.message.contains("duplicate field `model`"));
+    }
+
+    #[test]
+    fn test_parse_tool_image_strings_compose_with_json_repairs() {
+        let body = b"{\"model\":\"test-model\",\"messages\":[{\"role\":\"tool\",\"tool_call_id\":\"call-1\",\"content\":[{\"type\":\"text\",\"text\":\"raw \xff \x03 data\"},{\"type\":\"image_url\",\"image_url\":\"https://example.com/a.png\"}]}]}";
+        let request: NvCreateChatCompletionRequest =
+            parse_json_request("chat completions", body).unwrap();
+        let wire = serde_json::to_value(request).unwrap();
+        assert_eq!(wire["messages"][0]["tool_call_id"], "call-1");
+        assert_eq!(wire["messages"][0]["content"][0]["text"], "raw \u{fffd} \u{3} data");
+        assert_eq!(wire["messages"][0]["content"][1]["image_url"]["url"], "https://example.com/a.png");
+    }
+
+    #[test]
+    fn test_parse_tool_image_strings_keep_duplicate_field_errors() {
+        let body = br#"{"model":"m","messages":[{"role":"tool","tool_call_id":"c","content":[{"type":"image_url","image_url":"https://example.com/a.png"}]}],"model":"duplicate"}"#;
+        let error = parse_json_request::<NvCreateChatCompletionRequest>("chat completions", body)
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]

@@ -43,6 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Rerun build if environment variable changes
     println!("cargo:rerun-if-env-changed=DYN_FATBIN_PATH");
 
+    // Compute the deterministic source fingerprint emitted as
+    // DYN_BUILD_SOURCE_FINGERPRINT below. Declaring rerun-if-changed here
+    // would be wrong: emit_source_fingerprint prints those directives itself.
+    emit_source_fingerprint()?;
+
     Ok(())
 }
 
@@ -99,6 +104,96 @@ fn find_fatbin_file() -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Deterministic fingerprint over local Rust crates and the Python package.
+///
+/// Hashes source and manifest files by relative path and contents, including
+/// uncommitted changes and archive builds without `.git`. Watch directories as
+/// well as files so adding or removing a source file invalidates the build.
+/// This does not access Git metadata or the network.
+fn emit_source_fingerprint() -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::io::Read;
+    use std::path::{Path, PathBuf};
+
+    const EXTENSIONS: &[&str] = &["rs", "py", "toml", "lock", "proto", "yml", "yaml"];
+
+    fn collect(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        // Watching the entire `lib` tree would also watch nested Cargo targets.
+        // Source roots cover new modules without invalidating on build output.
+        if root.file_name().is_some_and(|name| name == "src" || name == "dingo") {
+            println!("cargo:rerun-if-changed={}", root.display());
+        }
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                if name == "__pycache__" || name == "target" || name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                collect(&path, out)?;
+            } else if file_type.is_file()
+                && path.extension().and_then(|e| e.to_str())
+                    .is_some_and(|ext| EXTENSIONS.contains(&ext))
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("CARGO_MANIFEST_DIR must be <workspace>/lib/llm")?
+        .to_path_buf();
+
+    let mut files = Vec::new();
+    collect(&workspace_root.join("lib"), &mut files)?;
+    collect(&workspace_root.join("dingo"), &mut files)?;
+    for name in ["Cargo.toml", "Cargo.lock", "pyproject.toml"] {
+        files.push(workspace_root.join(name));
+    }
+
+    files.sort();
+    for file in &files {
+        // Rerun this build script (and hence rebuild the frontend) whenever
+        // any covered file changes. Touched paths are absolute, which cargo
+        // normalizes against the workspace.
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    for file in &files {
+        let rel = file
+            .strip_prefix(&workspace_root)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        hasher.update(rel.as_bytes());
+        hasher.update([0]);
+        let mut source = fs::File::open(file)?;
+        hasher.update(source.metadata()?.len().to_le_bytes());
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+    }
+    let digest = hasher.finalize();
+    let fingerprint: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+
+    let out_dir = PathBuf::from(env::var(OUT_DIR)?);
+    fs::write(out_dir.join("source_fingerprint.txt"), &fingerprint)?;
+    Ok(())
 }
 
 // NOTE: Preserving this build.rs for reference. We may want to re-enable
