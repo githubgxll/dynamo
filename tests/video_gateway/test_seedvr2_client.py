@@ -135,3 +135,29 @@ async def test_cancel_timeout_does_not_claim_success():
     async with server(handler) as client:
         with pytest.raises(TimeoutError):
             await client.cancel_and_wait(JOB, settle_timeout_s=0.02, poll_s=0.001)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 413, 415, 422])
+async def test_confirmed_validation_rejection_is_not_unknown_submission(tmp_path, status):
+    from dingo.vllm.omni.seedvr2_client import SubmissionRejected
+    calls = []
+    async def handler(request):
+        calls.append(request.method)
+        return web.json_response({"detail": "invalid source"}, status=status)
+    source = tmp_path / "base.mp4"; source.write_bytes(b"base")
+    async with server(handler) as client:
+        with pytest.raises(SubmissionRejected) as error:
+            await client.submit(source, width=2256, height=960, frames=3)
+    assert error.value.status == status and calls == ["POST"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [409, 429, 500, 502, 503])
+async def test_busy_or_server_failure_remains_ambiguous(tmp_path, status):
+    async def handler(request):
+        return web.Response(status=status)
+    source = tmp_path / "base.mp4"; source.write_bytes(b"base")
+    async with server(handler) as client:
+        with pytest.raises(SubmissionUnknown):
+            await client.submit(source, width=2256, height=960, frames=3)

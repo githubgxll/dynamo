@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import signal
 import time
@@ -123,6 +124,7 @@ async def probe(path: Path) -> dict:
         "frames": frames,
         "sha256": digest,
         "audio": audio,
+        "audio_time_base": audios[0].get("time_base") if audios else None,
         "start_time": video.get("start_time", "0"),
         "probe_timings": timings,
         "copy_compatible": (
@@ -189,6 +191,11 @@ async def finalize(
         "0:v:0",
     ]
     args += ["-map", "1:a:0", "-c:a", "copy"] if original["audio"] else ["-an"]
+    if original.get("audio_time_base"):
+        # The MP4 edit list uses the movie clock, which defaults to 1 ms.
+        # Keep AAC tail edits exact while also representing whole 24 fps frames.
+        audio_ticks = Fraction(original["audio_time_base"]).denominator
+        args += ["-movie_timescale", str(math.lcm(audio_ticks, 24))]
     copy_video = (restored["width"], restored["height"]) == (
         width,
         height,

@@ -287,6 +287,7 @@ class GatewayConfig:
 
     context_ir: ContextIRConfig = field(default_factory=ContextIRConfig)
     seed_defaults: SeedDefaultsConfig | None = None
+    upscale_routes: Mapping[str, str] = field(default_factory=dict)
 
     def pool_for_model(self, model: str) -> PoolConfig | None:
         return self.pools_by_model.get(model)
@@ -858,6 +859,7 @@ def parse_config(raw: Any) -> GatewayConfig:
             "performance_cache",
             "context_ir",
             "seed_defaults",
+            "upscale_routes",
         },
         "config",
     )
@@ -896,6 +898,18 @@ def parse_config(raw: Any) -> GatewayConfig:
         if pool.backend_target != base.backend_target:
             raise ValueError("pipeline backend_target must match its base pool")
 
+    upscale_routes = dict(_mapping(data.get("upscale_routes", {}), "upscale_routes"))
+    for model, pool_id in upscale_routes.items():
+        if not isinstance(model, str) or not model.strip() or model not in by_model:
+            raise ValueError("upscale_routes keys must be configured public generation models")
+        if by_model[model].adapter.name == "seedvr2":
+            raise ValueError("upscale_routes must use a public generation model, not an SR backend alias")
+        target = by_id.get(pool_id) if isinstance(pool_id, str) else None
+        if (target is None or target.adapter.name != "seedvr2"
+                or target.adapter.workflow != "sr_only"
+                or target.execution_mode != "detached" or target.pipeline is not None):
+            raise ValueError("upscale_routes targets must be configured detached seedvr2 sr_only pools")
+
     http = _http_config(data.get("http"))
     media = _media_config(data.get("media"), http)
     if http.default_model is not None and http.default_model not in by_model:
@@ -926,6 +940,7 @@ def parse_config(raw: Any) -> GatewayConfig:
         pools_by_model=by_model,
         pools_by_id=by_id,
         performance_cache=_performance_cache_config(data.get("performance_cache")),
+        upscale_routes=upscale_routes,
         context_ir=parse_context_ir(data.get("context_ir"), by_model),
         seed_defaults=(
             _seed_defaults_config(data["seed_defaults"])

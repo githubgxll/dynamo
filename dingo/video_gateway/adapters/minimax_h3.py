@@ -32,7 +32,7 @@ from dingo.video_gateway.adapters.h3_output_policy import (
     plan_h3_output,
 )
 from dingo.video_gateway.adapters.h3_resolution import (
-    BASE_CANVASES, RESOLUTION_CANVASES, classify_resolution, plan_fl2va_adaptive,
+    BASE_CANVASES, RESOLUTION_CANVASES, classify_resolution, plan_fl2va_adaptive, restore_sr_plan,
 )
 from dingo.video_gateway.adapters.h3_shape import (
     align_frame_count,
@@ -1348,6 +1348,9 @@ class MiniMaxH3VideoAdapter:
                 "sr_width": resolved_shape.sr_width,
                 "sr_height": resolved_shape.sr_height,
             }
+            if resolved_shape.adaptive_keyframe:
+                normalized["super_resolution"]["adaptive_keyframe"] = list(resolved_shape.adaptive_keyframe)
+                normalized["adaptive_resolution"] = resolved_shape.adaptive_keyframe[2]
         return normalized
 
     def normalize_context_ir_request(self, fields, uploads, public_model):
@@ -1467,11 +1470,9 @@ class MiniMaxH3VideoAdapter:
         sr = normalized.get("super_resolution")
         if sr is not None:
             # Reconstruct the plan rather than trusting persisted/user fields.
-            plan = plan_h3_output(
-                normalized["width"],
-                normalized["height"],
-                sr_profile=self.pool.sr_profile,
-            )
+            plan = restore_sr_plan(sr, self.pool.sr_profile)
+            if (normalized["width"], normalized["height"]) != (plan.output_width, plan.output_height):
+                raise ValueError("persisted SR output dimensions changed")
             expected = {
                 "schema_version": 1,
                 "profile": plan.sr_profile,
@@ -1482,6 +1483,8 @@ class MiniMaxH3VideoAdapter:
                 "sr_width": plan.sr_width,
                 "sr_height": plan.sr_height,
             }
+            if plan.adaptive_keyframe:
+                expected["adaptive_keyframe"] = list(plan.adaptive_keyframe)
             if plan.sr_profile is None or sr != expected:
                 raise ValueError("persisted SR plan does not match model output policy")
         payload: dict[str, Any] = {

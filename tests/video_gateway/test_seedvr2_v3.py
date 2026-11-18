@@ -55,7 +55,7 @@ async def test_finalizer_only_allows_explicit_base_geometry_and_stream_copy(monk
 def test_v3_provenance_includes_crop_and_policy_without_changing_v2(tmp_path):
  from dingo.vllm.omni.seedvr2_process import measurement_source_hashes
  base=['vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py','vllm_omni/diffusion/models/seedvr2/sr_telemetry.py','vllm_omni/diffusion/ipc.py','vllm_omni/diffusion/models/seedvr2/long_video.py','dingo/vllm/omni/seedvr2_handler.py']
- extra=['vllm_omni/diffusion/models/seedvr2/long_video_support.py','dingo/video_gateway/adapters/h3_output_policy.py','dingo/common/video_super_resolution.py','dingo/vllm/omni/seedvr2_media.py']
+ extra=['vllm_omni/diffusion/models/seedvr2/long_video_support.py','dingo/video_gateway/adapters/h3_output_policy.py','dingo/common/video_super_resolution.py','dingo/common/video_sr_only.py','dingo/video_gateway/adapters/h3_resolution.py','dingo/video_gateway/adapters/h3_shape.py','dingo/vllm/omni/seedvr2_media.py']
  for name in base+extra:
   p=tmp_path/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(name)
  assert set(measurement_source_hashes(tmp_path))==set(base)

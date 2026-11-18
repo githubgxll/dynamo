@@ -36,6 +36,9 @@ def measurement_source_hashes(package_root, *, include_geometry=False, dingo_roo
         sources += ["vllm_omni/diffusion/models/seedvr2/long_video_support.py",
                     "dingo/video_gateway/adapters/h3_output_policy.py",
                     "dingo/common/video_super_resolution.py",
+                    "dingo/common/video_sr_only.py",
+                    "dingo/video_gateway/adapters/h3_resolution.py",
+                    "dingo/video_gateway/adapters/h3_shape.py",
                     "dingo/vllm/omni/seedvr2_media.py"]
     native_root = Path(package_root)
     wrapper_root = native_root if dingo_root is None else Path(dingo_root)

@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from dingo.vllm.omni.seedvr2_client import SETTLED, SeedVR2Client
+from dingo.vllm.omni.seedvr2_client import SETTLED, SeedVR2Client, SubmissionRejected
 from dingo.common.video_worker_error import VideoWorkerFailure, normalize_internal_error
 
 
@@ -149,6 +149,9 @@ class SeedVR2Execution:
         ):
             raise UnsafeRecovery("SR checkpoint belongs to a different request")
         if existing is not None:
+            if existing.get("phase") == "rejected":
+                # Known non-admission is durable; do not POST or quarantine on replay.
+                raise SubmissionRejected(existing["http_status"])
             if existing.get("owner") != self.owner or not existing.get("job_id"):
                 self.quarantine(
                     "unresolved SR submission or changed process incarnation"
@@ -195,6 +198,11 @@ class SeedVR2Execution:
                     if state["frames"] > frames:
                         raise RuntimeError("native SR processed more frames than Base")
                     await asyncio.sleep(self.poll_s)
+        except SubmissionRejected as exc:
+            # A complete validation rejection is not an unknown GPU execution.
+            record.update(phase="rejected", http_status=exc.status, settled_at=time.time())
+            write_journal(journal, record)
+            raise
         except BaseException:
             if may_be_running and not settled:
                 # Pause admission while determining settlement. A confirmed

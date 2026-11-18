@@ -70,7 +70,7 @@ python3 -m dingo.context_ir.worker
 | `CONTEXT_IR_DEPLOYMENT_ID` | 与Gateway相同的部署ID |
 | `CONTEXT_IR_ARTIFACT_ROOT` | 与Gateway ContextIR制品根目录指向同一共享存储及相同子目录 |
 | `CONTEXT_IR_STORAGE_ID` | 与Gateway配置相同的存储域标识 |
-| `CONTEXT_IR_CAPACITY_DOMAIN` | 一套独立Qwen的稳定唯一标识；同一套Qwen重启后仍沿用 |
+| `CONTEXT_IR_CAPACITY_DOMAIN` | 一套独立Qwen计算资源的容量域标识；同一Qwen仍可能执行旧请求时必须沿用，独立Qwen实例之间必须不同，详见下节 |
 | `CONTEXT_IR_CAPACITY` | 默认16；当前部署显式16，预取固定0 |
 | `CONTEXT_IR_HEALTH_PORT` | 默认8126 |
 | `ETCD_ENDPOINTS` | 与Gateway使用同一发现后端 |
@@ -83,7 +83,63 @@ python3 -m dingo.context_ir.worker
 
 编译容器配置`GET /health`为存活检查、`GET /ready`为就绪检查。ready同时检查Qwen健康、恢复闸门与drain；满载本身不令实例不健康。drain后仍可读取已接收任务状态。Qwen未就绪或恢复状态不明时不派发新任务。
 
-扩容需要新增完整的Worker＋独立Qwen组合，分配新的容量域和独占缓存目录，使用相同编译endpoint、pool和共享制品根目录。新实例注册后被自动发现；两个独立16槽实例提供最多32槽。不得把两个编译进程指向同一个Qwen并将容量相加；共享目录的进程锁和容量域去重用于阻止此类超配。当前仅实测了一套Qwen，双独立Qwen扩容尚未做真实验证。
+扩容需要新增完整的Worker＋独立Qwen组合，分配新的容量域和独占缓存目录，使用相同编译endpoint、pool和共享制品根目录。新实例就绪并注册后由Gateway自动发现；两个独立16槽实例在健康且无占用时提供最多32个执行槽。实例和容量域的配置规则见下节；同池多实例扩容的验证边界见“验证范围”。
+
+## 实例身份、容量域与单模型多实例
+
+本节按2026-11-17的实现核对。Worker模式支持同一模型部署多个独立Worker＋Qwen组合，由同一个编译池处理同类请求。调用方继续使用同一个`model`；Gateway的`context_ir.model_bindings`将该模型映射到编译后端，`backend_target`发现其下的所有运行时实例，无需逐个填写Pod地址。
+
+### 三种标识
+
+| 标识 | 产生方式 | 用途 |
+|---|---|---|
+| Worker池：`CONTEXT_IR_POOL` | 部署配置，须匹配Gateway的`worker_pool` | 将处理同类任务的实例归入同一调度池 |
+| `instance_id` | Worker使用Dynamo Runtime的`endpoint.connection_id()`自动取得 | 定向派发、查询和取消某个Worker进程的任务；不提供同名环境变量供调用方设置 |
+| 容量域：`CONTEXT_IR_CAPACITY_DOMAIN` | 部署方显式提供，当前无自动缺省值 | 标识Worker背后的一套独立Qwen计算资源，用于执行槽、占用和故障恢复 |
+
+`instance_id`标识当前注册进程，重启后不能依赖它保持不变。容量域标识所使用的后端资源；同一套仍可能处理旧请求的Qwen，不能因CPU编译进程重启就更换容量域。两个独立Qwen实例即使模型名称和权重相同，也必须使用不同容量域。
+
+例如，同一个编译池有两套独立的双卡Qwen：
+
+```text
+h3-compiler-workers
+├─ instance A → capacity_domain=qwen36-pod-a → 独立Qwen A（2 GPU）
+└─ instance B → capacity_domain=qwen36-pod-b → 独立Qwen B（2 GPU）
+```
+
+Gateway从服务发现获取实例列表，查询各实例能力，并校验存储标识、协议、适配器和可接单状态。之后依据空闲槽位比例选择候选实例，对等候选轮转；真正领取执行槽还须通过etcd比较并交换事务。新实例健康且有空闲槽后即可参与派发，原有模型绑定和编译服务地址不必改变。
+
+每个容量域的上限取Worker声明值与Gateway的`worker_capacity`较小者。增加实例扩展独立执行容量，`queue_limit`仍是对应编译后端的排队上限，不随副本数自动倍增。多个公开模型别名映射到同一个编译后端时共享这套队列和执行容量。
+
+### 容量域冲突如何处理
+
+`capacity_domain`不是根据`H3IR_LLM_URL`、模型名称或GPU设备自动探测出来的。它依赖部署方正确描述资源关系，不会主动验证两个不同域是否实际指向同一个Qwen。
+
+- 同一注册实例经多个逻辑别名出现时，容量不会重复计入。
+- 同一容量域出现不同`instance_id`或进程代次，或仍有其他注册留下的占用时，调度器会阻止该域派发，直到冲突和占用被协调清理；不会把它们的容量相加，也不是随机选择其中一个。
+- Worker启动时还会对共享制品目录下的容量域锁文件取得排他进程锁。两个活跃编译进程在相同存储和部署ID下使用相同容量域，后启动者会因锁冲突拒绝启动。
+
+因此，不能通过给同一个Qwen换两个容量域来扩大容量，这会绕过上述去重关系。当前恢复策略要求一个活跃编译Worker独占一套Qwen；需要更多容量时部署新的独立Qwen组合。
+
+### Kubernetes副本配置
+
+只把固定`CONTEXT_IR_CAPACITY_DOMAIN`的Deployment改成`replicas: 2`不够。两个完整Pod各自运行独立Qwen时，容量域和`H3IR_STATE_DIR`也应按Pod隔离。可使用Downward API，以下是编译容器的环境变量片段：
+
+```yaml
+env:
+- name: POD_UID
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.uid
+- name: CONTEXT_IR_CAPACITY_DOMAIN
+  value: qwen36-$(POD_UID)
+- name: H3IR_STATE_DIR
+  value: /compiler-state/$(POD_UID)
+```
+
+`POD_UID`须先于引用它的变量声明；`/compiler-state`需挂载可写存储。所有副本继续使用相同的`CONTEXT_IR_ENDPOINT`、`CONTEXT_IR_POOL`、`CONTEXT_IR_DEPLOYMENT_ID`、`CONTEXT_IR_STORAGE_ID`及指向同一共享存储的`CONTEXT_IR_ARTIFACT_ROOT`。每个编译容器的`H3IR_LLM_URL`仍指向本Pod的Qwen，Qwen自身按所需卡数申请GPU；调度按部署环境的弹性资源规则配置。
+
+该方式适用于整个Worker＋Qwen随Pod一起替换：同Pod容器重启时UID不变，新建Pod及其独立Qwen获得新UID。若CPU Worker独立部署、Qwen跨CPU Pod重建仍持续存在，应使用与那套Qwen绑定的稳定容量域，不能直接以CPU Pod UID标识资源。新Pod获得新域不代表旧域的任务或槽位已结清；发现租约过期也不允许盲目释放旧占用。
 
 ## 取消、故障与用量
 
@@ -105,7 +161,7 @@ python3 -m dingo.context_ir.worker
 
 本地Gateway/Worker相关220项测试通过；编译器1272项通过、11项跳过，官方格式控制23/23通过。真实测试覆盖完整126项编译集、1/16/32请求、双Gateway共享16槽、排队及执行中取消、drain、CPU Worker故障、Gateway接管，以及T2VA/FL2VA/Ref2VA三类768P视频链路。
 
-126项首轮为116项正常技术完成、1项预期拒绝、4项负向未满足预期、5项HTTP失败。存储预算问题修复后3项完成；两项首尾帧输入调整为满足原有比例校验的画布后完成，保留原始失败记录。技术完成不代表所有提示词已完成语义人工评分。真实etcd整体停机、双Qwen扩容与新一轮超分视频不在此次实测范围内。
+126项首轮为116项正常技术完成、1项预期拒绝、4项负向未满足预期、5项HTTP失败。存储预算问题修复后3项完成；两项首尾帧输入调整为满足原有比例校验的画布后完成，保留原始失败记录。技术完成不代表所有提示词已完成语义人工评分。真实etcd整体停机、同一模型同一池的多Qwen扩容与新一轮超分视频不在该轮实测范围内。2026-11-17补充的Qwen3.6与Qwen3.8对照部署属于两个独立编译后端，不能替代同一池双实例扩容验证。
 
 ## 输入意图解析与独立CPU验证（2026-11-16）
 

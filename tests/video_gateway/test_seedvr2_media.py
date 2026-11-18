@@ -41,23 +41,24 @@ async def test_probe_copy_compatibility_guard(monkeypatch, changes, expected):
 
 
 @pytest.mark.parametrize(
-    "compatible,same_size,audio",
+    "compatible,same_size,audio_rate,movie_timescale",
     [
-        (True, True, True),
-        (True, True, False),
-        (False, True, True),
-        (True, False, True),
+        (True, True, 48000, "48000"),
+        (True, True, None, None),
+        (False, True, 44100, "88200"),
+        (True, False, 32000, "96000"),
     ],
 )
 async def test_copy_only_for_compatible_exact_size(
-    monkeypatch, compatible, same_size, audio
+    monkeypatch, compatible, same_size, audio_rate, movie_timescale
 ):
     original = {
         "width": 960,
         "height": 544,
         "frames": 124,
         "start_time": "0",
-        "audio": {"codec": "aac", "packets": []} if audio else None,
+        "audio": {"codec": "aac", "packets": []} if audio_rate else None,
+        "audio_time_base": f"1/{audio_rate}" if audio_rate else None,
     }
     raw = dict(
         original,
@@ -85,9 +86,12 @@ async def test_copy_only_for_compatible_exact_size(
     expected = compatible and same_size
     assert args[args.index("-c:v") + 1] == ("copy" if expected else "libx264")
     assert ("-vf" not in args) == expected
-    assert ("-an" not in args) == audio
-    if audio:
+    assert ("-an" not in args) == bool(audio_rate)
+    if audio_rate:
         assert args[args.index("-c:a") + 1] == "copy"
+        assert args[args.index("-movie_timescale") + 1] == movie_timescale
+    else:
+        assert "-movie_timescale" not in args
     assert value["postprocess_mode"] == ("stream_copy" if expected else "encode")
     assert all(t >= 0 for t in value["postprocess_timings"].values())
 

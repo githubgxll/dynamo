@@ -9,7 +9,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as replace_artifact
 from pathlib import Path
 
 from dingo.video_gateway.adapters.base import UploadedArtifact, VideoBackendAdapter
@@ -115,9 +115,34 @@ class VideoGatewayService:
         pipeline_parent: StoredTask | None = None,
         pipeline_phase: str | None = None,
         prepared_request: Mapping | None = None,
+        request_operation: str | None = None,
     ) -> Submission:
+        if request_operation == "regenerate" and not fields.get("model", [""])[0].strip():
+            raise GatewayError(400, "missing_required_field", "model is required", "model")
         model = self.resolve_request_model(fields)
         pool = self.resolve_pool(model)
+        if request_operation == "regenerate":
+            unsupported = set(fields) - {"model", "resolution"}
+            if unsupported:
+                name = sorted(unsupported)[0]
+                raise GatewayError(400, "unsupported_parameter",
+                                   f"regeneration does not accept parameter {name!r}", name)
+            target = self.config.upscale_routes.get(model)
+            if target is None:
+                raise GatewayError(400, "regeneration_not_supported",
+                                   "model has no configured regeneration route", "model")
+            pool = self.config.pools_by_id[target]
+            if len(uploads) != 1 or uploads[0].field_name != "base_video":
+                raise GatewayError(400, "invalid_source_video", "upload exactly one base_video MP4", "base_video")
+            # The shared SR adapter and internal pipeline retain their existing contract.
+            fields = {**fields, "operation": ["sr_only"]}
+            uploads = [replace_artifact(uploads[0], field_name="input_references")]
+        elif request_operation == "generate":
+            if pool.adapter.name == "seedvr2" or "sr_only" in fields.get("operation", []):
+                raise GatewayError(400, "unsupported_operation",
+                                   "video regeneration uses POST /v1/videos/regenerate", "model")
+        elif request_operation is not None:
+            raise ValueError("unknown submission operation")
         if idempotency_key is not None:
             if not idempotency_key or len(idempotency_key.encode()) > 256:
                 await self.artifacts.discard(upload_root)
@@ -136,12 +161,13 @@ class VideoGatewayService:
         normalized_fields["model"] = [model]
         try:
             if prepared_request is not None:
-                if pipeline_parent is None or pipeline_phase != "base":
-                    raise ValueError("prepared input is private to pipeline base admission")
+                if pipeline_parent is None or pipeline_phase not in ("base", "sr"):
+                    raise ValueError("prepared input requires internal pipeline admission")
                 normalized = dict(prepared_request)
             else:
                 normalized = await run_file_io(
-                    adapter.normalize_request, normalized_fields, uploads, model
+                    adapter.normalize_request, normalized_fields, uploads, model,
+                    **({"independent_upload": True} if request_operation == "regenerate" else {}),
                 )
             if pipeline_parent is not None:
                 normalized["_pipeline_child"] = {
@@ -272,6 +298,16 @@ class VideoGatewayService:
 
         task_root: Path | None = None
         try:
+            if request_operation == "regenerate":
+                original = uploads[0]
+                prepared, normalized = await run_file_io(
+                    adapter.prepare_upscale_source, original, normalized,
+                    max_bytes=min(self.config.media.max_single_file_bytes,
+                                  self.config.media.max_total_file_bytes),
+                )
+                entry = prepared.manifest_entry(relative_to=upload_root)
+                entry.update(normalized["reference_metadata"][0])
+                manifest = [entry]
             # Resolve defaults only for a new H3 task, after the client digest and
             # replay check. Persist once; dispatch/recovery never resample seeds.
             if pool.adapter.name == "minimax_h3":

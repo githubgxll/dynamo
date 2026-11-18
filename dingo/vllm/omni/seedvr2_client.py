@@ -27,6 +27,19 @@ class SubmissionUnknown(RuntimeError):
     """The server may have started GPU work without returning its identity."""
 
 
+# Only statuses guaranteed to reject this POST before scheduling native work.
+REJECTED_STATUSES = frozenset({400, 413, 415, 422})
+
+
+class SubmissionRejected(RuntimeError):
+    """Native validation rejected the request; this POST did not start a job."""
+    def __init__(self, status):
+        if type(status) is not int or status not in REJECTED_STATUSES:
+            raise ValueError("invalid confirmed SR rejection status")
+        self.status = status
+        super().__init__(f"SR submission rejected (HTTP {status})")
+
+
 class SeedVR2Client:
     def __init__(self, port: int = 8124, *, timeout_s: float = 30):
         if type(port) is not int or not 1024 <= port <= 65535:
@@ -50,6 +63,9 @@ class SeedVR2Client:
             async with session.request(
                 method, self.base_url + route, data=data, allow_redirects=False
             ) as response:
+                if (method == "POST" and route == ROUTE
+                        and response.status in REJECTED_STATUSES):
+                    raise SubmissionRejected(response.status)
                 if response.status != status:
                     raise RuntimeError(f"SR {method} returned HTTP {response.status}")
                 body = bytearray()
@@ -111,10 +127,15 @@ class SeedVR2Client:
             "extra_params": '{"color_correction_method":"lab"}',
         }
         if options is not None:
-            if set(options) != {"window_frames", "delivery_size", "encoding_mode", "measurement_mode", "measurement_context"}:
+            required = {"window_frames", "delivery_size", "encoding_mode", "measurement_mode", "measurement_context"}
+            if set(options) - {"source_mode", "geometry_mode"} != required:
                 raise ValueError("invalid SR request options")
             if options["window_frames"] not in (33, 65) or options["encoding_mode"] != "single_encode" or options["measurement_mode"] != "basic":
                 raise ValueError("invalid SR profile options")
+            if "source_mode" in options and options["source_mode"] != "uploaded_video":
+                raise ValueError("invalid SR source mode")
+            if "geometry_mode" in options and options["geometry_mode"] != "full_frame_resize":
+                raise ValueError("invalid SR geometry mode")
             fields.update({k: json.dumps(v) if k == "measurement_context" else str(v) for k, v in options.items()})
         if seed is not None:
             fields["seed"] = str(seed)
@@ -135,6 +156,8 @@ class SeedVR2Client:
                 if value.get("status") != "queued":
                     raise RuntimeError("invalid SR submission acknowledgement")
                 return job_id
+            except SubmissionRejected:
+                raise
             except asyncio.CancelledError:
                 # Preserve cancellation; the caller's persisted submit intent
                 # and quarantine path account for the unknown job identity.

@@ -26,19 +26,23 @@
     {
       "path": "vllm_omni/diffusion/models/seedvr2/long_video.py",
       "before_sha256": "eab9feed7cd1e81c4f553778cce917287b9012a41ba33cd4d75c5c7ed8d39340",
-      "after_sha256": "344e7a8d3e36d82f7854c62362cc27934469b742507b3d54876c9b622dd1785f",
+      "after_sha256": "8b53efee84e9ea8d1bc8d444d06b4999ab2d3449176430f2d528219858b81b8a",
       "compatible_parent_sha256": [
         "0e2882ff85e21334b8883cfb68578346a2e60a0ab9d6d64b2fd1750aacea6f05",
-        "3e8fe4e7b705f63fbf9bf8cfa32b8e1ab0a723e9af73c3ea5aef8770f226230e"
+        "3e8fe4e7b705f63fbf9bf8cfa32b8e1ab0a723e9af73c3ea5aef8770f226230e",
+        "344e7a8d3e36d82f7854c62362cc27934469b742507b3d54876c9b622dd1785f",
+        "be493ac5d7c2dbdc4412340c18186ddd891eafe588c32e47e3f711e46fa2eb20"
       ]
     },
     {
       "path": "vllm_omni/diffusion/models/seedvr2/long_video_support.py",
       "before_sha256": null,
-      "after_sha256": "462c7b9de0ba97be0c72b31b2ea962c85f33bafa21e3f434df1cdaa024f2626a",
+      "after_sha256": "77efbf3ab27374dc8eac87a3178d5e13edf4aebdd28151b5b7b109d0eb3b59fd",
       "compatible_parent_sha256": [
         "bff770f2a4c19e58743d519ded9a34829484d4e45a9076a3793a3030bda32cf1",
-        "2cb778163bf7f36883138b9c584897422089ebaccbfd59ca10f6eb4346132650"
+        "2cb778163bf7f36883138b9c584897422089ebaccbfd59ca10f6eb4346132650",
+        "462c7b9de0ba97be0c72b31b2ea962c85f33bafa21e3f434df1cdaa024f2626a",
+        "0205cda5ea5d9508b0da53680be3ada4426648689fea75c85d9182a7dff5c7ca"
       ]
     },
     {

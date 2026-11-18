@@ -57,6 +57,7 @@ curl -fL "$GATEWAY_URL/v1/videos/$TASK_ID/content" \
 | `GET` | `/v1/models` | 查询模型、可用状态和媒体能力 |
 | `POST` | `/v1/videos` | 异步提交任务，返回任务 JSON |
 | `POST` | `/v1/videos/sync` | 同步提交任务，成功时直接返回 MP4 |
+| `POST` | `/v1/videos/regenerate` | 上传已有视频，异步创建独立超分任务 |
 | `GET` | `/v1/videos/{task_id}` | 查询单个任务状态和阶段耗时 |
 | `GET` | `/v1/videos/{task_id}/diagnostics` | 查询相同任务信息及当前 attempt 的诊断明细 |
 | `GET` | `/v1/videos` | 分页查询任务列表 |
@@ -142,9 +143,11 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 - `ratio` 和 `aspect_ratio` 同时提供时必须相同。纯文生视频和Ref2VA在无显式尺寸时必须指定具体比例。
 - FL2VA 有关键帧且未显式指定尺寸时，可以省略比例或指定 `ratio=adaptive`：
   768P 按首帧实际比例计算画布，短边初值768、取整前像素预算768×1344，最后两轴各自四舍五入到32的倍数。
-  支持六种命名比例之外的画布，例如3:2图片得到1152×768。只有尾帧时按尾帧计算。
+  支持六种命名比例之外的画布。5:3 和 3:2 横屏分别输出 1280×768 和 1152×768，竖屏对应 768×1280 和 768×1152。只有尾帧时按尾帧计算。
   首尾帧可以具有不同尺寸和比例，画布由首帧确定；Worker沿用现有图片处理，不新增裁剪。
-  1080P和2K仍选择当前档位允许的预设，要求输出比例与首帧相差不超过3%；不匹配时拒绝。
+  1080P 和 2K 优先匹配现有预设（比例误差最多 3%）。使用 V3 超分时，未命中预设且长边/短边 ≤ 21:9 的关键帧按实际比例计算画布。
+  1080P 以短边 1080、约 1920×1080 像素预算计算，两轴对齐到偶数；2K 以短边 1440、约 2560×1440 像素预算计算，两轴对齐到 32。
+  例如 5:3 首帧可分别生成 1800×1080、2400×1440。超出动态范围且未命中预设的请求返回 400。
 - FL2VA 显式比例与参考图片不匹配时返回错误，不静默忽略。Ref2VA 暂不支持 `adaptive`。
   显式尺寸、具体比例入口保留首尾同尺寸要求和3%的图片比例校验；768P自动计算画布不受预设比例的3%限制。
   官方768P的21:9画布为1536x672，严格21:9图片与它的约2.04%误差可以通过。
@@ -161,37 +164,71 @@ curl -sS -X POST "$GATEWAY_URL/v1/videos" \
 768P自适应得到的非预设画布也返回 `resolution=768P`，例如1152×768返回 `ratio=3:2`。
 `/v1/context-ir`只做提示词编译，按比例和素材语义处理，不检查超分能力，也不返回像素画布；生成分辨率在视频请求中另行设置。见[ContextIR API参考](context-ir/05-api-reference.md)。
 
-### 上传已有视频单独超分（SeedVR2）
+### 视频重生成
 
-这一路径仍使用 `POST /v1/videos`，但 `model` 必须指向配置了 `seedvr2` adapter、
-`sr_only` workflow 和 detached 执行模式的独立 Worker 池。不会执行 H3 基础生成。
-先通过 `GET /v1/models` 确认目标模型的 `video_capabilities.workflow` 为 `sr_only`。
-以下 `seedvr2-3b-sr` 仅为示例名称，以实际部署公开的模型名为准。
-
-```bash
-curl -sS -X POST "$GATEWAY_URL/v1/videos" \
-  -H 'Idempotency-Key: sr-example-001' \
-  -F model=seedvr2-3b-sr \
-  -F operation=sr_only \
-  -F resolution=1080P \
-  -F 'input_references=@source.mp4;type=video/mp4'
-```
+视频重生成使用 `POST /v1/videos/regenerate`，与基础生成的创建接口分开。请求使用
+`multipart/form-data`，只接受三个必填参数，每个只出现一次：
 
 | 字段 | 要求 |
 |---|---|
-| `model` | 独立超分池的公开模型名 |
-| `operation` | 必须是 `sr_only` |
-| `resolution` | `1080P` 或 `2K`，输出比例按源视频匹配支持的画幅 |
-| `input_references` | 恰好一个源MP4，也接受单数名称 `input_reference` |
+| `model` | 公开生成模型名，例如 `minimax-h3`；不区分 T2VA、FL2VA、Ref2VA |
+| `resolution` | `1080P` 或 `2K`，无默认值 |
+| `base_video` | 恰好上传一个源 MP4 文件，不接受 URL、路径或 Base64 文本 |
 
-不接收 `prompt`、`seed`、`seconds`、`size`、`ratio` 或 `num_inference_steps` 等生成参数。
-源视频要求MP4、H.264/yuv420p、24 FPS、1–362帧、最多128 MiB；最多一条AAC音轨。
-源宽高各在256–2048之间，总像素不超过1,100,000，宽高比在0.4–2.5之间，且能匹配支持的超分画幅。
-请求还受Gateway配置的单文件、总请求体和存储配额限制；使用128 MiB源文件时需同步配置足够的上传限制。
+```bash
+curl -sS -X POST "$GATEWAY_URL/v1/videos/regenerate" \
+  -H 'Idempotency-Key: regenerate-example-001' \
+  -F model=minimax-h3 \
+  -F resolution=2K \
+  -F 'base_video=@source.mp4;type=video/mp4'
+```
 
-任务查询、结果下载、取消沿用本文通用接口。输出保留源帧数、帧率及音轨有无，
-不生成新对白；最终画幅以任务响应的 `size` 为准。Gateway和独立Worker需要配置一致的
-`storage_id`并挂载同一任务制品存储，源视频按任务目录及哈希核验后交给Worker。
+普通 768P 生成的六种画幅可作为源视频。Gateway 按画幅和目标档位选择交付尺寸。
+例如，21:9 的 `1536x672` 源先在 Gateway 调整到超分池要求的 `1504x640`，再进入现有超分流程。
+调整时重编码视频轨，AAC 音轨原样封装。源宽高已经符合要求时直接使用原文件。
+畸形的 multipart 请求返回 `400 invalid_multipart`。
+具体尺寸见[超分画幅契约](super-resolution.md#参数与能力边界)。
+
+不接收 `operation`、`input_reference`、`input_references` 或 `prompt`、`seed`、
+`seconds`、`fps`、`size`、`ratio`、`num_inference_steps` 等生成参数。未知参数及文件字段
+返回 400，不静默忽略。普通视频生成和 ContextIR 的素材字段保持原契约。
+
+Gateway 配置通过公开模型显式选择已有的独立 SR Worker 池：
+
+```yaml
+upscale_routes:
+  minimax-h3: seedvr2-sr-only
+```
+
+映射值是 `pools` 中的 `pool_id`，目标必须为 detached 模式的 `seedvr2/sr_only` 池。
+键必须为已配置的公开生成模型；不接受 SR 后台模型别名。映射缺省为空，未配置的模型
+不能使用独立超分；它与基础生成后的 `pipeline.sr_pool` 配置独立，不相互推导。
+多个公开模型可按需映射到同一个池，源任务来自哪种生成模式不参与路由。
+独立超分不会执行基础生成，也不要求基础生成 Worker 在线。
+
+`GET /v1/models` 在公开模型的 `video_capabilities.regeneration` 下返回支持状态、独立 SR
+可用状态、创建路径和媒体/分辨率能力；顶层 `available` 仍表示生成池的状态。
+SeedVR2 后台池的模型别名不再作为公开模型列出。`available=true` 不表示当前空闲。
+
+独立超分的 `base_video` 按 H3 768P 源视频规格校验。文件为 H.264/yuv420p MP4，
+包含一条 AAC 音轨。视频固定 24 FPS，时间戳从零开始，宽高均为 32 的倍数，
+每帧像素数在 589,824–1,032,192 之间。合法帧数为 107、124、141，依次每档递增 17 帧，
+最多 362 帧（对应约 4–15 秒）。
+文件大小上限以 `GET /v1/models` 返回的 `video_capabilities.regeneration.max_video_bytes` 为准。
+Gateway 取部署上传配置和 SR Worker 上限的较小值。
+输出比例按源视频匹配支持的画幅，最终尺寸以任务响应 `size` 为准。
+
+异步任务的状态码、幂等、查询、下载、取消、诊断和超分耗时沿用通用视频任务接口。
+任务的 `model` 保持请求中的公开模型，响应保留 `operation: sr_only`、`task: null`，
+不生成或返回 H3 seed。重生成和视频生成共用 `video-<ULID>` 任务 ID，并通过
+`GET /v1/videos/{task_id}` 查询。调用方可以用 `operation: sr_only` 识别重生成任务。
+输出保留源帧数和帧率，AAC 音轨以流复制保留音频包内容、时间戳及包时长。
+Gateway 与独立 Worker 继续使用一致的 `storage_id` 和共享制品存储，输入通过任务目录和哈希核验。
+
+`POST /v1/videos` 和 `/v1/videos/sync` 不再接受客户端独立 SR 创建请求，返回 400 并提示
+使用新路径。已经创建的旧任务仍可查询、下载和取消。基础生成后由 Gateway 调度 SR 的
+内部 pipeline 不受外部入口迁移影响。没有兼容就绪 SR Worker 时返回 503；忙碌时按原队列
+限额排队，满队列返回 429。源文件验证失败或上传断连会清理暂存文件。
 
 ### 超分尺寸契约
 

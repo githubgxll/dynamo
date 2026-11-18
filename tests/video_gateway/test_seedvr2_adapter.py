@@ -124,7 +124,7 @@ async def test_sr_only_http_validation_and_no_worker(make_gateway_config, tmp_pa
     _, _, _, service = _stack(config, {pool.pool_id: FakeClient(available=False)})
     upload = video(tmp_path)
     async with TestClient(TestServer(create_app(service))) as client:
-        for operation, expected in [('generate', 400), ('sr_only', 503)]:
+        for operation, expected in [('generate', 400), ('sr_only', 400)]:
             form = aiohttp.FormData()
             for name, value in {'model':pool.served_models[0], 'operation':operation,
                                 'resolution':'1080P'}.items():

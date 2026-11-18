@@ -76,15 +76,24 @@ async def test_two_gateways_admit_one_child_and_link_in_same_transaction(store):
     assert await store.queue_depth('base')==1
 
 
-async def setup_pipeline(make_gateway_config):
+async def setup_pipeline(make_gateway_config, *, keyframe=False):
     cfg=make_gateway_config(pools=pools())
     store,artifacts,dispatcher,service=_stack(cfg,{p.pool_id:FakeClient() for p in cfg.pools})
     dispatcher.has_workers=lambda pool: True
     dispatcher.has_sr_workers=lambda pool,n: True
     root=await artifacts.create_upload()
+    uploads = []
+    if keyframe:
+        from tests.video_gateway.test_minimax_h3_adapter import _png_upload
+        from dataclasses import replace
+        from PIL import Image
+        upload = _png_upload(root)
+        Image.new("RGB", (1280, 768)).save(upload.path)
+        image_bytes = upload.path.read_bytes()
+        uploads = [replace(upload, size=len(image_bytes), sha256=hashlib.sha256(image_bytes).hexdigest())]
     submitted=await service.submit(fields={k:[v] for k,v in {
         'model':'public-pipeline','prompt':'test chart','resolution':'1080P',
-        'ratio':'16:9','seconds':'4','seed':'123'}.items()},uploads=[],upload_root=root,
+        'ratio':'adaptive' if keyframe else '16:9','seconds':'4','seed':'123'}.items()},uploads=uploads,upload_root=root,
         delivery_mode='async',idempotency_key='parent-test')
     coordinator=VideoPipelineCoordinator(service)
     pool=cfg.pools_by_id['pipeline']
@@ -207,3 +216,31 @@ async def test_uncertain_child_commit_keeps_files_and_atomic_link(make_gateway_c
     sr=await service.store.get_task(parent.task.normalized_request['_pipeline']['children']['sr'])
     assert Path(sr.task.request_path).is_file()
     assert Path(sr.task.input_manifest_path).is_file()
+
+async def test_adaptive_keyframe_recovered_sr_child_uses_parent_geometry(make_gateway_config):
+    import json
+    from dingo.common.video_sr_only import validate_sr_only
+    from dingo.common.video_super_resolution import SR_PAYLOAD_KEY
+
+    service, _, step, parent = await setup_pipeline(make_gateway_config, keyframe=True)
+    normalized = parent.task.normalized_request
+    base_id = normalized['_pipeline']['children']['base']
+    base = await service.store.get_task(base_id)
+    assert (base.task.normalized_request['width'], base.task.normalized_request['height']) == (1280, 768)
+    root = await service.artifacts.resolve_task_root(base.task.deployment_id, 'base', base_id)
+    await complete_child(service, base_id, video(root, size=(1280, 768)).path, seconds=2)
+    recovered = VideoPipelineCoordinator(service)
+    await step(recovered)
+    parent = await step(recovered)
+    sr_id = parent.task.normalized_request['_pipeline']['children']['sr']
+    sr = await service.store.get_task(sr_id)
+    child = sr.task.normalized_request
+    assert child['super_resolution'] == normalized['super_resolution']
+    assert (child['width'], child['height']) == (1800, 1080)
+    root = await service.artifacts.resolve_task_root(sr.task.deployment_id, 'sr', sr_id)
+    manifest = json.loads(Path(sr.task.input_manifest_path).read_text())
+    payload = service.adapters['sr'].build_worker_payload(child, manifest, root)
+    assert validate_sr_only(payload) == normalized['super_resolution']
+    payload[SR_PAYLOAD_KEY]['base_width'] += 32
+    with pytest.raises(ValueError):
+        validate_sr_only(payload)

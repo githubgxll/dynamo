@@ -139,7 +139,7 @@ def _status(job: Path, stage: str, frames: int, error: str = "", *, oom=False) -
     pending.replace(job / "status.json")
 
 
-def _frames(source: Path, width: int, height: int, loop: bool) -> Iterator[av.VideoFrame]:
+def _frames(source: Path, width: int, height: int, loop: bool, *, source_crop=None) -> Iterator[av.VideoFrame]:
     while True:
         count = 0
         with av.open(str(source)) as container:
@@ -150,6 +150,8 @@ def _frames(source: Path, width: int, height: int, loop: bool) -> Iterator[av.Vi
                 if frame.pts is None or frame.time_base is None or frame.pts * frame.time_base != Fraction(count, FPS):
                     raise JobError("SeedVR2 long video requires constant 24 FPS timestamps starting at zero")
                 count += 1
+                if source_crop is not None:
+                    frame = _support.crop_uploaded_frame(frame, source_crop)
                 # The model resizes to the output on the device, so windows carry
                 # source pixels; only a larger source shrinks here to stay in budget.
                 if frame.width * frame.height > width * height:
@@ -272,7 +274,7 @@ def _restore_to(
     source = job / "input.mp4"
     video_path = scratch / "video.mp4"
     output = scratch / "output.mp4"
-    source_frames = _frames(source, width, height, loop)
+    source_frames = _frames(source, width, height, loop, source_crop=optimization.get("source_crop"))
     def take(count):
         with metrics.stage("source_decode"):
             return list(itertools.islice(source_frames, count))
@@ -319,7 +321,8 @@ def _restore_to(
                 _c14.fused_frame(job, written, array)
                 if (width, height) != (delivery_width, delivery_height):
                     with metrics.stage("delivery_resize"):
-                        frame = _support.delivery_array(array, delivery_width, delivery_height, metrics)
+                        frame = _support.delivery_array(array, delivery_width, delivery_height, metrics,
+                                                       crop_box=writer_spec["crop_box"])
                 else:
                     frame = av.VideoFrame.from_ndarray(array, format="rgb24")
                 frame.pts, frame.time_base = written, Fraction(1, FPS)
@@ -540,6 +543,8 @@ async def create_long_video(
     window_frames: int | None = Form(None),
     measurement_mode: str = Form("off"),
     measurement_context: str | None = Form(None),
+    source_mode: str = Form("generated_base"),
+    geometry_mode: str = Form("center_crop"),
 ) -> dict[str, str | int]:
     global active_task
     if raw_request.app.state.api_server_count != 1:
@@ -553,7 +558,7 @@ async def create_long_video(
     if prompt.strip():
         raise HTTPException(400, "SeedVR2 long video requires a blank prompt")
     try:
-        optimization = _support.options(encoding_mode, delivery_size, window_frames, measurement_mode, measurement_context)
+        optimization = _support.options(encoding_mode, delivery_size, window_frames, measurement_mode, measurement_context, source_mode, geometry_mode)
         _support.select_window(_window(width, height), window_frames)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
@@ -587,7 +592,9 @@ async def create_long_video(
                 try:
                     with av.open(str(job / "input.mp4")) as source_container:
                         source_video = source_container.streams.video[0]
-                        _support.validate_source(optimization, source_video.width, source_video.height, width, height)
+                        crop = _support.validate_source(optimization, source_video.width, source_video.height, width, height)
+                        if crop is not None:
+                            optimization["source_crop"] = list(crop)
                 except Exception as error:
                     raise HTTPException(400, "Source/delivery geometry rejected: " + str(error)) from error
             _support.atomic_json(job / "optimization.json", optimization)

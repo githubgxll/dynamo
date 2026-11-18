@@ -212,7 +212,23 @@ async def models(request: web.Request) -> web.Response:
     service = _service(request)
     data = list(service.upstream_models)
     for model, pool in sorted(service.config.pools_by_model.items()):
+        if pool.adapter.name == "seedvr2":
+            continue  # Standalone SR pools are selected through public-model routes.
         adapter = service.adapters[pool.pool_id]
+        capabilities = adapter.capabilities(max_result_bytes=service.config.media.max_result_bytes)
+        sr_pool_id = service.config.upscale_routes.get(model)
+        if sr_pool_id is not None:
+            sr_capabilities = service.adapters[sr_pool_id].capabilities(
+                max_result_bytes=service.config.media.max_result_bytes,
+                max_upload_bytes=min(service.config.media.max_single_file_bytes,
+                                     service.config.media.max_total_file_bytes),
+            )
+            capabilities["regeneration"] = {
+                "supported": True,
+                "available": service.dispatcher.has_admission_workers(sr_pool_id),
+                "endpoint": "/v1/videos/regenerate",
+                **{k: v for k, v in sr_capabilities.items() if k not in {"workflow", "operations"}},
+            }
         data.append(
             {
                 "id": model,
@@ -220,15 +236,13 @@ async def models(request: web.Request) -> web.Response:
                 "created": 0,
                 "owned_by": "dingo-video-gateway",
                 "available": service.dispatcher.has_admission_workers(pool.pool_id),
-                "video_capabilities": adapter.capabilities(
-                    max_result_bytes=service.config.media.max_result_bytes
-                ),
+                "video_capabilities": capabilities,
             }
         )
     return web.json_response({"object": "list", "data": data})
 
 
-async def _submit(request: web.Request, *, delivery_mode: str):
+async def _submit(request: web.Request, *, delivery_mode: str, request_operation: str = "generate"):
     service = _service(request)
     if service.dispatcher.draining:
         raise _gateway_draining_error()
@@ -246,6 +260,8 @@ async def _submit(request: web.Request, *, delivery_mode: str):
             service.artifacts,
             service.config.media,
             upload_root=upload_root,
+            allowed_file_fields=frozenset({"base_video"}) if request_operation == "regenerate" else None,
+            max_files=1 if request_operation == "regenerate" else None,
         )
         return await service.submit(
             fields=parsed.fields,
@@ -253,6 +269,7 @@ async def _submit(request: web.Request, *, delivery_mode: str):
             upload_root=parsed.upload_root,
             delivery_mode=delivery_mode,
             idempotency_key=request.headers.get("Idempotency-Key"),
+            request_operation=request_operation,
         )
 
     try:
@@ -309,6 +326,14 @@ async def create_video(request: web.Request) -> web.Response:
         status=status,
         headers={"Location": f"/v1/videos/{task.id}"},
     )
+
+
+async def create_video_regeneration(request: web.Request) -> web.Response:
+    submission = await _submit(request, delivery_mode="async", request_operation="regenerate")
+    task = submission.stored.task
+    status = _service(request).config.http.async_submit_status_code if submission.created else 200
+    return web.json_response(task.public_dict(), status=status,
+                             headers={"Location": f"/v1/videos/{task.id}"})
 
 
 async def create_video_sync(request: web.Request) -> web.StreamResponse:
@@ -803,6 +828,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_get("/metrics", metrics)
     app.router.add_get("/v1/models", models)
     app.router.add_post("/v1/videos", create_video)
+    app.router.add_post("/v1/videos/regenerate", create_video_regeneration)
     app.router.add_post("/v1/videos/sync", create_video_sync)
     app.router.add_post("/v1/videos/stream", unsupported_stream)
     app.router.add_get("/v1/videos", list_videos)

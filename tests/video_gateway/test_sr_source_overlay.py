@@ -17,6 +17,9 @@ def test_native_and_worker_sources_are_hashed_from_their_actual_roots(tmp_path):
         "dingo/vllm/omni/seedvr2_handler.py",
         "dingo/video_gateway/adapters/h3_output_policy.py",
         "dingo/common/video_super_resolution.py",
+        "dingo/common/video_sr_only.py",
+        "dingo/video_gateway/adapters/h3_resolution.py",
+        "dingo/video_gateway/adapters/h3_shape.py",
         "dingo/vllm/omni/seedvr2_media.py",
     ]
     expected = {}

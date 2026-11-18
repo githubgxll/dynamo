@@ -16,6 +16,7 @@ import uuid
 
 from dingo.common.video_sr_timings import SR_TIMINGS_KEY
 from dingo.common.video_timing_schemas import MODEL_EXECUTION_KEY
+from dingo.video_gateway.adapters.h3_resolution import adaptive_base_metadata
 from dingo.video_gateway.adapters.base import UploadedArtifact
 from dingo.video_gateway.adapters.h3_resolution import classify_resolution
 from dingo.video_gateway.errors import GatewayError, StoreConflict
@@ -207,7 +208,7 @@ class VideoPipelineCoordinator:
                 prepared.pop('_pipeline', None)
                 sr = prepared.pop('super_resolution', None)
                 if sr:
-                    prepared.update(width=sr['base_width'],height=sr['base_height'])
+                    prepared.update(width=sr['base_width'],height=sr['base_height'], **adaptive_base_metadata(sr))
                 prepared.update(public_model=pool.served_models[0], backend_model=pool.backend_model)
                 # Transport is selected by the actual base pool, not the parent.
                 prepared.pop('shared_inputs', None)
@@ -222,10 +223,16 @@ class VideoPipelineCoordinator:
                 uploads=[UploadedArtifact('input_references',0,'base.mp4','video/mp4',destination,
                     base.result_bytes,base.result_sha256)]
                 tier = classify_resolution(task.normalized_request['width'], task.normalized_request['height'], super_resolution=True)
+                parent_sr = task.normalized_request['super_resolution']
+                if 'adaptive_keyframe' in parent_sr:
+                    tier = task.normalized_request['adaptive_resolution']
                 fields={'model':[pool.served_models[0]],'operation':['sr_only'],'resolution':[tier]}
                 # The SR adapter must agree with the already admitted parent canvas.
+                kwargs = {'pipeline_sr': parent_sr} if 'adaptive_keyframe' in parent_sr else {}
                 normalized = await run_file_io(self.service.adapters[pool.pool_id].normalize_request,
-                                              fields, uploads, pool.served_models[0])
+                                              fields, uploads, pool.served_models[0], **kwargs)
+                if kwargs:
+                    prepared = normalized
                 if (normalized['width'],normalized['height']) != (task.normalized_request['width'],task.normalized_request['height']):
                     raise ValueError('SR source selects a different canvas than the admitted parent')
         except Exception as exc:

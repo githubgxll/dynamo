@@ -60,7 +60,7 @@ def plan_fl2va_adaptive(
     """Resolve image-derived geometry without widening explicit-size admission.
 
     Native 768P follows the measured H3 short-edge/pixel-budget/32-alignment
-    rule. Higher tiers retain the verified SR whitelist and 3% match limit.
+    rule. Higher tiers prefer established presets before computing a bounded canvas.
     The caller supplies the first keyframe (or the sole last keyframe).
     """
     ratio = source_width / source_height
@@ -72,9 +72,24 @@ def plan_fl2va_adaptive(
         )
         width, height = canvases[name]
         if relative_ratio_error(width, height, ratio) > 0.03:
-            raise ValueError(
-                "no preset matches the keyframe aspect ratio within 3%; "
-                "provide a compatible image or explicit size"
+            if sr_profile != H3_SR_PROFILE_V3:
+                raise ValueError("adaptive high-resolution output requires the V3 SR profile")
+            if max(source_width, source_height) * 9 > min(source_width, source_height) * 21:
+                raise ValueError("adaptive keyframe long/short ratio exceeds 21:9")
+            base = plan_fl2va_adaptive(source_width, source_height, "768P", sr_profile=None)
+            short, budget, alignment, window = (
+                (1080, 1920 * 1080, 2, 33) if resolution == "1080P"
+                else (1440, 2560 * 1440, 32, 65)
+            )
+            w, h = (short * ratio, short) if ratio >= 1 else (short, short / ratio)
+            factor = min(1.0, sqrt(budget / (w * h)))
+            w = round(w * factor / alignment) * alignment
+            h = round(h * factor / alignment) * alignment
+            divisor = gcd(w, h)
+            return H3OutputPlan(
+                w, h, base.base_width, base.base_height, f"{w // divisor}:{h // divisor}",
+                sr_profile, (w + 15) // 16 * 16, (h + 15) // 16 * 16, window,
+                (source_width, source_height, resolution),
             )
         return plan_h3_output(
             width, height, requested_aspect_ratio=name, sr_profile=sr_profile
@@ -95,6 +110,29 @@ def plan_fl2va_adaptive(
         f"{width // divisor}:{height // divisor}",
     )
     return H3OutputPlan(width, height, width, height, name)
+
+
+def adaptive_base_metadata(sr):
+    if "adaptive_keyframe" not in sr:
+        return {}
+    width, height = sr["base_width"], sr["base_height"]
+    divisor = gcd(width, height)
+    return {"adaptive_resolution": "768P", "aspect_ratio": f"{width // divisor}:{height // divisor}"}
+
+
+def restore_sr_plan(sr, profile):
+    """Rebuild private adaptive geometry from the original keyframe after handoff."""
+    if "adaptive_keyframe" not in sr:
+        return plan_h3_output(sr.get("output_width"), sr.get("output_height"), sr_profile=profile)
+    key = sr["adaptive_keyframe"]
+    if (not isinstance(key, list) or len(key) != 3
+            or not all(type(v) is int and 256 <= v <= 5760 for v in key[:2])
+            or key[2] not in ("1080P", "2K")):
+        raise ValueError("invalid adaptive keyframe geometry")
+    plan = plan_fl2va_adaptive(*key, sr_profile=profile)
+    if plan.adaptive_keyframe is None:
+        raise ValueError("unexpected adaptive descriptor for fixed preset")
+    return plan
 
 
 def classify_resolution(

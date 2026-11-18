@@ -51,6 +51,15 @@ def h3_sr_tier(normalized: Mapping) -> str | None:
     if not isinstance(sr, Mapping) or not isinstance(sr.get("profile"), str):
         return None
     size = (normalized.get("width"), normalized.get("height"))
+    if "adaptive_keyframe" in sr:
+        from dingo.video_gateway.adapters.h3_resolution import restore_sr_plan
+        try:
+            plan = restore_sr_plan(sr, sr["profile"])
+        except (ValueError, TypeError):
+            return None
+        if size == (plan.output_width, plan.output_height):
+            return plan.adaptive_keyframe[2].lower()
+        return None
     try:
         plan = plan_h3_output(*size, sr_profile=sr["profile"])
     except (ValueError, TypeError):
@@ -74,6 +83,7 @@ class H3OutputPlan:
     sr_width: int | None = None
     sr_height: int | None = None
     window_frames: int | None = None
+    adaptive_keyframe: tuple[int, int, str] | None = None
 
 
 def plan_h3_output(

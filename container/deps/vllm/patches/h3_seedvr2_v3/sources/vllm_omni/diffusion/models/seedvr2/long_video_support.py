@@ -68,7 +68,16 @@ def geometry(value):
 
 
 def options(encoding_mode="legacy", delivery_size=None, window_frames=None,
-            measurement_mode="off", measurement_context=None):
+            measurement_mode="off", measurement_context=None, source_mode="generated_base", geometry_mode="center_crop"):
+    if geometry_mode not in {"center_crop", "full_frame_resize"}:
+        raise ValueError("invalid geometry_mode")
+    full_frame = geometry_mode == "full_frame_resize"
+    if full_frame and encoding_mode != "single_encode":
+        raise ValueError("full-frame resize requires single_encode")
+    if source_mode not in {"generated_base", "uploaded_video"}:
+        raise ValueError("unsupported SR source_mode")
+    if source_mode == "uploaded_video" and encoding_mode != "single_encode":
+        raise ValueError("uploaded_video requires single_encode")
     if encoding_mode not in {"legacy", "single_encode"}:
         raise ValueError("encoding_mode must be legacy or single_encode")
     if measurement_mode not in {"off", "basic", "diagnostic"}:
@@ -80,7 +89,10 @@ def options(encoding_mode="legacy", delivery_size=None, window_frames=None,
     delivery = geometry(delivery_size) if delivery_size is not None else None
     if encoding_mode == "single_encode" and delivery is None:
         raise ValueError("single_encode requires delivery_size")
-    if delivery and delivery not in DELIVERY_CANVASES and (min(delivery) not in (1080, 1440) or any(x % 2 for x in delivery)):
+    if full_frame and (not delivery or not all(256 <= v <= 3072 and v % 2 == 0 for v in delivery)
+                       or delivery[0] * delivery[1] > 3791872):
+        raise ValueError("invalid full-frame delivery dimensions")
+    if delivery and not full_frame and delivery not in DELIVERY_CANVASES and (min(delivery) not in (1080, 1440) or any(x % 2 for x in delivery)):
         raise ValueError("delivery_size requires an even canvas with short edge 1080 or 1440")
     if measurement_context is None:
         context = {}
@@ -114,12 +126,22 @@ def options(encoding_mode="legacy", delivery_size=None, window_frames=None,
             raise ValueError("Measured requests require absolute SEEDVR2_METRICS_DIR shared by API and all ranks")
     return {"encoding_mode": encoding_mode, "delivery_size": delivery,
             "window_frames": window_frames, "measurement_mode": measurement_mode,
-            "measurement_context": context}
+            "measurement_context": context, "source_mode": source_mode, "geometry_mode": geometry_mode}
 
 
 def validate_source(config, source_width, source_height, model_width, model_height):
     if config["encoding_mode"] == "single_encode":
         dw, dh = config["delivery_size"]
+        if config.get("geometry_mode") == "full_frame_resize":
+            if ((model_width, model_height) != ((dw + 15) // 16 * 16, (dh + 15) // 16 * 16)
+                    or not all(256 <= v <= 2048 for v in (source_width, source_height))
+                    or source_width * source_height > 1100000
+                    or abs((source_width / source_height) / (dw / dh) - 1) > 0.06):
+                raise ValueError("invalid full-frame SR geometry")
+            return
+        if config.get("source_mode") == "uploaded_video":
+            from dingo.common.video_sr_only import source_crop_box
+            return source_crop_box(source_width, source_height, dw, dh, model_width, model_height)
         if (dw,dh) in DELIVERY_CANVASES:
             if (source_width,source_height,model_width,model_height) != DELIVERY_CANVASES[(dw,dh)]:
                 raise ValueError("delivery_size must preserve the exact source aspect ratio or match its whitelisted base/internal canvas")
@@ -148,7 +170,8 @@ def writer_spec(config, model_width, model_height):
     encoder_options = {"preset": "medium", "crf": "18"} if config["encoding_mode"] == "single_encode" else {
         "preset": "veryfast", "crf": "18", "tune": "zerolatency", "bf": "0"}
     crop = (delivery_crop_box(model_width, model_height, *size)
-            if config["encoding_mode"] == "single_encode" else (0, 0, model_width, model_height))
+            if config["encoding_mode"] == "single_encode" and config.get("geometry_mode") != "full_frame_resize"
+            else (0, 0, model_width, model_height))
     validation_threads, validation_thread_type = 0, None
     encoder_threads, encoder_thread_type = 0, None
     if config["encoding_mode"] == "single_encode":
@@ -682,12 +705,12 @@ def delivery_crop_box(width, height, delivery_width, delivery_height):
             delivery_width, delivery_height)
 
 
-def delivery_array(array, width, height, metrics):
+def delivery_array(array, width, height, metrics, *, crop_box=None):
     """Crop admitted canvases directly; retain Lanczos only where still needed."""
     import av
     import numpy as np
     source_height, source_width = array.shape[:2]
-    x, y, crop_width, crop_height = delivery_crop_box(
+    x, y, crop_width, crop_height = crop_box or delivery_crop_box(
         source_width, source_height, width, height
     )
     if (crop_width, crop_height) != (source_width, source_height):
@@ -710,3 +733,30 @@ def configure_validation_decoder(video, writer):
     if writer["validation_threads"]:
         video.thread_count = writer["validation_threads"]
         video.thread_type = writer["validation_thread_type"]
+
+
+def crop_uploaded_frame(frame, box):
+    """Crop even-aligned YUV420 planes without an RGB round trip or re-encode."""
+    import av
+    import numpy as np
+    left, top, width, height = box
+    if (left, top, width, height) == (0, 0, frame.width, frame.height):
+        return frame
+    if any(value % 2 for value in box):
+        raise ValueError("source crop must be chroma aligned")
+    source = frame.reformat(format="yuv420p")
+    sw, sh = source.width, source.height
+    if min(left, top) < 0 or min(width, height) <= 0 or left + width > sw or top + height > sh:
+        raise ValueError("source crop is outside the decoded frame")
+    planes = []
+    for index, plane in enumerate(source.planes):
+        # Decoder strides may include padding; chroma planes may round odd
+        # source dimensions upward. Crop only visible pixels in each plane.
+        pixels = np.frombuffer(plane, dtype=np.uint8).reshape(plane.height, plane.line_size)
+        factor = 1 if index == 0 else 2
+        planes.append(pixels[top//factor:(top+height)//factor, left//factor:(left+width)//factor].reshape(-1))
+    result = av.VideoFrame.from_ndarray(np.concatenate(planes).reshape(height * 3 // 2, width), format="yuv420p")
+    result.pts = frame.pts
+    if frame.time_base is not None:
+        result.time_base = frame.time_base
+    return result

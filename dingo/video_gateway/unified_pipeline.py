@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path
 
+from dingo.video_gateway.adapters.h3_resolution import adaptive_base_metadata
 from dingo.video_gateway.errors import GatewayError, StoreConflict
 from dingo.video_gateway.file_io import run_file_io
 from dingo.video_gateway.ids import new_video_id
@@ -27,7 +28,7 @@ async def admit_base(service, parent, pool):
         normalized = copy.deepcopy(parent.normalized_request)
         normalized.pop('_pipeline')
         sr = normalized.pop('super_resolution')
-        normalized.update(width=sr['base_width'], height=sr['base_height'],
+        normalized.update(width=sr['base_width'], height=sr['base_height'], **adaptive_base_metadata(sr),
                           _pipeline_child={'parent_id':parent.id,'phase':'base'})
         child_root = await service.artifacts.commit_upload(root, parent.deployment_id, pool.pool_id, child_id,
             artifact_manifest={'schema_version':1,'task_id':child_id,'deployment_id':parent.deployment_id,

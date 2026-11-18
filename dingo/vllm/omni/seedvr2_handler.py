@@ -26,7 +26,7 @@ from dingo.common.video_result_file import (
 )
 from dingo.common.video_worker_error import VideoWorkerFailure, failed_chunk_error, classify_worker_error
 from dingo.common.video_super_resolution import H3_SR_PROFILE, H3_SR_PROFILE_V2, H3_SR_PROFILE_V3, SR_PAYLOAD_KEY
-from dingo.video_gateway.adapters.h3_output_policy import plan_h3_output
+from dingo.video_gateway.adapters.h3_resolution import restore_sr_plan
 from dingo.vllm.omni import seedvr2_media as media
 from dingo.vllm.omni.h3_video_handler import H3VideoHandler
 from dingo.vllm.omni.seedvr2_execution import (
@@ -41,9 +41,7 @@ def validate_sr_request(payload: dict, *, profile=H3_SR_PROFILE) -> dict:
     sr = payload.get(SR_PAYLOAD_KEY)
     if not isinstance(sr, dict):
         raise ValueError("missing SR plan")
-    plan = plan_h3_output(
-        sr.get("output_width"), sr.get("output_height"), sr_profile=profile
-    )
+    plan = restore_sr_plan(sr, profile)
     expected = {
         "schema_version": 1,
         "profile": profile,
@@ -54,10 +52,12 @@ def validate_sr_request(payload: dict, *, profile=H3_SR_PROFILE) -> dict:
         "sr_width": plan.sr_width,
         "sr_height": plan.sr_height,
     }
+    if plan.adaptive_keyframe:
+        expected["adaptive_keyframe"] = list(plan.adaptive_keyframe)
     if (
         plan.sr_profile is None
         or sr != expected
-        or any(type(sr[k]) is not int for k in expected if k != "profile")
+        or any(type(sr[k]) is not int for k in expected if k not in ("profile", "adaptive_keyframe"))
         or payload.get("size") != f"{plan.base_width}x{plan.base_height}"
         or payload.get("nvext", {}).get("fps") != 24
     ):
@@ -215,7 +215,7 @@ class SeedVR2Handler(H3VideoHandler):
             if not self.measurement_identity:
                 raise RuntimeError("SR v2 requires measurement provenance")
             options = {
-                "window_frames": plan_h3_output(sr["output_width"],sr["output_height"],sr_profile=self.sr_profile).window_frames if self.sr_profile == H3_SR_PROFILE_V3 else 33 if sr["output_height"] == 1080 else 65,
+                "window_frames": restore_sr_plan(sr, self.sr_profile).window_frames if self.sr_profile == H3_SR_PROFILE_V3 else 33 if sr["output_height"] == 1080 else 65,
                 "delivery_size": f"{sr['output_width']}x{sr['output_height']}",
                 "encoding_mode": "single_encode", "measurement_mode": "basic",
                 "measurement_context": {**self.measurement_identity,
@@ -223,6 +223,10 @@ class SeedVR2Handler(H3VideoHandler):
                     "case_id": f"sr-{sr['output_height']}", "action_id": fingerprint,
                     "phase": "super_resolution"},
             }
+        if options is not None and "adaptive_keyframe" in sr:
+            options["geometry_mode"] = "full_frame_resize"
+        elif options is not None and payload.get("operation") == "sr_only":
+            options["source_mode"] = "uploaded_video"
         mark = time.monotonic()
         try:
             job = await self.execution.run(

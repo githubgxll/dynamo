@@ -291,3 +291,25 @@ async def test_native_oom_classification_survives_status_and_journal(tmp_path):
     assert caught.value.internal_error==detail
     assert read_journal(path)['phase']=='failed'
     assert client.deletes==0
+
+
+@pytest.mark.asyncio
+async def test_confirmed_rejection_does_not_quarantine_or_poison_next_task(tmp_path):
+    from dingo.vllm.omni.seedvr2_client import SubmissionRejected
+    client, quarantined, engine, path, kwargs = setup(tmp_path)
+    transitions = []
+    engine.pause = lambda: transitions.append("pause")
+    engine.resume = lambda: transitions.append("resume")
+    client.error = SubmissionRejected(400)
+    with pytest.raises(SubmissionRejected):
+        await engine.run(tmp_path / "base.mp4", path, **kwargs)
+    assert not quarantined and not transitions and client.deletes == 0
+    record = read_journal(path)
+    assert record["phase"] == "rejected" and record["http_status"] == 400
+    # Replaying the rejected attempt preserves the original result without POST.
+    with pytest.raises(SubmissionRejected):
+        await engine.run(tmp_path / "base.mp4", path, **kwargs)
+    assert client.posts == 1 and not quarantined
+    client.error = None
+    assert await engine.run(tmp_path / "base.mp4", tmp_path / "next.json", **kwargs) == JOB
+    assert client.posts == 2 and not quarantined

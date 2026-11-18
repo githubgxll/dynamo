@@ -30,7 +30,7 @@ Never erase or rewrite the previous process's journal.
         return int(match.group(1))
     if attempt(previous_root) >= attempt(current_root):
         raise UnsafeRecovery('SR retry requires a newer Gateway attempt')
-    if previous.get('phase') in {'completed', 'failed', 'cancelled'}:
+    if previous.get('phase') in {'completed', 'failed', 'cancelled', 'rejected'}:
         return
     if previous.get('phase') not in {'submit_intent', 'submitted'}:
         raise UnsafeRecovery('SR attempt has an unknown journal state')

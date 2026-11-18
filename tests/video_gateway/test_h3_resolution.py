@@ -136,14 +136,12 @@ def test_adaptive_accepts_different_keyframe_dimensions(make_gateway_config, tmp
         a.normalize_request(fields(size="1344x768"), [first, second], "public-fl")
 
 
-def test_adaptive_preserves_high_resolution_whitelist(make_gateway_config, tmp_path):
+def test_dynamic_adaptive_keeps_explicit_size_validation(make_gateway_config, tmp_path):
     first = _png_upload(tmp_path)
     a = adapter(make_gateway_config)
     Image.new("RGB", (1200, 800)).save(first.path)
-    with pytest.raises(GatewayError, match="no preset matches"):
-        a.normalize_request(
-            fields(resolution="2K", ratio="adaptive"), [first], "public-fl"
-        )
+    adaptive = a.normalize_request(fields(resolution="2K", ratio="adaptive"), [first], "public-fl")
+    assert (adaptive["width"], adaptive["height"]) == (2176, 1440)
     with pytest.raises(GatewayError, match="output size must match"):
         a.normalize_request(fields(size="1440x2560"), [first], "public-fl")
 
@@ -412,14 +410,44 @@ def test_adaptive_canvas_tracks_first_keyframe_or_sole_tail(make_gateway_config,
     assert (normalized["width"], normalized["height"]) == (672, 1536)
 
 
-@pytest.mark.parametrize("tier", ["1080P", "2K"])
-def test_high_resolution_adaptive_rejects_unlisted_ratio(make_gateway_config, tmp_path, tier):
-    upload = _png_upload(tmp_path)
-    Image.new("RGB", (1536, 1024)).save(upload.path)
-    with pytest.raises(GatewayError, match="no preset matches"):
-        adapter(make_gateway_config).normalize_request(
-            fields(resolution=tier, ratio="adaptive"), [upload], "public-fl"
-        )
+@pytest.mark.parametrize("source,tier,expected", [
+    ((1730, 1000), "2K", (2560, 1440)),
+    ((2100, 900), "2K", (2944, 1248)),
+    ((2140, 900), "1080P", (2208, 936)),  # Previously admitted, before fallback limit.
+    ((1280, 768), "1080P", (1800, 1080)),
+    ((1280, 768), "2K", (2400, 1440)),
+    ((768, 1280), "2K", (1440, 2400)),
+    ((1536, 1024), "1080P", (1620, 1080)),
+    ((900, 2100), "2K", (1248, 2944)),
+])
+def test_high_resolution_adaptive_handoff(make_gateway_config, tmp_path, source, tier, expected):
+    from dingo.vllm.omni.seedvr2_handler import validate_sr_request
+    from dingo.common.video_super_resolution import H3_SR_PROFILE_V3
+    from dingo.video_gateway.adapters.h3_output_policy import h3_sr_tier
+
+    first = _png_upload(tmp_path)
+    last = _png_upload(tmp_path, ordinal=1)
+    Image.new("RGB", source).save(last.path)
+    a = adapter(make_gateway_config)
+    n = a.normalize_request(fields(resolution=tier, ratio="adaptive", frame_indices="[-1,0]"),
+                            [first, last], "public-fl")
+    assert (n["width"], n["height"]) == expected
+    sr = n["super_resolution"]
+    if source in ((1730, 1000), (2100, 900), (2140, 900)):
+        assert "adaptive_keyframe" not in sr
+    else:
+        assert sr["adaptive_keyframe"] == [*source, tier]
+    payload = a.build_worker_payload(n, [], tmp_path)
+    assert validate_sr_request(payload, profile=H3_SR_PROFILE_V3) == sr
+    assert h3_sr_tier(n) == tier.lower()
+
+
+@pytest.mark.parametrize("source", [(900, 2101), (2200, 900)])
+def test_unmatched_high_resolution_over_21_9(make_gateway_config, tmp_path, source):
+    first = _png_upload(tmp_path)
+    Image.new("RGB", source).save(first.path)
+    with pytest.raises(GatewayError, match="21:9"):
+        adapter(make_gateway_config).normalize_request(fields(resolution="2K"), [first], "public-fl")
 
 
 def test_native_adaptive_does_not_apply_preset_three_percent_limit(make_gateway_config, tmp_path):

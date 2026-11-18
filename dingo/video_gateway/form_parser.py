@@ -10,7 +10,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
+from aiohttp.http_exceptions import BadHttpMessage
 
 from dingo.video_gateway.adapters.base import UploadedArtifact
 from dingo.video_gateway.artifact_store import FileArtifactStore
@@ -27,11 +28,20 @@ class ParsedMultipart:
     total_bytes: int
 
 
+async def _read_multipart(awaitable):
+    # Scope these exceptions to aiohttp parsing. Filesystem failures still
+    # propagate as server errors.
+    try:
+        return await awaitable
+    except (ValueError, AssertionError, BadHttpMessage) as exc:
+        raise GatewayError(400, "invalid_multipart", "malformed multipart/form-data body") from exc
+
+
 async def _read_text(part, *, limit: int) -> str:
     chunks: list[bytes] = []
     size = 0
     while True:
-        chunk = await part.read_chunk(size=64 * 1024)
+        chunk = await _read_multipart(part.read_chunk(size=64 * 1024))
         if not chunk:
             break
         size += len(chunk)
@@ -45,7 +55,7 @@ async def _read_text(part, *, limit: int) -> str:
         chunks.append(chunk)
     try:
         return b"".join(chunks).decode(part.get_charset(default="utf-8"))
-    except UnicodeDecodeError as exc:
+    except (UnicodeDecodeError, LookupError) as exc:
         raise GatewayError(
             400,
             "invalid_field_encoding",
@@ -60,6 +70,8 @@ async def parse_multipart(
     limits: MediaConfig,
     *,
     upload_root: Path | None = None,
+    allowed_file_fields: frozenset[str] | None = None,
+    max_files: int | None = None,
 ) -> ParsedMultipart:
     if request.content_type != "multipart/form-data":
         raise GatewayError(
@@ -74,11 +86,13 @@ async def parse_multipart(
     total_file_bytes = 0
     part_count = 0
     try:
-        reader = await request.multipart()
+        reader = await _read_multipart(request.multipart())
         while True:
-            part = await reader.next()
+            part = await _read_multipart(reader.next())
             if part is None:
                 break
+            if not isinstance(part, BodyPartReader):
+                raise GatewayError(400, "invalid_multipart", "nested multipart parts are not supported")
             part_count += 1
             if part_count > limits.max_parts:
                 raise GatewayError(413, "too_many_parts", "too many multipart parts")
@@ -93,6 +107,12 @@ async def parse_multipart(
                 )
                 continue
 
+            if allowed_file_fields is not None and name not in allowed_file_fields:
+                raise GatewayError(400, "unsupported_parameter",
+                                   f"unsupported file field {name!r}; use base_video", name)
+            if max_files is not None and len(uploads) >= max_files:
+                raise GatewayError(400, "invalid_source_video", "upload exactly one base_video MP4", "base_video")
+
             ordinal = len(uploads)
             destination = upload_root / "inputs" / f"{ordinal:03d}.bin"
             temporary = destination.with_suffix(".part")
@@ -100,7 +120,7 @@ async def parse_multipart(
             size = 0
             async with opened_file(temporary.open, "xb") as output:
                 while True:
-                    chunk = await part.read_chunk(size=1024 * 1024)
+                    chunk = await _read_multipart(part.read_chunk(size=1024 * 1024))
                     if not chunk:
                         break
                     size += len(chunk)
