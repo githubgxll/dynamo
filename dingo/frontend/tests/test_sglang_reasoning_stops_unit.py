@@ -15,7 +15,7 @@ from sglang.srt.parser.reasoning_parser import ReasoningParser
 import dingo.frontend.sglang_processor as processor_module
 from dingo.frontend.sglang_prepost import SglangStreamingPostProcessor
 from dingo.frontend.sglang_processor import (
-    DEFAULT_SGLANG_MAX_TOKENS,
+    DEFAULT_GLM53_MAX_TOKENS,
     SglangProcessor,
     _build_dynamo_preproc,
     _infer_reasoning_parser_name,
@@ -193,13 +193,13 @@ def feed(post, text, finish=None):
 @pytest.mark.parametrize(
     "limits,expected",
     [
-        ({}, DEFAULT_SGLANG_MAX_TOKENS),
+        ({}, DEFAULT_GLM53_MAX_TOKENS),
         ({"max_tokens": 256}, 256),
         ({"max_tokens": 256, "max_completion_tokens": 512}, 512),
         ({"max_tokens": 256, "max_completion_tokens": 0}, 0),
         (
             {"max_tokens": None, "max_completion_tokens": None},
-            DEFAULT_SGLANG_MAX_TOKENS,
+            DEFAULT_GLM53_MAX_TOKENS,
         ),
     ],
 )
