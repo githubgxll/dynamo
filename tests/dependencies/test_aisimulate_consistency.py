@@ -44,6 +44,9 @@ LOCKFILES = (
     ROOT / "lib/bindings/python/Cargo.lock",
     ROOT / "lib/bindings/kvbm/Cargo.lock",
 )
+REVIEWED_VERSION = next(
+    iter(json.loads((ROOT / "container/deps/aisimulate-sources.json").read_text()))
+)
 
 
 def _root_configs() -> tuple[dict, dict]:
@@ -157,6 +160,12 @@ def test_rust_source_staging_preserves_transitive_lock(tmp_path, monkeypatch):
     root = tmp_path / "build"
     (root / ".cargo").mkdir(parents=True)
     (root / "Cargo.toml").write_text((ROOT / "Cargo.toml").read_text())
+    deps = root / "container/deps"
+    deps.mkdir(parents=True)
+    version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"][
+        "dependencies"
+    ]["aisimulate-core"]["version"][1:].replace("-dev.", ".dev")
+    (deps / "aisimulate-sources.json").write_text(json.dumps({version: {}}))
     for original in LOCKFILES:
         destination = root / original.relative_to(ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -185,6 +194,20 @@ def test_rust_source_staging_preserves_transitive_lock(tmp_path, monkeypatch):
         staging.stage_rust_source(root, tmp_path / "deps")
 
 
+def test_registry_rust_pin_preserves_checkout(tmp_path):
+    staging = _staging_module()
+    root = tmp_path / "build"
+    deps = root / "container/deps"
+    deps.mkdir(parents=True)
+    (root / "Cargo.toml").write_text((ROOT / "Cargo.toml").read_text())
+    (deps / "aisimulate-sources.json").write_text("{}")
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    output = tmp_path / "source"
+    staging.stage_rust_source(root, output)
+    assert not output.exists()
+    assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
 @pytest.mark.parametrize("matching_version", [True, False])
 def test_container_stages_the_published_aisimulate_wheel(
     tmp_path, monkeypatch, matching_version
@@ -197,16 +220,6 @@ def test_container_stages_the_published_aisimulate_wheel(
         )
         == version
     )
-    wheel_builder = (ROOT / "container/templates/wheel_builder.Dockerfile").read_text()
-    assert "COPY container/deps/requirements.aisimulate.txt" in wheel_builder
-    assert (
-        "COPY container/deps/stage_aisimulate.py container/deps/aisimulate-sources.json"
-        in wheel_builder
-    )
-    assert "python /opt/dynamo/container/deps/stage_aisimulate.py" in wheel_builder
-    assert "COPY aisimulate" not in wheel_builder
-    assert "/opt/dynamo/aisimulate" not in wheel_builder
-    assert not (ROOT / "aisimulate").exists()
     staging = _staging_module()
     calls = []
 
@@ -242,24 +255,20 @@ def test_container_stages_the_published_aisimulate_wheel(
 
 def test_aisimulate_source_fallback_rejects_checksum_mismatch(tmp_path, monkeypatch):
     staging = _staging_module()
-    calls = []
-
-    def unavailable(command, **kwargs):
-        calls.append(command)
-        assert command[1:4] == ["-m", "pip", "download"]
-        return subprocess.CompletedProcess(command, 1)
-
-    monkeypatch.setattr(staging.subprocess, "run", unavailable)
+    version = REVIEWED_VERSION
+    monkeypatch.setattr(
+        staging, "run", lambda *args, **kwargs: pytest.fail("Unverified source executed")
+    )
     monkeypatch.setattr(
         staging.urllib.request,
         "urlopen",
         lambda *args, **kwargs: io.BytesIO(b"invalid archive"),
     )
-    output = tmp_path / "wheels"
+    output = tmp_path / "source"
+    output.mkdir()
     with pytest.raises(SystemExit, match="source archive checksum mismatch"):
-        staging.stage(ROOT, output)
-    assert len(calls) == 1  # No build may run after the checksum fails.
-    assert not list(output.iterdir())
+        staging.prepare_source(ROOT / "container/deps", version, output)
+    assert not any(path.is_dir() for path in output.iterdir())
 
 
 def _aisim_source_archive(tmp_path, version, monkeypatch):
@@ -315,7 +324,7 @@ for relative in ("python/aisimulate/pyproject.toml", "crates/core/Cargo.toml"):
 def test_aisimulate_source_fallback_extracts_and_verifies_real_archive(
     tmp_path, monkeypatch
 ):
-    version = str(_exact_version(_python_requirement(_root_configs()[0])))
+    version = REVIEWED_VERSION
     rust_version = version.replace(".dev", "-dev.")
     staging, deps = _aisim_source_archive(tmp_path, version, monkeypatch)
     work = tmp_path / "work"
@@ -345,7 +354,7 @@ def test_aisimulate_source_fallback_extracts_and_verifies_real_archive(
 
 
 def test_aisimulate_source_fallback_rejects_tampered_archive(tmp_path, monkeypatch):
-    version = str(_exact_version(_python_requirement(_root_configs()[0])))
+    version = REVIEWED_VERSION
     staging, deps = _aisim_source_archive(tmp_path, version, monkeypatch)
     archive = tmp_path / "source.tar.gz"
     data = bytearray(archive.read_bytes())

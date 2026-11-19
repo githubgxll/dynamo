@@ -191,17 +191,22 @@ def stage(root, output):
 
 
 def stage_rust_source(root, output):
-    """Use reviewed source when the exact nightly is not in the public index.
+    """Stage reviewed nightlies; otherwise keep Cargo's exact registry pin.
 
-    This changes only the disposable build checkout: Cargo's manifest pins and
-    all transitive lockfile entries stay fixed. --locked metadata/build verifies
-    that the source has the same dependency requirements as the published crate.
+    Only versions in the reviewed source map require a build-local override.
+    Other pins are resolved and checksum-verified by Cargo with --locked.
     """
     data = tomllib.loads((root / "Cargo.toml").read_text())
     pin = data["workspace"]["dependencies"]["aisimulate-core"]["version"]
     if not re.fullmatch(r"=\d+\.\d+\.\d+-dev\.\d+", pin):
         raise SystemExit("Rust source staging requires an exact reviewed nightly pin")
     version = pin[1:].replace("-dev.", ".dev")
+    sources = json.loads(
+        (root / "container/deps/aisimulate-sources.json").read_text()
+    )
+    if version not in sources:
+        print(f"Using locked registry crate: aisimulate-core {pin[1:]}", flush=True)
+        return
     output.mkdir(parents=True, exist_ok=True)
     checkout = prepare_source(root / "container/deps", version, output)
     config = root / ".cargo/config.toml"

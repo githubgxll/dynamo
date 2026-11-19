@@ -35,10 +35,23 @@ the upstream nightly version script, and builds with locked Rust dependencies.
 It checks both Dynamo Rust pins and the final wheel metadata against the Python
 pin; a different version is never substituted.
 
+The current Python/container pin is `0.13.0.dev2`, matching Rust
+`0.13.0-dev.2` in both manifests and all three Cargo lockfiles. Its wheels
+are published in NVIDIA's index. `--rust-source-only` leaves this version
+on Cargo's checksum-pinned registry package; it only installs a source
+override for versions explicitly listed in the reviewed source map.
+
+Validation for this cutover: the runtime's `--rust-source-only` entrypoint
+completed, and the isolated dependency consistency/staging tests passed
+(8 tests; installed-distribution check excluded). Both published Linux wheels
+(`x86_64`, `aarch64`) were downloaded and their SHA-256 and metadata verified.
+The published Rust crate checksum matched all three lockfiles. A complete
+container build was not run locally.
+
 The `0.13.0.dev202610060000000067` source commit comes from the published
 `aisimulate-core` crate's `.cargo_vcs_info.json`. Its `src/` files were compared
-with that crate and match exactly. This fallback is needed because the matching
-Python wheel is absent from the public NVIDIA index.
+with that crate and match exactly. This historical fallback is retained for
+that nightly; it must not be stamped as `0.13.0.dev2`.
 
 The canonical source repository is now `ai-dynamo/aisim`. Codeload archives
 extract to `aisim-<commit>`; the reviewed archive digest and extraction prefix
