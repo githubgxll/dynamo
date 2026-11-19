@@ -342,6 +342,39 @@ def test_partial_stop_flushed_on_length(token_aware):
     assert end["finish_reason"] == "length"
 
 
+@pytest.mark.parametrize("token_aware", [False, True])
+@pytest.mark.parametrize("in_reasoning", [False, True])
+def test_local_stop_preserves_completion_token_boundary(token_aware, in_reasoning):
+    post = make_post(["END"], token_aware=token_aware)
+    if not in_reasoning:
+        feed(post, "thinking</think>")
+    choice = feed(post, "helloENDignored")
+    assert choice["finish_reason"] == "stop"
+    assert post.post_stop_token_count() == len("ignored")
+
+
+def test_local_stop_counts_suppressed_control_token_and_answer():
+    post = make_post(["END"], token_aware=True)
+    choice = feed(post, "helloENDignored</think>answer")
+    assert choice["delta"]["reasoning_content"] == "hello"
+    assert not choice["delta"].get("content")
+    assert post.post_stop_token_count() == len("ignored") + 1 + len("answer")
+
+
+@pytest.mark.parametrize("token_aware", [False, True])
+def test_hidden_stop_logprob_is_preserved_with_reasoning(token_aware):
+    post = make_post([], token_aware=token_aware, logprobs_enabled=True, eos_token_ids=[0])
+    choice = post.process_output(
+        {
+            "token_ids": [ord("x"), 0],
+            "finish_reason": "stop",
+            "stop_reason": 0,
+            "log_probs": [-0.1, -0.2],
+        }
+    )
+    assert len(choice["logprobs"]["content"]) == 2
+
+
 def test_glm_pending_prefix_keeps_original_channel_across_control_token():
     post = make_post(["x</think>END"], token_aware=True)
     assert feed(post, "thoughtx")["delta"]["reasoning_content"] == "thought"
