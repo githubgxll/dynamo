@@ -230,33 +230,33 @@ impl OpenAIPreprocessor {
             }
         }
 
-        let mut guidance_tools = convert_tools(tools);
-        if self.runtime_config.supports_runtime_capability(
-            crate::local_model::runtime_config::SGLANG_GENERATE_CAPABILITY,
-        ) {
-            relax_glm53_lookahead_guidance(
-                &request.inner.model,
-                self.tool_call_parser.as_deref(),
-                &parser_tool_choice,
-                self.runtime_config
-                    .structural_tag
-                    .as_ref()
-                    .map(|config| config.schema)
-                    .unwrap_or_default(),
-                &mut guidance_tools,
-            );
-        }
-        if !self.is_beam()
-            && self.apply_tool_choice_structural_tag(
+        if !self.is_beam() {
+            let mut guidance_tools = convert_tools(tools);
+            if self.runtime_config.supports_runtime_capability(
+                crate::local_model::runtime_config::SGLANG_GENERATE_CAPABILITY,
+            ) {
+                relax_glm53_lookahead_guidance(
+                    &request.inner.model,
+                    self.tool_call_parser.as_deref(),
+                    &parser_tool_choice,
+                    self.runtime_config
+                        .structural_tag
+                        .as_ref()
+                        .map(|config| config.schema)
+                        .unwrap_or_default(),
+                    &mut guidance_tools,
+                );
+            }
+            if self.apply_tool_choice_structural_tag(
                 &parser_tool_choice,
                 &guidance_tools,
                 request.inner.parallel_tool_calls,
                 prompt_prefill.unified,
                 request.inner.response_format.as_ref(),
                 common_request,
-            )?
-        {
-            return Ok(GuidedToolConstraint::StructuralTag);
+            )? {
+                return Ok(GuidedToolConstraint::StructuralTag);
+            }
         }
 
         // If the structural-tag layer did not compose this response format with
