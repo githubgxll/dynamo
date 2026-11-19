@@ -183,6 +183,7 @@ impl Guard {
                             name: Some(std::mem::take(&mut call.name)),
                             arguments: Some(std::mem::take(&mut call.arguments)),
                         }),
+                        custom: None,
                     });
                 } else if self.pending_bytes > MAX_PENDING_BYTES {
                     // This caps only data waiting for an identity, not valid

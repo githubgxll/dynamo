@@ -130,6 +130,8 @@ fn delayed_identity_filters_stub_and_remaps_completion_without_losing_arguments(
     let calls = second.inner.choices[0].delta.tool_calls.as_ref().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].index, 0);
+    assert!(matches!(calls[0].r#type, Some(FunctionType::Function)));
+    assert!(calls[0].custom.is_none());
     assert_eq!(
         calls[0].function.as_ref().unwrap().arguments.as_deref(),
         Some("{\"x\":1}")
