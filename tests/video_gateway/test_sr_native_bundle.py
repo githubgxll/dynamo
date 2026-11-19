@@ -21,7 +21,9 @@ def load(name,path):
 
 def test_all_reviewed_source_bytes_and_idempotent_installer(tmp_path):
     lock=json.loads((BUNDLE/'source-lock.json').read_text())
-    assert len(lock['files'])==13
+    helper = 'vllm_omni/diffusion/models/seedvr2/bf16_runtime.py'
+    assert len(lock['files']) == 14
+    assert any(e['path'] == helper and e['before_sha256'] is None for e in lock['files'])
     for name in ['vllm','vllm-omni']:
         meta=tmp_path/(name.replace('-','_')+'-0.32.0.dist-info');meta.mkdir()
         (meta/'METADATA').write_text(f'Metadata-Version: 2.1\nName: {name}\nVersion: 0.32.0\n')
@@ -32,6 +34,16 @@ def test_all_reviewed_source_bytes_and_idempotent_installer(tmp_path):
         target=tmp_path/e['path'];target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
     installer=load('_bundle_install',BUNDLE/'apply.py')
     assert installer.apply(tmp_path,check=True)==installer.apply(tmp_path)==0
+    (tmp_path / helper).unlink()
+    assert installer.apply(tmp_path, check=True) == 1
+    assert installer.apply(tmp_path) == 1
+    runtime = load('_seedvr2_bf16_runtime', tmp_path / helper)
+    with pytest.MonkeyPatch.context() as env:
+        env.delenv('SEEDVR2_DIT_BF16', raising=False)
+        assert runtime.configuration() == {'enabled': True}
+        env.setenv('SEEDVR2_DIT_BF16', '0')
+        assert runtime.configuration() == {'enabled': True}
+        assert load('_seedvr2_fp16_runtime', tmp_path / helper).configuration() == {'enabled': False}
     target=tmp_path/lock['files'][0]['path'];target.write_text('unknown source')
     with pytest.raises(ValueError,match='base checksum mismatch'):installer.apply(tmp_path)
 

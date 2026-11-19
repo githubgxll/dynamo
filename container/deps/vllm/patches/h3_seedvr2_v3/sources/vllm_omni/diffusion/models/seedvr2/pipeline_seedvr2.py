@@ -24,6 +24,7 @@ from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
 from vllm_omni.diffusion.distributed.utils import get_local_device
 from vllm_omni.diffusion.model_loader.diffusers_loader import DiffusersPipelineLoader
 from vllm_omni.diffusion.models.seedvr2 import c14_capture as _c14
+from vllm_omni.diffusion.models.seedvr2 import bf16_runtime as _sr_bf16
 from vllm_omni.diffusion.models.seedvr2 import sr_telemetry as _sr_metrics
 from vllm_omni.diffusion.models.seedvr2 import config as envs
 from vllm_omni.diffusion.models.seedvr2.config import COLOR_CORRECTION_METHODS, DEFAULT_COLOR_CORRECTION_METHOD
@@ -643,6 +644,7 @@ class SeedVR2Pipeline(nn.Module):
 
     @torch.inference_mode()
     def forward(self, batch: DiffusionRequestBatch) -> list[DiffusionOutput]:
+        _sr_bf16.configure_once(self)
         outputs = []
         for request in batch.requests:
             params = request.sampling_params
@@ -688,7 +690,8 @@ class SeedVR2Pipeline(nn.Module):
                             parallel_config=self.od_config.parallel_config,
                         )
                     with observation.stage("dit"):
-                        velocity = self.transformer(video, self.text, shape, text_shape, timestep, runtime).vid_sample
+                        velocity = _sr_bf16.run_transformer(self, video, self.text, shape, text_shape, timestep, runtime)
+                        velocity = _sr_bf16.velocity_to_fp16(self, velocity)
                     if capture is not None:
                         capture.tensor("dit_velocity", velocity, "NC", "native NaDiT canonical rows")
                     with observation.stage("solver"):

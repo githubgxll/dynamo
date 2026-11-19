@@ -46,9 +46,17 @@
       ]
     },
     {
+      "path": "vllm_omni/diffusion/models/seedvr2/bf16_runtime.py",
+      "before_sha256": null,
+      "after_sha256": "01929816e1c46e8e216d97e89c110cae6424492ee65c869f094187b7a5a29eab"
+    },
+    {
       "path": "vllm_omni/diffusion/models/seedvr2/pipeline_seedvr2.py",
       "before_sha256": "e26adc61748c8c832271768882a20dd2dc39df95d5b5cc074588f002b8f9d0d1",
-      "after_sha256": "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048"
+      "after_sha256": "85f9f11ff2afdfad96dcd2d2331f2f522703037ebb703946a71ca29352906415",
+      "compatible_parent_sha256": [
+        "de79ebe5e79a31814dbc8158e1e231a0e0fe45291c0ffb53e735bdba0c8b1048"
+      ]
     },
     {
       "path": "vllm_omni/diffusion/models/seedvr2/sr_telemetry.py",

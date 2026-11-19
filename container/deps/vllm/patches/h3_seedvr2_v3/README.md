@@ -5,20 +5,25 @@ SPDX-License-Identifier: Apache-2.0
 
 # H3 and SeedVR2 source overlays for Omni 0.32
 
-This bundle preserves thirteen native `vllm_omni` source files from the verified
-H3 plus SeedVR2 service. Gateway and Worker business code lives under `dingo/`.
+This bundle installs fourteen native `vllm_omni` source files for the H3 plus
+SeedVR2 service. Gateway and Worker business code lives under `dingo/`.
 No weights, credentials, deployment manifests or generated media are included.
 
 `source-lock.json` pins vLLM and vLLM-Omni 0.32.0, the official Omni wheel checksum,
 each upstream/replacement checksum, and the tested parent image digest. Newly
 introduced modules must be absent or already match their exact reviewed bytes.
-The two latest delivery files also accept the known earlier parent-image hashes.
+Updated source files can accept explicitly listed earlier parent-image hashes.
 Unknown or modified inputs fail before any writes.
 
 The native files contain H3 module-offload recovery and memory preparation,
 SeedVR2 long-video windows, telemetry and transport, the fourteen output canvases,
 centered crops, two 1080P Lanczos exceptions, one final lossy encode, 32 FRAME
 encoder threads and 16 FRAME full-output validation threads.
+
+SeedVR2 uses BF16 for DiT by default, preserving FP32 RoPE and the FP16
+VAE, solver and model weights. Set `SEEDVR2_DIT_BF16=0` on the Worker and
+restart it to restore the original DiT path. Keep the SeedVR2 engine's
+`--dtype float16` setting in both modes.
 
 The CUDA image template invokes `install_vllm_omni_patches.sh`, which selects
 this bundle only for the 0.32.0 pair. Older version-specific patch behavior stays
