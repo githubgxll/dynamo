@@ -2024,10 +2024,10 @@ class SglangStreamingPostProcessor:
 
     def _filter_glm_stop_segments(
         self, finish_reason: str | None, stop_reason: Any
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str | None, str, int | None]:
         """Match raw GLM text while retaining token-derived channel boundaries."""
         segments = self._pending_glm_stop_segments + self._glm_stop_segments
-        text, _ = self._filter_stop_string_delta(
+        text, stop_end = self._filter_stop_string_delta(
             "".join(part for _, part in self._glm_stop_segments),
             finish_reason,
             stop_reason,
@@ -2050,7 +2050,7 @@ class SglangStreamingPostProcessor:
                     (channel, part[max(0, pending_start - offset) :])
                 )
             offset += len(part)
-        return "".join(reasoning) or None, "".join(content)
+        return "".join(reasoning) or None, "".join(content), stop_end
 
     def pop_reasoning_token_count(self) -> int | None:
         """Consume the reasoning token count accumulated across the stream.
@@ -2319,11 +2319,14 @@ class SglangStreamingPostProcessor:
                 token_ids,
                 finished=finish_reason is not None,
             )
-        decoded_text = (
-            self._incremental_decode(token_ids, flush=finish_reason is not None)
-            if glm_reasoning is None and (token_ids or finish_reason is not None)
-            else ""
-        )
+        if glm_reasoning is None:
+            decoded_text = (
+                self._incremental_decode(token_ids, flush=finish_reason is not None)
+                if token_ids or finish_reason is not None
+                else ""
+            )
+        else:
+            decoded_text = "".join(part for _, part in self._glm_stop_segments)
         # A hidden stop token is generated output: score it, but do not display it.
         stop_logprobs: list[dict[str, Any]] = []
         if log_probs is not None:
@@ -2380,12 +2383,21 @@ class SglangStreamingPostProcessor:
         if glm_reasoning is not None:
             reasoning_text, normal_text, reasoning_tokens = glm_reasoning
             self._reasoning_token_count += reasoning_tokens
+            stop_end = None
             if self._stop_strings:
-                reasoning_text, normal_text = self._filter_glm_stop_segments(
+                reasoning_text, normal_text, stop_end = self._filter_glm_stop_segments(
                     finish_reason, stop_reason
                 )
-                if self._locally_finished:
-                    finish_reason = "stop"
+            if stop_end is None:
+                self._pending_logprobs_content.extend(stop_logprobs)
+            else:
+                finish_reason = "stop"
+                self._local_stop_boundary = (
+                    context_ids,
+                    held_ids + token_ids,
+                    decoded_text[:stop_end],
+                    len(generated_ids) - len(token_ids),
+                )
         elif self.reasoning_parser and (delta_text or finish_reason):
             reasoning_text, normal_text, reasoning_tokens = self._parse_reasoning_delta(
                 delta_text,

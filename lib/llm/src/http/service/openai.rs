@@ -3679,7 +3679,7 @@ where
     }
     let repaired_body =
         serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
-    let request = serde_json::from_slice(&repaired_body)?;
+    let request = from_slice_dedup_reasoning(endpoint, &repaired_body)?;
     tracing::warn!(
         endpoint,
         "Accepted chat request after retaining the last duplicate JSON field"
@@ -3730,10 +3730,7 @@ where
     }
 
     let mut repaired = false;
-    if let Some(messages) = value
-        .get_mut("messages")
-        .and_then(|m| m.as_array_mut())
-    {
+    if let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for message in messages.iter_mut() {
             if allow_missing_ids && message.get("role").and_then(|r| r.as_str()) == Some("tool") {
                 repaired |= normalize_missing_history_id(message, "tool_call_id");
@@ -3741,9 +3738,7 @@ where
             if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
                 continue;
             }
-            let Some(tool_calls) = message
-                .get_mut("tool_calls")
-                .and_then(|t| t.as_array_mut())
+            let Some(tool_calls) = message.get_mut("tool_calls").and_then(|t| t.as_array_mut())
             else {
                 continue;
             };
@@ -3768,7 +3763,7 @@ where
 
     let repaired_body =
         serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
-    let request = serde_json::from_slice(&repaired_body)?;
+    let request = from_slice_dedup_reasoning(endpoint, &repaired_body)?;
     tracing::warn!(
         endpoint,
         "Accepted request after repairing historical tool call stubs or missing IDs"
@@ -3872,7 +3867,10 @@ impl<'de> Deserialize<'de> for JsonWithoutDuplicateKeys {
                 self,
                 mut sequence: A,
             ) -> Result<Self::Value, A::Error> {
-                while sequence.next_element::<JsonWithoutDuplicateKeys>()?.is_some() {}
+                while sequence
+                    .next_element::<JsonWithoutDuplicateKeys>()?
+                    .is_some()
+                {}
                 Ok(JsonWithoutDuplicateKeys)
             }
 
@@ -3883,9 +3881,7 @@ impl<'de> Deserialize<'de> for JsonWithoutDuplicateKeys {
                 let mut keys = HashSet::new();
                 while let Some((key, _)) = map.next_entry::<String, JsonWithoutDuplicateKeys>()? {
                     if !keys.insert(key.clone()) {
-                        return Err(serde::de::Error::custom(format!(
-                            "duplicate field `{key}`"
-                        )));
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
                     }
                 }
                 Ok(JsonWithoutDuplicateKeys)
@@ -8210,6 +8206,25 @@ mod tests {
         assert_eq!(repaired["messages"][1]["content"], "continue");
         let _: NvCreateChatCompletionRequest =
             parse_json_request("chat completions", body).expect("request should parse");
+    }
+
+    #[test]
+    fn test_glm_history_repairs_preserve_reasoning_alias_recovery() {
+        for body in [
+            br#"{"model":"first","model":"glm-5.3","messages":[{"role":"assistant","content":"answer","reasoning":"alias","reasoning_content":"canonical"}]}"#.as_slice(),
+            br#"{"model":"glm-5.3","messages":[{"role":"assistant","reasoning":"alias","reasoning_content":"canonical","tool_calls":[{"type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","content":"ok"}]}"#.as_slice(),
+            br#"{"model":"other-model","messages":[{"role":"assistant","reasoning":"alias","reasoning_content":"canonical","tool_calls":[{"type":"function","function":{"name":"","arguments":"{}"}},{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}]}"#.as_slice(),
+        ] {
+            let request: NvCreateChatCompletionRequest =
+                parse_json_request("chat completions", body)
+                    .expect("history repair must retain baseline reasoning alias handling");
+            let message = serde_json::to_value(&request.inner.messages[0]).unwrap();
+            assert_eq!(message["reasoning_content"], "canonical");
+            if let Some(calls) = message["tool_calls"].as_array() {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0]["function"]["name"], "lookup");
+            }
+        }
     }
 
     #[test]
