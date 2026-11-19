@@ -9,6 +9,7 @@ import importlib
 import json
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -103,6 +104,7 @@ def _install_sglang_stubs(install_module, tokenizer_module):
     _install_module(
         install_module, "sglang.srt.environ", ToolStrictLevel=object, envs=object()
     )
+    _install_module(install_module, "xgrammar", StructuralTag=object, StructuralTagItem=object)
     _install_module(install_module, "sglang.srt.function_call")
     _install_module(
         install_module,
@@ -147,8 +149,8 @@ def _install_sglang_stubs(install_module, tokenizer_module):
         install_module,
         tokenizer_module,
         get_tokenizer=lambda *args, **kwargs: None,
-        get_config=lambda *args, **kwargs: None,
-        get_generation_config=lambda *args, **kwargs: None,
+        get_config=lambda *args, **kwargs: types.SimpleNamespace(eos_token_id=[154820, 154827]),
+        get_generation_config=lambda *args, **kwargs: types.SimpleNamespace(eos_token_id=[154820, 154829]),
     )
 
 
@@ -185,6 +187,11 @@ def _load_processor_module(
     # Importing common.utils initializes native bindings absent from this fixture.
     _install_module(
         install_module,
+        "dingo.common.utils",
+        __path__=[str(Path(__file__).resolve().parents[2] / "common" / "utils")],
+    )
+    _install_module(
+        install_module,
         "dingo.common.utils.input_params",
         resolve_thinking_token_budget=lambda *_args, **_kwargs: None,
     )
@@ -216,6 +223,11 @@ def _load_processor_module(
     )
     _install_module(
         install_module,
+        "dynamo._internal",
+        ModelDeploymentCard=object,
+    )
+    _install_module(
+        install_module,
         "dynamo.llm",
         ModelCardInstanceId=object,
         HttpError=http_error,
@@ -228,11 +240,35 @@ def _load_processor_module(
         "dynamo.llm.exceptions",
         HttpError=http_error,
         InvalidArgument=type("InvalidArgument", (Exception,), {}),
+        Unknown=type("Unknown", (Exception,), {}),
         WorkerUnavailable=type("WorkerUnavailable", (Exception,), {}),
     )
     remove_module("dingo.frontend.sglang_prepost")
     remove_module("dingo.frontend.sglang_processor")
     return importlib.import_module("dingo.frontend.sglang_processor")
+
+
+def test_output_limit_default_is_glm53_only(module_stubs):
+    module = _load_processor_module(module_stubs)
+    for model, default in [
+        ("glm-5.3", 65536), ("zai-org/GLM-5.3", 65536),
+        ("glm5.3", 65536), ("GLM_5.3", 65536),
+        ("kimi-k2.5", None), ("moonshotai/Kimi-K2-Instruct", None),
+        ("glm-5.2", None), ("glm-5.3-flash", None), ("glm53", None),
+    ]:
+        for limits, expected in [
+            ({}, default),
+            ({"max_tokens": None, "max_completion_tokens": None}, default),
+            ({"max_tokens": 256}, 256),
+            ({"max_tokens": 90000}, 90000),
+            ({"max_tokens": 256, "max_completion_tokens": 512}, 512),
+            ({"max_tokens": 256, "max_completion_tokens": 0}, 0),
+        ]:
+            request = {"model": model, **limits}
+            original = request.copy()
+            result = module._build_dynamo_preproc(request, [1], model, None)
+            assert result["stop_conditions"]["max_tokens"] == expected, (model, limits)
+            assert request == original
 
 
 def test_stream_embeds_typed_llm_metrics(module_stubs):
@@ -506,6 +542,39 @@ def _usage_request(options=None, *, stream=True):
     return request
 
 
+@pytest.mark.parametrize("interval", [1, 20])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_text_deltas_and_terminal_are_emitted_once(module_stubs, interval, streaming):
+    module = _load_processor_module(module_stubs)
+    processor, post = _usage_processor(
+        module,
+        [
+            {"token_ids": [65]},
+            {"token_ids": [66]},
+            # Changes logprob shape while a batch is pending (interval=20).
+            {"token_ids": [67], "log_probs": [-0.1]},
+            {"token_ids": [], "finish_reason": "stop"},
+        ],
+        interval=interval,
+    )
+
+    async def collect():
+        return [
+            item["data"]
+            async for item in processor._generate_and_stream(
+                "once", {"model": "glm-5.3", "stream": streaming, "logprobs": True},
+                {}, [], post,
+            )
+        ]
+
+    chunks = asyncio.run(collect())
+    choices = [chunk["choices"][0] for chunk in chunks]
+    assert "".join(choice["delta"].get("content", "") for choice in choices) == "ABC"
+    assert sum(choice["finish_reason"] is not None for choice in choices) == 1
+    assert sum(chunk["llm_metrics"]["chunk_tokens"] for chunk in chunks) == 3
+    assert processor.routed_engine.stream_released
+
+
 _CONTINUOUS_USAGE = {"include_usage": True, "continuous_usage_stats": True}
 
 
@@ -751,6 +820,23 @@ def test_tokenizer_import_layouts(module_stubs, tokenizer_module):
     """Resolve the tokenizer from current sources and the pinned releases."""
     module = _load_processor_module(module_stubs, tokenizer_module)
     assert module.get_tokenizer is sys.modules[tokenizer_module].get_tokenizer
+    assert module.get_config is sys.modules[tokenizer_module].get_config
+    assert module.get_generation_config is sys.modules[tokenizer_module].get_generation_config
+
+
+@pytest.mark.parametrize(
+    "tokenizer_module",
+    ["sglang.srt.hf_transformers", "sglang.srt.utils.hf_transformers"],
+)
+def test_model_eos_sources_are_loaded(module_stubs, tokenizer_module):
+    module = _load_processor_module(module_stubs, tokenizer_module)
+    # Use the imported functions, rather than monkeypatching missing globals:
+    # the old NameError was swallowed and silently retained only tokenizer EOS.
+    assert module._resolve_model_eos_token_ids(
+        tokenizer=types.SimpleNamespace(eos_token_id=154820),
+        source_path="local-model",
+        trust_remote_code=False,
+    ) == [154820, 154827, 154829]
 
 
 @pytest.mark.parametrize(
@@ -774,5 +860,5 @@ def test_tokenizer_import_preserves_dependency_error(
 
     monkeypatch.setattr(builtins, "__import__", import_with_missing_dependency)
     with pytest.raises(ModuleNotFoundError) as caught:
-        _load_processor_module(module_stubs)
+        _load_processor_module(module_stubs, tokenizer_module)
     assert caught.value is error

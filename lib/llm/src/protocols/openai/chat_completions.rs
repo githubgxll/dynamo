@@ -24,6 +24,8 @@ use crate::protocols::common::extensions::{
 pub mod aggregator;
 pub(crate) mod custom_tools;
 mod delta;
+mod glm53;
+pub(crate) use glm53::compatible_stream as glm53_compatible_stream;
 pub(crate) mod tool_call_merge;
 pub mod tool_parser_v2;
 pub(crate) mod unified_parser;
@@ -214,6 +216,29 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// Canonicalize GLM-5.3 options accepted but ignored by the official API
+    /// (2026-11-18 regression baseline). Do this before validation/worker dispatch.
+    /// Other models retain OpenAI validation and valid values retain their semantics.
+    pub fn normalize_glm53_options(&mut self) {
+        if !is_glm53_model_id(&self.inner.model) {
+            return;
+        }
+        // The official GLM-5.3 API ignores streaming-only options on unary calls.
+        // Drop them before HTTP validation and backend serialization.
+        if !self.inner.stream.unwrap_or(false) {
+            self.inner.stream_options = None;
+        }
+        if self.inner.n == Some(0) {
+            self.inner.n = Some(1);
+        }
+        if self.inner.top_logprobs.is_some_and(|count| count > 20) {
+            // Acceptance does not promise 99 alternatives: the reference API
+            // returns no logprobs for this input. Never send it to the worker.
+            self.inner.top_logprobs = None;
+            self.inner.logprobs = Some(false);
+        }
+    }
+
     /// An empty Chat Completions stop array means no custom stop condition.
     /// Normalize before validation and backend serialization; keep EOS defaults.
     pub fn normalize_empty_stop(&mut self) {
@@ -580,6 +605,38 @@ pub struct NvCreateChatCompletionResponse {
     pub nvext: Option<serde_json::Value>,
 }
 
+/// HTTP-only projection: keep worker transport and Responses aggregation unchanged.
+pub struct HttpChatCompletionResponse<'a> {
+    response: &'a NvCreateChatCompletionResponse,
+    glm53_request_id: Option<&'a str>,
+}
+
+impl NvCreateChatCompletionResponse {
+    pub fn for_http<'a>(
+        &'a self,
+        glm53_request_id: Option<&'a str>,
+    ) -> HttpChatCompletionResponse<'a> {
+        HttpChatCompletionResponse {
+            response: self,
+            glm53_request_id,
+        }
+    }
+}
+
+impl Serialize for HttpChatCompletionResponse<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_chat_completion_response(
+            &self.response.inner,
+            &self.response.nvext,
+            self.response.prompt_logprobs.as_deref(),
+            &[],
+            &[],
+            self.glm53_request_id,
+            serializer,
+        )
+    }
+}
+
 /// Parser lifecycle evidence carried between serving components, never to OpenAI clients.
 ///
 /// Evidence is keyed by choice and tool index. It may repeat or arrive without
@@ -708,6 +765,7 @@ fn serialize_chat_completion_response<S, Inner>(
     prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
     tool_call_completion: &[ToolCallCompletion],
     model_eos: &[u32],
+    glm53_request_id: Option<&str>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -752,6 +810,9 @@ where
         );
     }
 
+    if let Some(request_id) = glm53_request_id {
+        glm53::project_response(&mut map, request_id);
+    }
     let mut ser_map = serializer.serialize_map(Some(map.len()))?;
     for (key, value) in map {
         ser_map.serialize_entry(&key, &value)?;
@@ -767,6 +828,7 @@ impl Serialize for NvCreateChatCompletionResponse {
             self.prompt_logprobs.as_deref(),
             &[],
             &[],
+            None,
             serializer,
         )
     }
@@ -782,6 +844,7 @@ impl Serialize for NvCreateChatCompletionStreamResponse {
             None,
             &self.tool_call_completion,
             &self.model_eos,
+            None,
             serializer,
         )
     }
@@ -1148,6 +1211,22 @@ impl NvCreateChatCompletionRequest {
             is_glm53_model_id(&self.inner.model),
         )?;
         validate::validate_model(&self.inner.model)?;
+        if is_glm53_model_id(&self.inner.model) {
+            // Official GLM-5.3 rejects empty user input (2026-11-19 live baseline).
+            // Missing/null content is already rejected by the typed decoder.
+            for message in &self.inner.messages {
+                if let dynamo_protocols::types::ChatCompletionRequestMessage::User(user) = message {
+                    use dynamo_protocols::types::ChatCompletionRequestUserMessageContent;
+                    let empty = match &user.content {
+                        ChatCompletionRequestUserMessageContent::Text(text) => text.is_empty(),
+                        ChatCompletionRequestUserMessageContent::Array(parts) => parts.is_empty(),
+                    };
+                    if empty {
+                        anyhow::bail!("GLM-5.3 user content must not be empty");
+                    }
+                }
+            }
+        }
         // none for store
         validate::validate_reasoning_effort(&self.inner.reasoning_effort)?;
         // none for metadata
@@ -1182,6 +1261,14 @@ impl NvCreateChatCompletionRequest {
         // none for seed
         validate::validate_service_tier(&self.inner.service_tier)?;
         validate::validate_stop(&self.inner.stop)?;
+        if is_glm53_model_id(&self.inner.model)
+            && matches!(
+                self.inner.stop,
+                Some(dynamo_protocols::types::Stop::String(_))
+            )
+        {
+            anyhow::bail!("GLM-5.3 stop must be an array, not a string");
+        }
         // none for stream
         // none for stream_options
         validate::validate_temperature(self.inner.temperature)?;
@@ -1771,6 +1858,10 @@ mod tests {
         assert_eq!(obj.get("sglext"), Some(&payload));
         // Only the carrier was present -> no nvext on the wire.
         assert!(!obj.contains_key("nvext"));
+        let http = serde_json::to_value(response.for_http(Some("frontend-request"))).unwrap();
+        assert_eq!(http["request_id"], "frontend-request");
+        assert_eq!(http["sglext"], wire["sglext"]);
+        assert_eq!(serde_json::to_value(response.for_http(None)).unwrap(), wire);
     }
 
     #[test]

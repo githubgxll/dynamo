@@ -3398,6 +3398,7 @@ async fn handler_chat_completions(
                 return Err(error);
             }
         };
+    request.normalize_glm53_options();
     if *FORCE_INCLUDE_USAGE && request.inner.stream.unwrap_or(false) {
         delta_common::force_include_usage(&mut request.inner.stream_options);
     }
@@ -3610,8 +3611,67 @@ where
                 _ => Err(error),
             }
         }
-        Err(error) => Err(error),
+        Err(error) => repair_glm53_options(endpoint, body).unwrap_or(Err(error)),
     }
+}
+
+/// GLM-5.3 compatibility observed in the official API regression report (2026-11-18).
+/// Retry only inputs the typed parser rejected; normal requests keep the single-parse path.
+/// Remove this adapter when the GLM-5.3 serving profile is retired or changes its contract.
+fn repair_glm53_options<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Option<Result<T, serde_json::Error>>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return None;
+    }
+    // Do not collapse duplicate keys here; the existing model-scoped recovery owns them.
+    let UniqueJsonValue(mut value) = serde_json::from_slice(body).ok()?;
+    if !is_glm53_chat_request(&value) {
+        return None;
+    }
+    let object = value.as_object_mut()?;
+    let mut repaired = false;
+    if let Some(stream) = object
+        .get("stream")
+        .and_then(crate::protocols::openai::chat_completions::glm53_compatible_stream)
+    {
+        object.insert("stream".into(), serde_json::Value::Bool(stream));
+        repaired = true;
+    }
+    if object
+        .get("n")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|n| n <= 0)
+    {
+        object.insert("n".into(), serde_json::json!(1));
+        repaired = true;
+    }
+    // Unknown/missing format discriminators fall back to text in this profile.
+    // Keep recognized formats intact so malformed JSON schemas still fail validation.
+    if let Some(format) = object
+        .get("response_format")
+        .and_then(serde_json::Value::as_object)
+    {
+        let ignored = match format.get("type") {
+            None => true,
+            Some(serde_json::Value::String(kind)) => {
+                !matches!(kind.as_str(), "text" | "json_object" | "json_schema")
+            }
+            _ => false,
+        };
+        if ignored {
+            object.remove("response_format");
+            repaired = true;
+        }
+    }
+    repaired.then(|| {
+        let repaired_body = serde_json::to_vec(&value)?;
+        from_slice_dedup_reasoning(endpoint, &repaired_body)
+    })
 }
 
 /// Collapse `reasoning` / `reasoning_content` pairs to a single key per message.
@@ -5652,7 +5712,10 @@ async fn chat_completions(
             terminal.finish(TerminalOutcome::Success);
         }
         Ok(Json(crate::reasoning_field::RoutedReasoning::new(
-            response,
+            response.for_http(
+                crate::protocols::openai::chat_completions::is_glm53_model_id(&model)
+                    .then_some(request_id.as_str()),
+            ),
             state.reasoning_field(),
         ))
         .into_response())
@@ -7859,6 +7922,61 @@ pub fn audios_router(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn glm53_report_option_regressions() {
+        use crate::engines::ValidateRequest;
+        use serde_json::json;
+
+        // Report regressions share one model-scoped normalization boundary.
+        for model in ["glm-5.3", "test-model"] {
+            for options in [
+                json!({"stop": "END"}),
+                json!({"stream": "true"}),
+                json!({"stream": 1}),
+                json!({"stream": 0}),
+                json!({"stream": false, "stream_options": {"include_usage": true}}),
+                json!({"messages": [{"role":"user", "content":""}]}),
+                json!({"messages": [{"role":"user", "content":[]}]}),
+                json!({"n": -1}),
+                json!({"n": 0}),
+                json!({"response_format": {}}),
+                json!({"response_format": {"type": "foo"}}),
+                json!({"logprobs": true, "top_logprobs": 99}),
+            ] {
+                let mut body =
+                    json!({"model": model, "messages": [{"role":"user", "content":"hello"}]});
+                body.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let parsed = parse_json_request::<NvCreateChatCompletionRequest>(
+                    "chat completions",
+                    &serde_json::to_vec(&body).unwrap(),
+                );
+                let accepted = parsed.is_ok_and(|mut request| {
+                    request.normalize_glm53_options();
+                    if model == "glm-5.3" && options.get("stream_options").is_some() {
+                        assert!(request.inner.stream_options.is_none());
+                    }
+                    if model == "glm-5.3" && options.get("n").is_some() {
+                        assert_eq!(request.inner.n, Some(1));
+                    }
+                    if model == "glm-5.3" && options.get("top_logprobs").is_some() {
+                        assert_eq!(request.inner.logprobs, Some(false));
+                        assert!(request.inner.top_logprobs.is_none());
+                    }
+                    validate_chat_completion_stream_options(&request).is_ok()
+                        && request.validate().is_ok()
+                });
+                let expected = if options.get("stop").is_some() || options.get("messages").is_some()
+                {
+                    model != "glm-5.3"
+                } else {
+                    model == "glm-5.3"
+                };
+                assert_eq!(accepted, expected, "{model} {options}");
+            }
+        }
+    }
 
     use super::*;
     use crate::discovery::ModelManagerError;

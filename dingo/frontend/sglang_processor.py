@@ -61,20 +61,29 @@ from .utils import (
 )
 
 try:
-    from sglang.srt.hf_transformers import get_tokenizer
+    from sglang.srt.hf_transformers import (
+        get_config,
+        get_generation_config,
+        get_tokenizer,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "sglang.srt.hf_transformers":
         raise
     # SGLang 0.5.11 to 0.5.23 (current CUDA and XPU pins).
     # Remove once both pins are newer.
-    from sglang.srt.utils.hf_transformers import get_tokenizer
+    from sglang.srt.utils.hf_transformers import (
+        get_config,
+        get_generation_config,
+        get_tokenizer,
+    )
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SGLANG_STREAM_INTERVAL: int = 1
-# Bound reasoning and answer tokens together when the client omits both limits.
-DEFAULT_SGLANG_MAX_TOKENS: int = 8192
+# Official GLM-5.3 default, including reasoning and answer tokens (2026-11-19).
+# https://docs.bigmodel.cn/cn/guide/start/concept-param
+DEFAULT_GLM53_MAX_TOKENS: int = 65536
 
 # Internal carrier key mirroring the Rust constant in
 # lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
@@ -645,8 +654,12 @@ def _build_dynamo_preproc(
     max_tokens = request.get("max_completion_tokens")
     if max_tokens is None:
         max_tokens = request.get("max_tokens")
-    if max_tokens is None:
-        max_tokens = DEFAULT_SGLANG_MAX_TOKENS
+    if (
+        max_tokens is None
+        and model_name.rsplit("/", 1)[-1].lower().replace("-", "").replace("_", "")
+        == "glm5.3"
+    ):
+        max_tokens = DEFAULT_GLM53_MAX_TOKENS
 
     frequency_penalty = request.get("frequency_penalty", 0.0)
     # GLM-5.3 compatibility policy: accept negative values without rewarding
@@ -1473,7 +1486,6 @@ class SglangProcessor:
                         ):
                             pending_terminal = envelope
                             continue
-                        yield envelope
                         if post.locally_finished:
                             terminal_items = list(split_terminal_tool_payload(envelope))
                             break
@@ -1523,7 +1535,6 @@ class SglangProcessor:
                         # Preserve terminal metadata without emitting post-stop text.
                         pending_terminal = envelope
                         continue
-                    yield envelope
                     if post.locally_finished:
                         terminal_items = list(split_terminal_tool_payload(envelope))
                         break

@@ -9,11 +9,17 @@ See [docs/components/frontend/](../../docs/fern/pages/developer-guide/knowledge-
 
 ## SGLang chat generation limits and stops
 
-The SGLang chat processor defaults to 8192 generated tokens when both
-`max_completion_tokens` and `max_tokens` are omitted. An explicit
-`max_completion_tokens` takes precedence over `max_tokens`. The limit includes
-reasoning and answer tokens; reaching it returns `finish_reason: "length"` and
-can leave the answer empty if all tokens were spent reasoning.
+For GLM-5.3, the SGLang chat processor defaults to 65536 generated tokens when
+both `max_completion_tokens` and `max_tokens` are omitted or null, matching the
+[official default](https://docs.bigmodel.cn/cn/guide/start/concept-param).
+Matching is case-insensitive, accepts repository-qualified IDs and the
+`glm5.3` / `GLM_5.3` spellings, and excludes other GLM versions and Flash models.
+Other models, including Kimi, retain an unspecified limit for the backend to
+resolve; the frontend does not impose a shared 8192-token fallback.
+An explicit `max_completion_tokens` takes precedence over `max_tokens`.
+The limit includes reasoning and answer tokens; reaching it returns
+`finish_reason: "length"` and can leave the answer empty if all tokens were
+spent reasoning.
 
 For the exact model ID `glm-5.3` (case-insensitive, also repository-qualified
 IDs such as `zai-org/GLM-5.3`), negative `frequency_penalty` values are accepted
@@ -53,10 +59,9 @@ Without the engine flag, a tool grammar that excludes `</think>` can prevent
 the model from ending its thinking block and cause repeated reasoning after a
 tool result. The router's reasoning parser alone does not resolve this.
 
-When validating requests without an explicit output limit, leave room for the
-8192-token default completion in the configured engine context window. An
-8192-token context plus a nonempty prompt can otherwise fail SGLang's length
-validation before generation starts.
+For GLM-5.3 requests without an explicit output limit, leave room for the
+65536-token default completion plus the prompt in the configured engine context
+window, or set an explicit output limit. Other models use their backend defaults.
 
 ## GLM-5.3 malformed historical tool arguments
 

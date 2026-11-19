@@ -24,6 +24,7 @@ from dingo.common.configuration.groups.router_args import (
     RouterConfigBase,
 )
 from dingo.common.configuration.utils import (
+    ArgEnv,
     add_argument,
     add_negatable_bool_argument,
     env_or_default,
