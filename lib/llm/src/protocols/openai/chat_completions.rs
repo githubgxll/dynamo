@@ -1915,7 +1915,8 @@ mod tests {
             for (stop, valid) in [
                 (json!([]), true),
                 (json!(null), true),
-                (json!("END"), true),
+                // Official GLM-5.3 accepts stop arrays, not a bare string.
+                (json!("END"), false),
                 (json!(["END", "DONE"]), true),
                 (json!([32, 34]), true),
                 (json!(""), false),
@@ -1949,6 +1950,16 @@ mod tests {
                     assert_eq!(serde_json::to_value(&request).unwrap(), before);
                 }
             }
+        }
+
+        // Other models retain the OpenAI string-stop contract.
+        for model in ["kimi-k2.5", "test-model"] {
+            let request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                "model": model, "messages": [{"role":"user", "content":"Hello"}],
+                "stop": "END"
+            }))
+            .unwrap();
+            assert!(ValidateRequest::validate(&request).is_ok(), "{model}");
         }
     }
 
