@@ -26,7 +26,6 @@ pytestmark = [
 _MISSING = object()
 
 
-
 @pytest.fixture
 def module_stubs():
     original_modules = {}
@@ -62,6 +61,7 @@ def _install_module(install_module, name: str, **attrs):
 
 def _install_sglang_stubs(install_module, tokenizer_module):
     """Install lightweight backend modules with the selected tokenizer layout."""
+
     class _Function:
         pass
 
@@ -104,7 +104,9 @@ def _install_sglang_stubs(install_module, tokenizer_module):
     _install_module(
         install_module, "sglang.srt.environ", ToolStrictLevel=object, envs=object()
     )
-    _install_module(install_module, "xgrammar", StructuralTag=object, StructuralTagItem=object)
+    _install_module(
+        install_module, "xgrammar", StructuralTag=object, StructuralTagItem=object
+    )
     _install_module(install_module, "sglang.srt.function_call")
     _install_module(
         install_module,
@@ -149,8 +151,12 @@ def _install_sglang_stubs(install_module, tokenizer_module):
         install_module,
         tokenizer_module,
         get_tokenizer=lambda *args, **kwargs: None,
-        get_config=lambda *args, **kwargs: types.SimpleNamespace(eos_token_id=[154820, 154827]),
-        get_generation_config=lambda *args, **kwargs: types.SimpleNamespace(eos_token_id=[154820, 154829]),
+        get_config=lambda *args, **kwargs: types.SimpleNamespace(
+            eos_token_id=[154820, 154827]
+        ),
+        get_generation_config=lambda *args, **kwargs: types.SimpleNamespace(
+            eos_token_id=[154820, 154829]
+        ),
     )
 
 
@@ -172,9 +178,7 @@ class _PostProcessor:
         return 1
 
 
-def _load_processor_module(
-    module_stubs, tokenizer_module="sglang.srt.hf_transformers"
-):
+def _load_processor_module(module_stubs, tokenizer_module="sglang.srt.hf_transformers"):
     """Import a fresh processor against the selected SGLang module layout."""
     install_module, remove_module = module_stubs
     http_error = type("HttpError", (Exception,), {})
@@ -251,10 +255,15 @@ def _load_processor_module(
 def test_output_limit_default_is_glm53_only(module_stubs):
     module = _load_processor_module(module_stubs)
     for model, default in [
-        ("glm-5.3", 65536), ("zai-org/GLM-5.3", 65536),
-        ("glm5.3", 65536), ("GLM_5.3", 65536),
-        ("kimi-k2.5", None), ("moonshotai/Kimi-K2-Instruct", None),
-        ("glm-5.2", None), ("glm-5.3-flash", None), ("glm53", None),
+        ("glm-5.3", 65536),
+        ("zai-org/GLM-5.3", 65536),
+        ("glm5.3", 65536),
+        ("GLM_5.3", 65536),
+        ("kimi-k2.5", None),
+        ("moonshotai/Kimi-K2-Instruct", None),
+        ("glm-5.2", None),
+        ("glm-5.3-flash", None),
+        ("glm53", None),
     ]:
         for limits, expected in [
             ({}, default),
@@ -269,6 +278,107 @@ def test_output_limit_default_is_glm53_only(module_stubs):
             result = module._build_dynamo_preproc(request, [1], model, None)
             assert result["stop_conditions"]["max_tokens"] == expected, (model, limits)
             assert request == original
+
+
+def test_glm53_context_budget_keeps_other_models_unchanged():
+    from dingo.frontend.glm53 import model_context_length, output_budget
+
+    for model in ("glm-5.3", "org/GLM_5.3", "glm5.3"):
+        assert output_budget(model, 131072, 16, 131072) == 131056
+        assert output_budget(model, 65536, 16, 131072) == 65536
+        with pytest.raises(ValueError):
+            output_budget(model, 131073, 16, 131072)
+        with pytest.raises(ValueError):
+            output_budget(model, 16, 131072, 131072)
+    for model in ("kimi-k2.5", "glm-5.2", "glm-5.3-flash", "glm53"):
+        assert output_budget(model, 131073, 16, 131072) == 131073
+    assert (
+        model_context_length(
+            {"context_length": 8192}, {"architectural_max_context_length": 131072}
+        )
+        == 8192
+    )
+    assert (
+        model_context_length(
+            {"context_length": 0}, {"architectural_max_context_length": 131072}
+        )
+        is None
+    )
+    assert (
+        model_context_length({}, {"architectural_max_context_length": 131072}) == 131072
+    )
+
+
+@pytest.mark.parametrize("glm53", [False, True])
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("terminal_eos", [False, True])
+def test_glm53_hides_eos_before_string_stop(module_stubs, glm53, batched, terminal_eos):
+    module = _load_processor_module(module_stubs)
+
+    class Tokenizer:
+        def decode(self, ids, **kwargs):
+            return "".join("<|user|>" if i == 777 else chr(i) for i in ids)
+
+    post = module.SglangStreamingPostProcessor(
+        tokenizer=Tokenizer(),
+        tool_call_parser=None,
+        reasoning_parser=None,
+        eos_token_ids=[777],
+        stop_strings={"e"},
+        skip_special_tokens=False,
+        glm53_profile=glm53,
+    )
+    chunks = [[79, 75, 777]] if batched else [[79], [75], [777]]
+    results = []
+    for index, ids in enumerate(chunks):
+        result = post.process_output(
+            {
+                "token_ids": ids,
+                "finish_reason": "stop"
+                if terminal_eos and index == len(chunks) - 1
+                else None,
+                "stop_reason": "e",
+            }
+        )
+        if result:
+            results.append(result)
+    result = post.process_output({"token_ids": [], "finish_reason": "stop"})
+    if result:
+        results.append(result)
+    text = "".join(r["delta"].get("content", "") for r in results)
+    assert text == ("OK" if glm53 else "OK<|us")
+
+
+def test_glm53_budget_is_sent_to_routed_engine(module_stubs):
+    module = _load_processor_module(module_stubs)
+    module.preprocess_chat_request = lambda *args, **kwargs: types.SimpleNamespace(
+        prompt_token_ids=list(range(10)),
+        guided_decoding=None,
+        tool_call_parser=None,
+        reasoning_parser=None,
+        named_zero_arg_tool=None,
+        response_format_guided_active=False,
+        tool_guided_active=False,
+        require_reasoning=False,
+        force_reasoning=False,
+    )
+    for model, expected in [("glm-5.3", 131062), ("kimi-k2.5", 131072)]:
+        engine = FakeRoutedEngine(items=[])
+        processor = module.SglangProcessor(
+            None, engine, None, None, None, context_length=131072
+        )
+        processor._build_postprocessor = lambda *args, **kwargs: _PostProcessor()
+
+        async def collect():
+            return [
+                item
+                async for item in processor._generator_inner(
+                    {"model": model, "max_tokens": 131072}
+                )
+            ]
+
+        asyncio.run(collect())
+        assert engine.requests[0]["stop_conditions"]["max_tokens"] == expected
 
 
 def test_stream_embeds_typed_llm_metrics(module_stubs):
@@ -562,8 +672,11 @@ def test_text_deltas_and_terminal_are_emitted_once(module_stubs, interval, strea
         return [
             item["data"]
             async for item in processor._generate_and_stream(
-                "once", {"model": "glm-5.3", "stream": streaming, "logprobs": True},
-                {}, [], post,
+                "once",
+                {"model": "glm-5.3", "stream": streaming, "logprobs": True},
+                {},
+                [],
+                post,
             )
         ]
 
@@ -726,6 +839,7 @@ def test_empty_token_report_emits_usage_without_waiting_for_finish(module_stubs)
     assert event["data"]["usage"]["completion_tokens"] == 1
     assert event["data"]["llm_metrics"]["chunk_tokens"] == 0
 
+
 @pytest.mark.parametrize("stream_interval", [1, 2])
 @pytest.mark.parametrize(
     "stream_options,intermediate_usage",
@@ -736,7 +850,6 @@ def test_empty_token_report_emits_usage_without_waiting_for_finish(module_stubs)
         ({"include_usage": True, "continuous_usage_stats": True}, True),
     ],
 )
-
 def test_sparse_usage_survives_flushes(
     module_stubs, stream_interval, stream_options, intermediate_usage
 ):
@@ -821,7 +934,10 @@ def test_tokenizer_import_layouts(module_stubs, tokenizer_module):
     module = _load_processor_module(module_stubs, tokenizer_module)
     assert module.get_tokenizer is sys.modules[tokenizer_module].get_tokenizer
     assert module.get_config is sys.modules[tokenizer_module].get_config
-    assert module.get_generation_config is sys.modules[tokenizer_module].get_generation_config
+    assert (
+        module.get_generation_config
+        is sys.modules[tokenizer_module].get_generation_config
+    )
 
 
 @pytest.mark.parametrize(

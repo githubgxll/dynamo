@@ -3,6 +3,22 @@
 
 use serde_json::{Map, Value};
 
+pub(super) fn validate_user_id(value: Option<&Value>) -> Result<(), &'static str> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(id)) if (6..=128).contains(&id.chars().count()) => Ok(()),
+        _ => Err("GLM-5.3 user_id must be a string of 6 to 128 characters"),
+    }
+}
+
+pub(super) fn validate_stop_count(count: usize) -> Result<(), &'static str> {
+    if count > 4 {
+        Err("GLM-5.3 allows at most 4 stop words")
+    } else {
+        Ok(())
+    }
+}
+
 /// HTTP correlation only: never use a client ID to key internal request state.
 pub(super) fn client_request_id(value: Option<&Value>) -> Result<Option<&str>, &'static str> {
     match value {
@@ -58,6 +74,20 @@ pub(super) fn project_response(response: &mut Map<String, Value>, request_id: &s
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn extra_field_and_stop_limits_follow_glm53_contract() {
+        for length in [6, 128] {
+            assert!(validate_user_id(Some(&json!("u".repeat(length)))).is_ok());
+        }
+        for value in [json!("u".repeat(5)), json!("u".repeat(129)), json!(42)] {
+            assert!(validate_user_id(Some(&value)).is_err());
+        }
+        assert!(validate_user_id(None).is_ok());
+        assert!(validate_stop_count(4).is_ok());
+        assert!(validate_stop_count(5).is_err());
+        assert!(validate_stop_count(17).is_err());
+    }
 
     #[test]
     fn client_ids_validate_and_echo_without_replacing_internal_ids() {

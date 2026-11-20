@@ -318,6 +318,15 @@ impl NvCreateChatCompletionRequest {
     /// Runs once at the HTTP boundary, so every render path reads one answer.
     /// Model-specific overrides still apply later in the default preprocessor.
     pub fn normalize_reasoning_template_args(&mut self) -> anyhow::Result<()> {
+        // Official GLM-5.3 ignores this nested dialect (2026-11-20 probe),
+        // while still rejecting top-level thinking.type=disabled. Remove the
+        // ignored toggle before canonicalization so it cannot disable the model.
+        if is_glm53_model_id(&self.inner.model)
+            && let Some(args) = self.chat_template_args.as_mut()
+            && args.get("thinking").and_then(serde_json::Value::as_bool) == Some(false)
+        {
+            args.remove("thinking");
+        }
         let thinking_mode = self
             .thinking
             .as_ref()
@@ -1225,7 +1234,24 @@ impl NvCreateChatCompletionRequest {
         &self,
         allow_invalid_history_arguments: bool,
     ) -> Result<(), anyhow::Error> {
-        validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
+        if is_glm53_model_id(&self.inner.model) {
+            if self
+                .unsupported_fields
+                .get("enable_thinking")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+            {
+                anyhow::bail!("GLM-5.3 does not support disabling reasoning via `enable_thinking`");
+            }
+            glm53::validate_user_id(self.unsupported_fields.get("user_id"))
+                .map_err(anyhow::Error::msg)?;
+            // GLM ignores extra API fields (including tool_stream). Preserve
+            // validation of Dynamo's named passthrough extensions; unrelated
+            // fields remain excluded from worker/Python serialization.
+            validate::validate_no_unsupported_fields_with_ignore(&self.unsupported_fields, true)?;
+        } else {
+            validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
+        }
         validate::validate_guided_decoding(self)?;
         validate::validate_chat_template_args(self.chat_template_args.as_ref())?;
         validate::validate_messages_with_history_compatibility(
@@ -1242,7 +1268,15 @@ impl NvCreateChatCompletionRequest {
                     use dynamo_protocols::types::ChatCompletionRequestUserMessageContent;
                     let empty = match &user.content {
                         ChatCompletionRequestUserMessageContent::Text(text) => text.is_empty(),
-                        ChatCompletionRequestUserMessageContent::Array(parts) => parts.is_empty(),
+                        ChatCompletionRequestUserMessageContent::Array(parts) => {
+                            if parts.iter().any(|part| matches!(part,
+                                dynamo_protocols::types::ChatCompletionRequestUserMessageContentPart::InputAudio(_)
+                                | dynamo_protocols::types::ChatCompletionRequestUserMessageContentPart::AudioUrl(_)
+                            )) {
+                                anyhow::bail!("GLM-5.3 does not support audio input");
+                            }
+                            parts.is_empty()
+                        }
                     };
                     if empty {
                         anyhow::bail!("GLM-5.3 user content must not be empty");
@@ -1284,6 +1318,11 @@ impl NvCreateChatCompletionRequest {
         // none for seed
         validate::validate_service_tier(&self.inner.service_tier)?;
         validate::validate_stop(&self.inner.stop)?;
+        if is_glm53_model_id(&self.inner.model)
+            && let Some(dynamo_protocols::types::Stop::StringArray(stops)) = &self.inner.stop
+        {
+            glm53::validate_stop_count(stops.len()).map_err(anyhow::Error::msg)?;
+        }
         if is_glm53_model_id(&self.inner.model)
             && matches!(
                 self.inner.stop,
@@ -1516,6 +1555,67 @@ mod tests {
             body[key] = value.clone();
         }
         serde_json::from_value(body).expect("Failed to deserialize request")
+    }
+
+    #[test]
+    fn glm53_report_admission_keeps_other_model_rules() {
+        for model in [
+            "glm-5.3",
+            "org/GLM_5.3",
+            "kimi-k2.5",
+            "glm-5.2",
+            "glm-5.3-flash",
+        ] {
+            let glm = is_glm53_model_id(model);
+            for extra in [
+                json!({"user_id":"abcdef"}),
+                json!({"tool_stream":true}),
+                json!({"foobar_field":1}),
+            ] {
+                let mut extra = extra;
+                extra["model"] = json!(model);
+                let request = chat_request_with(&extra);
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), glm, "{extra}");
+            }
+            for count in [4, 5, 17] {
+                let request = chat_request_with(&json!({"model":model,"stop":vec!["END";count]}));
+                assert_eq!(
+                    ValidateRequest::validate(&request).is_ok(),
+                    !glm || count <= 4
+                );
+            }
+            let request = chat_request_with(
+                &json!({"model":model,"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAA","format":"wav"}}]}]}),
+            );
+            assert_eq!(ValidateRequest::validate(&request).is_ok(), !glm);
+            let mut request = chat_request_with(
+                &json!({"model":model,"chat_template_kwargs":{"thinking":false}}),
+            );
+            request.normalize_reasoning_template_args().unwrap();
+            assert_eq!(
+                request
+                    .chat_template_args
+                    .as_ref()
+                    .unwrap()
+                    .get("thinking")
+                    .and_then(|v| v.as_bool()),
+                if glm { None } else { Some(false) }
+            );
+            let request = chat_request_with(&json!({"model":model,"detokenize":"invalid"}));
+            assert!(
+                ValidateRequest::validate(&request).is_err(),
+                "named extensions must still validate"
+            );
+            let request = chat_request_with(&json!({"model":model,"enable_thinking":false}));
+            assert!(
+                ValidateRequest::validate(&request).is_err(),
+                "known reasoning controls must not become ignored extras"
+            );
+        }
+        for user_id in ["a".repeat(5), "a".repeat(129)] {
+            let request = chat_request_with(&json!({"model":"glm-5.3","user_id":user_id}));
+            assert!(ValidateRequest::validate(&request).is_err());
+        }
     }
 
     #[test]
