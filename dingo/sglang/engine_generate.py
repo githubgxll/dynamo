@@ -50,6 +50,7 @@ def build_native_generate_request(
     routed_dp_rank: int | None = None,
     prefill_dp_rank: int | None = None,
     lora_path: str | None = None,
+    cache_salt: str | None = None,
     cache_retention_ttl_s: int | None = None,
 ) -> GenerateReqInput:
     """Reconstruct the installed SGLang version native request.

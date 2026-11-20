@@ -2472,6 +2472,80 @@ def test_kv_cache_write_engine_data_accepts_zero_ttl_as_unprotected():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("report", [False, True])
+async def test_process_token_stream_without_receipt_preserves_usage_boundary(report):
+    handler = _new_decode_handler()
+    chunks = await _collect(
+        handler._process_token_stream(
+            _stream(
+                [
+                    # First chunk: engine reports no cache-write fields at
+                    # all, so _kv_cache_write_engine_data returns {} -> None
+                    # (the exact crashed state of the real worker).
+                    _usage_update([101], 1, cached_tokens=None),
+                    _usage_update([102], 2, cached_tokens=None),
+                ]
+            ),
+            _Context(),
+            report_kv_cache_write=report,
+        )
+    )
+    # No HTTP 500: the absent-receipt chunk streams through with no
+    # early-receipt usage view and no kv_cache_write engine data.
+    assert chunks[0]["token_ids"] == [101]
+    assert "completion_usage" not in chunks[0]
+    assert "kv_cache_write" not in chunks[0].get("engine_data", {})
+
+
+def _receipt_update(token_ids, completion_tokens, *, receipt=True):
+    update = _usage_update(token_ids, completion_tokens, cached_tokens=None)
+    if receipt:
+        update["meta_info"].update(
+            {
+                "prompt_tokens": 8,
+                "cached_tokens": 2,
+                "cache_write_tokens": 6,
+                "cache_write_ttl_s": 90,
+            }
+        )
+    return update
+
+
+@pytest.mark.asyncio
+async def test_process_token_stream_emits_first_valid_receipt_only():
+    handler = _new_decode_handler()
+    chunks = await _collect(
+        handler._process_token_stream(
+            _stream(
+                [
+                    _receipt_update([101], 1, receipt=False),
+                    _receipt_update([102], 2),
+                    _receipt_update([103], 3),
+                ]
+            ),
+            _Context(),
+            report_kv_cache_write=True,
+        )
+    )
+
+    # The receiptless chunk before the latch must not crash (the AGDC2-73
+    # HTTP 500) and carries neither usage nor the receipt.
+    assert chunks[0]["token_ids"] == [101]
+    assert "completion_usage" not in chunks[0]
+    assert "kv_cache_write" not in chunks[0].get("engine_data", {})
+    receipt = {
+        "prompt_tokens": 8,
+        "cached_tokens": 2,
+        "cache_write_tokens": 6,
+        "cache_write_ttl_s": 90,
+    }
+    assert chunks[1]["engine_data"]["kv_cache_write"] == receipt
+    assert chunks[1]["completion_usage"]["prompt_tokens_details"] == {"cached_tokens": 2}
+    assert "kv_cache_write" not in chunks[2].get("engine_data", {})
+    assert "completion_usage" not in chunks[2]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("serving_mode", "reports"),
     [(DisaggregationMode.AGGREGATED, True), (DisaggregationMode.DECODE, False)],

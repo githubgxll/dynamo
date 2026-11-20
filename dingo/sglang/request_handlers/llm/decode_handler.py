@@ -1209,10 +1209,8 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         # Keep the latest cache breakdown per choice for the terminal chunk,
         # and expose it on intermediate chunks only in continuous-usage mode.
         cached_tokens_details_per_choice: dict[int, dict[str, Any]] = {}
-        # Latched cache-write receipts per choice (aggregated mode only):
-        # the engine's prompt-side accounting, re-emitted on every chunk so
-        # the response layer can emit protection headers before SSE starts.
-        cache_write_per_choice: dict[int, Dict[str, Any]] = {}
+        # Emit the first valid receipt once per choice, even on a tokenless frame.
+        cache_write_reported: set[int] = set()
         cached_tokens_per_choice: dict[int, int] = {}
         request_ids: set[str] = set()
         first_output_seen = False
@@ -1287,23 +1285,15 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     meta_info.get("prompt_tokens") is not None
                     and meta_info.get("completion_tokens") is not None
                 )
-                cache_write_receipt = (
-                    cache_write_per_choice.get(output_idx)
-                    if report_kv_cache_write
-                    else None
-                )
-                if cache_write_receipt is None and report_kv_cache_write:
-                    cache_write_receipt = (
-                        _kv_cache_write_engine_data(meta_info) or None
-                    )
-                    if cache_write_receipt is not None:
-                        cache_write_per_choice[output_idx] = cache_write_receipt
+                cache_write_receipt = None
+                if report_kv_cache_write and output_idx not in cache_write_reported:
+                    cache_write_receipt = _kv_cache_write_engine_data(meta_info) or None
                 # The receipt chunk also carries the Chat-usage view of the
                 # engine's cached_tokens so the response layer sees C on the
                 # same early chunk as W and the applied TTL. Only the early
                 # (non-terminal) receipt chunk adds this; the terminal chunk
                 # keeps its original usage semantics untouched.
-                early_receipt_chunk = not finish_reason and cache_write_receipt != {}
+                early_receipt_chunk = not finish_reason and cache_write_receipt is not None
                 usage_chunk = (
                     finish_reason or continuous_usage_stats or early_receipt_chunk
                 )
@@ -1392,6 +1382,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     not output_ids
                     and not finish_reason
                     and "completion_usage" not in out
+                    and cache_write_receipt is None
                 ):
                     continue
 
@@ -1413,6 +1404,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     # chunks. The receipt was validated and latched above;
                     # absent engine fields latch and emit nothing.
                     engine_data["kv_cache_write"] = cache_write_receipt
+                    cache_write_reported.add(output_idx)
                 if (
                     finish_reason or continuous_usage_stats
                 ) and output_idx in cached_tokens_details_per_choice:
