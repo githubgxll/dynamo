@@ -34,6 +34,14 @@ pub const TOPOLOGY_TAINT_PREFIX: &str = "dynamo.topology/";
 /// Runtime-data key for an engine-published token-overflow contract.
 pub const TOKEN_BUDGET_RUNTIME_KEY: &str = "token_budget";
 
+/// Runtime-data key for the per-model prompt-cache retention admission bound.
+/// The value is a JSON object with one field, `max_ttl_s` (integer seconds).
+/// A missing key, missing field, or non-positive/non-integer value is a bad
+/// configuration: it is logged once per read and ignored, so admission falls
+/// back to the process env override or the built-in default — it never
+/// widens the bound.
+pub const PROMPT_CACHE_RUNTIME_KEY: &str = "prompt_cache";
+
 /// Runtime-data key indicating that a backend expects tool structural tags to
 /// exclude reasoning and manages grammar activation around reasoning itself.
 ///
@@ -703,6 +711,42 @@ impl ModelRuntimeConfig {
         }
     }
 
+    /// Per-model prompt-cache retention admission bound, in whole seconds.
+    ///
+    /// Read from `runtime_data["prompt_cache"]["max_ttl_s"]`. A missing key or
+    /// field means "not configured for this model"; a present but invalid
+    /// value (non-integer, zero, negative) is a bad configuration: it is
+    /// logged and treated as absent so the bound can only fall back to a
+    /// safe default, never widen.
+    pub fn prompt_cache_max_ttl_s(&self) -> Option<u64> {
+        let value = self.runtime_data.get(PROMPT_CACHE_RUNTIME_KEY)?;
+        let Some(fields) = value.as_object() else {
+            tracing::warn!(
+                key = PROMPT_CACHE_RUNTIME_KEY,
+                "Invalid prompt_cache runtime config: expected an object with max_ttl_s; ignoring"
+            );
+            return None;
+        };
+        let Some(max_ttl) = fields.get("max_ttl_s") else {
+            tracing::warn!(
+                key = PROMPT_CACHE_RUNTIME_KEY,
+                "Invalid prompt_cache runtime config: max_ttl_s missing; ignoring"
+            );
+            return None;
+        };
+        match max_ttl.as_u64() {
+            Some(seconds) if seconds > 0 => Some(seconds),
+            _ => {
+                tracing::warn!(
+                    key = PROMPT_CACHE_RUNTIME_KEY,
+                    value = %max_ttl,
+                    "Invalid prompt_cache.max_ttl_s: expected a positive integer of seconds; ignoring"
+                );
+                None
+            }
+        }
+    }
+
     pub fn effective_tokenizer_backend(&self) -> TokenizerBackend {
         self.tokenizer_backend
             .unwrap_or_else(TokenizerBackend::from_env_or_default)
@@ -819,6 +863,39 @@ mod tests {
             cfg.populate_stable_routing_id_from_env();
             assert_eq!(cfg.stable_routing_id.as_deref(), Some("worker-3"));
         });
+    }
+
+    #[test]
+    fn prompt_cache_max_ttl_s_reads_and_rejects_bad_config() {
+        let mut cfg = ModelRuntimeConfig::default();
+        // Not configured → None (fall back to process default).
+        assert_eq!(cfg.prompt_cache_max_ttl_s(), None);
+
+        // Valid integer seconds.
+        cfg.runtime_data.insert(
+            PROMPT_CACHE_RUNTIME_KEY.to_string(),
+            serde_json::json!({"max_ttl_s": 600}),
+        );
+        assert_eq!(cfg.prompt_cache_max_ttl_s(), Some(600));
+
+        // Bad shapes are ignored, never widen the bound.
+        for bad in [
+            serde_json::json!(600),
+            serde_json::json!({"max_ttl_s": "600"}),
+            serde_json::json!({"max_ttl_s": 0}),
+            serde_json::json!({"max_ttl_s": -5}),
+            serde_json::json!({"max_ttl_s": 1.5}),
+            serde_json::json!({}),
+            serde_json::Value::Null,
+        ] {
+            cfg.runtime_data
+                .insert(PROMPT_CACHE_RUNTIME_KEY.to_string(), bad);
+            assert_eq!(
+                cfg.prompt_cache_max_ttl_s(),
+                None,
+                "bad prompt_cache config must be ignored"
+            );
+        }
     }
 
     #[test]

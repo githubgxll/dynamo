@@ -65,6 +65,13 @@ pub struct ResponseStreamConverter {
     next_output_index: u32,
     // Usage stats from the backend's final chunk
     usage: Option<ResponseUsage>,
+    // Applied cache-write metering from the engine's prefill receipt,
+    // captured from the first data chunk that carries one (seeded by the
+    // HTTP layer's preflight so the earliest events already agree). Drives
+    // the `cache_write_tokens` usage splice and the `prompt_cache_options`
+    // echo on the terminal `response.completed`/`response.incomplete`.
+    pub(crate) cache_meter:
+        Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
     // The backend ended with a terminal reason that is not success-like.
     incomplete_reason: Option<&'static str>,
     terminal_failure_emitted: bool,
@@ -145,6 +152,7 @@ impl ResponseStreamConverter {
             function_call_items: Vec::new(),
             next_output_index: 0,
             usage: None,
+            cache_meter: None,
             incomplete_reason: None,
             terminal_failure_emitted: false,
         }
@@ -416,6 +424,12 @@ impl ResponseStreamConverter {
                 },
                 total_tokens: u.total_tokens,
             });
+        }
+
+        // Capture the engine's prefill cache-write receipt from the first
+        // chunk that carries one; strictly real receipts only.
+        if self.cache_meter.is_none() {
+            self.cache_meter = chunk.cache_meter;
         }
 
         let mut should_finish_function_calls = false;
@@ -992,11 +1006,22 @@ impl ResponseStreamConverter {
         &self,
         event: &ResponseStreamEvent,
     ) -> Result<String, serde_json::Error> {
+        // The cache-write accounting and the `prompt_cache_options` echo are
+        // carried only by the terminal completed/incomplete events (the
+        // customer reads them there); created/in_progress/queued/failed stay
+        // untouched.
+        let is_terminal = matches!(
+            event,
+            ResponseStreamEvent::ResponseCompleted(_) | ResponseStreamEvent::ResponseIncomplete(_)
+        );
         let spec = ResponseSpecFields {
             presence_penalty: self.params.presence_penalty.unwrap_or(0.0),
             frequency_penalty: self.params.frequency_penalty.unwrap_or(0.0),
             store: self.params.store.unwrap_or(false),
+            cache_meter: if is_terminal { self.cache_meter } else { None },
+            echo_cache_options: is_terminal,
         };
+
 
         match event {
             ResponseStreamEvent::ResponseCreated(event) => {
@@ -1057,6 +1082,15 @@ struct ResponseSpecFields {
     presence_penalty: f32,
     frequency_penalty: f32,
     store: bool,
+    /// Applied cache-write metering from the engine's prefill receipt. When
+    /// present with terminal events it splices the real insertion count into
+    /// `usage.input_tokens_details.cache_write_tokens` and (on
+    /// completed/incomplete) echoes the actually applied `prompt_cache_options`.
+    /// `None` on non-terminal events and failures: no fabricated claims.
+    cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    /// Whether this event's response should echo `prompt_cache_options`
+    /// (true for the `response.completed`/`response.incomplete` terminals).
+    echo_cache_options: bool,
 }
 
 struct ResponseEventForSpec<'a> {
@@ -1145,7 +1179,53 @@ impl Serialize for ResponseForSpec<'_> {
         serialize_optional_entry(&mut map, "top_logprobs", &response.top_logprobs)?;
         serialize_optional_entry(&mut map, "top_p", &response.top_p)?;
         serialize_optional_entry(&mut map, "truncation", &response.truncation)?;
-        map.serialize_entry("usage", &response.usage)?;
+        // Kimi customer contract: on the terminal completed/incomplete event,
+        // project the prefill receipt onto the usage — `cached_tokens` (C)
+        // and `cache_write_tokens` (W) from the same receipt, measured zeros
+        // as explicit zeros (also when the applied TTL is 0: real insertion,
+        // no protection charge) — and echo the actually applied
+        // `prompt_cache_options` when protection was claimed. The usage value
+        // must be rebuilt as a JSON object because the pinned `ResponseUsage`
+        // type predates `cache_write_tokens`.
+        let usage_entry: serde_json::Value = match (&self.spec.cache_meter, &response.usage) {
+            (Some(meter), Some(usage)) => {
+                let mut value = serde_json::to_value(usage)
+                    .map_err(|e| <S::Error as serde::ser::Error>::custom(e))?;
+                if let serde_json::Value::Object(usage_map) = &mut value {
+                    let (cached_tokens, write_tokens) = meter.openai_projection();
+                    let details = usage_map
+                        .entry("input_tokens_details")
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let serde_json::Value::Object(details_map) = details {
+                        details_map.insert(
+                            "cached_tokens".to_string(),
+                            serde_json::json!(cached_tokens),
+                        );
+                        details_map.insert(
+                            "cache_write_tokens".to_string(),
+                            serde_json::json!(write_tokens),
+                        );
+                    }
+                }
+                value
+            }
+            (_, usage) => serde_json::to_value(usage)
+                .map_err(|e| <S::Error as serde::ser::Error>::custom(e))?,
+        };
+        map.serialize_entry("usage", &usage_entry)?;
+        if self.spec.echo_cache_options
+            && let Some(meter) = self.spec.cache_meter.filter(|m| m.is_protected())
+        {
+            map.serialize_entry(
+                "prompt_cache_options",
+                &serde_json::json!({
+                    "mode": "implicit",
+                    "ttl": crate::protocols::common::cache_meter::applied_ttl_string(
+                        meter.applied_ttl_s
+                    ),
+                }),
+            )?;
+        }
         map.serialize_entry("presence_penalty", &self.spec.presence_penalty)?;
         map.serialize_entry("frequency_penalty", &self.spec.frequency_penalty)?;
         map.serialize_entry("store", &self.spec.store)?;
@@ -1353,6 +1433,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1385,6 +1466,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1417,6 +1499,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 

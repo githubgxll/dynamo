@@ -57,6 +57,12 @@ pub struct DeltaGenerator {
     should_return_prompt_logprobs: bool,
     /// Prompt logprobs may arrive before the terminal backend delta.
     prompt_logprobs: Option<common::llm_backend::PromptLogprobs>,
+    /// Applied cache-write metering from the engine's prefill receipt
+    /// (`engine_data.kv_cache_write`), captured from the first backend chunk
+    /// that carries one and stamped onto every generated stream chunk so the
+    /// HTTP layer can emit the `msh-usage-cache-write-tokens-*` headers before
+    /// the first client-visible SSE event.
+    cache_meter: Option<common::cache_meter::CacheWriteMeter>,
 }
 
 impl DeltaGenerator {
@@ -73,6 +79,7 @@ impl DeltaGenerator {
             suppress_top_logprobs: false,
             should_return_prompt_logprobs: false,
             prompt_logprobs: None,
+            cache_meter: None,
         }
     }
 
@@ -200,6 +207,7 @@ impl DeltaGenerator {
             nvext: None, // Will be populated by router layer if needed
             prompt_logprobs: None,
             llm_metrics: None,
+            cache_meter: self.cache_meter,
             tool_call_completion: Vec::new(),
         }
     }
@@ -226,6 +234,7 @@ impl DeltaGenerator {
             nvext: None,
             prompt_logprobs: None,
             llm_metrics: None,
+            cache_meter: self.cache_meter,
             tool_call_completion: Vec::new(),
         }
     }
@@ -258,6 +267,15 @@ impl crate::protocols::openai::DeltaGeneratorExt<NvCreateChatCompletionStreamRes
         delta: crate::protocols::common::llm_backend::BackendOutput,
     ) -> anyhow::Result<NvCreateChatCompletionStreamResponse> {
         self.state.update_usage_from_backend_output(&delta, false);
+
+        // Capture the engine's prefill cache-write receipt the first time it
+        // arrives (`engine_data.kv_cache_write`). Strictly real receipts only:
+        // a missing or malformed object leaves the meter `None`, which means
+        // no protection headers and no write accounting for this request.
+        if self.cache_meter.is_none() {
+            self.cache_meter =
+                common::cache_meter::CacheWriteMeter::from_engine_data(delta.engine_data.as_ref());
+        }
 
         let logprobs = self.create_logprobs(
             delta.tokens,

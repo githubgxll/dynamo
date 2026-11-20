@@ -367,8 +367,18 @@ fn validate_anthropic_tools(
 async fn handler_anthropic_messages(
     State((state, template)): State<(Arc<service_v2::State>, Option<RequestTemplate>)>,
     headers: HeaderMap,
-    Json(mut request): Json<AnthropicCreateMessageRequest>,
+    body: axum::body::Body,
 ) -> Result<Response, Response> {
+    // Manual body parse (matching the OpenAI endpoints) so a malformed
+    // field — including an invalid raw `cache_control` value such as a
+    // non-string `ttl` — surfaces as an Anthropic 400 `invalid_request_error`
+    // instead of axum's generic 422 JSON rejection.
+    let body_bytes = super::openai::read_json_request_body(&headers, body)
+        .await
+        .map_err(|error| error.into_response())?;
+    let mut request: AnthropicCreateMessageRequest =
+        super::openai::parse_json_request("anthropic messages", &body_bytes)
+            .map_err(|error| error.into_response())?;
     let request_id = get_or_create_request_id(&headers);
     let streaming = request.stream;
     let resolved_model = resolve_request_model(&request.model, template.as_ref());
@@ -570,6 +580,56 @@ async fn anthropic_messages(
     // etc.) that the stream converter needs for faithful response reconstruction.
     let anthropic_ctx = unified_request.anthropic_context().cloned();
     let mut chat_request = unified_request.into_inner();
+
+    // Resolve the Messages cache_control markers into the trusted
+    // `cache_retention_ttl_s` request field before validation: an invalid
+    // marker (readonly type, malformed ttl) must fail as an admission 400
+    // naming the original `cache_control` field, never fall through to a
+    // silently unprotected request. The marker-without-ttl default (300s)
+    // and multi-marker maximum are resolved by the shared admission module.
+    // The TTL rides the trusted request field, NOT chat_template_args, so it
+    // can never leak into Jinja template rendering.
+    if let Some(ctx) = anthropic_ctx.as_ref() {
+        let blocks = ctx.cache_breakpoints.iter().map(|breakpoint| {
+            (
+                breakpoint.message_index,
+                breakpoint.block_index,
+                &breakpoint.cache_control,
+            )
+        });
+        let tools = ctx
+            .tool_cache_markers
+            .iter()
+            .map(|marker| marker as &dynamo_protocols::types::anthropic::CacheControl);
+        // Same bound source as the Chat/Responses admission: the model's
+        // per-model `prompt_cache.max_ttl_s` runtime configuration, else the
+        // process-wide env override, else the built-in default. The user
+        // request never influences this bound.
+        let model_max_ttl = state.manager().prompt_cache_max_ttl_s(&model);
+        let max_ttl = crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(model_max_ttl);
+        let markers = crate::protocols::openai::prompt_cache::messages_request_ttl(
+            ctx.top_level_cache_control.as_ref(),
+            ctx.system_cache_control.as_ref(),
+            blocks,
+            tools,
+            max_ttl,
+        );
+        match markers {
+            Ok(Some(seconds)) => {
+                chat_request.cache_retention_ttl_s = Some(seconds);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(
+                    AnthropicHandlerError::validation(error).into_marked_response(
+                        &mut inflight_guard,
+                    ),
+                );
+            }
+        }
+    }
+
+    let wants_cache_write = chat_request.cache_retention_ttl_s.is_some();
     apply_anthropic_nvext_policy(&mut chat_request, &headers, state.nvext_enabled());
     if let Err(error) = chat_request.validate() {
         let error = invalid_argument(error.to_string());
@@ -753,6 +813,16 @@ async fn anthropic_messages(
             anthropic_backend_error_response(error_response)
         })?;
 
+        // Kimi strict contract: decide the cache-write headers before the
+        // first SSE byte. The transport guarantees the prefill receipt is on
+        // the first data chunk; meter-or-absent is decided there and the
+        // stream is released (no scanning until end of generation).
+        let (cache_meter, engine_stream) =
+            super::openai::preflight_cache_meter(engine_stream, wants_cache_write, &ctx)
+                .await
+                .map_err(anthropic_backend_error_response)?;
+        let msh_headers = super::openai::msh_cache_write_headers(cache_meter.as_ref());
+
         stream_handle.arm();
 
         let mut converter = match anthropic_ctx {
@@ -761,6 +831,10 @@ async fn anthropic_messages(
             }
             None => AnthropicStreamConverter::new(model_for_resp, estimated_input_tokens),
         };
+        // The preflight already extracted the meter from the leading chunks;
+        // seed the converter so `message_start` (emitted before any chunk)
+        // already carries the cache_creation breakdown.
+        converter.cache_meter = cache_meter;
 
         let mut http_queue_guard = Some(http_queue_guard);
         let mut engine_stream = engine_stream;
@@ -879,7 +953,30 @@ async fn anthropic_messages(
         if let Some(keep_alive) = keep_alive {
             sse_stream = sse_stream.keep_alive(KeepAlive::default().interval(keep_alive));
         }
-        Ok(sse_stream.into_response())
+        // Cache-write headers ride the same response that opens the SSE body;
+        // absent when no protected write was reported.
+        if let Some((five_m, one_h)) = msh_headers {
+            Ok((
+                axum::response::AppendHeaders([
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                        ),
+                        axum::http::HeaderValue::from(five_m),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                        ),
+                        axum::http::HeaderValue::from(one_h),
+                    ),
+                ]),
+                sse_stream,
+            )
+                .into_response())
+        } else {
+            Ok(sse_stream.into_response())
+        }
     } else {
         // Non-streaming path: aggregate stream into single response
 
@@ -916,6 +1013,7 @@ async fn anthropic_messages(
                     anthropic_non_streaming_aggregation_error(error)
                 })?;
 
+        let cache_meter = chat_response.cache_meter;
         let response = chat_completion_to_anthropic_response(
             chat_response,
             &model_for_resp,
@@ -924,7 +1022,37 @@ async fn anthropic_messages(
 
         inflight_guard.mark_ok();
 
-        Ok(Json(response).into_response())
+        // Kimi customer contract: splice `cache_creation` into usage and emit
+        // the two cache-write headers when the engine receipt claimed a
+        // protected write. No receipt → no headers, no breakdown.
+        let body = crate::protocols::anthropic::anthropic_response_with_cache_creation(
+            response,
+            cache_meter.as_ref(),
+        );
+        let mut builder = Response::builder().status(StatusCode::OK);
+        if let Some(meter) = cache_meter.as_ref().filter(|m| m.is_protected()) {
+            let (five_m, one_h) = meter.msh_split();
+            builder = builder
+                .header(
+                    crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                    five_m,
+                )
+                .header(
+                    crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                    one_h,
+                );
+        }
+        Ok(builder
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&body).map_err(
+                |e| {
+                    anthropic_sanitized_error_with_details(
+                        SanitizedError::Internal,
+                        format!("Failed to serialize Anthropic response: {e}"),
+                    )
+                },
+            )?))
+            .unwrap_or_else(|_| Json(body).into_response()))
     }
 }
 

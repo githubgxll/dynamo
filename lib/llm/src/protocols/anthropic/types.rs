@@ -186,6 +186,8 @@ impl TryFrom<AnthropicCreateMessageRequest> for NvCreateChatCompletionRequest {
             do_sample: None,
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         })
     }
@@ -542,7 +544,29 @@ fn convert_anthropic_tool_choice(tc: &AnthropicToolChoice) -> ChatCompletionTool
 /// Dynamo backends report `prompt_tokens` as the complete prompt and
 /// `cached_tokens` as a subset of it. Anthropic reports the cached subset
 /// separately, so `input_tokens` must exclude it.
-pub(super) fn completion_usage_to_anthropic(usage: &CompletionUsage) -> AnthropicUsage {
+///
+/// When a validated engine receipt is available (`cache_meter`), the whole
+/// breakdown is projected from that one receipt: `cache_read_input_tokens`
+/// is the receipt's C, `cache_creation_input_tokens` its W (explicit zero
+/// included — a valid receipt reports measured zeros, never missing fields),
+/// and `input_tokens` the uncached remainder, so the three always sum back
+/// to P and agree with the Chat/Responses projection and the headers.
+/// Without a receipt the legacy path stays: decode-side usage clamped to the
+/// prompt, and no cache-creation claim.
+pub(super) fn completion_usage_to_anthropic(
+    usage: &CompletionUsage,
+    cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+) -> AnthropicUsage {
+    if let Some(meter) = cache_meter {
+        let (input_tokens, cache_read, cache_creation) = meter.anthropic_projection();
+        return AnthropicUsage {
+            input_tokens,
+            output_tokens: usage.completion_tokens,
+            cache_creation_input_tokens: Some(cache_creation),
+            cache_read_input_tokens: Some(cache_read),
+        };
+    }
+
     let cache_read_input_tokens = usage
         .prompt_tokens_details
         .as_ref()
@@ -557,10 +581,34 @@ pub(super) fn completion_usage_to_anthropic(usage: &CompletionUsage) -> Anthropi
             .prompt_tokens
             .saturating_sub(cache_read_input_tokens.unwrap_or(0)),
         output_tokens: usage.completion_tokens,
-        // OpenAI-compatible usage has no cache-write count; keep the Anthropic key present.
+        // No receipt: keep the Anthropic key present as an explicit zero.
         cache_creation_input_tokens: Some(0),
         cache_read_input_tokens,
     }
+}
+
+/// Serialize the Anthropic `cache_creation` breakdown object for a usage that
+/// carries protected writes. The band split mirrors the two price headers:
+/// `a ≤ 300` seconds writes into `ephemeral_5m_input_tokens`, anything longer
+/// into `ephemeral_1h_input_tokens`; the other bucket stays 0 so the buckets
+/// sum to `cache_creation_input_tokens`. Emitted only when a protected write
+/// exists — no receipt, no object, no fabricated claim.
+pub(super) fn anthropic_cache_creation_object(
+    usage: &AnthropicUsage,
+    cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+) -> Option<serde_json::Value> {
+    let meter = cache_meter?;
+    if !meter.is_protected() {
+        return None;
+    }
+    // The buckets sum to `cache_creation_input_tokens` by construction
+    // (`msh_split`); the creation total itself already lives one level up.
+    let _ = usage.cache_creation_input_tokens?;
+    let (ephemeral_5m, ephemeral_1h) = meter.msh_split();
+    Some(serde_json::json!({
+        "ephemeral_5m_input_tokens": ephemeral_5m,
+        "ephemeral_1h_input_tokens": ephemeral_1h,
+    }))
 }
 
 /// Generate an Anthropic-native `tool_use` id.
@@ -828,10 +876,12 @@ pub fn chat_completion_to_anthropic_response(
         .inner
         .usage
         .as_ref()
-        .map(completion_usage_to_anthropic)
-        .unwrap_or(AnthropicUsage {
-            cache_creation_input_tokens: Some(0),
-            ..Default::default()
+        .map(|usage| completion_usage_to_anthropic(usage, chat_resp.cache_meter.as_ref()))
+        .unwrap_or_else(|| {
+            completion_usage_to_anthropic(
+                &CompletionUsage::default(),
+                chat_resp.cache_meter.as_ref(),
+            )
         });
 
     AnthropicMessageResponse {
@@ -844,6 +894,27 @@ pub fn chat_completion_to_anthropic_response(
         stop_sequence: None,
         usage,
     }
+}
+
+/// Kimi customer contract: serialize a Messages response and splice the
+/// `cache_creation` breakdown (`ephemeral_5m_input_tokens` /
+/// `ephemeral_1h_input_tokens`) into its `usage` object when the engine's
+/// prefill receipt claimed a protected write. The pinned
+/// `AnthropicMessageResponse` type predates the field, so the breakdown is
+/// patched into the serialized JSON. No receipt → no `cache_creation` key.
+pub fn anthropic_response_with_cache_creation(
+    response: AnthropicMessageResponse,
+    cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+) -> serde_json::Value {
+    let cache_creation = anthropic_cache_creation_object(&response.usage, cache_meter);
+    let mut value = serde_json::to_value(&response).expect("anthropic response serializes");
+    if let (Some(cache_creation), serde_json::Value::Object(map)) = (&cache_creation, &mut value)
+        && let Some(usage) = map.get_mut("usage")
+        && let serde_json::Value::Object(usage_map) = usage
+    {
+        usage_map.insert("cache_creation".to_string(), cache_creation.clone());
+    }
+    value
 }
 
 #[cfg(test)]
@@ -1282,6 +1353,7 @@ mod tests {
                 }),
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -1344,6 +1416,7 @@ mod tests {
                 }),
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -1373,7 +1446,7 @@ mod tests {
             completion_tokens_details: None,
         };
 
-        let usage = completion_usage_to_anthropic(&usage);
+        let usage = completion_usage_to_anthropic(&usage, None);
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.cache_read_input_tokens, Some(12));
         assert_eq!(usage.output_tokens, 5);
@@ -1409,6 +1482,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -1449,6 +1523,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: Some(serde_json::json!({
                 "worker_id": {"decode_worker_id": 1}
             })),
@@ -2558,6 +2633,7 @@ mod anthropic_types_tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
         chat_completion_to_anthropic_response(chat_resp, "test-model", None)

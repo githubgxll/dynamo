@@ -119,6 +119,8 @@ async fn main_loop(
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
 

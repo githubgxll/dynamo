@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::types::{
     AnthropicDelta, AnthropicErrorBody, AnthropicMessageDeltaBody, AnthropicMessageResponse,
     AnthropicResponseContentBlock, AnthropicStopReason, AnthropicStreamEvent, AnthropicUsage,
-    completion_usage_to_anthropic, new_tool_use_id,
+    anthropic_cache_creation_object, completion_usage_to_anthropic, new_tool_use_id,
 };
 use crate::protocols::openai::chat_completions::NvCreateChatCompletionStreamResponse;
 use crate::protocols::unified::AnthropicContext;
@@ -38,6 +38,11 @@ pub struct AnthropicStreamConverter {
     // Starts with a frontend estimate and is replaced atomically when the
     // engine reports authoritative usage.
     usage: AnthropicUsage,
+    // Applied cache-write metering from the engine's prefill receipt, captured
+    // from the first backend chunk carrying one. Drives the `cache_creation`
+    // breakdown stamped on `message_start`/`message_delta` usage objects.
+    pub(crate) cache_meter:
+        Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
     // True once the backend has reported authoritative usage at least once
     // (via `include_usage`/`continuous_usage_stats`). Until then the converter
     // falls back to counting output deltas so that every `content_block_delta`
@@ -106,6 +111,7 @@ impl AnthropicStreamConverter {
                 cache_creation_input_tokens: Some(0),
                 ..Default::default()
             },
+            cache_meter: None,
             saw_backend_usage: false,
             tool_call_states: Vec::new(),
             pending_text: Vec::new(),
@@ -369,7 +375,7 @@ impl AnthropicStreamConverter {
         // final usage chunk (`include_usage` without `continuous_usage_stats`)
         // would otherwise regress `output_tokens` on the terminal chunk.
         let running = self.usage.output_tokens;
-        self.usage = completion_usage_to_anthropic(usage);
+        self.usage = completion_usage_to_anthropic(usage, self.cache_meter.as_ref());
         self.usage.output_tokens = self.usage.output_tokens.max(running);
         self.saw_backend_usage = true;
     }
@@ -429,8 +435,15 @@ impl AnthropicStreamConverter {
             usage: self.usage.clone(),
         };
 
+        let usage = message.usage.clone();
         let event = AnthropicStreamEvent::MessageStart { message };
-        events.push(make_sse_event("message_start", &event));
+        events.push(make_cache_usage_sse_event(
+            "message_start",
+            &event,
+            &usage,
+            self.cache_meter.as_ref(),
+            &["message", "usage"],
+        ));
     }
 
     /// Process a single chat completion stream chunk and return zero or more SSE events.
@@ -454,6 +467,12 @@ impl AnthropicStreamConverter {
         // non-overlapping cached-token accounting.
         if let Some(usage) = &chunk.inner.usage {
             self.record_usage(usage);
+        }
+
+        // Capture the engine's prefill cache-write receipt from the first chunk
+        // that carries one; strictly real receipts only (no zero-fill).
+        if self.cache_meter.is_none() {
+            self.cache_meter = chunk.cache_meter;
         }
 
         // Fallback output-token accounting for backends that never populate
@@ -703,7 +722,13 @@ impl AnthropicStreamConverter {
             },
             usage: self.usage.clone(),
         };
-        events.push(make_sse_event("message_delta", &message_delta));
+        events.push(make_cache_usage_sse_event(
+            "message_delta",
+            &message_delta,
+            &self.usage,
+            self.cache_meter.as_ref(),
+            &["usage"],
+        ));
 
         // Emit message_stop
         let message_stop = AnthropicStreamEvent::MessageStop {};
@@ -790,6 +815,33 @@ fn drain_pending_text(
 
 fn make_sse_event(event_type: &str, event: &AnthropicStreamEvent) -> Result<Event, anyhow::Error> {
     let data = serde_json::to_string(event)?;
+    Ok(Event::default().event(event_type).data(data))
+}
+
+/// Serialize a `message_start`/`message_delta` SSE event and splice the Kimi
+/// `cache_creation` breakdown (`ephemeral_5m_input_tokens` /
+/// `ephemeral_1h_input_tokens`) into its `usage` object. The breakdown comes
+/// exclusively from the engine's prefill receipt: absent when the engine
+/// reported nothing, so no protection is invented. `usage_path` addresses the
+/// usage object in the serialized event (`message.usage` for `message_start`,
+/// the event root for `message_delta`).
+fn make_cache_usage_sse_event(
+    event_type: &str,
+    event: &AnthropicStreamEvent,
+    usage: &AnthropicUsage,
+    cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+    usage_path: &[&str],
+) -> Result<Event, anyhow::Error> {
+    let Some(cache_creation) = anthropic_cache_creation_object(usage, cache_meter) else {
+        return make_sse_event(event_type, event);
+    };
+    let mut value = serde_json::to_value(event)?;
+    let mut cursor = &mut value;
+    for key in usage_path {
+        cursor = &mut cursor[*key];
+    }
+    cursor["cache_creation"] = cache_creation;
+    let data = serde_json::to_string(&value)?;
     Ok(Event::default().event(event_type).data(data))
 }
 
@@ -1097,6 +1149,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1142,6 +1195,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1570,6 +1624,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -2268,6 +2323,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 

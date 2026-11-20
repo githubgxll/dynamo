@@ -82,6 +82,18 @@ pub struct AnthropicContext {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_breakpoints: Vec<CacheBreakpoint>,
 
+    /// Top-level `cache_control` (Anthropic automatic caching form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_level_cache_control: Option<CacheControl>,
+
+    /// `cache_control` from the parsed `system` prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_cache_control: Option<CacheControl>,
+
+    /// `cache_control` markers attached to tool definitions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_cache_markers: Vec<CacheControl>,
+
     /// When true, the model should not issue parallel tool calls.
     /// Also mapped to the inverse of Chat Completions' `parallel_tool_calls`.
     #[serde(default)]
@@ -171,6 +183,9 @@ impl TryFrom<AnthropicCreateMessageRequest> for UnifiedRequest {
         let anthropic_ctx = AnthropicContext {
             thinking: req.thinking.clone(),
             cache_breakpoints: extract_cache_breakpoints(&req),
+            top_level_cache_control: req.cache_control.clone(),
+            system_cache_control: req.system.as_ref().and_then(|system| system.cache_control.clone()),
+            tool_cache_markers: extract_tool_cache_markers(&req),
             disable_parallel_tool_use: extract_disable_parallel_tool_use(&req),
             metadata: req.metadata.clone(),
             service_tier: req.service_tier.clone(),
@@ -270,6 +285,16 @@ fn extract_disable_parallel_tool_use(req: &AnthropicCreateMessageRequest) -> boo
         Some(AnthropicToolChoice::Named(named)) => named.disable_parallel_tool_use.unwrap_or(false),
         None => false,
     }
+}
+
+/// Collect `cache_control` markers from tool definitions.
+fn extract_tool_cache_markers(req: &AnthropicCreateMessageRequest) -> Vec<CacheControl> {
+    req.tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|tool| tool.cache_control.clone())
+        .collect()
 }
 
 // Trait implementations — delegate to inner NvCreateChatCompletionRequest
@@ -508,6 +533,12 @@ impl crate::preprocessor::prompt::MediaRequestExt for UnifiedRequest {
     }
 }
 
+impl crate::preprocessor::prompt::PromptCacheTtlExt for UnifiedRequest {
+    fn cache_retention_ttl_s(&self) -> Option<u64> {
+        self.inner.cache_retention_ttl_s
+    }
+}
+
 impl UnifiedRequest {
     /// Returns the Anthropic context if this request originated from the
     /// Anthropic Messages API.
@@ -624,6 +655,101 @@ mod tests {
         // Verify it still works as a preprocessor input
         assert_eq!(unified.model(), "claude-sonnet-4-20250514");
         assert!(unified.extract_text().is_some());
+    }
+
+    #[test]
+    fn test_anthropic_cache_markers_preserved_for_admission() {
+        use super::super::anthropic::types::*;
+
+        let req: AnthropicCreateMessageRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "max_tokens": 256,
+            "system": [
+                {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral", "ttl": "5m"}}
+            ],
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "30m"}},
+                    {"type": "text", "text": "there"}
+                ]
+            }],
+            "tools": [{
+                "name": "get_weather",
+                "input_schema": {"type": "object"},
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "cache_control": {"type": "ephemeral", "ttl": "90s"}
+        }))
+        .unwrap();
+
+        let unified = UnifiedRequest::try_from(req).unwrap();
+        let ctx = unified.anthropic_context().unwrap();
+
+        // All four marker surfaces survive conversion losslessly so
+        // admission can validate and locate them. The system marker appears
+        // both as `system_cache_control` and as the logical-position-0
+        // breakpoint (`extract_cache_breakpoints` records it); the user
+        // block marker follows at message index 1 because the system prompt
+        // occupies logical position 0. Both markers also feed the max-TTL
+        // resolution — `system_cache_control` and the position-0 breakpoint
+        // are the same marker, counted once.
+        assert!(ctx.top_level_cache_control.is_some());
+        assert!(ctx.system_cache_control.is_some());
+        assert_eq!(ctx.tool_cache_markers.len(), 1);
+        assert_eq!(
+            ctx.cache_breakpoints.len(),
+            2,
+            "system marker (position 0) + the one marked content block"
+        );
+        assert_eq!(ctx.cache_breakpoints[0].message_index, 0, "system");
+        assert_eq!(ctx.cache_breakpoints[1].message_index, 1, "user content block");
+        assert_eq!(ctx.cache_breakpoints[1].block_index, 0);
+
+        // Admission resolves max across markers with the marker default.
+        let blocks = ctx.cache_breakpoints.iter().map(|b| {
+            (b.message_index, b.block_index, &b.cache_control)
+        });
+        let tools = ctx
+            .tool_cache_markers
+            .iter()
+            .map(|m| m as &CacheControl);
+        let ttl = crate::protocols::openai::prompt_cache::messages_request_ttl(
+            ctx.top_level_cache_control.as_ref(),
+            ctx.system_cache_control.as_ref(),
+            blocks,
+            tools,
+            crate::protocols::openai::prompt_cache::DEFAULT_MAX_TTL_SECONDS,
+        )
+        .unwrap();
+        assert_eq!(ttl, Some(1800), "30m marker wins over 5m/90s/300s-default");
+
+        // An invalid marker is rejected with its location.
+        let bad: AnthropicCreateMessageRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "max_tokens": 256,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi", "cache_control": {"type": "readonly"}}
+                ]
+            }]
+        }))
+        .unwrap();
+        let unified = UnifiedRequest::try_from(bad).unwrap();
+        let ctx = unified.anthropic_context().unwrap();
+        let blocks = ctx.cache_breakpoints.iter().map(|b| {
+            (b.message_index, b.block_index, &b.cache_control)
+        });
+        let err = crate::protocols::openai::prompt_cache::messages_request_ttl(
+            None,
+            None,
+            blocks,
+            [].into_iter(),
+            crate::protocols::openai::prompt_cache::DEFAULT_MAX_TTL_SECONDS,
+        )
+        .unwrap_err();
+        assert!(err.contains("cache_control.type"), "{err}");
     }
 
     #[test]

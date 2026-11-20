@@ -241,7 +241,11 @@ fn terminal_outcome_for_error_type(error_type: ErrorType) -> TerminalOutcome {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+/// Error response for the OpenAI-compatible endpoints.
+///
+/// Typed OpenAI admission rejections use the OpenAI envelope; other errors
+/// preserve their existing bodies (including readiness and overload details).
+#[derive(Deserialize, Debug)]
 pub(crate) struct ErrorMessage {
     message: String,
     #[serde(rename = "type")]
@@ -253,6 +257,36 @@ pub(crate) struct ErrorMessage {
     metric_error_type: Option<ErrorType>,
 }
 
+impl Serialize for ErrorMessage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            message: &'a str,
+            #[serde(rename = "type")]
+            kind: &'a str,
+            code: u16,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            param: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            details: Option<&'a serde_json::Value>,
+        }
+        #[derive(Serialize)]
+        struct Envelope<'a> { error: Body<'a> }
+
+        let admission = self.error_type == "invalid_request_error";
+        let body = Body {
+            message: &self.message,
+            kind: &self.error_type,
+            code: self.code,
+            param: if admission {
+                self.message.strip_prefix('`').and_then(|s| s.split_once('`')).map(|(key, _)| key)
+            } else { None },
+            details: self.details.as_deref(),
+        };
+        if admission { Envelope { error: body }.serialize(serializer) } else { body.serialize(serializer) }
+    }
+}
+
 impl ErrorMessage {
     pub(crate) fn message(&self) -> &str {
         &self.message
@@ -260,6 +294,15 @@ impl ErrorMessage {
 
     pub(crate) fn is_overload(&self) -> bool {
         self.metric_error_type == Some(ErrorType::Overload)
+    }
+
+    fn openai_admission(error: anyhow::Error, context: &str) -> ErrorResponse {
+        let (status, mut body) = Self::from_anyhow(error, context);
+        if status == StatusCode::BAD_REQUEST {
+            body.0.error_type.clear();
+            body.0.error_type.push_str("invalid_request_error");
+        }
+        (status, body)
     }
 }
 
@@ -3306,7 +3349,7 @@ async fn handler_chat_completions(
     response
 }
 
-fn parse_json_request<T>(endpoint: &'static str, body: &[u8]) -> Result<T, ErrorResponse>
+pub(crate) fn parse_json_request<T>(endpoint: &'static str, body: &[u8]) -> Result<T, ErrorResponse>
 where
     T: DeserializeOwned,
 {
@@ -3428,7 +3471,7 @@ fn failed_to_read_request_body_error() -> ErrorResponse {
 /// Reads and buffers a JSON request body.
 ///
 /// Validates the `Content-Type` before reading the body and limits buffering to [`get_body_limit`].
-async fn read_json_request_body(headers: &HeaderMap, body: Body) -> Result<Bytes, ErrorResponse> {
+pub(crate) async fn read_json_request_body(headers: &HeaderMap, body: Body) -> Result<Bytes, ErrorResponse> {
     ensure_json_content_type(headers)?;
     axum::body::to_bytes(body, get_body_limit())
         .await
@@ -3743,6 +3786,60 @@ fn is_annotation_frame<T>(e: &Annotated<T>) -> bool {
 /// request. The handful of real annotations a frontend prepends
 /// (currently just `request_id`) fits well under this cap.
 const MAX_LEADING_ANNOTATIONS: usize = 16;
+
+/// Inspect the first data frame only for an explicit cache-write request.
+/// Replay frames unchanged; the backend never owes a later billing receipt.
+pub(super) async fn preflight_cache_meter(
+    stream: futures::stream::BoxStream<'static, Annotated<NvCreateChatCompletionStreamResponse>>,
+    requested: bool,
+    ctx: &Arc<dyn AsyncEngineContext>,
+) -> Result<(
+    Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    futures::stream::BoxStream<'static, Annotated<NvCreateChatCompletionStreamResponse>>,
+), ErrorResponse> {
+    use futures::stream::StreamExt;
+
+    if !requested {
+        return Ok((None, stream));
+    }
+    let mut stream = stream;
+    let mut buffered = Vec::new();
+    loop {
+        let event = tokio::select! {
+            event = stream.next() => event,
+            () = ctx.killed() => return Err(ErrorMessage::client_disconnected()),
+        };
+        let Some(event) = event else {
+            return Ok((None, Box::pin(futures::stream::iter(buffered))));
+        };
+        if is_annotation_frame(&event) && buffered.len() < MAX_LEADING_ANNOTATIONS {
+            // Annotation frame: replay verbatim, keep waiting for the first
+            // data chunk.
+            buffered.push(event);
+            continue;
+        }
+        // First data chunk: the receipt must be here or it is absent. Either
+        // way the decision is final and the stream is released.
+        let meter = event.data.as_ref().and_then(|data| data.cache_meter);
+        buffered.push(event);
+        return Ok((meter, Box::pin(futures::stream::iter(buffered).chain(stream))));
+    }
+}
+
+/// Build the two `msh-usage-cache-write-tokens-*` header values for a meter,
+/// or `None` when no protected write was reported (nothing may be invented).
+/// Shared by the Chat, Messages, and Responses handlers so all three surfaces
+/// agree on the band split.
+pub(super) fn msh_cache_write_headers(
+    meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+) -> Option<(u32, u32)> {
+    let meter = meter?;
+    if !meter.is_protected() {
+        return None;
+    }
+    let (five_m, one_h) = meter.msh_split();
+    Some((five_m, one_h))
+}
 
 /// Inspect the first non-annotation event in the stream for a backend error.
 ///
@@ -4237,6 +4334,15 @@ async fn chat_completions(
         return Err(err_response);
     }
 
+    // Validate Kimi `prompt_cache_options` and project the resolved TTL onto
+    // the internal `cache_retention_ttl_s` before any other stage could drop
+    // or re-interpret it.
+    if let Err(err_response) = normalize_chat_prompt_cache_ttl(&mut request, &state) {
+        inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+        return Err(err_response);
+    }
+    let wants_cache_write = request.cache_retention_ttl_s.is_some();
+
     // Handle unsupported fields - if Some(resp) is returned by
     // validate_chat_completion_unsupported_fields,
     // then a field was used that is unsupported. We will log an error message
@@ -4383,7 +4489,15 @@ async fn chat_completions(
             inflight_guard.mark_error(extract_error_type_from_response(err_response));
         })?;
 
+        // Kimi strict contract: decide the `msh-usage-cache-write-tokens-*`
+        // headers before the first SSE byte. The transport guarantees the
+        // prefill receipt is on the first data chunk; meter-or-absent is
+        // decided there and the stream is released.
+        let (cache_meter, stream) = preflight_cache_meter(stream, wants_cache_write, &ctx).await?;
+        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
+
         let mut http_queue_guard = Some(http_queue_guard);
+
         let tool_dispatch_enabled = state.streaming_tool_dispatch_enabled();
         let reasoning_dispatch_enabled = state.streaming_reasoning_dispatch_enabled();
         let reasoning_field = state.reasoning_field();
@@ -4537,7 +4651,30 @@ async fn chat_completions(
         if let Some(keep_alive) = keep_alive {
             sse_stream = sse_stream.keep_alive(KeepAlive::default().interval(keep_alive));
         }
-        Ok(sse_stream.into_response())
+        // Cache-write headers decided by the preflight ride the SSE open; the
+        // per-chunk usage also carries `cache_write_tokens` via the converter.
+        if let Some((five_m, one_h)) = msh_headers {
+            Ok((
+                axum::response::AppendHeaders([
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                        ),
+                        axum::http::HeaderValue::from(five_m),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                        ),
+                        axum::http::HeaderValue::from(one_h),
+                    ),
+                ]),
+                sse_stream,
+            )
+                .into_response())
+        } else {
+            Ok(sse_stream.into_response())
+        }
     } else {
         // Observe metrics as frames arrive, ahead of the backend-error preflight:
         // the preflight buffers leading annotation frames, so observing after it
@@ -4576,6 +4713,8 @@ async fn chat_completions(
                     err_response
                 })?;
 
+        let cache_meter = response.cache_meter;
+        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
         inflight_guard.mark_ok();
         // If the engine context was killed (client disconnect), the response was
         // assembled but never delivered. Override to cancelled.
@@ -4585,11 +4724,32 @@ async fn chat_completions(
         } else {
             terminal.finish(TerminalOutcome::Success);
         }
-        Ok(Json(crate::reasoning_field::RoutedReasoning::new(
+        let body = Json(crate::reasoning_field::RoutedReasoning::new(
             response,
             state.reasoning_field(),
-        ))
-        .into_response())
+        ));
+        if let Some((five_m, one_h)) = msh_headers {
+            Ok((
+                axum::response::AppendHeaders([
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                        ),
+                        axum::http::HeaderValue::from(five_m),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                        ),
+                        axum::http::HeaderValue::from(one_h),
+                    ),
+                ]),
+                body,
+            )
+                .into_response())
+        } else {
+            Ok(body.into_response())
+        }
     }
 }
 
@@ -4646,6 +4806,24 @@ fn normalize_chat_anthropic_stop_sequences(
             },
         )
     })
+}
+
+/// Validates `prompt_cache_options` and projects the resolved TTL onto the
+/// internal `cache_retention_ttl_s` chat-template argument. The error names
+/// the customer's original protocol field (`prompt_cache_options.mode` /
+/// `.ttl`), already embedded in the typed invalid-argument message.
+fn normalize_chat_prompt_cache_ttl(
+    request: &mut NvCreateChatCompletionRequest,
+    state: &service_v2::State,
+) -> Result<(), ErrorResponse> {
+    // Single source for all three protocols: the model's per-model
+    // `prompt_cache.max_ttl_s` runtime configuration, else the process-wide
+    // env override, else the built-in default. The user request never
+    // influences this bound.
+    let model_max_ttl = state.manager().prompt_cache_max_ttl_s(&request.inner.model);
+    let max_ttl = crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(model_max_ttl);
+    request.normalize_prompt_cache_ttl(max_ttl)
+        .map_err(|e| ErrorMessage::openai_admission(e, "Invalid chat completion request"))
 }
 
 fn request_stream_can_defer_all_output(
@@ -4716,7 +4894,7 @@ fn validation_result_response(
 ) -> Result<(), ErrorResponse> {
     result.map_err(|e| {
         if find_invalid_argument_in_chain(e.as_ref()).is_some() {
-            return ErrorMessage::from_anyhow(e, &format!("Invalid {request_kind} request"));
+            return ErrorMessage::openai_admission(e, &format!("Invalid {request_kind} request"));
         }
         ErrorMessage::from_http_error(
             ErrorClass::InvalidRequest,
@@ -4977,6 +5155,10 @@ async fn responses(
         prompt_cache_key: request.inner.prompt_cache_key.clone(),
         prompt_cache_retention: request.inner.prompt_cache_retention,
         safety_identifier: request.inner.safety_identifier.clone(),
+        // Echo of the accepted Kimi prompt-cache options; WireOutput
+        // overrides this with the actually-applied values from engine
+        // receipts when present.
+        prompt_cache_options: request.prompt_cache_options.clone(),
     };
     let request_id = request.id().to_string();
     let (orig_request, context) = request.into_parts();
@@ -5000,6 +5182,13 @@ async fn responses(
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
+    // Same Kimi prompt-cache admission as the chat handler: the Responses
+    // converter mapped `prompt_cache_options` verbatim onto the chat request.
+    if let Err(err_response) = normalize_chat_prompt_cache_ttl(&mut chat_request, &state) {
+        inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+        return Err(err_response);
+    }
+    let wants_cache_write = chat_request.cache_retention_ttl_s.is_some();
     if let Err(error) = chat_request
         .validate_with_history_policy(state.history_arguments_policy(&chat_request.inner.model))
     {
@@ -5114,6 +5303,13 @@ async fn responses(
             inflight_guard.mark_error(extract_error_type_from_response(err_response));
         })?;
 
+        // Kimi strict contract: decide the `msh-usage-cache-write-tokens-*`
+        // headers before the first SSE byte. Meter-or-absent is decided at
+        // the first data chunk (transport contract) and the stream released.
+        let (cache_meter, engine_stream) =
+            preflight_cache_meter(engine_stream, wants_cache_write, &ctx).await?;
+        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
+
         // Streaming path: convert chat completion stream chunks to Responses API SSE events.
         // The engine yields Annotated<NvCreateChatCompletionStreamResponse>. We extract the
         // inner stream response data and convert it to Responses API events.
@@ -5123,6 +5319,9 @@ async fn responses(
             Some(ctx) => ResponseStreamConverter::with_context(model.clone(), response_params, ctx),
             None => ResponseStreamConverter::new(model.clone(), response_params),
         };
+        // Seed the converter so the terminal events agree with the headers
+        // even if the metered chunk was consumed by the preflight.
+        converter.cache_meter = cache_meter;
 
         let mut http_queue_guard = Some(http_queue_guard);
         let error_signal = StreamErrorSignal::default();
@@ -5228,7 +5427,29 @@ async fn responses(
             sse_stream = sse_stream.keep_alive(KeepAlive::default().interval(keep_alive));
         }
 
-        Ok(sse_stream.into_response())
+        // Cache-write headers decided by the preflight ride the SSE open.
+        if let Some((five_m, one_h)) = msh_headers {
+            Ok((
+                axum::response::AppendHeaders([
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                        ),
+                        axum::http::HeaderValue::from(five_m),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                        ),
+                        axum::http::HeaderValue::from(one_h),
+                    ),
+                ]),
+                sse_stream,
+            )
+                .into_response())
+        } else {
+            Ok(sse_stream.into_response())
+        }
     } else {
         // Non-streaming path: aggregate stream into single response
 
@@ -5287,7 +5508,30 @@ async fn responses(
             inflight_guard.mark_error(ErrorType::Cancelled);
         }
 
-        Ok(Json(response).into_response())
+        let msh_headers = msh_cache_write_headers(response.cache_meter.as_ref());
+        let body = Json(response);
+        if let Some((five_m, one_h)) = msh_headers {
+            Ok((
+                axum::response::AppendHeaders([
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
+                        ),
+                        axum::http::HeaderValue::from(five_m),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(
+                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
+                        ),
+                        axum::http::HeaderValue::from(one_h),
+                    ),
+                ]),
+                body,
+            )
+                .into_response())
+        } else {
+            Ok(body.into_response())
+        }
     }
 }
 
@@ -7237,6 +7481,7 @@ mod tests {
             nvext: None,
             chat_template_args: None,
             thinking_token_budget: None,
+            prompt_cache_options: None,
         }
     }
 
@@ -9046,6 +9291,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_required_fields(&request);
@@ -9082,6 +9329,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_required_fields(&request);
@@ -9132,6 +9381,280 @@ mod tests {
         ));
         validate_chat_completion_fields_generic(&request)
             .expect("normalized request should pass generic validation");
+    }
+
+    #[test]
+    fn test_normalize_chat_prompt_cache_ttl_projects_seconds() {
+        for (ttl, seconds) in [
+            ("1s", 1),
+            ("90s", 90),
+            ("5m", 300),
+            ("301s", 301),
+            ("30m", 1800),
+            ("60m", 3600),
+            ("1h", 3600),
+        ] {
+            let mut request: NvCreateChatCompletionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "model": "kimi-k3.1",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "prompt_cache_options": {"mode": "implicit", "ttl": ttl}
+                }))
+                .unwrap();
+            request.normalize_prompt_cache_ttl(crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None))
+                .unwrap_or_else(|e| panic!("ttl {ttl} should be admitted: {e:?}"));
+            assert_eq!(
+                request.cache_retention_ttl_s,
+                Some(seconds),
+                "ttl {ttl}"
+            );
+            // The raw customer field is consumed, not forwarded.
+            assert!(request.prompt_cache_options.is_none());
+            // The TTL never rides the client-writable template args.
+            assert!(!request
+                .chat_template_args
+                .as_ref()
+                .is_some_and(|args| args.contains_key("cache_retention_ttl_s")));
+        }
+    }
+
+    #[test]
+    fn test_normalize_chat_prompt_cache_ttl_rejections() {
+        // (payload, field the 400 must name)
+        for (options, expected) in [
+            (serde_json::json!({"mode": "ephemeral", "ttl": "5m"}), "prompt_cache_options.mode"),
+            (serde_json::json!({"mode": "explicit"}), "prompt_cache_options.mode"),
+            (serde_json::json!({"ttl": "30M"}), "prompt_cache_options.ttl"),
+            (serde_json::json!({"ttl": "0s"}), "prompt_cache_options.ttl"),
+            (serde_json::json!({"ttl": "05m"}), "prompt_cache_options.ttl"),
+            (serde_json::json!({"ttl": 300}), "prompt_cache_options.ttl"),
+            (serde_json::json!({"ttl": "3601s"}), "prompt_cache_options.ttl"),
+        ] {
+            let mut request: NvCreateChatCompletionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "model": "kimi-k3.1",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "prompt_cache_options": options
+                }))
+                .unwrap();
+            let error = request
+                .normalize_prompt_cache_ttl(
+                    crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None),
+                )
+                .expect_err("invalid prompt_cache_options must be rejected");
+            // The typed invalid-argument error carries the public message
+            // naming the customer's original protocol field; the HTTP layer
+            // renders exactly this text as the 400 body.
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(expected),
+                "rejection must name {expected}; got: {message}"
+            );
+            assert!(
+                request.cache_retention_ttl_s.is_none(),
+                "rejected request must not carry an internal TTL"
+            );
+        }
+    }
+
+    #[test]
+    fn test_openai_error_envelope_wire_format() {
+        // 400 admission failures serialize as the OpenAI error envelope with
+        // the API-level error class and the named parameter — never the flat
+        // `{message,type:"Bad Request",code}` shape.
+        let mut request: NvCreateChatCompletionRequest =
+            serde_json::from_value(serde_json::json!({
+                "model": "kimi-k3.1",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "prompt_cache_options": {"ttl": "30M"}
+            }))
+            .unwrap();
+        let error = request
+            .normalize_prompt_cache_ttl(
+                crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None),
+            )
+            .expect_err("invalid ttl must be rejected");
+        let err_response = ErrorMessage::openai_admission(error, "Invalid chat completion request");
+        assert_eq!(err_response.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(&err_response.1.0).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], 400);
+        assert_eq!(body["error"]["param"], "prompt_cache_options.ttl");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("prompt_cache_options.ttl") && m.contains("30M")),
+            "message names the field and the offending value: {body}"
+        );
+        // The envelope must not leak the flat shape.
+        assert!(body.get("type").is_none(), "flat `type` leaked: {body}");
+        assert!(body.get("message").is_none(), "flat `message` leaked: {body}");
+        assert!(body.get("code").is_none(), "flat `code` leaked: {body}");
+    }
+
+    #[test]
+    fn test_non_admission_error_keeps_existing_public_details() {
+        let (status, response) = ErrorMessage::service_unavailable_with_body("warming up".into());
+        let body = serde_json::to_value(&response.0).unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "warming up");
+        assert!(body.get("error").is_none());
+    }
+
+    #[test]
+    fn test_k31_named_tool_choice_envelope_names_param() {
+        let request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [{"type": "function", "function": {
+                "name": "get_weather",
+                "parameters": {"type": "object"}
+            }}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        }))
+        .unwrap();
+        let error = request.validate().expect_err("K3.1 named choice must reject");
+        // The K3.1 message names tool_choice first; the envelope surfaces it
+        // as `param` for strict-mode clients.
+        let response = validation_result_response(Err(error), "chat completion").unwrap_err();
+        let body = serde_json::to_value(&response.1.0).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("tool_choice"), "{message}");
+        assert!(message.contains("thinking"), "{message}");
+    }
+
+    #[test]
+    fn test_normalize_chat_prompt_cache_ttl_absent_stays_best_effort() {
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}]
+        }))
+        .unwrap();
+        request.normalize_prompt_cache_ttl(crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None))
+            .expect("no options is admitted");
+        assert!(request.cache_retention_ttl_s.is_none());
+
+        // Options present but ttl omitted: accepted, still no internal TTL.
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "prompt_cache_options": {"mode": "implicit"}
+        }))
+        .unwrap();
+        request.normalize_prompt_cache_ttl(crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None))
+            .expect("implicit-only options are admitted");
+        assert!(request.cache_retention_ttl_s.is_none());
+    }
+
+    #[test]
+    fn test_prompt_cache_ttl_cannot_be_forged_via_template_args() {
+        // A client-supplied trusted-field JSON value is discarded on
+        // deserialize...
+        let request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "cache_retention_ttl_s": 99999
+        }))
+        .unwrap();
+        assert_eq!(request.cache_retention_ttl_s, None, "client JSON value is discarded");
+
+        // ...and a forged copy inside chat_template_kwargs is stripped.
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "chat_template_kwargs": {"cache_retention_ttl_s": 99999}
+        }))
+        .unwrap();
+        request.normalize_prompt_cache_ttl(crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None))
+            .expect("no cache options to reject");
+        assert_eq!(request.cache_retention_ttl_s, None);
+        assert!(!request
+            .chat_template_args
+            .as_ref()
+            .unwrap()
+            .contains_key("cache_retention_ttl_s"));
+
+        // Admission output wins over any client input.
+        let mut request: NvCreateChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "prompt_cache_options": {"ttl": "90s"},
+            "chat_template_kwargs": {"cache_retention_ttl_s": 99999}
+        }))
+        .unwrap();
+        request.normalize_prompt_cache_ttl(crate::protocols::openai::prompt_cache::admission_max_ttl_seconds(None)).unwrap();
+        assert_eq!(request.cache_retention_ttl_s, Some(90));
+        assert!(!request
+            .chat_template_args
+            .as_ref()
+            .unwrap()
+            .contains_key("cache_retention_ttl_s"));
+    }
+
+    #[test]
+    fn test_kimi_k31_named_tool_choice_rejected_while_thinking() {
+        let base = serde_json::json!({
+            "model": "kimi-k3.1",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [{"type": "function", "function": {
+                "name": "get_weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+            }}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        });
+        // No thinking control at all: K3.1 always thinks → 400.
+        let request: NvCreateChatCompletionRequest = serde_json::from_value(base.clone()).unwrap();
+        let err = request.validate().expect_err("named choice + default thinking must reject");
+        let message = format!("{err:#}");
+        assert!(message.contains("tool_choice"), "{message}");
+        assert!(message.contains("thinking"), "{message}");
+        assert!(message.contains("not supported"), "{message}");
+
+        // Explicit thinking on → still 400.
+        let mut enabled = base.clone();
+        enabled["thinking"] = serde_json::json!({"type": "enabled"});
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(enabled).unwrap();
+        request.validate().expect_err("named choice + explicit thinking must reject");
+
+        // Explicit thinking off → admitted.
+        let mut disabled = base.clone();
+        disabled["thinking"] = serde_json::json!({"type": "disabled"});
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(disabled).unwrap();
+        request.validate().expect("named choice with thinking disabled is valid");
+
+        // reasoning_effort=none disables thinking → admitted.
+        let mut none_effort = base.clone();
+        none_effort["reasoning_effort"] = serde_json::json!("none");
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(none_effort).unwrap();
+        request.validate().expect("named choice with reasoning_effort=none is valid");
+
+        // Other choices stay legal on K3.1.
+        for choice in ["auto", "required", "none"] {
+            let mut other = base.clone();
+            other["tool_choice"] = serde_json::json!(choice);
+            let request: NvCreateChatCompletionRequest =
+                serde_json::from_value(other).unwrap();
+            request
+                .validate()
+                .unwrap_or_else(|e| panic!("tool_choice={choice} must stay valid: {e:#}"));
+        }
+
+        // K3 (not 3.1) keeps its named-choice thinking exception.
+        let mut k3 = base.clone();
+        k3["model"] = serde_json::json!("kimi-k3");
+        let request: NvCreateChatCompletionRequest = serde_json::from_value(k3).unwrap();
+        request.validate().expect("kimi-k3 named choice keeps its exception");
+
+        // Other models are unaffected.
+        let mut other_model = base.clone();
+        other_model["model"] = serde_json::json!("test-model");
+        let request: NvCreateChatCompletionRequest =
+            serde_json::from_value(other_model).unwrap();
+        request.validate().expect("non-Kimi models are unaffected");
     }
 
     #[test]
@@ -9383,6 +9906,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
 
@@ -9417,6 +9942,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9450,6 +9977,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9483,6 +10012,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9518,6 +10049,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9551,6 +10084,8 @@ mod tests {
             return_tokens_as_token_ids: None,
             thinking_token_budget: None,
             do_sample: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         };
         let result = validate_chat_completion_fields_generic(&request);
@@ -9653,6 +10188,7 @@ mod tests {
                 prompt_logprobs: None,
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -10305,6 +10841,7 @@ mod tests {
                 prompt_logprobs: None,
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -10397,6 +10934,7 @@ mod tests {
                 prompt_logprobs: None,
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -10810,6 +11348,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         Annotated {
             id: Some("test-id".to_string()),
@@ -11446,6 +11985,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 

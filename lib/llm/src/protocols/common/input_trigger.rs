@@ -163,6 +163,8 @@ mod tests {
             do_sample: None,
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         }
     }
@@ -209,6 +211,7 @@ mod tests {
             nvext: None,
             chat_template_args: None,
             thinking_token_budget: None,
+            prompt_cache_options: None,
         }
     }
 
@@ -222,6 +225,7 @@ mod tests {
             nvext: None,
             chat_template_args: None,
             thinking_token_budget: None,
+            prompt_cache_options: None,
         }
     }
 

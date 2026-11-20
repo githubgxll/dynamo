@@ -3704,6 +3704,7 @@ pub(crate) mod tests {
             llm_metrics: None,
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         Annotated::from_data(response)
     }
@@ -6564,6 +6565,7 @@ pub(crate) mod tests {
                 llm_metrics: None,
                 prompt_logprobs: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             };
             Annotated::from_data(response)
         }
@@ -8138,6 +8140,7 @@ pub(crate) mod tests {
                 llm_metrics: None,
                 prompt_logprobs: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             };
             Annotated::from_data(response)
         }

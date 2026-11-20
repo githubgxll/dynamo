@@ -981,6 +981,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1025,6 +1026,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 
@@ -1372,6 +1374,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
 
         let logprobs = response.extract_logprobs_by_choice();
@@ -1592,6 +1595,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         }
     }
 

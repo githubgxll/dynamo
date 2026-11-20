@@ -55,6 +55,7 @@ pub(crate) fn invalid_argument_error(message: impl Into<String>) -> anyhow::Erro
         .into()
 }
 
+pub mod cache_meter;
 pub mod extensions;
 pub mod input_trigger;
 pub mod llm_backend;

@@ -419,6 +419,15 @@ pub mod llm {
     pub const DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS: &str =
         "DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS";
 
+    /// Process-wide upper bound, in whole seconds, for prompt-cache retention
+    /// TTLs admitted from customer requests (Chat/Responses
+    /// `prompt_cache_options.ttl`, Messages `cache_control` markers). Applies
+    /// to every model without a per-model `prompt_cache.max_ttl_s` runtime
+    /// configuration. An invalid value is ignored at startup in favor of the
+    /// built-in default; a configured value can only lower that default,
+    /// never raise it.
+    pub const DYN_PROMPT_CACHE_MAX_TTL_S: &str = "DYN_PROMPT_CACHE_MAX_TTL_S";
+
     /// Master switch for the frontend's HTTP admin API surface.
     /// The admin API is **enabled by default**; this variable disables it.
     /// Truthy values (`1` / `true` / `yes` / `on`, case-insensitive) prevent
@@ -1142,6 +1151,7 @@ mod tests {
             llm::DYN_ENABLE_ANTHROPIC_API,
             llm::DYN_DISABLE_FRONTEND_NVEXT,
             llm::DYN_IGNORE_OPENAI_FE_UNSUPPORTED_FIELDS,
+            llm::DYN_PROMPT_CACHE_MAX_TTL_S,
             llm::DYN_DISABLE_FRONTEND_ADMIN_API,
             llm::DYN_STRIP_ANTHROPIC_PREAMBLE,
             llm::DYN_ENABLE_FORCE_INCLUDE_USAGE,

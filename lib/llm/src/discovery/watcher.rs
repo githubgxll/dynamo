@@ -2751,6 +2751,8 @@ request_classifier:
                 do_sample: None,
                 media_io_kwargs: None,
                 return_tokens_as_token_ids: None,
+                prompt_cache_options: None,
+                cache_retention_ttl_s: None,
                 unsupported_fields: Default::default(),
             };
             assert!(engine.generate(SingleIn::new(request)).await.is_err());

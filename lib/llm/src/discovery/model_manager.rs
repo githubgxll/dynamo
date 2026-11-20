@@ -440,6 +440,23 @@ impl ModelManager {
             .map(|entry| entry.value().clone())
     }
 
+    /// Per-model prompt-cache retention admission bound, in whole seconds.
+    ///
+    /// Reads the committed catalog's `prompt_cache.max_ttl_s` runtime
+    /// configuration for the model and takes the minimum across worker sets
+    /// when several advertise different bounds (the most restrictive bound
+    /// governs — any worker in the rotation must be able to honor the
+    /// admitted TTL). `None` means the model has no explicit per-model
+    /// bound; the caller then falls back to the process-wide default.
+    pub fn prompt_cache_max_ttl_s(&self, model_name: &str) -> Option<u64> {
+        let model = self.get_committed_model(model_name)?;
+        model
+            .worker_sets()
+            .iter()
+            .filter_map(|worker_set| worker_set.card().runtime_config.prompt_cache_max_ttl_s())
+            .min()
+    }
+
     pub(crate) fn get_committed_model(&self, model_name: &str) -> Option<Arc<Model>> {
         self.catalog.load().models.get(model_name).cloned()
     }

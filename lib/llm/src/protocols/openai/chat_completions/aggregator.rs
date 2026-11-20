@@ -160,6 +160,11 @@ pub struct DeltaAggregator {
     nvext: Option<serde_json::Value>,
     /// Prompt logprobs captured from the terminal chunk.
     prompt_logprobs: Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>,
+    /// Applied cache-write metering captured from the first stream chunk that
+    /// carried the engine's prefill receipt. Forwarded onto the aggregated
+    /// unary response so the protocol output converters and the
+    /// `msh-usage-cache-write-tokens-*` headers keep working non-streaming.
+    cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
 }
 
 /// Represents the accumulated state of a single chat choice during streaming aggregation.
@@ -435,6 +440,7 @@ impl DeltaAggregator {
             service_tier: None,
             nvext: None,
             prompt_logprobs: None,
+            cache_meter: None,
         }
     }
 
@@ -502,6 +508,12 @@ impl DeltaAggregator {
 
                     if let Some(prompt_logprobs) = delta.prompt_logprobs {
                         aggregator.prompt_logprobs = Some(prompt_logprobs);
+                    }
+
+                    // First chunk carrying the prefill receipt wins; later
+                    // chunks reuse it (the generator stamps every chunk).
+                    if aggregator.cache_meter.is_none() {
+                        aggregator.cache_meter = delta.cache_meter;
                     }
 
                     // Aggregate choices incrementally.
@@ -895,6 +907,7 @@ impl DeltaAggregator {
                 service_tier: aggregator.service_tier,
             },
             prompt_logprobs: aggregator.prompt_logprobs,
+            cache_meter: aggregator.cache_meter,
             nvext: aggregator.nvext,
         };
 
@@ -1137,6 +1150,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
 
         Annotated {
@@ -1187,6 +1201,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         Annotated {
             data: Some(data),
@@ -1310,6 +1325,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         let annotated = Annotated {
             data: Some(data),
@@ -1370,6 +1386,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         Annotated {
             data: Some(data),
@@ -2020,6 +2037,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
 
         // Wrap it in Annotated and create a stream

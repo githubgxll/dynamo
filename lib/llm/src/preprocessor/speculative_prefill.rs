@@ -625,6 +625,8 @@ mod tests {
             do_sample: None,
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         }
     }
@@ -660,6 +662,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         })
     }
 

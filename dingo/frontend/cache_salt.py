@@ -29,3 +29,35 @@ def project_cache_salt(preproc: dict[str, Any], salt: str | None) -> None:
     extra_args = dict(preproc.get("extra_args") or {})
     extra_args["nvext"] = {**(extra_args.get("nvext") or {}), "cache_salt": salt}
     preproc["extra_args"] = extra_args
+
+
+def request_cache_retention_ttl_s(request: dict[str, Any]) -> int | None:
+    """Read the admission-resolved prompt-cache TTL from the request.
+
+    Rust admission validated the customer's ``prompt_cache_options`` /
+    ``cache_control`` markers and wrote whole seconds onto the server-owned
+    ``cache_retention_ttl_s`` request field. Only that trusted value is
+    returned: this helper never defaults or invents a TTL, and never reads
+    the client-writable ``chat_template_args`` (whose homonymous key, if a
+    client forges one, is stripped at the Rust HTTP boundary).
+    """
+    value = request.get("cache_retention_ttl_s")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def project_cache_retention_ttl_s(preproc: dict[str, Any], request: dict[str, Any]) -> None:
+    """Persist the admission-resolved TTL onto the worker payload.
+
+    Companion to [`project_cache_salt`]: the typed top-level
+    ``cache_retention_ttl_s`` field is what the SGLang request handlers read
+    when forwarding the retention hint to the engine. An absent/invalid
+    admission value leaves the payload untouched so transport forwards
+    nothing and the engine runs best-effort.
+    """
+    seconds = request_cache_retention_ttl_s(request)
+    if seconds is not None:
+        preproc["cache_retention_ttl_s"] = seconds

@@ -75,6 +75,14 @@ pub struct NvCreateResponse {
     /// `thinking_token_budget` sampling parameter when supported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_token_budget: Option<u32>,
+
+    /// Kimi prompt-cache options, forwarded to the converted chat request's
+    /// `prompt_cache_options` (same strict contract as Chat Completions)
+    /// and validated there. Echoed back in the response body so the client
+    /// can observe the actually applied options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub prompt_cache_options: Option<serde_json::Value>,
 }
 
 #[derive(ToSchema, Deserialize, Validate, Debug, Clone)]
@@ -98,6 +106,15 @@ pub struct NvResponse {
     pub frequency_penalty: f32,
     #[serde(default)]
     pub store: bool,
+    /// Applied cache-write metering from the engine's prefill receipt.
+    /// Spliced into the serialized JSON during `Serialize` (below): the real
+    /// insertion count lands in `usage.input_tokens_details.cache_write_tokens`
+    /// whenever the engine reported a receipt, and the actually applied
+    /// `prompt_cache_options` (`{"mode":"implicit","ttl":"<applied>"}`) is
+    /// echoed at the top level when protection was claimed. Never serialized
+    /// as a field of its own.
+    #[serde(skip)]
+    pub cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
 }
 
 /// Patch an already-serialized `Response` JSON object to match the
@@ -155,6 +172,42 @@ impl Serialize for NvResponse {
 
         if let Some(nvext) = &self.nvext {
             obj.insert("nvext".into(), nvext.clone());
+        }
+
+        // Kimi customer contract (Responses): when the engine reported a
+        // valid prefill receipt, project it onto the usage details —
+        // `cached_tokens` (C) and `cache_write_tokens` (W) from the same
+        // receipt, with measured zeros serialized as explicit zeros. No
+        // receipt → both fields stay absent. The actually applied
+        // `prompt_cache_options` is echoed only when protection was claimed,
+        // with the applied TTL rendered as the same duration string the
+        // request used (30m stays 30m, never 1h).
+        if let Some(meter) = &self.cache_meter
+            && let Some(usage) = obj.get_mut("usage")
+            && let serde_json::Value::Object(usage_map) = usage
+        {
+            let (cached_tokens, write_tokens) = meter.openai_projection();
+            let details = usage_map
+                .entry("input_tokens_details")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(details_map) = details {
+                details_map.insert("cached_tokens".to_string(), serde_json::json!(cached_tokens));
+                details_map.insert(
+                    "cache_write_tokens".to_string(),
+                    serde_json::json!(write_tokens),
+                );
+            }
+        }
+        if let Some(meter) = self.cache_meter.as_ref().filter(|m| m.is_protected()) {
+            obj.insert(
+                "prompt_cache_options".to_string(),
+                serde_json::json!({
+                    "mode": "implicit",
+                    "ttl": crate::protocols::common::cache_meter::applied_ttl_string(
+                        meter.applied_ttl_s
+                    ),
+                }),
+            );
         }
 
         value.serialize(serializer)
@@ -1036,6 +1089,8 @@ impl TryFrom<NvCreateResponse> for NvCreateChatCompletionRequest {
             do_sample: None,
             media_io_kwargs: None,
             return_tokens_as_token_ids: None,
+            prompt_cache_options: resp.prompt_cache_options,
+            cache_retention_ttl_s: None,
             unsupported_fields: Default::default(),
         })
     }
@@ -1087,6 +1142,8 @@ pub struct ResponseParams {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<PromptCacheRetention>,
     pub safety_identifier: Option<String>,
+    /// Accepted Kimi prompt-cache options, echoed on the response body.
+    pub prompt_cache_options: Option<serde_json::Value>,
 }
 
 /// Map a terminal Chat Completions reason that makes a Responses result non-success-like.
@@ -1385,6 +1442,7 @@ pub fn chat_completion_to_response(
         presence_penalty: params.presence_penalty.unwrap_or(0.0),
         frequency_penalty: params.frequency_penalty.unwrap_or(0.0),
         store: params.store.unwrap_or(false),
+        cache_meter: nv_resp.cache_meter,
     })
 }
 
@@ -1441,6 +1499,7 @@ mod tests {
             nvext: None,
             chat_template_args: None,
             thinking_token_budget: None,
+            prompt_cache_options: None,
         }
     }
 
@@ -2437,6 +2496,7 @@ mod tests {
                 nvext: None,
                 chat_template_args: None,
                 thinking_token_budget: None,
+                prompt_cache_options: None,
             };
 
             let chat_req: NvCreateChatCompletionRequest = req.try_into().unwrap();
@@ -3168,6 +3228,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3229,6 +3290,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3303,6 +3365,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
         let params = ResponseParams {
@@ -3507,6 +3570,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3544,6 +3608,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3573,6 +3638,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3599,6 +3665,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         };
 
@@ -3766,6 +3833,7 @@ mod tests {
                 usage: None,
             },
             prompt_logprobs: None,
+            cache_meter: None,
             nvext: None,
         }
     }

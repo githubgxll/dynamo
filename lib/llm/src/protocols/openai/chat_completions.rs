@@ -90,6 +90,19 @@ pub(crate) fn tool_call_response_chunk_to_protocol(
 /// serialization and re-emitted as `sglext`.
 pub const INTERNAL_SGLEXT_KEY: &str = "__dynamo_internal_sglext";
 
+/// Deserializer for the server-owned `cache_retention_ttl_s` field: a value
+/// present in incoming client JSON is discarded rather than trusted. Only
+/// in-memory admission writes (`normalize_prompt_cache_ttl`, the Messages
+/// handler) can set the field, so a forged TTL can never bypass the
+/// admission grammar or model limit.
+fn deny_client_cache_retention_ttl<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = Option::<u64>::deserialize(deserializer)?;
+    Ok(None)
+}
+
 /// Split the internal SGLang extension carrier out of a response `nvext`.
 ///
 /// Returns `(visible_nvext, sglext)`:
@@ -182,6 +195,31 @@ pub struct NvCreateChatCompletionRequest {
     /// of decoded text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_tokens_as_token_ids: Option<bool>,
+
+    /// Kimi prompt-cache options. `ttl` is the strict explicit retention
+    /// (`^[1-9][0-9]*(s|m|h)$`); `mode` may only be `"implicit"`. Validated
+    /// and resolved by [`Self::normalize_prompt_cache_ttl`] into the trusted
+    /// [`Self::cache_retention_ttl_s`] field before preprocessing, so every
+    /// backend path — Rust or Python — observes one answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_options: Option<serde_json::Value>,
+
+    /// Admission-resolved prompt-cache retention, in whole seconds. Server-
+    /// owned: only [`Self::normalize_prompt_cache_ttl`] and the Messages
+    /// handler write it, after strict validation. Never routed through
+    /// `chat_template_args`, so the value cannot be forged through the
+    /// client-writable template parameters and cannot leak into Jinja
+    /// rendering. `None` = nothing admitted; the engine runs best-effort.
+    ///
+    /// Serialization carries the server-owned value to the Python
+    /// preprocessors, but deserialization always yields `None`: a client
+    /// `cache_retention_ttl_s` in the request body is discarded, not trusted.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deny_client_cache_retention_ttl"
+    )]
+    pub cache_retention_ttl_s: Option<u64>,
 
     /// Catch-all for unsupported fields - checked during validation
     #[serde(
@@ -462,8 +500,98 @@ impl NvCreateChatCompletionRequest {
         self.inner.stop = Some(dynamo_protocols::types::Stop::StringArray(stop_sequences));
         Ok(())
     }
+
+    /// Validate `prompt_cache_options` and resolve the admitted TTL onto the
+    /// trusted `cache_retention_ttl_s` request field (whole seconds).
+    ///
+    /// Runs once at the HTTP boundary for Chat (and for Responses after its
+    /// converter maps the field), so the Rust preprocessor and the Python
+    /// SGLang/VLLM processors read one canonical answer. A request without
+    /// options — or with options that omit `ttl` — leaves the internal TTL
+    /// unset: the engine then treats the prefix best-effort and no protection
+    /// or premium is claimed.
+    ///
+    /// The trusted field is server-owned and never routed through the
+    /// client-writable `chat_template_args`, so it can neither be forged past
+    /// the admission limit nor leak into Jinja template rendering.
+    pub fn normalize_prompt_cache_ttl(&mut self, max_ttl: u64) -> anyhow::Result<()> {
+        // A client cannot reach the trusted field through request JSON; a
+        // forged `cache_retention_ttl_s` inside `chat_template_args` /
+        // `chat_template_kwargs` is stripped unconditionally so it can never
+        // bypass the admission limit or reach Jinja rendering.
+        self.strip_untrusted_prompt_cache_ttl();
+        let Some(options) = self.prompt_cache_options.take() else {
+            return Ok(());
+        };
+        match super::prompt_cache::prompt_cache_options_ttl(&options, max_ttl) {
+            Ok(Some(Some(seconds))) => self.cache_retention_ttl_s = Some(seconds),
+            Ok(Some(None) | None) => {}
+            Err(error) => return Err(crate::protocols::common::invalid_argument_error(error)),
+        }
+        Ok(())
+    }
+
+    /// Remove any client-supplied `cache_retention_ttl_s` from the
+    /// user-writable template parameters. Called at every HTTP entry point
+    /// and by [`Self::normalize_prompt_cache_ttl`]: the only value that may
+    /// survive is the one admission wrote onto the trusted
+    /// [`Self::cache_retention_ttl_s`] field.
+    pub fn strip_untrusted_prompt_cache_ttl(&mut self) {
+        if let Some(args) = self.chat_template_args.as_mut() {
+            args.remove("cache_retention_ttl_s");
+        }
+    }
 }
 
+
+impl NvCreateChatCompletionRequest {
+    /// Whether thinking is on for this request at validation time.
+    ///
+    /// The K3 family thinks by default: an absent control means enabled.
+    /// Only an explicit off switch — `thinking=false`, `thinking.type=
+    /// "disabled"`, `reasoning_effort="none"`, or a folded `thinking/
+    /// enable_thinking=false` in `chat_template_args` — disables it. Runs
+    /// after `normalize_reasoning_template_args`, so the raw `thinking`
+    /// payload has already been folded and dropped for K3-family models;
+    /// both sources are still inspected so models that skip that
+    /// normalization stay correct.
+    fn thinking_effectively_enabled(&self) -> bool {
+        if let Some(args) = self.chat_template_args.as_ref()
+            && dynamo_renderer::thinking_bool_from_args(Some(args)) == Some(false)
+        {
+            return false;
+        }
+        match self.thinking.as_ref() {
+            Some(serde_json::Value::Bool(false)) => return false,
+            Some(serde_json::Value::Object(fields))
+                if fields.get("type").and_then(|value| value.as_str()) == Some("disabled") =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        !matches!(
+            self.inner.reasoning_effort,
+            Some(dynamo_protocols::types::ReasoningEffort::None)
+        )
+    }
+}
+
+/// Kimi K3.1-specific model detection: matches `kimi-k3.1`/`kimik31` and
+/// only those. Bare `kimi-k3` must keep its existing named-choice thinking
+/// exception, so it does not match here.
+pub(crate) fn is_kimi_k31_model_id(model: &str) -> bool {
+    let mut name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .bytes()
+        .filter(|byte| !matches!(*byte, b'-' | b'_' | b'.'));
+    b"kimik31"
+        .iter()
+        .all(|expected| name.next().is_some_and(|byte| byte.to_ascii_lowercase() == *expected))
+        && name.next().is_none()
+}
 /// Kimi K3/K3.1 model detection for the nested `thinking.effort` contract.
 /// Exact family match on the last path segment, dash/underscore-insensitive.
 pub(crate) fn is_kimi_k3_model_id(model: &str) -> bool {
@@ -583,6 +711,16 @@ pub struct NvCreateChatCompletionResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_logprobs: Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Per-request applied cache-write metering from the engine prefill
+    /// receipt (`engine_data.kv_cache_write`). Never synthesized from the
+    /// request TTL; `None` when the engine reported no receipt. Consumed by
+    /// the protocol output converters (Chat/Messages/Responses usage and the
+    /// `msh-usage-cache-write-tokens-*` headers); not serialized as a field —
+    /// the OpenAI-compatible wire gains it only via
+    /// `prompt_tokens_details.cache_write_tokens`.
+    #[serde(skip)]
+    pub cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub nvext: Option<serde_json::Value>,
 }
 
@@ -613,6 +751,17 @@ pub struct NvCreateChatCompletionStreamResponse {
     /// client-facing OpenAI-compatible streams.
     #[serde(default, skip_serializing)]
     pub llm_metrics: Option<crate::protocols::common::metrics::LLMMetricAnnotation>,
+    /// Same applied cache-write metering as the unary response; stamped by
+    /// the delta generator from the backend chunk's `engine_data` so every
+    /// converter (and the SSE header preflight) can read it before the first
+    /// client-visible event. Never serialized to the wire directly.
+    #[serde(
+        default,
+        rename(deserialize = "prefill_cache_write"),
+        deserialize_with = "crate::protocols::common::cache_meter::CacheWriteMeter::deserialize_prefill_receipt",
+        skip_serializing
+    )]
+    pub cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
     /// Internal transport evidence; the HTTP chat converter removes it before SSE serialization.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_call_completion: Vec<ToolCallCompletion>,
@@ -630,6 +779,7 @@ fn serialize_chat_completion_response<S, Inner>(
     nvext: &Option<serde_json::Value>,
     prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
     tool_call_completion: &[ToolCallCompletion],
+    cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -653,6 +803,33 @@ where
 
     if let Some(sglext) = sglext {
         map.insert("sglext".to_string(), sglext);
+    }
+
+    // Kimi cache-write accounting (customer contract): when the engine
+    // reported a valid prefill receipt, project it onto the usage details —
+    // `cached_tokens` (C) and `cache_write_tokens` (W) both come from the
+    // same receipt so the parts can never contradict each other or the
+    // headers. Measured zeros are serialized as explicit zeros (the customer
+    // treats missing fields as missing measurements, never as 0): a valid
+    // receipt with W=0 writes `"cache_write_tokens": 0`. No receipt at all →
+    // both fields stay absent (nothing invented). The protection claim
+    // (`msh-*` headers, band split) is decided separately from the meter by
+    // the HTTP layer.
+    if let Some(meter) = cache_meter
+        && let Some(usage) = map.get_mut("usage")
+        && let serde_json::Value::Object(usage_map) = usage
+    {
+        let (cached_tokens, write_tokens) = meter.openai_projection();
+        let details = usage_map
+            .entry("prompt_tokens_details")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let serde_json::Value::Object(details_map) = details {
+            details_map.insert("cached_tokens".to_string(), serde_json::json!(cached_tokens));
+            details_map.insert(
+                "cache_write_tokens".to_string(),
+                serde_json::json!(write_tokens),
+            );
+        }
     }
 
     if let Some(prompt_logprobs) = prompt_logprobs {
@@ -682,6 +859,7 @@ impl Serialize for NvCreateChatCompletionResponse {
             &self.nvext,
             self.prompt_logprobs.as_deref(),
             &[],
+            self.cache_meter.as_ref(),
             serializer,
         )
     }
@@ -696,6 +874,7 @@ impl Serialize for NvCreateChatCompletionStreamResponse {
             &self.nvext,
             None,
             &self.tool_call_completion,
+            self.cache_meter.as_ref(),
             serializer,
         )
     }
@@ -1086,9 +1265,29 @@ impl NvCreateChatCompletionRequest {
             self.common.continue_final_message,
         )?;
 
+        // Kimi K3.1 negative boundary: with thinking enabled (the model's
+        // default), a specified function tool_choice is incompatible and must
+        // be rejected at admission — not silently executed with thinking off.
+        // K3 keeps its existing exception (thinking auto-disabled for a named
+        // choice); every other model family is unaffected.
+        if is_kimi_k31_model_id(&self.inner.model)
+            && matches!(
+                self.inner.tool_choice.as_ref(),
+                Some(dynamo_protocols::types::ChatCompletionToolChoiceOption::Named(_))
+            )
+            && self.thinking_effectively_enabled()
+        {
+            return Err(crate::protocols::common::invalid_argument_error(
+                "`tool_choice` with a specified function is not supported while thinking is \
+                 enabled for kimi-k3.1; disable thinking or use tool_choice \"auto\" or \
+                 \"required\"",
+            ));
+        }
+
         Ok(())
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1545,6 +1744,7 @@ mod tests {
             llm_metrics: None,
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1574,6 +1774,7 @@ mod tests {
             llm_metrics: None,
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1599,6 +1800,7 @@ mod tests {
             },
             nvext: Some(json!({INTERNAL_SGLEXT_KEY: payload})),
             prompt_logprobs: None,
+            cache_meter: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();

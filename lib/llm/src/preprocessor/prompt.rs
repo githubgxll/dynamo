@@ -38,6 +38,13 @@ pub trait MediaRequestExt {
     fn media_io_kwargs(&self) -> Option<&serde_json::Value>;
 }
 
+/// Admission-resolved prompt-cache retention, in whole seconds. Server-owned
+/// by construction (HTTP entry points strip client-forged values), so the
+/// preprocessor can trust it unconditionally. `None` = nothing admitted.
+pub trait PromptCacheTtlExt {
+    fn cache_retention_ttl_s(&self) -> Option<u64>;
+}
+
 /// Parse a JSON object string into a serde_json Map, preserving the exact
 /// spelling of numbers that cannot be round-tripped through f64 without loss.
 /// Numbers that survive f64 conversion unchanged are kept as `Value::Number`;
@@ -300,6 +307,18 @@ impl OAIChatLikeRequest for NvCreateChatCompletionRequest {
 impl MediaRequestExt for NvCreateChatCompletionRequest {
     fn media_io_kwargs(&self) -> Option<&serde_json::Value> {
         self.media_io_kwargs.as_ref()
+    }
+}
+
+impl PromptCacheTtlExt for NvCreateChatCompletionRequest {
+    fn cache_retention_ttl_s(&self) -> Option<u64> {
+        self.cache_retention_ttl_s
+    }
+}
+
+impl PromptCacheTtlExt for NvCreateCompletionRequest {
+    fn cache_retention_ttl_s(&self) -> Option<u64> {
+        None
     }
 }
 

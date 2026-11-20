@@ -29,7 +29,11 @@ from sglang.srt.hf_transformers import (
 
 from dingo.common.multimodal.cache_uuid import reject_unsupported_multimodal_uuids
 from dingo.common.utils.input_params import resolve_thinking_token_budget
-from dingo.frontend.cache_salt import project_cache_salt, resolve_cache_salt
+from dingo.frontend.cache_salt import (
+    project_cache_salt,
+    project_cache_retention_ttl_s,
+    resolve_cache_salt,
+)
 from dingo.frontend.frontend_args import FrontendConfig
 
 from .sglang_prepost import (
@@ -741,6 +745,7 @@ def _build_dynamo_preproc(
         "annotations": [],
         "routing": routing,
     }
+    project_cache_retention_ttl_s(preproc, request)
 
     try:
         # Forward multimodal URLs so the backend handler can load the media.
@@ -1089,6 +1094,8 @@ class SglangProcessor:
             pending_log_probs: list[float] | None = None
             pending_top_logprobs: list[list[dict[str, Any]]] | None = None
             pending_usage: dict[str, Any] | None = None
+            prefill_cache_write = None
+            receipt_sent = False
             first_chunk = True
             input_tokens = len(tokens)
             cumulative_output_tokens = 0
@@ -1112,6 +1119,7 @@ class SglangProcessor:
                 nonlocal pending_top_logprobs
                 nonlocal pending_usage
                 nonlocal first_chunk
+                nonlocal receipt_sent
                 nonlocal post_proc_total_ms
                 nonlocal token_count
 
@@ -1168,6 +1176,11 @@ class SglangProcessor:
                             }
                     if pending_usage and (terminal or continuous_usage):
                         dynamo_out["usage"] = pending_usage
+                    if prefill_cache_write is not None and (
+                        not receipt_sent or terminal or "usage" in dynamo_out
+                    ):
+                        dynamo_out["prefill_cache_write"] = prefill_cache_write
+                        receipt_sent = True
                     response_nvext: dict[str, Any] = {}
                     effective_stop_reason = (
                         stop_reason
@@ -1282,6 +1295,14 @@ class SglangProcessor:
                         handle_engine_error(engine_response, request_id, logger)
                     )
                     break
+
+                # PD can send a metadata-only frame before the first token. The
+                # HTTP layer needs the receipt on the first emitted data frame,
+                # not just on the final usage frame or an opt-in nvext field.
+                if prefill_cache_write is None:
+                    data = engine_response.get("engine_data")
+                    if isinstance(data, dict):
+                        prefill_cache_write = data.get("kv_cache_write")
 
                 new_ids = engine_response["token_ids"]
                 log_probs = engine_response.get("log_probs")

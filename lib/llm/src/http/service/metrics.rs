@@ -3062,6 +3062,7 @@ mod tests {
                 ..Default::default()
             }),
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         };
         let annotated = crate::types::Annotated::from_data(data);
 
@@ -4566,6 +4567,7 @@ mod tests {
                     prompt_logprobs: None,
                     llm_metrics: None,
                     tool_call_completion: Vec::new(),
+                    cache_meter: None,
                 },
             ),
             event: None,
@@ -4957,6 +4959,7 @@ mod tests {
                 llm_metrics,
                 prompt_logprobs: None,
                 tool_call_completion: Vec::new(),
+                cache_meter: None,
             };
             Annotated {
                 data: Some(response),

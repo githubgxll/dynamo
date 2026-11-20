@@ -107,7 +107,8 @@ use crate::protocols::{
 use crate::tokenizers::traits::Tokenizer;
 
 use crate::preprocessor::prompt::{
-    MediaRequestExt, apply_continue_final_message, prompt_formatter_from_mdc,
+    MediaRequestExt, PromptCacheTtlExt, apply_continue_final_message,
+    prompt_formatter_from_mdc,
 };
 use crate::protocols::openai::common_ext::CommonExtProvider;
 use dynamo_renderer::{OAIChatLikeRequest, PromptFormatter, PromptInput, TextInput, TokenInput};
@@ -2944,6 +2945,7 @@ impl OpenAIPreprocessor {
     pub async fn preprocess_request<
         R: OAIChatLikeRequest
             + MediaRequestExt
+            + PromptCacheTtlExt
             + AnnotationsProvider
             + SamplingOptionsProvider
             + StopConditionsProvider
@@ -2973,6 +2975,7 @@ impl OpenAIPreprocessor {
     async fn preprocess_request_with_options<
         R: OAIChatLikeRequest
             + MediaRequestExt
+            + PromptCacheTtlExt
             + AnnotationsProvider
             + SamplingOptionsProvider
             + StopConditionsProvider
@@ -3102,6 +3105,7 @@ impl OpenAIPreprocessor {
     pub fn builder<
         R: OAIChatLikeRequest
             + MediaRequestExt
+            + PromptCacheTtlExt
             + AnnotationsProvider
             + SamplingOptionsProvider
             + StopConditionsProvider
@@ -3117,6 +3121,7 @@ impl OpenAIPreprocessor {
     fn builder_with_lora<
         R: OAIChatLikeRequest
             + MediaRequestExt
+            + PromptCacheTtlExt
             + AnnotationsProvider
             + SamplingOptionsProvider
             + StopConditionsProvider
@@ -3271,6 +3276,15 @@ impl OpenAIPreprocessor {
             self.runtime_config.reasoning_parser.as_deref(),
             has_thinking_budget,
         ));
+
+        // The trusted, admission-resolved `cache_retention_ttl_s` request
+        // field (set by Chat/Responses `prompt_cache_options` admission or
+        // the Messages handler) is the single source: promote it to the wire
+        // field so backend transport forwards it to SGLang's
+        // `GenerateReqInput.cache_retention_ttl_s`. It is deliberately NOT
+        // read from `chat_template_args` — entry points strip any
+        // client-forged copy there, so template kwargs stay user-owned.
+        builder.cache_retention_ttl_s(request.cache_retention_ttl_s());
 
         // Forward mm_processor_kwargs (e.g. use_audio_in_video) to the backend.
         builder.mm_processor_kwargs(request.mm_processor_kwargs().cloned());
@@ -6227,6 +6241,7 @@ impl OpenAIPreprocessor {
                     prompt_logprobs,
                     llm_metrics,
                     tool_call_completion: Vec::new(),
+                    cache_meter: None,
                 }),
                 id: a.id,
                 event: a.event,
@@ -6361,6 +6376,7 @@ impl OpenAIPreprocessor {
                             prompt_logprobs,
                             llm_metrics,
                             tool_call_completion: Vec::new(),
+                            cache_meter: None,
                         }),
                         id: None,
                         event: None,
@@ -9512,6 +9528,8 @@ mod tests {
             thinking_token_budget: None,
             do_sample: None,
             media_io_kwargs: None,
+            prompt_cache_options: None,
+            cache_retention_ttl_s: None,
             return_tokens_as_token_ids: None,
             unsupported_fields: Default::default(),
         }
@@ -10185,6 +10203,7 @@ mod tests {
             prompt_logprobs: None,
             llm_metrics: None,
             tool_call_completion: Vec::new(),
+            cache_meter: None,
         })
     }
 

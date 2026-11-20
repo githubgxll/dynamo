@@ -4871,6 +4871,35 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         assert chunks[0]["choices"][0]["delta"]["content"] == "A"
         assert chunks[0]["choices"][0]["finish_reason"] == "stop"
 
+    def test_prefill_receipt_survives_tokenless_frame_until_usage(self):
+        receipt = {"prompt_tokens": 66, "cached_tokens": 0,
+                   "cache_write_tokens": 64, "cache_write_ttl_s": 300}
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": [], "engine_data": {"kv_cache_write": receipt}},
+                {"token_ids": list(b"A")},
+                {"token_ids": list(b"B"), "finish_reason": "stop",
+                 "completion_usage": {"prompt_tokens": 66, "completion_tokens": 2,
+                                      "total_tokens": 68}},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None, reasoning_parser=None
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 66, post
+            ) if "data" in item]
+
+        first, terminal = asyncio.run(collect())
+        assert first["choices"][0]["delta"]["content"] == "A"
+        assert first["prefill_cache_write"] == terminal["prefill_cache_write"] == receipt
+        assert terminal["usage"]["completion_tokens"] == 2
+
     @pytest.mark.parametrize("with_tool_parser", [False, True])
     def test_processor_finishes_locally_without_stopping_parent_context(
         self, with_tool_parser
