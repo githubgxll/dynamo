@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod tool_history;
+
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -3396,6 +3398,7 @@ async fn handler_chat_completions(
                 return Err(error);
             }
         };
+    request.normalize_glm53_options();
     if *FORCE_INCLUDE_USAGE && request.inner.stream.unwrap_or(false) {
         delta_common::force_include_usage(&mut request.inner.stream_options);
     }
@@ -3564,10 +3567,14 @@ where
                         Ok(request)
                     }
                     Err(_) => parse_json_request_lossy(endpoint, body)
+                        .or_else(|_| parse_json_request_repaired_duplicate_fields(endpoint, body))
+                        .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                         .map_err(|_| json_deserialize_error(original_error)),
                 }
             } else {
                 parse_json_request_lossy(endpoint, body)
+                    .or_else(|_| parse_json_request_repaired_duplicate_fields(endpoint, body))
+                    .or_else(|_| parse_json_request_repaired_tool_calls(endpoint, body))
                     .map_err(|_| json_deserialize_error(original_error))
             }
         }
@@ -3604,8 +3611,67 @@ where
                 _ => Err(error),
             }
         }
-        Err(error) => Err(error),
+        Err(error) => repair_glm53_options(endpoint, body).unwrap_or(Err(error)),
     }
+}
+
+/// GLM-5.3 compatibility observed in the official API regression report (2026-11-18).
+/// Retry only inputs the typed parser rejected; normal requests keep the single-parse path.
+/// Remove this adapter when the GLM-5.3 serving profile is retired or changes its contract.
+fn repair_glm53_options<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Option<Result<T, serde_json::Error>>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return None;
+    }
+    // Do not collapse duplicate keys here; the existing model-scoped recovery owns them.
+    let UniqueJsonValue(mut value) = serde_json::from_slice(body).ok()?;
+    if !is_glm53_chat_request(&value) {
+        return None;
+    }
+    let object = value.as_object_mut()?;
+    let mut repaired = false;
+    if let Some(stream) = object
+        .get("stream")
+        .and_then(crate::protocols::openai::chat_completions::glm53_compatible_stream)
+    {
+        object.insert("stream".into(), serde_json::Value::Bool(stream));
+        repaired = true;
+    }
+    if object
+        .get("n")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|n| n <= 0)
+    {
+        object.insert("n".into(), serde_json::json!(1));
+        repaired = true;
+    }
+    // Unknown/missing format discriminators fall back to text in this profile.
+    // Keep recognized formats intact so malformed JSON schemas still fail validation.
+    if let Some(format) = object
+        .get("response_format")
+        .and_then(serde_json::Value::as_object)
+    {
+        let ignored = match format.get("type") {
+            None => true,
+            Some(serde_json::Value::String(kind)) => {
+                !matches!(kind.as_str(), "text" | "json_object" | "json_schema")
+            }
+            _ => false,
+        };
+        if ignored {
+            object.remove("response_format");
+            repaired = true;
+        }
+    }
+    repaired.then(|| {
+        let repaired_body = serde_json::to_vec(&value)?;
+        from_slice_dedup_reasoning(endpoint, &repaired_body)
+    })
 }
 
 /// Collapse `reasoning` / `reasoning_content` pairs to a single key per message.
@@ -3632,6 +3698,258 @@ fn drop_duplicate_reasoning(body: &[u8]) -> Option<Vec<u8>> {
         }
     }
     serde_json::to_vec(&value).ok()
+}
+
+/// Retry a GLM-5.3 chat request with duplicate JSON keys using the last value
+/// for each key, as the upstream API does. Keep normal schema validation.
+fn parse_json_request_repaired_duplicate_fields<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "duplicate field repair is only supported for chat completions",
+        )));
+    }
+
+    let lossy_body = String::from_utf8_lossy(body);
+    let normalized_body = escape_json_string_control_chars(lossy_body.as_bytes())
+        .unwrap_or_else(|| lossy_body.into_owned().into_bytes());
+
+    match serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body) {
+        Ok(_) => {
+            return Err(serde_json::Error::io(std::io::Error::other(
+                "no duplicate JSON object keys found to repair",
+            )));
+        }
+        Err(error) if !error.to_string().starts_with("duplicate field `") => {
+            return Err(error);
+        }
+        Err(_) => {}
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
+    if !is_glm53_chat_request(&value) {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "duplicate field repair is only supported for GLM-5.3",
+        )));
+    }
+    let repaired_body =
+        serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
+    let request = from_slice_dedup_reasoning(endpoint, &repaired_body)?;
+    tracing::warn!(
+        endpoint,
+        "Accepted chat request after retaining the last duplicate JSON field"
+    );
+    Ok(request)
+}
+
+fn is_glm53_chat_request(value: &serde_json::Value) -> bool {
+    value
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(crate::protocols::openai::chat_completions::is_glm53_model_id)
+}
+
+/// Retry a body whose strict/lossy deserialization failed by dropping
+/// empty historical tool call stubs from assistant messages.
+///
+/// Some serving stacks emit an extra function call with no id, name, or
+/// meaningful arguments before a real call. Only that empty stub is removed;
+/// partially malformed calls may still carry useful history and are not discarded.
+/// GLM-5.3 also accepts missing/null historical IDs: normalize those to an empty
+/// string for the request wire type, without inventing IDs or pairing results.
+fn parse_json_request_repaired_tool_calls<T>(
+    endpoint: &'static str,
+    body: &[u8],
+) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    if endpoint != "chat completions" {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "tool call repair is only supported for chat completions",
+        )));
+    }
+
+    // Reuse the existing syntax recovery before inspecting the JSON tree.
+    let lossy_body = String::from_utf8_lossy(body);
+    let normalized_body = escape_json_string_control_chars(lossy_body.as_bytes())
+        .unwrap_or_else(|| lossy_body.into_owned().into_bytes());
+
+    // Preserve duplicate-field errors for other models. GLM-5.3 follows the
+    // upstream API's last-value behavior, including when empty tool call
+    // stubs also need repair.
+    let mut value: serde_json::Value = serde_json::from_slice(&normalized_body)?;
+    let allow_missing_ids = is_glm53_chat_request(&value);
+    if !allow_missing_ids {
+        serde_json::from_slice::<JsonWithoutDuplicateKeys>(&normalized_body)?;
+    }
+
+    let mut repaired = false;
+    if let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for message in messages.iter_mut() {
+            if allow_missing_ids && message.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                repaired |= normalize_missing_history_id(message, "tool_call_id");
+            }
+            if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                continue;
+            }
+            let Some(tool_calls) = message.get_mut("tool_calls").and_then(|t| t.as_array_mut())
+            else {
+                continue;
+            };
+            let before = tool_calls.len();
+            tool_calls.retain(|tool_call| !is_empty_historical_tool_call(tool_call));
+            repaired |= tool_calls.len() != before;
+            // Clean exact empty stubs before normalizing IDs. Keep real calls,
+            // their names and arguments unchanged, including broken arguments.
+            if allow_missing_ids {
+                for call in tool_calls {
+                    repaired |= normalize_missing_history_id(call, "id");
+                }
+            }
+        }
+    }
+
+    if !repaired {
+        return Err(serde_json::Error::io(std::io::Error::other(
+            "no empty historical tool call stubs or missing history IDs found to repair",
+        )));
+    }
+
+    let repaired_body =
+        serde_json::to_vec(&value).map_err(|e| serde_json::Error::io(std::io::Error::other(e)))?;
+    let request = from_slice_dedup_reasoning(endpoint, &repaired_body)?;
+    tracing::warn!(
+        endpoint,
+        "Accepted request after repairing historical tool call stubs or missing IDs"
+    );
+    Ok(request)
+}
+
+fn normalize_missing_history_id(value: &mut serde_json::Value, key: &str) -> bool {
+    let Some(object) = value.as_object_mut() else {
+        return false;
+    };
+    if object.get(key).is_none_or(serde_json::Value::is_null) {
+        object.insert(key.to_owned(), serde_json::Value::String(String::new()));
+        return true;
+    }
+    false
+}
+
+fn is_empty_historical_tool_call(tool_call: &serde_json::Value) -> bool {
+    let Some(call) = tool_call.as_object() else {
+        return false;
+    };
+    if call.get("type").and_then(serde_json::Value::as_str) != Some("function")
+        || call
+            .keys()
+            .any(|key| !matches!(key.as_str(), "type" | "id" | "function"))
+    {
+        return false;
+    }
+    let Some(function) = call.get("function").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    if function
+        .keys()
+        .any(|key| !matches!(key.as_str(), "name" | "arguments"))
+    {
+        return false;
+    }
+
+    let blank = |value: Option<&serde_json::Value>| match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(text)) => text.trim().is_empty(),
+        _ => false,
+    };
+    let empty_arguments = match function.get("arguments") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(text)) => {
+            text.trim().is_empty()
+                || serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                    .is_ok_and(|arguments| arguments.is_empty())
+        }
+        Some(serde_json::Value::Object(arguments)) => arguments.is_empty(),
+        _ => false,
+    };
+    blank(call.get("id")) && blank(function.get("name")) && empty_arguments
+}
+
+/// Consume JSON recursively while rejecting duplicate object keys before a
+/// serde_json::Value round trip can collapse them.
+struct JsonWithoutDuplicateKeys;
+
+impl<'de> Deserialize<'de> for JsonWithoutDuplicateKeys {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = JsonWithoutDuplicateKeys;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("JSON without duplicate object keys")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence
+                    .next_element::<JsonWithoutDuplicateKeys>()?
+                    .is_some()
+                {}
+                Ok(JsonWithoutDuplicateKeys)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut keys = HashSet::new();
+                while let Some((key, _)) = map.next_entry::<String, JsonWithoutDuplicateKeys>()? {
+                    if !keys.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+                    }
+                }
+                Ok(JsonWithoutDuplicateKeys)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 fn parse_json_request_lossy<T>(endpoint: &'static str, body: &[u8]) -> Result<T, serde_json::Error>
@@ -4921,6 +5239,16 @@ async fn chat_completions(
     request.normalize_cache_salt();
 
     let nvtx_validate = dynamo_nvtx_range!("frontend.http.chat.validate");
+    // Client correlation is frontend-only; keep request_id as the server-owned
+    // ID for tracing, cancellation and in-flight state, even for duplicate IDs.
+    let client_request_id = request.take_glm53_request_id().map_err(|error| {
+        let response = ErrorMessage::from_anyhow(
+            invalid_argument(error.to_string()).into(),
+            "Invalid GLM-5.3 request_id",
+        );
+        inflight_guard.mark_error(extract_error_type_from_response(&response));
+        response
+    })?;
     state
         .chat_template_defaults()
         .apply_to_request(&mut request);
@@ -4928,6 +5256,10 @@ async fn chat_completions(
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
+
+    // Empty OpenAI stop arrays are equivalent to an omitted stop, including
+    // when a gateway also supplies the Anthropic alias below.
+    request.normalize_empty_stop();
 
     // Normalize Anthropic `stop_sequences` (forwarded verbatim by some
     // Anthropic->OpenAI gateways) into OpenAI `stop` before unsupported-field
@@ -4973,6 +5305,7 @@ async fn chat_completions(
     }
 
     // Handle Rest of Validation Errors
+    tool_history::repair_placeholder_results(&mut request.inner.messages);
     if let Err(err_response) = validate_chat_completion_fields_with_history_policy(
         &request,
         state.allows_invalid_history_arguments(&request.inner.model),
@@ -5024,7 +5357,10 @@ async fn chat_completions(
     );
 
     // Handle Rest of Validation Errors
-    if let Err(err_response) = validate_chat_completion_fields_generic(&request) {
+    if let Err(err_response) = validate_chat_completion_fields_with_history_policy(
+        &request,
+        state.allows_invalid_history_arguments(&request.inner.model),
+    ) {
         inflight_guard.mark_error(extract_error_type_from_response(&err_response));
         return Err(err_response);
     }
@@ -5108,6 +5444,10 @@ async fn chat_completions(
 
     // apply any annotations to the front of the stream
     let stream = stream::iter(annotations).chain(stream);
+
+    // Validate tool identities before either SSE projection or aggregation.
+    // Keep the engine context above for disconnect/cancellation propagation.
+    let stream = tool_history::guard_stream(stream);
 
     // todo - tap the stream and propagate request level metrics
     // note - we might do this as part of the post processing set to make it more generic
@@ -5355,6 +5695,15 @@ async fn chat_completions(
                     err_response
                 })?;
 
+        tool_history::guard_response(&mut response).map_err(|message| {
+            let err_response = ErrorMessage::internal_server_error_with_details(
+                "Invalid tool call in backend response",
+                message,
+            );
+            inflight_guard.mark_error(extract_error_type_from_response(&err_response));
+            err_response
+        })?;
+
         custom_tools
             .project_response(&mut response)
             .map_err(|error| {
@@ -5373,7 +5722,10 @@ async fn chat_completions(
             terminal.finish(TerminalOutcome::Success);
         }
         Ok(Json(crate::reasoning_field::RoutedReasoning::new(
-            response,
+            response.for_http(
+                crate::protocols::openai::chat_completions::is_glm53_model_id(&model)
+                    .then_some(client_request_id.as_deref().unwrap_or(request_id.as_str())),
+            ),
             state.reasoning_field(),
         ))
         .into_response())
@@ -7580,6 +7932,85 @@ pub fn audios_router(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn glm53_report_option_regressions() {
+        use crate::engines::ValidateRequest;
+        use serde_json::json;
+
+        // Report regressions share one model-scoped normalization boundary.
+        for model in ["glm-5.3", "kimi-k2.5", "test-model"] {
+            for options in [
+                json!({"stop": "END"}),
+                json!({"stream": "true"}),
+                json!({"stream": 1}),
+                json!({"stream": 0}),
+                json!({"stream": false, "stream_options": {"include_usage": true}}),
+                json!({"messages": [{"role":"user", "content":""}]}),
+                json!({"messages": [{"role":"user", "content":[]}]}),
+                json!({"n": -1}),
+                json!({"n": 0}),
+                json!({"response_format": {}}),
+                json!({"response_format": {"type": "foo"}}),
+                json!({"logprobs": true, "top_logprobs": 99}),
+                json!({"request_id": "aaaaaa"}),
+                json!({"request_id": "a".repeat(64)}),
+                json!({"temperature": -1}),
+                json!({"presence_penalty": -5}),
+            ] {
+                let mut body =
+                    json!({"model": model, "messages": [{"role":"user", "content":"hello"}]});
+                body.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let parsed = parse_json_request::<NvCreateChatCompletionRequest>(
+                    "chat completions",
+                    &serde_json::to_vec(&body).unwrap(),
+                );
+                let accepted = parsed.is_ok_and(|mut request| {
+                    let client_id = request.take_glm53_request_id().unwrap();
+                    if model == "glm-5.3" {
+                        assert_eq!(
+                            client_id.as_deref(),
+                            options.get("request_id").and_then(|id| id.as_str())
+                        );
+                        assert!(!request.unsupported_fields.contains_key("request_id"));
+                    } else {
+                        assert!(client_id.is_none());
+                    }
+                    request.normalize_glm53_options();
+                    if model == "glm-5.3" && options.get("stream_options").is_some() {
+                        assert!(request.inner.stream_options.is_none());
+                    }
+                    if model == "glm-5.3" && options.get("n").is_some() {
+                        assert_eq!(request.inner.n, Some(1));
+                    }
+                    if model == "glm-5.3" && options.get("top_logprobs").is_some() {
+                        assert_eq!(request.inner.logprobs, Some(false));
+                        assert!(request.inner.top_logprobs.is_none());
+                    }
+                    let valid = validate_chat_completion_stream_options(&request).is_ok()
+                        && request.validate().is_ok();
+                    if valid && model == "glm-5.3" {
+                        request.normalize_sampling_controls();
+                        if options.get("temperature").is_some() {
+                            assert_eq!(request.inner.temperature, Some(0.01));
+                        }
+                        if options.get("presence_penalty").is_some() {
+                            assert_eq!(request.inner.presence_penalty, Some(0.0));
+                        }
+                    }
+                    valid
+                });
+                let expected = if options.get("stop").is_some() || options.get("messages").is_some()
+                {
+                    model != "glm-5.3"
+                } else {
+                    model == "glm-5.3"
+                };
+                assert_eq!(accepted, expected, "{model} {options}");
+            }
+        }
+    }
 
     use super::*;
     use crate::discovery::ModelManagerError;
@@ -7896,18 +8327,135 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_completion_stream_options_preserves_duplicate_field_errors() {
+    fn test_parse_completion_stream_options_uses_last_duplicate_field() {
         let chat_body = br#"{
             "model":"first-model",
-            "model":"second-model",
+            "model":"glm-5.3",
             "messages":[{"role":"user","content":"hello"}],
             "stream_options":{"include_usage":null}
         }"#;
-        let chat_error =
-            parse_json_request::<NvCreateChatCompletionRequest>("chat completions", chat_body)
-                .unwrap_err();
-        assert_eq!(chat_error.0, StatusCode::BAD_REQUEST);
-        assert!(chat_error.1.message.contains("duplicate field `model`"));
+        let chat: NvCreateChatCompletionRequest =
+            parse_json_request("chat completions", chat_body).expect("last model should win");
+        assert_eq!(chat.inner.model, "glm-5.3");
+        let other_model = br#"{"model":"other-model","model":"another-model","messages":[{"role":"user","content":"hello"}]}"#;
+        let error =
+            parse_json_request::<NvCreateChatCompletionRequest>("chat completions", other_model)
+                .expect_err("other models should retain strict duplicate validation");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_parse_chat_completion_request_repairs_duplicate_message_fields() {
+        let body = br#"{
+            "model":"glm-5.3",
+            "messages":[
+                {"role":"assistant","content":"previous answer",
+                 "reasoning_content":"first","reasoning_content":"second"},
+                {"role":"user","content":"first","content":"continue"}
+            ]
+        }"#;
+        let repaired: serde_json::Value =
+            parse_json_request_repaired_duplicate_fields("chat completions", body)
+                .expect("duplicate fields should be repaired");
+        assert_eq!(repaired["messages"][0]["reasoning_content"], "second");
+        assert_eq!(repaired["messages"][1]["content"], "continue");
+        let _: NvCreateChatCompletionRequest =
+            parse_json_request("chat completions", body).expect("request should parse");
+    }
+
+    #[test]
+    fn test_glm_history_repairs_preserve_reasoning_alias_recovery() {
+        for body in [
+            br#"{"model":"first","model":"glm-5.3","messages":[{"role":"assistant","content":"answer","reasoning":"alias","reasoning_content":"canonical"}]}"#.as_slice(),
+            br#"{"model":"glm-5.3","messages":[{"role":"assistant","reasoning":"alias","reasoning_content":"canonical","tool_calls":[{"type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","content":"ok"}]}"#.as_slice(),
+            br#"{"model":"other-model","messages":[{"role":"assistant","reasoning":"alias","reasoning_content":"canonical","tool_calls":[{"type":"function","function":{"name":"","arguments":"{}"}},{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}]}"#.as_slice(),
+        ] {
+            let request: NvCreateChatCompletionRequest =
+                parse_json_request("chat completions", body)
+                    .expect("history repair must retain baseline reasoning alias handling");
+            let message = serde_json::to_value(&request.inner.messages[0]).unwrap();
+            assert_eq!(message["reasoning_content"], "canonical");
+            if let Some(calls) = message["tool_calls"].as_array() {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0]["function"]["name"], "lookup");
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_missing_history_ids_preserve_real_calls_and_bad_arguments() {
+        for stream in [false, true] {
+            for explicit_null in [false, true] {
+                let mut body = serde_json::json!({
+                    "model": "glm-5.3", "stream": stream,
+                    "messages": [
+                        {"role":"assistant", "content":null, "tool_calls":[
+                            {"id":null,"type":"function","function":{"name":"","arguments":"{}"}},
+                            {"type":"function","function":{"name":"lookup","arguments":"\"city\":\"Beijing\"}"}},
+                            {"type":"function","function":{"name":"lookup","arguments":"{}"}}
+                        ]},
+                        {"role":"tool","content":"18C"},
+                        {"role":"user","content":"Summarize"}
+                    ]
+                });
+                if explicit_null {
+                    body["messages"][0]["tool_calls"][1]["id"] = serde_json::Value::Null;
+                    body["messages"][0]["tool_calls"][2]["id"] = serde_json::Value::Null;
+                    body["messages"][1]["tool_call_id"] = serde_json::Value::Null;
+                }
+                let request: NvCreateChatCompletionRequest =
+                    parse_json_request("chat completions", &serde_json::to_vec(&body).unwrap())
+                        .expect("missing IDs should reach the normal request path");
+                request.validate_with_history_policy(true).unwrap();
+                assert!(request.validate_with_history_policy(false).is_err());
+                let parsed = serde_json::to_value(&request).unwrap();
+                let calls = parsed["messages"][0]["tool_calls"].as_array().unwrap();
+                assert_eq!(calls.len(), 2, "only the empty stub is removed");
+                assert_eq!(calls[0]["id"], "");
+                assert_eq!(calls[1]["id"], "");
+                assert_eq!(
+                    calls[0]["function"],
+                    body["messages"][0]["tool_calls"][1]["function"]
+                );
+                assert_eq!(parsed["messages"][1]["tool_call_id"], "");
+                assert_eq!(parsed["messages"][1]["content"], "18C");
+            }
+        }
+    }
+
+    #[test]
+    fn history_id_repair_keeps_other_models_and_invalid_types_strict() {
+        for model in ["glm-5.3", "qwen3-8b-backend"] {
+            for id in [
+                None,
+                Some(serde_json::json!({})),
+                Some(serde_json::json!([])),
+            ] {
+                let mut body = serde_json::json!({
+                    "model":model,
+                    "messages":[{"role":"assistant","tool_calls":[
+                        {"type":"function","function":{"name":"lookup","arguments":"{}"}}
+                    ]}]
+                });
+                let missing = id.is_none();
+                if let Some(id) = id {
+                    body["messages"][0]["tool_calls"][0]["id"] = id;
+                }
+                let result = parse_json_request::<NvCreateChatCompletionRequest>(
+                    "chat completions",
+                    &serde_json::to_vec(&body).unwrap(),
+                );
+                assert_eq!(result.is_ok(), model == "glm-5.3" && missing);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_chat_completion_request_keeps_schema_errors_after_deduplication() {
+        let body = br#"{"model":"first-model","model":"glm-5.3","messages":42}"#;
+        let error = parse_json_request::<NvCreateChatCompletionRequest>("chat completions", body)
+            .expect_err("invalid messages should still fail");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]

@@ -24,6 +24,8 @@ use crate::protocols::common::extensions::{
 pub mod aggregator;
 pub(crate) mod custom_tools;
 mod delta;
+mod glm53;
+pub(crate) use glm53::compatible_stream as glm53_compatible_stream;
 pub(crate) mod tool_call_merge;
 pub mod tool_parser_v2;
 pub(crate) mod unified_parser;
@@ -214,11 +216,61 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// Consume GLM's HTTP-only correlation field before unsupported-field
+    /// validation. It is neither serialized to Python nor used for routing.
+    pub(crate) fn take_glm53_request_id(&mut self) -> anyhow::Result<Option<String>> {
+        if !is_glm53_model_id(&self.inner.model) {
+            return Ok(None);
+        }
+        let id = glm53::client_request_id(self.unsupported_fields.get("request_id"))
+            .map_err(anyhow::Error::msg)?
+            .map(str::to_owned);
+        self.unsupported_fields.remove("request_id");
+        Ok(id)
+    }
+
+    /// Canonicalize GLM-5.3 options accepted but ignored by the official API
+    /// (2026-11-18 regression baseline). Do this before validation/worker dispatch.
+    /// Other models retain OpenAI validation and valid values retain their semantics.
+    pub fn normalize_glm53_options(&mut self) {
+        if !is_glm53_model_id(&self.inner.model) {
+            return;
+        }
+        // The official GLM-5.3 API ignores streaming-only options on unary calls.
+        // Drop them before HTTP validation and backend serialization.
+        if !self.inner.stream.unwrap_or(false) {
+            self.inner.stream_options = None;
+        }
+        if self.inner.n == Some(0) {
+            self.inner.n = Some(1);
+        }
+        if self.inner.top_logprobs.is_some_and(|count| count > 20) {
+            // Acceptance does not promise 99 alternatives: the reference API
+            // returns no logprobs for this input. Never send it to the worker.
+            self.inner.top_logprobs = None;
+            self.inner.logprobs = Some(false);
+        }
+    }
+
+    /// An empty Chat Completions stop array means no custom stop condition.
+    /// Normalize before validation and backend serialization; keep EOS defaults.
+    pub fn normalize_empty_stop(&mut self) {
+        let empty = match self.inner.stop.as_ref() {
+            Some(dynamo_protocols::types::Stop::StringArray(values)) => values.is_empty(),
+            Some(dynamo_protocols::types::Stop::TokenIdArray(values)) => values.is_empty(),
+            _ => false,
+        };
+        if empty {
+            self.inner.stop = None;
+        }
+    }
+
     /// Apply sampling controls after validating the client's original values.
     /// The resulting canonical options are shared by Rust and Python backends.
     pub fn normalize_sampling_controls(&mut self) {
         self.inner.temperature = self.get_temperature();
         self.inner.top_p = self.get_top_p();
+        self.inner.presence_penalty = self.get_presence_penalty();
         // Downstream adapters receive canonical sampling parameters, not a
         // backend-specific switch that could be ignored or rejected there.
         self.do_sample = None;
@@ -266,6 +318,15 @@ impl NvCreateChatCompletionRequest {
     /// Runs once at the HTTP boundary, so every render path reads one answer.
     /// Model-specific overrides still apply later in the default preprocessor.
     pub fn normalize_reasoning_template_args(&mut self) -> anyhow::Result<()> {
+        // Official GLM-5.3 ignores this nested dialect (2026-11-20 probe),
+        // while still rejecting top-level thinking.type=disabled. Remove the
+        // ignored toggle before canonicalization so it cannot disable the model.
+        if is_glm53_model_id(&self.inner.model)
+            && let Some(args) = self.chat_template_args.as_mut()
+            && args.get("thinking").and_then(serde_json::Value::as_bool) == Some(false)
+        {
+            args.remove("thinking");
+        }
         let thinking_mode = self
             .thinking
             .as_ref()
@@ -468,7 +529,7 @@ enum OpenAiThinkingMode {
     Adaptive,
 }
 
-fn is_glm53_model_id(model: &str) -> bool {
+pub(crate) fn is_glm53_model_id(model: &str) -> bool {
     model.rsplit('/').next().is_some_and(|name| {
         // Compare on a normalized form so the alias-family deployed model ids
         // (`glm-5.3`, `glm5.3`, `GLM_5.3`) match; version suffix must stay
@@ -565,6 +626,38 @@ pub struct NvCreateChatCompletionResponse {
     pub prompt_logprobs: Option<Arc<crate::protocols::common::llm_backend::PromptLogprobs>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nvext: Option<serde_json::Value>,
+}
+
+/// HTTP-only projection: keep worker transport and Responses aggregation unchanged.
+pub struct HttpChatCompletionResponse<'a> {
+    response: &'a NvCreateChatCompletionResponse,
+    glm53_request_id: Option<&'a str>,
+}
+
+impl NvCreateChatCompletionResponse {
+    pub fn for_http<'a>(
+        &'a self,
+        glm53_request_id: Option<&'a str>,
+    ) -> HttpChatCompletionResponse<'a> {
+        HttpChatCompletionResponse {
+            response: self,
+            glm53_request_id,
+        }
+    }
+}
+
+impl Serialize for HttpChatCompletionResponse<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_chat_completion_response(
+            &self.response.inner,
+            &self.response.nvext,
+            self.response.prompt_logprobs.as_deref(),
+            &[],
+            &[],
+            self.glm53_request_id,
+            serializer,
+        )
+    }
 }
 
 /// Parser lifecycle evidence carried between serving components, never to OpenAI clients.
@@ -695,6 +788,7 @@ fn serialize_chat_completion_response<S, Inner>(
     prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
     tool_call_completion: &[ToolCallCompletion],
     model_eos: &[u32],
+    glm53_request_id: Option<&str>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -739,6 +833,9 @@ where
         );
     }
 
+    if let Some(request_id) = glm53_request_id {
+        glm53::project_response(&mut map, request_id);
+    }
     let mut ser_map = serializer.serialize_map(Some(map.len()))?;
     for (key, value) in map {
         ser_map.serialize_entry(&key, &value)?;
@@ -754,6 +851,7 @@ impl Serialize for NvCreateChatCompletionResponse {
             self.prompt_logprobs.as_deref(),
             &[],
             &[],
+            None,
             serializer,
         )
     }
@@ -769,6 +867,7 @@ impl Serialize for NvCreateChatCompletionStreamResponse {
             None,
             &self.tool_call_completion,
             &self.model_eos,
+            None,
             serializer,
         )
     }
@@ -875,6 +974,8 @@ impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
     fn get_temperature(&self) -> Option<f32> {
         if self.do_sample == Some(false) {
             Some(0.0)
+        } else if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_temperature(self.inner.temperature)
         } else {
             self.inner.temperature
         }
@@ -896,7 +997,14 @@ impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
 
     /// Retrieves the presence penalty parameter, if set.
     fn get_presence_penalty(&self) -> Option<f32> {
-        self.inner.presence_penalty
+        if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_presence_penalty(
+                self.inner.presence_penalty,
+                validate::MIN_PRESENCE_PENALTY,
+            )
+        } else {
+            self.inner.presence_penalty
+        }
     }
 
     /// Returns a reference to the optional `NvExt` extension, if available.
@@ -1126,14 +1234,56 @@ impl NvCreateChatCompletionRequest {
         &self,
         allow_invalid_history_arguments: bool,
     ) -> Result<(), anyhow::Error> {
-        validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
+        if is_glm53_model_id(&self.inner.model) {
+            if self
+                .unsupported_fields
+                .get("enable_thinking")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+            {
+                anyhow::bail!("GLM-5.3 does not support disabling reasoning via `enable_thinking`");
+            }
+            glm53::validate_user_id(self.unsupported_fields.get("user_id"))
+                .map_err(anyhow::Error::msg)?;
+            // GLM ignores extra API fields (including tool_stream). Preserve
+            // validation of Dynamo's named passthrough extensions; unrelated
+            // fields remain excluded from worker/Python serialization.
+            validate::validate_no_unsupported_fields_with_ignore(&self.unsupported_fields, true)?;
+        } else {
+            validate::validate_no_unsupported_fields(&self.unsupported_fields)?;
+        }
         validate::validate_guided_decoding(self)?;
         validate::validate_chat_template_args(self.chat_template_args.as_ref())?;
-        validate::validate_messages_with_history_policy(
+        validate::validate_messages_with_history_compatibility(
             &self.inner.messages,
             allow_invalid_history_arguments,
+            is_glm53_model_id(&self.inner.model),
         )?;
         validate::validate_model(&self.inner.model)?;
+        if is_glm53_model_id(&self.inner.model) {
+            // Official GLM-5.3 rejects empty user input (2026-11-19 live baseline).
+            // Missing/null content is already rejected by the typed decoder.
+            for message in &self.inner.messages {
+                if let dynamo_protocols::types::ChatCompletionRequestMessage::User(user) = message {
+                    use dynamo_protocols::types::ChatCompletionRequestUserMessageContent;
+                    let empty = match &user.content {
+                        ChatCompletionRequestUserMessageContent::Text(text) => text.is_empty(),
+                        ChatCompletionRequestUserMessageContent::Array(parts) => {
+                            if parts.iter().any(|part| matches!(part,
+                                dynamo_protocols::types::ChatCompletionRequestUserMessageContentPart::InputAudio(_)
+                                | dynamo_protocols::types::ChatCompletionRequestUserMessageContentPart::AudioUrl(_)
+                            )) {
+                                anyhow::bail!("GLM-5.3 does not support audio input");
+                            }
+                            parts.is_empty()
+                        }
+                    };
+                    if empty {
+                        anyhow::bail!("GLM-5.3 user content must not be empty");
+                    }
+                }
+            }
+        }
         // none for store
         validate::validate_reasoning_effort(&self.inner.reasoning_effort)?;
         // none for metadata
@@ -1163,14 +1313,32 @@ impl NvCreateChatCompletionRequest {
         // none for modalities
         // none for prediction
         // none for audio
-        validate::validate_presence_penalty(self.inner.presence_penalty)?;
+        validate::validate_presence_penalty(self.get_presence_penalty())?;
         validate::validate_response_format(&self.inner.response_format)?;
         // none for seed
         validate::validate_service_tier(&self.inner.service_tier)?;
         validate::validate_stop(&self.inner.stop)?;
+        if is_glm53_model_id(&self.inner.model)
+            && let Some(dynamo_protocols::types::Stop::StringArray(stops)) = &self.inner.stop
+        {
+            glm53::validate_stop_count(stops.len()).map_err(anyhow::Error::msg)?;
+        }
+        if is_glm53_model_id(&self.inner.model)
+            && matches!(
+                self.inner.stop,
+                Some(dynamo_protocols::types::Stop::String(_))
+            )
+        {
+            anyhow::bail!("GLM-5.3 stop must be an array, not a string");
+        }
         // none for stream
         // none for stream_options
-        validate::validate_temperature(self.inner.temperature)?;
+        let temperature = if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_temperature(self.inner.temperature)
+        } else {
+            self.inner.temperature
+        };
+        validate::validate_temperature(temperature)?;
         validate::validate_top_p(self.compatible_top_p())?;
         // Responses-origin requests validate tool definitions through the
         // namespace-aware path (see `validated_effective_tools`): qualified
@@ -1201,7 +1369,7 @@ impl NvCreateChatCompletionRequest {
 mod tests {
 
     #[test]
-    fn tool_results_require_an_unanswered_preceding_call() {
+    fn glm53_accepts_incomplete_history_other_models_keep_orphan_exception() {
         use crate::engines::ValidateRequest;
         use serde_json::json;
         let assistant = json!({"role":"assistant","tool_calls":[
@@ -1211,22 +1379,42 @@ mod tests {
         let a = json!({"role":"tool","tool_call_id":"a","content":"ok"});
         let b = json!({"role":"tool","tool_call_id":"b","content":"ok"});
         let user = json!({"role":"user","content":"hello"});
-        for (messages, valid) in [
-            (json!([user, a]), false),
-            (json!([a]), false),
-            (json!([assistant, a, b]), true),
-            (json!([assistant, b, a]), true),
-            (json!([assistant, a, a]), false),
-            (json!([assistant, user, a]), false),
+        for (messages, valid, orphan) in [
+            (json!([user, a]), false, true),
+            (json!([a]), false, true),
+            (
+                json!([user, {"role":"assistant","content":"Checking weather"},
+                    {"role":"tool","tool_call_id":"call_weather_001",
+                     "content":"{\"city\":\"Beijing\",\"temp_c\":18}"}, user]),
+                false,
+                true,
+            ),
+            (
+                json!([user, {"role":"tool","tool_call_id":" ","content":"ok"}]),
+                false,
+                false,
+            ),
+            (json!([assistant, a, b]), true, false),
+            (json!([assistant, b, a]), true, false),
+            (json!([assistant, a, a]), false, false),
+            (json!([assistant, a, b, b]), false, false),
+            (json!([assistant, user, a]), false, false),
             (
                 json!([assistant, {"role":"tool","tool_call_id":"unknown","content":"ok"}]),
                 false,
+                false,
             ),
-            (json!([assistant, a, b, user, assistant, b, a]), true),
+            (json!([assistant, a, b, user, assistant, b, a]), true, false),
         ] {
-            let request: super::NvCreateChatCompletionRequest =
-                serde_json::from_value(json!({"model":"glm-5.3","messages":messages})).unwrap();
-            assert_eq!(ValidateRequest::validate(&request).is_ok(), valid);
+            for model in ["glm-5.3", "qwen3-8b-backend", "test-model"] {
+                let request: super::NvCreateChatCompletionRequest =
+                    serde_json::from_value(json!({"model":model,"messages":messages})).unwrap();
+                let before = serde_json::to_value(&request).unwrap();
+                let expected = valid || orphan || model == "glm-5.3";
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), expected);
+                assert_eq!(request.validate_with_history_policy(true).is_ok(), expected);
+                assert_eq!(serde_json::to_value(&request).unwrap(), before);
+            }
         }
     }
 
@@ -1367,6 +1555,67 @@ mod tests {
             body[key] = value.clone();
         }
         serde_json::from_value(body).expect("Failed to deserialize request")
+    }
+
+    #[test]
+    fn glm53_report_admission_keeps_other_model_rules() {
+        for model in [
+            "glm-5.3",
+            "org/GLM_5.3",
+            "kimi-k2.5",
+            "glm-5.2",
+            "glm-5.3-flash",
+        ] {
+            let glm = is_glm53_model_id(model);
+            for extra in [
+                json!({"user_id":"abcdef"}),
+                json!({"tool_stream":true}),
+                json!({"foobar_field":1}),
+            ] {
+                let mut extra = extra;
+                extra["model"] = json!(model);
+                let request = chat_request_with(&extra);
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), glm, "{extra}");
+            }
+            for count in [4, 5, 17] {
+                let request = chat_request_with(&json!({"model":model,"stop":vec!["END";count]}));
+                assert_eq!(
+                    ValidateRequest::validate(&request).is_ok(),
+                    !glm || count <= 4
+                );
+            }
+            let request = chat_request_with(
+                &json!({"model":model,"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAA","format":"wav"}}]}]}),
+            );
+            assert_eq!(ValidateRequest::validate(&request).is_ok(), !glm);
+            let mut request = chat_request_with(
+                &json!({"model":model,"chat_template_kwargs":{"thinking":false}}),
+            );
+            request.normalize_reasoning_template_args().unwrap();
+            assert_eq!(
+                request
+                    .chat_template_args
+                    .as_ref()
+                    .unwrap()
+                    .get("thinking")
+                    .and_then(|v| v.as_bool()),
+                if glm { None } else { Some(false) }
+            );
+            let request = chat_request_with(&json!({"model":model,"detokenize":"invalid"}));
+            assert!(
+                ValidateRequest::validate(&request).is_err(),
+                "named extensions must still validate"
+            );
+            let request = chat_request_with(&json!({"model":model,"enable_thinking":false}));
+            assert!(
+                ValidateRequest::validate(&request).is_err(),
+                "known reasoning controls must not become ignored extras"
+            );
+        }
+        for user_id in ["a".repeat(5), "a".repeat(129)] {
+            let request = chat_request_with(&json!({"model":"glm-5.3","user_id":user_id}));
+            assert!(ValidateRequest::validate(&request).is_err());
+        }
     }
 
     #[test]
@@ -1737,6 +1986,10 @@ mod tests {
         assert_eq!(obj.get("sglext"), Some(&payload));
         // Only the carrier was present -> no nvext on the wire.
         assert!(!obj.contains_key("nvext"));
+        let http = serde_json::to_value(response.for_http(Some("frontend-request"))).unwrap();
+        assert_eq!(http["request_id"], "frontend-request");
+        assert_eq!(http["sglext"], wire["sglext"]);
+        assert_eq!(serde_json::to_value(response.for_http(None)).unwrap(), wire);
     }
 
     #[test]
@@ -1779,6 +2032,62 @@ mod tests {
                 .expect("Failed to extract output options");
 
             assert_eq!(output_options.skip_special_tokens, Some(skip_value));
+        }
+    }
+
+    #[test]
+    fn empty_stop_normalizes_to_omitted_without_changing_other_stops() {
+        use crate::engines::ValidateRequest;
+
+        for stream in [false, true] {
+            for (stop, valid) in [
+                (json!([]), true),
+                (json!(null), true),
+                // Official GLM-5.3 accepts stop arrays, not a bare string.
+                (json!("END"), false),
+                (json!(["END", "DONE"]), true),
+                (json!([32, 34]), true),
+                (json!(""), false),
+                (json!([""]), false),
+            ] {
+                let body = json!({
+                    "model":"glm-5.3", "stream":stream,
+                    "messages":[{"role":"user","content":"Hello"}],
+                    "stop":stop
+                });
+                let mut request: NvCreateChatCompletionRequest =
+                    serde_json::from_value(body).unwrap();
+                let before = serde_json::to_value(&request).unwrap();
+                request.normalize_empty_stop();
+                assert_eq!(ValidateRequest::validate(&request).is_ok(), valid);
+                if stop == json!([]) || stop.is_null() {
+                    assert!(request.inner.stop.is_none());
+                    let omitted: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                        "model":"glm-5.3", "stream":stream,
+                        "messages":[{"role":"user","content":"Hello"}]
+                    }))
+                    .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&request).unwrap(),
+                        serde_json::to_value(&omitted).unwrap()
+                    );
+                    let conditions = request.extract_stop_conditions().unwrap();
+                    assert!(conditions.stop.is_none());
+                    assert!(conditions.stop_token_ids.is_none());
+                } else {
+                    assert_eq!(serde_json::to_value(&request).unwrap(), before);
+                }
+            }
+        }
+
+        // Other models retain the OpenAI string-stop contract.
+        for model in ["kimi-k2.5", "test-model"] {
+            let request: NvCreateChatCompletionRequest = serde_json::from_value(json!({
+                "model": model, "messages": [{"role":"user", "content":"Hello"}],
+                "stop": "END"
+            }))
+            .unwrap();
+            assert!(ValidateRequest::validate(&request).is_ok(), "{model}");
         }
     }
 

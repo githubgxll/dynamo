@@ -40,6 +40,7 @@ from .sglang_prompt_renderer import (
 from .structural_tag_policy import (
     ToolChoiceKind,
     effective_tool_strict,
+    glm53_lookahead_guidance_tools,
     should_attempt_structural_tag,
 )
 from .thinking import apply_default_thinking_mode_to_template_kwargs
@@ -56,17 +57,6 @@ logger = logging.getLogger(__name__)
 # - JsonArrayParser: direct JSON array parsing under constrained decoding
 #   (tool_choice="required" or named function)
 ToolCallParserType: TypeAlias = FunctionCallParser | JsonArrayParser
-
-
-def _trailing_stop_prefix_len(text: str, stop_strings: set[str]) -> int:
-    if not text or not stop_strings:
-        return 0
-    max_len = min(len(text), max(len(stop) for stop in stop_strings))
-    for suffix_len in range(max_len, 0, -1):
-        suffix = text[-suffix_len:]
-        if any(stop.startswith(suffix) for stop in stop_strings):
-            return suffix_len
-    return 0
 
 
 @dataclass
@@ -590,7 +580,6 @@ def _kimi_k3_named_tool_choice_message(
     }
 
 
-
 def _filter_template_tools(
     request: dict[str, Any],
     *,
@@ -1005,8 +994,16 @@ def build_tool_call_guided_decoding(
     )
 
     if attempt_structural_tag and tool_call_parser_name:
+        # Keep explicit engine-wide PARAMETER policy authoritative as well.
+        guidance_raw_tools = raw_tools
+        if envs.SGLANG_TOOL_STRICT_LEVEL.get() < ToolStrictLevel.PARAMETER:
+            guidance_raw_tools = glm53_lookahead_guidance_tools(
+                request,
+                parser=_normalize_sglang_parser_name(tool_call_parser_name),
+                schema_mode=structural_tag_schema,
+            )
         guidance_tools = convert_tools(
-            raw_tools,
+            guidance_raw_tools,
             structural_tag_schema=structural_tag_schema,
         )
         if is_named_choice:
@@ -1533,6 +1530,7 @@ class SglangStreamingPostProcessor:
         logprobs_enabled: bool = False,
         return_tokens_as_token_ids: bool = False,
         guided_json_is_content: bool = False,
+        glm53_profile: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1614,12 +1612,16 @@ class SglangStreamingPostProcessor:
             )
         self._bypass_reasoning_for_bare_json = False
         self._eos_token_ids = set(eos_token_ids or [])
+        self._glm53_profile = glm53_profile
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
         self._pending_stop_text = ""
         self._include_stop_str_in_output = include_stop_str_in_output
         self._min_tokens = min_tokens
         self._generated_token_count = 0
-        self.matched_stop: str | None = None
+        # Raw GLM text includes control tokens. Keep channel attribution while
+        # withholding a possible stop prefix, without retokenizing literal tags.
+        self._glm_stop_segments: list[tuple[str | None, str]] = []
+        self._pending_glm_stop_segments: list[tuple[str | None, str]] = []
 
         self._request_stop_token_ids = set(stop_token_ids or [])
         self._locally_finished = False
@@ -1689,6 +1691,16 @@ class SglangStreamingPostProcessor:
         self, token_ids: list[int], stop_reason: Any
     ) -> list[int]:
         """Remove only the engine-reported token-stop suffix from display IDs."""
+        if self._glm53_profile and token_ids and token_ids[-1] in self._eos_token_ids:
+            # A user stop (e.g. "e") can also match inside the EOS spelling
+            # <|user|>. Hide the actual EOS token before text matching, without
+            # stripping ordinary tokens that merely spell a literal marker.
+            if (
+                not self._tool_close_literals
+                or self.tokenizer.decode([token_ids[-1]], skip_special_tokens=False)
+                not in self._tool_close_literals
+            ):
+                return token_ids[:-1]
         if not token_ids or self._no_stop_trim:
             return token_ids
 
@@ -1997,7 +2009,11 @@ class SglangStreamingPostProcessor:
         if match is not None:
             match_index, matched_stop_string = match
             retained_end = match_index
-            if self._no_stop_trim or matched_stop_string in self._tool_close_literals:
+            if (
+                self._include_stop_str_in_output
+                or self._no_stop_trim
+                or matched_stop_string in self._tool_close_literals
+            ):
                 retained_end += len(matched_stop_string)
             suppressed_text = text[retained_end:]
             suppressed_count = self._trailing_logprobs_count(suppressed_text)
@@ -2016,6 +2032,36 @@ class SglangStreamingPostProcessor:
             self._pending_stop_text = text[-pending_len:]
             return text[:-pending_len], None
         return text, None
+
+    def _filter_glm_stop_segments(
+        self, finish_reason: str | None, stop_reason: Any
+    ) -> tuple[str | None, str, int | None]:
+        """Match raw GLM text while retaining token-derived channel boundaries."""
+        segments = self._pending_glm_stop_segments + self._glm_stop_segments
+        text, stop_end = self._filter_stop_string_delta(
+            "".join(part for _, part in self._glm_stop_segments),
+            finish_reason,
+            stop_reason,
+        )
+        self._pending_glm_stop_segments = []
+        visible_end = len(text)
+        pending_start = sum(len(part) for _, part in segments) - len(
+            self._pending_stop_text
+        )
+        reasoning, content = [], []
+        offset = 0
+        for channel, part in segments:
+            visible = part[: max(0, visible_end - offset)]
+            if channel == "reasoning":
+                reasoning.append(visible)
+            elif channel == "content":
+                content.append(visible)
+            if self._pending_stop_text and offset + len(part) > pending_start:
+                self._pending_glm_stop_segments.append(
+                    (channel, part[max(0, pending_start - offset) :])
+                )
+            offset += len(part)
+        return "".join(reasoning) or None, "".join(content), stop_end
 
     def pop_reasoning_token_count(self) -> int | None:
         """Consume the reasoning token count accumulated across the stream.
@@ -2088,37 +2134,6 @@ class SglangStreamingPostProcessor:
                     )
                     self._emitted_args_len[idx] = len(accumulated)
         return deltas
-
-    def _filter_answer_stop(self, text: str, finish_reason: str | None) -> str:
-        """Match strings after reasoning separation, including split chunks."""
-        text = self._pending_stop_text + text
-        self._pending_stop_text = ""
-        if self._generated_token_count < self._min_tokens:
-            return text
-        matches = [
-            (pos, -len(stop), stop)
-            for stop in self._stop_strings
-            if (pos := text.find(stop)) >= 0
-        ]
-        if matches:
-            pos, _, self.matched_stop = min(matches)
-            end = (
-                pos + len(self.matched_stop)
-                if self._include_stop_str_in_output
-                else pos
-            )
-            suppressed_count = self._trailing_logprobs_count(text[end:])
-            if suppressed_count:
-                del self._pending_logprobs_content[-suppressed_count:]
-            self._locally_finished = True
-            self._local_stop_reason = self.matched_stop
-            return text[:end]
-        if not finish_reason:
-            pending_len = _trailing_stop_prefix_len(text, self._stop_strings)
-            if pending_len:
-                self._pending_stop_text = text[-pending_len:]
-                return text[:-pending_len]
-        return text
 
     def _parse_reasoning_delta(
         self,
@@ -2262,7 +2277,25 @@ class SglangStreamingPostProcessor:
             ):
                 splitter.in_reasoning = False
                 splitter.ended = True
-        return splitter.split(token_ids, self._incremental_decode, finished=finished)
+        if not self._stop_strings:
+            return splitter.split(
+                token_ids, self._incremental_decode, finished=finished
+            )
+
+        def decode(ids: list[int], *, flush: bool = False) -> str:
+            text = self._incremental_decode(ids, flush=flush)
+            channel = "reasoning" if splitter.in_reasoning else "content"
+            if not splitter.ended and len(ids) == 1:
+                marker = splitter.markers.get(ids[0])
+                if marker in {"<think>", "</think>"}:
+                    channel = None
+                elif marker == "<tool_call>":
+                    channel = "content"
+            if text:
+                self._glm_stop_segments.append((channel, text))
+            return text
+
+        return splitter.split(token_ids, decode, finished=finished)
 
     def process_output(self, engine_response: dict[str, Any]) -> dict[str, Any] | None:
         """Process a single engine response chunk into an OpenAI SSE choice dict.
@@ -2287,16 +2320,28 @@ class SglangStreamingPostProcessor:
             "stop_terminated", finish_reason == "stop"
         )
         generated_ids = token_ids
-        if stop_terminated:
+        if stop_terminated or (
+            self._glm53_profile and token_ids and token_ids[-1] in self._eos_token_ids
+        ):
             token_ids = self._strip_matched_stop_token_ids(list(token_ids), stop_reason)
 
         context_ids = self._decode_context_ids
         held_ids = list(self._pending_decode_ids)
-        decoded_text = (
-            self._incremental_decode(token_ids, flush=finish_reason is not None)
-            if glm_reasoning is None and (token_ids or finish_reason is not None)
-            else ""
-        )
+        glm_reasoning = None
+        self._glm_stop_segments = []
+        if self._glm_token_reasoning is not None:
+            glm_reasoning = self._split_glm_reasoning_tokens(
+                token_ids,
+                finished=finish_reason is not None,
+            )
+        if glm_reasoning is None:
+            decoded_text = (
+                self._incremental_decode(token_ids, flush=finish_reason is not None)
+                if token_ids or finish_reason is not None
+                else ""
+            )
+        else:
+            decoded_text = "".join(part for _, part in self._glm_stop_segments)
         # A hidden stop token is generated output: score it, but do not display it.
         stop_logprobs: list[dict[str, Any]] = []
         if log_probs is not None:
@@ -2311,20 +2356,22 @@ class SglangStreamingPostProcessor:
                 self._pending_logprobs_content.extend(content[: len(token_ids)])
                 stop_logprobs = content[len(token_ids) :]
         self._logprob_context_ids = (self._logprob_context_ids + token_ids)[-4:]
-        delta_text, stop_end = self._filter_stop_string_delta(
-            decoded_text, finish_reason, stop_reason
-        )
-        if stop_end is None:
-            # Queued after stop-string suppression, which matches display text.
-            self._pending_logprobs_content.extend(stop_logprobs)
-        else:
-            finish_reason = "stop"
-            self._local_stop_boundary = (
-                context_ids,
-                held_ids + token_ids,
-                decoded_text[:stop_end],
-                len(generated_ids) - len(token_ids),
+        delta_text = ""
+        if glm_reasoning is None:
+            delta_text, stop_end = self._filter_stop_string_delta(
+                decoded_text, finish_reason, stop_reason
             )
+            if stop_end is None:
+                # Queued after stop-string suppression, which matches display text.
+                self._pending_logprobs_content.extend(stop_logprobs)
+            else:
+                finish_reason = "stop"
+                self._local_stop_boundary = (
+                    context_ids,
+                    held_ids + token_ids,
+                    decoded_text[:stop_end],
+                    len(generated_ids) - len(token_ids),
+                )
         if self._is_kimi_k3 and delta_text:
             self._kimi_k3_raw_text_parts.append(delta_text)
 
@@ -2351,6 +2398,21 @@ class SglangStreamingPostProcessor:
         if glm_reasoning is not None:
             reasoning_text, normal_text, reasoning_tokens = glm_reasoning
             self._reasoning_token_count += reasoning_tokens
+            stop_end = None
+            if self._stop_strings:
+                reasoning_text, normal_text, stop_end = self._filter_glm_stop_segments(
+                    finish_reason, stop_reason
+                )
+            if stop_end is None:
+                self._pending_logprobs_content.extend(stop_logprobs)
+            else:
+                finish_reason = "stop"
+                self._local_stop_boundary = (
+                    context_ids,
+                    held_ids + token_ids,
+                    decoded_text[:stop_end],
+                    len(generated_ids) - len(token_ids),
+                )
         elif self.reasoning_parser and (delta_text or finish_reason):
             reasoning_text, normal_text, reasoning_tokens = self._parse_reasoning_delta(
                 delta_text,
@@ -2358,10 +2420,6 @@ class SglangStreamingPostProcessor:
                 len(token_ids),
             )
             self._reasoning_token_count += reasoning_tokens
-        if self.reasoning_parser is not None:
-            normal_text = self._filter_answer_stop(normal_text, finish_reason)
-            if self.matched_stop is not None:
-                finish_reason = "stop"
         if self._is_kimi_k3:
             reasoning_text = _strip_kimi_k3_control_markers(reasoning_text) or None
 
@@ -2647,7 +2705,7 @@ class SglangStreamingPostProcessor:
         if (
             finish_reason
             and self._is_kimi_k3
-            and self.matched_stop is None
+            and not self._locally_finished
             and not self._saw_normal_output
             and not self._tool_call_names
         ):

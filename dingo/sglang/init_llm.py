@@ -9,6 +9,8 @@ import time
 from typing import Any, Awaitable, Callable, Optional
 
 import sglang as sgl
+from dynamo.llm import ModelInput, ModelType, WorkerType
+from dynamo.runtime import DistributedRuntime
 from sglang.srt.entrypoints.http_server import _get_vlm_warmup_image_base64
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat

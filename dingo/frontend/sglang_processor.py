@@ -28,6 +28,7 @@ from dingo.common.utils.input_params import resolve_thinking_token_budget
 from dingo.frontend.cache_salt import project_cache_salt, resolve_cache_salt
 from dingo.frontend.frontend_args import FrontendConfig
 
+from .glm53 import is_glm53_model, model_context_length, output_budget
 from .responses_history import responses_tools_request
 from .sglang_prepost import (
     ReasoningParser,
@@ -61,20 +62,29 @@ from .utils import (
 )
 
 try:
-    from sglang.srt.hf_transformers import get_tokenizer
+    from sglang.srt.hf_transformers import (
+        get_config,
+        get_generation_config,
+        get_tokenizer,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "sglang.srt.hf_transformers":
         raise
     # SGLang 0.5.11 to 0.5.23 (current CUDA and XPU pins).
     # Remove once both pins are newer.
-    from sglang.srt.utils.hf_transformers import get_tokenizer
+    from sglang.srt.utils.hf_transformers import (
+        get_config,
+        get_generation_config,
+        get_tokenizer,
+    )
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SGLANG_STREAM_INTERVAL: int = 1
-# Bound reasoning and answer tokens together when the client omits both limits.
-DEFAULT_SGLANG_MAX_TOKENS: int = 8192
+# Official GLM-5.3 default, including reasoning and answer tokens (2026-11-19).
+# https://docs.bigmodel.cn/cn/guide/start/concept-param
+DEFAULT_GLM53_MAX_TOKENS: int = 65536
 
 # Internal carrier key mirroring the Rust constant in
 # lib/llm/src/protocols/openai/chat_completions.rs (INTERNAL_SGLEXT_KEY).
@@ -645,8 +655,12 @@ def _build_dynamo_preproc(
     max_tokens = request.get("max_completion_tokens")
     if max_tokens is None:
         max_tokens = request.get("max_tokens")
-    if max_tokens is None:
-        max_tokens = DEFAULT_SGLANG_MAX_TOKENS
+    if (
+        max_tokens is None
+        and model_name.rsplit("/", 1)[-1].lower().replace("-", "").replace("_", "")
+        == "glm5.3"
+    ):
+        max_tokens = DEFAULT_GLM53_MAX_TOKENS
 
     frequency_penalty = request.get("frequency_penalty", 0.0)
     # GLM-5.3 compatibility policy: accept negative values without rewarding
@@ -672,11 +686,6 @@ def _build_dynamo_preproc(
     elif stop is None:
         stop = []
 
-    # The worker sees the unsplit reasoning/answer stream. String stops belong
-    # to the frontend when a reasoning parser is active; token stops and EOS
-    # remain backend-owned.
-    if reasoning_parser is not None:
-        stop = []
     nvext = request.get("nvext") or {}
     routing = request.get("routing")
     nvext_routing = (
@@ -802,6 +811,7 @@ class SglangProcessor:
         structural_tag_scope: str = "auto",
         structural_tag_schema: str = "auto",
         prompt_renderer: PromptRenderer | None = None,
+        context_length: int | None = None,
     ):
         self.tokenizer = tokenizer
         # Detect force_reasoning once from the chat template, matching
@@ -830,6 +840,7 @@ class SglangProcessor:
         self.structural_tag_scope = structural_tag_scope
         self.structural_tag_schema = structural_tag_schema
         self.prompt_renderer = prompt_renderer
+        self.context_length = context_length
         self.preprocess_pool = preprocess_pool
         if preprocess_pool is not None:
             self._worker_semaphore: asyncio.Semaphore | None = asyncio.Semaphore(
@@ -909,6 +920,7 @@ class SglangProcessor:
             eos_token_ids=self.eos_token_ids,
             prompt_token_ids=prompt_token_ids,
             stop_strings=_request_stop_strings(request),
+            glm53_profile=is_glm53_model(request.get("model", "")),
             skip_special_tokens=request.get("skip_special_tokens"),
             stop_token_ids=set(_request_stop_token_ids(request)),
         )
@@ -1000,17 +1012,15 @@ class SglangProcessor:
             named_zero_arg_tool=named_zero_arg_tool,
             guided_json_is_content=_guided_json_is_content(dynamo_preproc),
             eos_token_ids=self.eos_token_ids,
-            stop_strings=_request_stop_strings(
-                request, match_visible=reasoning_parser is not None
-            ),
+            stop_strings=_request_stop_strings(request, match_visible=True),
+            glm53_profile=is_glm53_model(request.get("model", "")),
             include_stop_str_in_output=request.get("include_stop_str_in_output", False),
             min_tokens=request.get("min_tokens", 0),
             guided_decoding=guided_decoding,
             response_format_guided_active=response_format_guided_active,
             tool_guided_active=tool_guided_active,
             logprobs_enabled=bool(
-                (dynamo_preproc.get("output_options") or {}).get("logprobs")
-                is not None
+                (dynamo_preproc.get("output_options") or {}).get("logprobs") is not None
             ),
             return_tokens_as_token_ids=bool(
                 (dynamo_preproc.get("output_options") or {}).get(
@@ -1041,6 +1051,7 @@ class SglangProcessor:
                 structural_tag_schema=self.structural_tag_schema,
                 prompt_renderer=self.prompt_renderer,
             )
+            tokens = pre.prompt_token_ids
             dynamo_preproc = _build_dynamo_preproc(
                 request,
                 tokens,
@@ -1162,6 +1173,26 @@ class SglangProcessor:
         context: Any | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Shared streaming logic for both single-process and pool paths."""
+        # The factory passes the discovered model's context limit. Apply this
+        # after tokenization in both paths, before the remote worker is called.
+        if (
+            is_glm53_model(request.get("model", ""))
+            and (stops := dynamo_preproc.get("stop_conditions")) is not None
+        ):
+            try:
+                budget = output_budget(
+                    request["model"],
+                    stops.get("max_tokens"),
+                    len(tokens),
+                    self.context_length,
+                )
+                if budget is not None and (stops.get("min_tokens") or 0) > budget:
+                    raise ValueError(
+                        "GLM-5.3 min_tokens exceeds the available output budget"
+                    )
+                stops["max_tokens"] = budget
+            except ValueError as exc:
+                raise InvalidArgument(str(exc)) from exc
         token_count = 0
         post_proc_total_ms = 0.0
         created_ts = int(time.time())
@@ -1480,7 +1511,6 @@ class SglangProcessor:
                         ):
                             pending_terminal = envelope
                             continue
-                        yield envelope
                         if post.locally_finished:
                             terminal_items = list(split_terminal_tool_payload(envelope))
                             break
@@ -1530,7 +1560,6 @@ class SglangProcessor:
                         # Preserve terminal metadata without emitting post-stop text.
                         pending_terminal = envelope
                         continue
-                    yield envelope
                     if post.locally_finished:
                         terminal_items = list(split_terminal_tool_payload(envelope))
                         break
@@ -1634,7 +1663,9 @@ class SglangEngineFactory:
 
             chat_template = adapt_glm_history_template(tokenizer.chat_template)
             tokenizer.chat_template = chat_template
-            logger.info("Enabled GLM history arguments compatibility for %s", mdc.name())
+            logger.info(
+                "Enabled GLM history arguments compatibility for %s", mdc.name()
+            )
 
         eos_token_ids = _resolve_model_eos_token_ids(
             tokenizer=tokenizer,
@@ -1730,6 +1761,11 @@ class SglangEngineFactory:
 
         logger.info("SGLang processor stream_interval=%d", self.stream_interval)
 
+        context_length = None
+        if is_glm53_model(mdc.name()):
+            context_length = model_context_length(
+                mdc.runtime_config(), json.loads(mdc.to_json_str())
+            )
         gen = SglangProcessor(
             tokenizer,
             routed_engine,
@@ -1745,6 +1781,7 @@ class SglangEngineFactory:
             structural_tag_scope=structural_tag_scope,
             structural_tag_schema=structural_tag_schema,
             prompt_renderer=prompt_renderer,
+            context_length=context_length,
         )
         gen.exclude_tools_when_tool_choice_none = (
             self.config.exclude_tools_when_tool_choice_none

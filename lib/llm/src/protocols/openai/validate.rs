@@ -128,7 +128,7 @@ pub fn validate_no_unsupported_fields(
     )
 }
 
-fn validate_no_unsupported_fields_with_ignore(
+pub(super) fn validate_no_unsupported_fields_with_ignore(
     unsupported_fields: &std::collections::HashMap<String, serde_json::Value>,
     ignore_unsupported_fields: bool,
 ) -> Result<(), anyhow::Error> {
@@ -483,6 +483,16 @@ pub fn validate_messages_with_history_policy(
     messages: &[ChatCompletionRequestMessage],
     allow_invalid_history_arguments: bool,
 ) -> Result<(), anyhow::Error> {
+    validate_messages_with_history_compatibility(messages, allow_invalid_history_arguments, false)
+}
+
+/// GLM-5.3 accepts incomplete associations, as observed on the official API.
+/// Other models retain the existing orphan-only exception.
+pub(crate) fn validate_messages_with_history_compatibility(
+    messages: &[dynamo_protocols::types::ChatCompletionRequestMessage],
+    allow_invalid_history_arguments: bool,
+    allow_incomplete_history: bool,
+) -> Result<(), anyhow::Error> {
     if messages.is_empty() {
         anyhow::bail!("Messages array cannot be empty");
     }
@@ -490,6 +500,7 @@ pub fn validate_messages_with_history_policy(
     // as a JSON object string; reject bad non-empty shapes before chat-template rendering.
     // This was caught in MiniMax-M3 multi-turn tool-call tests
     let mut pending_tool_calls = std::collections::HashSet::new();
+    let mut assistant_declared_calls = false;
     for (message_index, message) in messages.iter().enumerate() {
         let has_custom_content = match message {
             ChatCompletionRequestMessage::User(user) => matches!(
@@ -508,7 +519,11 @@ pub fn validate_messages_with_history_policy(
             anyhow::bail!("messages[{message_index}].content custom parts are not supported");
         }
         if let ChatCompletionRequestMessage::Tool(tool) = message {
-            if !pending_tool_calls.remove(tool.tool_call_id.as_str()) {
+            let allowed_orphan = !assistant_declared_calls && !tool.tool_call_id.trim().is_empty();
+            if !pending_tool_calls.remove(tool.tool_call_id.as_str())
+                && !allowed_orphan
+                && !allow_incomplete_history
+            {
                 anyhow::bail!(
                     "`messages[{message_index}].tool_call_id` must reference an unanswered tool call in the preceding assistant message"
                 );
@@ -516,11 +531,19 @@ pub fn validate_messages_with_history_policy(
         } else {
             pending_tool_calls.clear();
         }
+        // Keep the declaration across intervening user/system messages so an
+        // interrupted or already answered call cannot become an allowed orphan.
+        if let ChatCompletionRequestMessage::Assistant(assistant) = message {
+            assistant_declared_calls = assistant
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty());
+        }
         if let ChatCompletionRequestMessage::Assistant(assistant) = message
             && let Some(tool_calls) = &assistant.tool_calls
         {
             for (tool_call_index, tool_call) in tool_calls.iter().enumerate() {
-                if !pending_tool_calls.insert(tool_call.id.as_str()) {
+                if !pending_tool_calls.insert(tool_call.id.as_str()) && !allow_incomplete_history {
                     anyhow::bail!(
                         "`messages[{message_index}].tool_calls[{tool_call_index}].id` must be unique within the assistant message"
                     );
