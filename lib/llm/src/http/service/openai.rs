@@ -5239,6 +5239,16 @@ async fn chat_completions(
     request.normalize_cache_salt();
 
     let nvtx_validate = dynamo_nvtx_range!("frontend.http.chat.validate");
+    // Client correlation is frontend-only; keep request_id as the server-owned
+    // ID for tracing, cancellation and in-flight state, even for duplicate IDs.
+    let client_request_id = request.take_glm53_request_id().map_err(|error| {
+        let response = ErrorMessage::from_anyhow(
+            invalid_argument(error.to_string()).into(),
+            "Invalid GLM-5.3 request_id",
+        );
+        inflight_guard.mark_error(extract_error_type_from_response(&response));
+        response
+    })?;
     state
         .chat_template_defaults()
         .apply_to_request(&mut request);
@@ -5714,7 +5724,7 @@ async fn chat_completions(
         Ok(Json(crate::reasoning_field::RoutedReasoning::new(
             response.for_http(
                 crate::protocols::openai::chat_completions::is_glm53_model_id(&model)
-                    .then_some(request_id.as_str()),
+                    .then_some(client_request_id.as_deref().unwrap_or(request_id.as_str())),
             ),
             state.reasoning_field(),
         ))
@@ -7928,7 +7938,7 @@ mod tests {
         use serde_json::json;
 
         // Report regressions share one model-scoped normalization boundary.
-        for model in ["glm-5.3", "test-model"] {
+        for model in ["glm-5.3", "kimi-k2.5", "test-model"] {
             for options in [
                 json!({"stop": "END"}),
                 json!({"stream": "true"}),
@@ -7942,6 +7952,10 @@ mod tests {
                 json!({"response_format": {}}),
                 json!({"response_format": {"type": "foo"}}),
                 json!({"logprobs": true, "top_logprobs": 99}),
+                json!({"request_id": "aaaaaa"}),
+                json!({"request_id": "a".repeat(64)}),
+                json!({"temperature": -1}),
+                json!({"presence_penalty": -5}),
             ] {
                 let mut body =
                     json!({"model": model, "messages": [{"role":"user", "content":"hello"}]});
@@ -7953,6 +7967,16 @@ mod tests {
                     &serde_json::to_vec(&body).unwrap(),
                 );
                 let accepted = parsed.is_ok_and(|mut request| {
+                    let client_id = request.take_glm53_request_id().unwrap();
+                    if model == "glm-5.3" {
+                        assert_eq!(
+                            client_id.as_deref(),
+                            options.get("request_id").and_then(|id| id.as_str())
+                        );
+                        assert!(!request.unsupported_fields.contains_key("request_id"));
+                    } else {
+                        assert!(client_id.is_none());
+                    }
                     request.normalize_glm53_options();
                     if model == "glm-5.3" && options.get("stream_options").is_some() {
                         assert!(request.inner.stream_options.is_none());
@@ -7964,8 +7988,18 @@ mod tests {
                         assert_eq!(request.inner.logprobs, Some(false));
                         assert!(request.inner.top_logprobs.is_none());
                     }
-                    validate_chat_completion_stream_options(&request).is_ok()
-                        && request.validate().is_ok()
+                    let valid = validate_chat_completion_stream_options(&request).is_ok()
+                        && request.validate().is_ok();
+                    if valid && model == "glm-5.3" {
+                        request.normalize_sampling_controls();
+                        if options.get("temperature").is_some() {
+                            assert_eq!(request.inner.temperature, Some(0.01));
+                        }
+                        if options.get("presence_penalty").is_some() {
+                            assert_eq!(request.inner.presence_penalty, Some(0.0));
+                        }
+                    }
+                    valid
                 });
                 let expected = if options.get("stop").is_some() || options.get("messages").is_some()
                 {
