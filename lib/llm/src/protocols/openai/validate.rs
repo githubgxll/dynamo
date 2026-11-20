@@ -128,7 +128,7 @@ pub fn validate_no_unsupported_fields(
     )
 }
 
-fn validate_no_unsupported_fields_with_ignore(
+pub(super) fn validate_no_unsupported_fields_with_ignore(
     unsupported_fields: &std::collections::HashMap<String, serde_json::Value>,
     ignore_unsupported_fields: bool,
 ) -> Result<(), anyhow::Error> {

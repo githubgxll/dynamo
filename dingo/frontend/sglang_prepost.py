@@ -580,7 +580,6 @@ def _kimi_k3_named_tool_choice_message(
     }
 
 
-
 def _filter_template_tools(
     request: dict[str, Any],
     *,
@@ -1531,6 +1530,7 @@ class SglangStreamingPostProcessor:
         logprobs_enabled: bool = False,
         return_tokens_as_token_ids: bool = False,
         guided_json_is_content: bool = False,
+        glm53_profile: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.tool_call_parser = tool_call_parser
@@ -1612,6 +1612,7 @@ class SglangStreamingPostProcessor:
             )
         self._bypass_reasoning_for_bare_json = False
         self._eos_token_ids = set(eos_token_ids or [])
+        self._glm53_profile = glm53_profile
         self._stop_strings = {stop for stop in (stop_strings or set()) if stop}
         self._pending_stop_text = ""
         self._include_stop_str_in_output = include_stop_str_in_output
@@ -1690,6 +1691,16 @@ class SglangStreamingPostProcessor:
         self, token_ids: list[int], stop_reason: Any
     ) -> list[int]:
         """Remove only the engine-reported token-stop suffix from display IDs."""
+        if self._glm53_profile and token_ids and token_ids[-1] in self._eos_token_ids:
+            # A user stop (e.g. "e") can also match inside the EOS spelling
+            # <|user|>. Hide the actual EOS token before text matching, without
+            # stripping ordinary tokens that merely spell a literal marker.
+            if (
+                not self._tool_close_literals
+                or self.tokenizer.decode([token_ids[-1]], skip_special_tokens=False)
+                not in self._tool_close_literals
+            ):
+                return token_ids[:-1]
         if not token_ids or self._no_stop_trim:
             return token_ids
 
@@ -2267,7 +2278,9 @@ class SglangStreamingPostProcessor:
                 splitter.in_reasoning = False
                 splitter.ended = True
         if not self._stop_strings:
-            return splitter.split(token_ids, self._incremental_decode, finished=finished)
+            return splitter.split(
+                token_ids, self._incremental_decode, finished=finished
+            )
 
         def decode(ids: list[int], *, flush: bool = False) -> str:
             text = self._incremental_decode(ids, flush=flush)
@@ -2307,7 +2320,9 @@ class SglangStreamingPostProcessor:
             "stop_terminated", finish_reason == "stop"
         )
         generated_ids = token_ids
-        if stop_terminated:
+        if stop_terminated or (
+            self._glm53_profile and token_ids and token_ids[-1] in self._eos_token_ids
+        ):
             token_ids = self._strip_matched_stop_token_ids(list(token_ids), stop_reason)
 
         context_ids = self._decode_context_ids
