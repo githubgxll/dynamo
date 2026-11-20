@@ -25,6 +25,7 @@ from dingo.common.multimodal.image_loader import (
 from dingo.common.multimodal.video_loader import VideoLoader
 from dingo.common.utils.engine_response import normalize_finish_reason
 from dingo.sglang._compat import (
+    cache_retention_ttl_s_kwargs,
     cache_salt_kwargs,
     filter_supported_async_generate_kwargs,
     prefill_dp_rank_kwargs,
@@ -53,7 +54,10 @@ from dingo.sglang.request_handlers.llm.mm_disagg_utils import (
     raise_if_unextracted_multimodal,
     reject_unconsumed_media,
 )
-from dingo.sglang.request_utils import request_cache_salt
+from dingo.sglang.request_utils import (
+    request_cache_retention_ttl_s,
+    request_cache_salt,
+)
 from dingo.sglang.thinking_budget import (
     apply_thinking_budget,
     thinking_budget_requested,
@@ -194,6 +198,38 @@ def _kv_cache_hit_engine_data(meta_info: Mapping[str, Any]) -> Dict[str, Any]:
         "prompt_tokens": prompt_tokens,
         "reused_tokens": meta_info.get("cached_tokens") or 0,
     }
+
+
+def _kv_cache_write_engine_data(meta_info: Mapping[str, Any]) -> Dict[str, Any]:
+    """Build the prefill cache-write receipt read by the response layer.
+
+    The receipt is strictly the engine's own accounting: ``cached_tokens``
+    (C, prefix hits), ``cache_write_tokens`` (W, page-aligned new insertions)
+    and ``cache_write_ttl_s`` (a, post-precheck applied TTL; 0 = unprotected),
+    all alongside ``prompt_tokens`` (P). All four must be non-negative
+    integers with C+W <= P — a receipt that violates that identity cannot be
+    billed and must not be surfaced. Any missing or malformed field means the
+    engine reported nothing: this returns an empty dict so the HTTP layer
+    emits no protection headers and no write accounting — never a zero-filled
+    or request-TTL-derived substitute.
+    """
+    receipt: Dict[str, Any] = {}
+    for field in (
+        "prompt_tokens",
+        "cached_tokens",
+        "cache_write_tokens",
+        "cache_write_ttl_s",
+    ):
+        value = meta_info.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return {}
+        receipt[field] = value
+    if (
+        receipt["cached_tokens"] + receipt["cache_write_tokens"]
+        > receipt["prompt_tokens"]
+    ):
+        return {}
+    return receipt
 
 
 def _has_parallel_prefix_warmup(sampling_params: Any) -> bool:
@@ -819,6 +855,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 report_kv_cache_hit=not _has_parallel_prefix_warmup(
                     native_payload.get("sampling_params")
                 ),
+                report_kv_cache_write=True,
             ):
                 yield output
             return
@@ -885,6 +922,9 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 **input_param,
                 **decode_mm_kwargs,
                 **cache_salt_kwargs(self.engine, request_cache_salt(request)),
+                **cache_retention_ttl_s_kwargs(
+                    self.engine, request_cache_retention_ttl_s(request)
+                ),
                 sampling_params=sampling_params,
                 stream=True,
                 **require_reasoning_kwargs(
@@ -987,6 +1027,9 @@ class DecodeWorkerHandler(BaseWorkerHandler):
             agg = await self.engine.async_generate(
                 **input_param,
                 **cache_salt_kwargs(self.engine, request_cache_salt(request)),
+                **cache_retention_ttl_s_kwargs(
+                    self.engine, request_cache_retention_ttl_s(request)
+                ),
                 image_data=image_data,
                 audio_data=audio_data,
                 video_data=video_data,
@@ -1019,6 +1062,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     report_kv_cache_hit=not _has_parallel_prefix_warmup(
                         sampling_params
                     ),
+                    report_kv_cache_write=True,
                     continuous_usage_stats=continuous_usage_stats,
                 ):
                     yield out
@@ -1041,6 +1085,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         internal_request_id: str | None = None,
         response_request_id: str | list[str] | None = None,
         report_kv_cache_hit: bool = True,
+        report_kv_cache_write: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Forward opaque SGLang chunks while retaining engine cancellation."""
         request_id_future: asyncio.Future[str] = asyncio.Future()
@@ -1095,6 +1140,19 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                                 "sglang_response": public_response,
                             },
                         }
+                if report_kv_cache_write and isinstance(meta_info, dict):
+                    # Same receipt contract as the token stream: the router
+                    # reads engine_data.kv_cache_write; the native response
+                    # keeps only sglang_response for the client.
+                    kv_cache_write = _kv_cache_write_engine_data(meta_info)
+                    if kv_cache_write:
+                        output = {
+                            **output,
+                            "engine_data": {
+                                **output["engine_data"],
+                                "kv_cache_write": kv_cache_write,
+                            },
+                        }
                 if (
                     report_kv_cache_hit
                     and self._reports_kv_cache_hit
@@ -1125,6 +1183,7 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         metadata_uploader: MetadataUploader | None = None,
         submitted_request_id: str | None = None,
         report_kv_cache_hit: bool = True,
+        report_kv_cache_write: bool = False,
         continuous_usage_stats: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process token-based stream output.
@@ -1150,6 +1209,10 @@ class DecodeWorkerHandler(BaseWorkerHandler):
         # Keep the latest cache breakdown per choice for the terminal chunk,
         # and expose it on intermediate chunks only in continuous-usage mode.
         cached_tokens_details_per_choice: dict[int, dict[str, Any]] = {}
+        # Latched cache-write receipts per choice (aggregated mode only):
+        # the engine's prompt-side accounting, re-emitted on every chunk so
+        # the response layer can emit protection headers before SSE starts.
+        cache_write_per_choice: dict[int, Dict[str, Any]] = {}
         cached_tokens_per_choice: dict[int, int] = {}
         request_ids: set[str] = set()
         first_output_seen = False
@@ -1224,7 +1287,27 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                     meta_info.get("prompt_tokens") is not None
                     and meta_info.get("completion_tokens") is not None
                 )
-                if has_usage and (finish_reason or continuous_usage_stats):
+                cache_write_receipt = (
+                    cache_write_per_choice.get(output_idx)
+                    if report_kv_cache_write
+                    else None
+                )
+                if cache_write_receipt is None and report_kv_cache_write:
+                    cache_write_receipt = (
+                        _kv_cache_write_engine_data(meta_info) or None
+                    )
+                    if cache_write_receipt is not None:
+                        cache_write_per_choice[output_idx] = cache_write_receipt
+                # The receipt chunk also carries the Chat-usage view of the
+                # engine's cached_tokens so the response layer sees C on the
+                # same early chunk as W and the applied TTL. Only the early
+                # (non-terminal) receipt chunk adds this; the terminal chunk
+                # keeps its original usage semantics untouched.
+                early_receipt_chunk = not finish_reason and cache_write_receipt != {}
+                usage_chunk = (
+                    finish_reason or continuous_usage_stats or early_receipt_chunk
+                )
+                if has_usage and usage_chunk:
                     input_tokens = meta_info["prompt_tokens"]
                     completion_tokens = meta_info["completion_tokens"]
                     prefill_prompt_tokens_details = None
@@ -1232,6 +1315,10 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                         continuous_usage_stats or cached_tokens > 0
                     ):
                         prefill_prompt_tokens_details = {"cached_tokens": cached_tokens}
+                    elif early_receipt_chunk:
+                        prefill_prompt_tokens_details = {
+                            "cached_tokens": cache_write_receipt["cached_tokens"]
+                        }
                     out["completion_usage"] = {
                         "prompt_tokens": input_tokens,
                         "completion_tokens": completion_tokens,
@@ -1318,6 +1405,14 @@ class DecodeWorkerHandler(BaseWorkerHandler):
                 routed_experts = meta_info.get("routed_experts")
                 if routed_experts is not None and metadata_uploader is None:
                     engine_data["routed_experts"] = routed_experts
+                if report_kv_cache_write and cache_write_receipt is not None:
+                    # Aggregated serving: the receipt rides exactly one chunk —
+                    # the earliest for this choice — so the HTTP layer can emit
+                    # protection headers before the first SSE event and any
+                    # consumer can take it exactly once without summing across
+                    # chunks. The receipt was validated and latched above;
+                    # absent engine fields latch and emit nothing.
+                    engine_data["kv_cache_write"] = cache_write_receipt
                 if (
                     finish_reason or continuous_usage_stats
                 ) and output_idx in cached_tokens_details_per_choice:

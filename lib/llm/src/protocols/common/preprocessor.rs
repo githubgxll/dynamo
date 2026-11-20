@@ -449,6 +449,17 @@ pub struct PreprocessedRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv_hint: Option<KvHint>,
 
+    /// Admission-resolved prompt-cache retention hint, in whole seconds.
+    /// `Some(0)` means "no protection" is the explicit applied value; `None`
+    /// means no protection was requested or admitted, and transport forwards
+    /// nothing so the engine runs best-effort. Set from Chat/Responses
+    /// `prompt_cache_options.ttl` or Messages `cache_control` markers during
+    /// admission; consumed by backend transport as SGLang's per-request
+    /// `cache_retention_ttl_s`.
+    #[builder(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_retention_ttl_s: Option<u64>,
+
     /// Whether the backend should allow a reasoning phase before enforcing
     /// guided output. SGLang consumes this as its per-request
     /// `require_reasoning` engine argument.

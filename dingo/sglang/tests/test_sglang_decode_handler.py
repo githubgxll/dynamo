@@ -29,6 +29,7 @@ from dingo.sglang.protocol import (
 from dingo.sglang.request_handlers.llm.decode_handler import (
     DecodeWorkerHandler,
     _extract_sglang_stop_reason,
+    _kv_cache_write_engine_data,
     _kv_cache_hit_engine_data,
     _native_payload_is_batched,
     _nvext_extra_field_requested,
@@ -2371,6 +2372,103 @@ def test_kv_cache_hit_engine_data_defaults_null_cached_tokens_to_zero():
 )
 def test_kv_cache_hit_engine_data_omits_missing_prompt_tokens(meta_info):
     assert _kv_cache_hit_engine_data(meta_info) == {}
+
+
+def test_kv_cache_write_engine_data_requires_all_engine_fields():
+    assert _kv_cache_write_engine_data(
+        {
+            "prompt_tokens": 300,
+            "cached_tokens": 128,
+            "cache_write_tokens": 160,
+            "cache_write_ttl_s": 1800,
+        }
+    ) == {
+        "prompt_tokens": 300,
+        "cached_tokens": 128,
+        "cache_write_tokens": 160,
+        "cache_write_ttl_s": 1800,
+    }
+
+
+@pytest.mark.parametrize(
+    "meta_info",
+    [
+        {},
+        {"prompt_tokens": 3, "cached_tokens": 1},
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": 1,
+            "cache_write_tokens": 2,
+            "cache_write_ttl_s": None,
+        },
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": 1,
+            "cache_write_tokens": None,
+            "cache_write_ttl_s": 90,
+        },
+        # Non-integer engine values are receipts the worker cannot vouch for.
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": 1,
+            "cache_write_tokens": "2",
+            "cache_write_ttl_s": 90,
+        },
+        # Booleans are not integer receipts.
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": 1,
+            "cache_write_tokens": True,
+            "cache_write_ttl_s": 90,
+        },
+        # prompt_tokens itself must be a non-negative integer.
+        {
+            "prompt_tokens": "300",
+            "cached_tokens": 1,
+            "cache_write_tokens": 2,
+            "cache_write_ttl_s": 90,
+        },
+        {
+            "prompt_tokens": True,
+            "cached_tokens": 1,
+            "cache_write_tokens": 2,
+            "cache_write_ttl_s": 90,
+        },
+        # Negative counters cannot be billed.
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": -1,
+            "cache_write_tokens": 2,
+            "cache_write_ttl_s": 90,
+        },
+        # C + W must not exceed P (P is the request's whole prompt).
+        {
+            "prompt_tokens": 3,
+            "cached_tokens": 2,
+            "cache_write_tokens": 2,
+            "cache_write_ttl_s": 90,
+        },
+    ],
+)
+def test_kv_cache_write_engine_data_emits_nothing_on_partial_receipt(meta_info):
+    """No full engine receipt → no protection claim, never zero-filled."""
+    assert _kv_cache_write_engine_data(meta_info) == {}
+
+
+def test_kv_cache_write_engine_data_accepts_zero_ttl_as_unprotected():
+    assert _kv_cache_write_engine_data(
+        {
+            "prompt_tokens": 300,
+            "cached_tokens": 128,
+            "cache_write_tokens": 160,
+            "cache_write_ttl_s": 0,
+        }
+    ) == {
+        "prompt_tokens": 300,
+        "cached_tokens": 128,
+        "cache_write_tokens": 160,
+        "cache_write_ttl_s": 0,
+    }
 
 
 @pytest.mark.asyncio

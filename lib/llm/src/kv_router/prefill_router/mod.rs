@@ -172,6 +172,10 @@ enum PrefillCompletion {
         result: PrefillResult,
         worker_link: Option<TraceLink>,
         completion: Option<PrefillTask>,
+        /// Engine cache-write receipt captured from a fully-consumed
+        /// (non-bootstrap) prefill stream. `None` when the engine reported
+        /// nothing or the bootstrap task owns capture.
+        kv_cache_write: Option<serde_json::Value>,
     },
     Terminal {
         output: Box<Annotated<LLMEngineOutput>>,
@@ -442,6 +446,7 @@ impl
         let router = &binding.router;
         let endpoint_id = &binding.endpoint_id;
         let mut prefill_completion = None;
+        let mut inline_kv_cache_write: Option<serde_json::Value> = None;
         let prefill_result: Result<(PrefillOutcome, Option<RoutingConstraints>)> = async {
             let (prepared, prefill_stream) = router
                 .select_and_dispatch_prefill(prefill_context, |request, target| {
@@ -468,8 +473,14 @@ impl
                         result,
                         worker_link,
                         completion,
+                        kv_cache_write,
                     } => {
                         prefill_completion = completion;
+                        // Non-bootstrap prefill is fully consumed here, so its
+                        // cache-write receipt is final. Keep it for the decode
+                        // handoff below; absent means the engine reported
+                        // nothing and no protection may be claimed.
+                        inline_kv_cache_write = kv_cache_write;
                         if let Some(bootstrap_info) =
                             extract_bootstrap_info(&result.disaggregated_params)
                         {
@@ -565,10 +576,13 @@ impl
             self.conditional_disagg_policy.is_enabled(),
         ));
 
+        let wait_for_meter = decode_req.cache_retention_ttl_s.unwrap_or_default() > 0;
         let decode = next.generate(context.map(|_| decode_req));
         match prefill_completion {
-            Some(completion) => completion.forward_decode(decode, engine_ctx).await,
-            None => decode.await,
+            Some(completion) => completion.forward_decode(decode, engine_ctx, wait_for_meter).await,
+            None => {
+                Ok(PrefillTask::prepend_receipt(decode.await?, inline_kv_cache_write))
+            }
         }
     }
 }
@@ -851,7 +865,7 @@ mod tests {
             // Decode can enter its phase even though prefill is still observed.
             let _decode_permit = tracker.set_phase(RequestPhase::Decode).await;
             let error = task
-                .forward_decode(std::future::pending(), Context::new(()).context())
+                .forward_decode(std::future::pending(), Context::new(()).context(), false)
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains("prefill connection lost"));

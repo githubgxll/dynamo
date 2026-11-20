@@ -19,3 +19,19 @@ def request_cache_salt(request: Mapping[str, Any]) -> str | None:
             if salt:
                 return salt
     return None
+
+
+def request_cache_retention_ttl_s(request: Mapping[str, Any]) -> int | None:
+    """Return the admission-resolved prompt-cache retention TTL in seconds.
+
+    The frontend sets ``cache_retention_ttl_s`` (whole seconds; 0 = no
+    protection) as a top-level request field during admission. Absent or
+    ``None`` means no protection was requested or admitted; transport then
+    forwards nothing and the engine runs unprotected.
+    """
+    value = request.get("cache_retention_ttl_s")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value

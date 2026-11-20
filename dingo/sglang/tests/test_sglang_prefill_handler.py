@@ -289,6 +289,122 @@ def prefill_responses():
     ]
 
 
+@pytest.fixture
+def prefill_responses_with_write_receipt():
+    return [
+        {
+            "meta_info": {
+                "id": "request-id",
+                "finish_reason": {"type": "length"},
+                "prompt_tokens": 300,
+                "cached_tokens": 128,
+                "cache_write_tokens": 160,
+                "cache_write_ttl_s": 1800,
+            }
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_prefill_reports_kv_cache_write_with_hit(
+    monkeypatch, prefill_responses_with_write_receipt
+):
+    handler = _kv_hit_prefill_handler(
+        monkeypatch, prefill_responses_with_write_receipt, cancelled=False
+    )
+    context = SimpleNamespace(
+        id=lambda: "request-id", trace_id=None, trace_headers=lambda: {}
+    )
+
+    chunks = await _drain(
+        handler.generate(
+            {"request": {"token_ids": list(range(300)), "routing": {}}, "sampling_params": {}},
+            context,
+        )
+    )
+
+    assert len(chunks) == 2
+    assert chunks[1] == {
+        "token_ids": [],
+        "engine_data": {
+            "kv_cache_hit": {"prompt_tokens": 300, "reused_tokens": 128},
+            "kv_cache_write": {
+                "prompt_tokens": 300,
+                "cached_tokens": 128,
+                "cache_write_tokens": 160,
+                "cache_write_ttl_s": 1800,
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_prefill_omits_receipt_when_engine_reports_no_write_fields(
+    monkeypatch, prefill_responses
+):
+    """No engine write receipt → no kv_cache_write key, never zero-filled."""
+    handler = _kv_hit_prefill_handler(monkeypatch, prefill_responses, cancelled=False)
+    context = SimpleNamespace(
+        id=lambda: "request-id", trace_id=None, trace_headers=lambda: {}
+    )
+
+    chunks = await _drain(
+        handler.generate(
+            {"request": {"token_ids": [1, 2, 3], "routing": {}}, "sampling_params": {}},
+            context,
+        )
+    )
+
+    assert "kv_cache_write" not in chunks[1]["engine_data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_prefill_forwards_ttl_into_engine(
+    monkeypatch, prefill_responses_with_write_receipt
+):
+    captured_kwargs = {}
+
+    async def results():
+        for response in prefill_responses_with_write_receipt:
+            yield response
+
+    class _Engine:
+        async def async_generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return results()
+
+    handler = _kv_hit_prefill_handler(
+        monkeypatch, prefill_responses_with_write_receipt, cancelled=False
+    )
+    handler.engine = _Engine()
+    monkeypatch.setattr(
+        "dingo.sglang.request_handlers.llm.prefill_handler.cache_retention_ttl_s_kwargs",
+        lambda engine, ttl: {"cache_retention_ttl_s": ttl} if ttl is not None else {},
+    )
+    context = SimpleNamespace(
+        id=lambda: "request-id", trace_id=None, trace_headers=lambda: {}
+    )
+
+    await _drain(
+        handler.generate(
+            {
+                "request": {
+                    "token_ids": list(range(300)),
+                    "routing": {},
+                    "cache_retention_ttl_s": 1800,
+                },
+                "sampling_params": {},
+            },
+            context,
+        )
+    )
+
+    assert captured_kwargs["cache_retention_ttl_s"] == 1800
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(5)
 async def test_prefill_reports_kv_cache_hit_after_bootstrap(

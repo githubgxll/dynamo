@@ -56,6 +56,7 @@ impl PrefillRouter {
                     && obj.contains_key("bootstrap_room")
             });
 
+        let mut inline_kv_cache_write = None;
         let completion = if !is_bootstrap {
             if let Some(ref tracker) = tracker {
                 tracker.record_prefill_complete();
@@ -65,28 +66,54 @@ impl PrefillRouter {
                     let detail = format!("Prefill router returned error in output stream: {error}");
                     return Err(PrefillError::PrefillError(detail, Some(Box::new(error))));
                 }
-                if let Some(output) = next.data.as_ref()
-                    && prompt_tokens_details.is_none()
-                {
-                    prompt_tokens_details = output
-                        .completion_usage
+                if let Some(output) = next.data.as_ref() {
+                    if prompt_tokens_details.is_none() {
+                        prompt_tokens_details = output
+                            .completion_usage
+                            .as_ref()
+                            .and_then(|usage| usage.prompt_tokens_details.clone());
+                    }
+                    // Capture the engine's cache-write receipt from the
+                    // trailing chunk; absent means the engine reported
+                    // nothing and no protection may be claimed downstream.
+                    if let Some(receipt) = output
+                        .engine_data
                         .as_ref()
-                        .and_then(|usage| usage.prompt_tokens_details.clone());
+                        .and_then(|data| data.get("kv_cache_write"))
+                        .cloned()
+                    {
+                        inline_kv_cache_write = Some(receipt);
+                    }
                 }
             }
             None
         } else {
             Some(PrefillTask::spawn(async move {
                 let _task_guard = task_guard;
+                // The worker's trailing chunk carries the engine's own
+                // cache-write receipt (engine_data.kv_cache_write) — strictly
+                // reported integers, kept verbatim. Absent means the engine
+                // reported nothing and the response layer must not claim
+                // protected writes.
+                let mut kv_cache_write = None;
                 while let Some(output) = prefill_response.next().await {
                     PrefillTask::check_output(&output)?;
+                    if let Some(receipt) = output
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.engine_data.as_ref())
+                        .and_then(|data| data.get("kv_cache_write"))
+                        .cloned()
+                    {
+                        kv_cache_write = Some(receipt);
+                    }
                 }
                 // Bootstrap details unblock decode, but do not mean prefill is
                 // complete. Record completion only after its stream finishes.
                 if let Some(tracker) = tracker {
                     tracker.record_prefill_complete();
                 }
-                Ok(())
+                Ok(kv_cache_write)
             }))
         };
 
@@ -144,6 +171,7 @@ impl PrefillRouter {
             },
             worker_link: output.worker_trace_link.clone(),
             completion,
+            kv_cache_write: inline_kv_cache_write,
         })
     }
 
@@ -156,13 +184,38 @@ impl PrefillRouter {
         let task_guard = self.task_guard.clone();
         PrefillTask::spawn(async move {
             drop(phase_transition_permit);
-            match Self::consume_prefill_stream(prefill_stream, tracker, task_guard).await? {
+            let completion = Self::consume_prefill_stream(
+                prefill_stream,
+                tracker,
+                task_guard,
+            )
+            .await?;
+            match completion {
                 PrefillCompletion::Handoff {
-                    completion: Some(task),
+                    completion,
+                    kv_cache_write,
                     ..
-                } => task.wait().await,
-                PrefillCompletion::Terminal { output } => PrefillTask::check_output(&output),
-                _ => Ok(()),
+                } => match completion {
+                    // The inner bootstrap drain captured the receipt on the
+                    // prefill stream's final chunk; awaiting it yields the
+                    // receipt directly.
+                    Some(task) => task.wait().await,
+                    // Non-bootstrap streams were consumed inline by
+                    // `consume_prefill_stream`, which captured the receipt.
+                    None => Ok(kv_cache_write),
+                },
+                PrefillCompletion::Terminal { output } => {
+                    PrefillTask::check_output(&output)?;
+                    // A terminal prefill response carries the receipt on the
+                    // same chunk; strip the engine's disaggregated params
+                    // (the caller does that separately) but keep the receipt.
+                    Ok(output
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.engine_data.as_ref())
+                        .and_then(|data| data.get("kv_cache_write"))
+                        .cloned())
+                }
             }
         })
     }
@@ -227,7 +280,7 @@ mod tests {
             let decode: ManyOut<Annotated<LLMEngineOutput>> =
                 ResponseStream::new(Box::pin(stream::pending()), context.clone());
             match completion
-                .forward_decode(async { Ok(decode) }, context)
+                .forward_decode(async { Ok(decode) }, context, false)
                 .await
             {
                 Err(error) => assert!(error.to_string().contains("Prefill")),

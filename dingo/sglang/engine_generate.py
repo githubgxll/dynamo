@@ -50,7 +50,7 @@ def build_native_generate_request(
     routed_dp_rank: int | None = None,
     prefill_dp_rank: int | None = None,
     lora_path: str | None = None,
-    cache_salt: str | None = None,
+    cache_retention_ttl_s: int | None = None,
 ) -> GenerateReqInput:
     """Reconstruct the installed SGLang version native request.
 
@@ -111,6 +111,12 @@ def build_native_generate_request(
         and "disagg_prefill_dp_rank" in GenerateReqInput.__dataclass_fields__
     ):
         payload["disagg_prefill_dp_rank"] = prefill_dp_rank
+    if cache_retention_ttl_s is not None:
+        if "cache_retention_ttl_s" not in GenerateReqInput.__dataclass_fields__:
+            raise ValueError(
+                "cache_retention_ttl_s is not supported by the installed SGLang engine"
+            )
+        payload["cache_retention_ttl_s"] = cache_retention_ttl_s
 
     native_request = _GENERATE_REQUEST_ADAPTER.validate_python(payload)
     _shared_logprobs.validate_sglang_top_logprobs(

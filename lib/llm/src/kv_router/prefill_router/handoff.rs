@@ -18,11 +18,18 @@ use crate::protocols::common::llm_backend::{FinishReason, LLMEngineOutput};
 
 /// Dropping the observer detaches the task: client disconnects must not abort a
 /// prefill whose KV transfer may still be needed by the decode worker.
-pub(super) struct PrefillTask(JoinHandle<Result<(), PrefillError>>);
+pub(super) struct PrefillTask(JoinHandle<Result<Option<serde_json::Value>, PrefillError>>);
 
 impl PrefillTask {
+    /// Spawn the prefill drain. The future resolves to the engine's
+    /// cache-write receipt (`engine_data.kv_cache_write` on the final prefill
+    /// chunk) when the worker reported one, or `None` when it reported
+    /// nothing — the response layer must then claim no protected writes.
     pub(super) fn spawn(
-        future: impl Future<Output = Result<(), PrefillError>> + Send + 'static,
+        future: impl Future<
+            Output = Result<Option<serde_json::Value>, PrefillError>,
+        > + Send
+        + 'static,
     ) -> Self {
         Self(tokio::spawn(
             async move {
@@ -37,7 +44,7 @@ impl PrefillTask {
         ))
     }
 
-    pub(super) async fn wait(self) -> Result<(), PrefillError> {
+    pub(super) async fn wait(self) -> Result<Option<serde_json::Value>, PrefillError> {
         self.0.await.map_err(|error| {
             PrefillError::PrefillError(
                 format!("Prefill background task did not complete: {error}"),
@@ -70,24 +77,50 @@ impl PrefillTask {
         }
     }
 
-    /// Observe prefill failures both during decode dispatch and while streaming.
-    /// Successful prefill does not delay tokens; a successful decode terminal is
-    /// held until prefill finishes so a late failure cannot follow success.
+    /// One receipt chunk, built from the engine's verbatim report.
+    fn receipt_chunk(receipt: serde_json::Value) -> Annotated<LLMEngineOutput> {
+        Annotated::from_data(LLMEngineOutput {
+            token_ids: Vec::new(),
+            engine_data: Some(serde_json::json!({
+                "kv_cache_write": receipt,
+            })),
+            ..Default::default()
+        })
+    }
+
+    pub(super) fn prepend_receipt(
+        mut response: ManyOut<Annotated<LLMEngineOutput>>,
+        receipt: Option<serde_json::Value>,
+    ) -> ManyOut<Annotated<LLMEngineOutput>> {
+        let Some(receipt) = receipt else { return response };
+        let context = response.context();
+        let stream = async_stream::stream! {
+            yield Self::receipt_chunk(receipt);
+            while let Some(output) = response.next().await {
+                yield output;
+            }
+        };
+        ResponseStream::new(Box::pin(stream), context)
+    }
+
+    /// Always hold terminal success for prefill. Only requests with an admitted
+    /// cache policy need to hold the first token for the response headers.
     pub(super) async fn forward_decode(
         self,
         decode: impl Future<Output = anyhow::Result<ManyOut<Annotated<LLMEngineOutput>>>>,
         request_context: Arc<dyn AsyncEngineContext>,
+        wait_for_meter: bool,
     ) -> anyhow::Result<ManyOut<Annotated<LLMEngineOutput>>> {
         let mut completion = Box::pin(self.wait());
         tokio::pin!(decode);
         let mut response = tokio::select! {
             biased;
             result = &mut completion => {
-                if let Err(error) = result {
+                let receipt = result.map_err(|error| {
                     request_context.stop_generating();
-                    return Err(error.into());
-                }
-                return decode.await;
+                    error
+                })?;
+                return Ok(Self::prepend_receipt(decode.await?, receipt));
             }
             result = &mut decode => result?,
         };
@@ -100,11 +133,19 @@ impl PrefillTask {
                 tokio::select! {
                     biased;
                     result = &mut completion => {
-                        if let Err(error) = result {
-                            request_context.stop_generating();
-                            stream_context.stop_generating();
-                            yield Annotated::from_err(error);
-                            return;
+                        // Completion resolves exactly once; the loop returns
+                        // in every arm that observes it.
+                        let receipt = match result {
+                            Ok(receipt) => receipt,
+                            Err(error) => {
+                                request_context.stop_generating();
+                                stream_context.stop_generating();
+                                yield Annotated::from_err(error);
+                                return;
+                            }
+                        };
+                        if let Some(receipt) = receipt {
+                            yield Self::receipt_chunk(receipt);
                         }
                         while let Some(output) = response.next().await {
                             yield output;
@@ -118,27 +159,40 @@ impl PrefillTask {
                                 Some(FinishReason::Error(_) | FinishReason::Cancelled)
                             )
                         }) {
+                            // Decode errors surface immediately; do not wait
+                            // for prefill to finish first.
                             yield output.unwrap();
                             return;
                         }
                         let terminal = output.as_ref().is_none_or(|output| {
                             output.data.as_ref().is_some_and(|data| data.finish_reason.is_some())
                         });
-                        if terminal
-                            && let Err(error) = completion.as_mut().await
-                        {
-                            request_context.stop_generating();
-                            stream_context.stop_generating();
-                            yield Annotated::from_err(error);
+                        if wait_for_meter || terminal {
+                            match completion.as_mut().await {
+                                Ok(Some(receipt)) => yield Self::receipt_chunk(receipt),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    request_context.stop_generating();
+                                    stream_context.stop_generating();
+                                    yield Annotated::from_err(error);
+                                    return;
+                                }
+                            }
+                            if let Some(output) = output {
+                                yield output;
+                                if !terminal {
+                                    while let Some(output) = response.next().await {
+                                        yield output;
+                                    }
+                                }
+                            }
                             return;
                         }
                         match output {
                             Some(output) => yield output,
                             None => return,
                         }
-                        if terminal {
-                            return;
-                        }
+                        // Unmetered non-terminal output: keep watching prefill.
                     }
                 }
             }
@@ -155,8 +209,17 @@ mod tests {
     use tokio::sync::oneshot;
 
     fn pending_prefill() -> (oneshot::Sender<Result<(), PrefillError>>, PrefillTask) {
-        let (tx, rx) = oneshot::channel();
-        let task = PrefillTask::spawn(async move { rx.await.unwrap() });
+        let (tx, rx) = oneshot::channel::<Result<(), PrefillError>>();
+        let task = PrefillTask::spawn(async move { rx.await.unwrap().map(|_| None) });
+        (tx, task)
+    }
+
+    fn pending_prefill_with_receipt(
+        receipt: serde_json::Value,
+    ) -> (oneshot::Sender<Result<(), PrefillError>>, PrefillTask) {
+        let (tx, rx) = oneshot::channel::<Result<(), PrefillError>>();
+        let task =
+            PrefillTask::spawn(async move { rx.await.unwrap().map(|_| Some(receipt)) });
         (tx, task)
     }
 
@@ -171,7 +234,7 @@ mod tests {
     async fn failure_interrupts_pending_decode_dispatch() {
         let (tx, task) = pending_prefill();
         let context = Arc::new(Controller::default());
-        let mut response = Box::pin(task.forward_decode(std::future::pending(), context.clone()));
+        let mut response = Box::pin(task.forward_decode(std::future::pending(), context.clone(), false));
         assert!(response.as_mut().now_or_never().is_none());
         tx.send(failure()).unwrap();
         let error = tokio::time::timeout(std::time::Duration::from_secs(1), response)
@@ -189,7 +252,7 @@ mod tests {
         let decode: ManyOut<Annotated<LLMEngineOutput>> =
             ResponseStream::new(Box::pin(stream::pending()), context.clone());
         let mut response = task
-            .forward_decode(async { Ok(decode) }, context.clone())
+            .forward_decode(async { Ok(decode) }, context.clone(), false)
             .await
             .unwrap();
         tx.send(failure()).unwrap();
@@ -224,7 +287,7 @@ mod tests {
             context.clone(),
         );
         let mut response = task
-            .forward_decode(async { Ok(decode) }, context.clone())
+            .forward_decode(async { Ok(decode) }, context.clone(), false)
             .await
             .unwrap();
         assert_eq!(response.next().await.unwrap().data.unwrap().token_ids, [42]);
@@ -249,7 +312,7 @@ mod tests {
             context.clone(),
         );
         let mut response = task
-            .forward_decode(async { Ok(decode) }, context)
+            .forward_decode(async { Ok(decode) }, context, false)
             .await
             .unwrap();
         assert!(response.next().now_or_never().is_none());
@@ -276,7 +339,7 @@ mod tests {
             context.clone(),
         );
         let mut response = task
-            .forward_decode(async { Ok(decode) }, context)
+            .forward_decode(async { Ok(decode) }, context, true)
             .await
             .unwrap();
         assert!(
@@ -305,7 +368,7 @@ mod tests {
             context.clone(),
         );
         let mut response = task
-            .forward_decode(async { Ok(decode) }, context.clone())
+            .forward_decode(async { Ok(decode) }, context.clone(), false)
             .await
             .unwrap();
         assert_eq!(
@@ -323,13 +386,13 @@ mod tests {
         let task = PrefillTask::spawn(async move {
             release_rx.await.unwrap();
             finished_tx.send(()).unwrap();
-            Ok(())
+            Ok(None)
         });
         let context = Arc::new(Controller::default());
         let decode: ManyOut<Annotated<LLMEngineOutput>> =
             ResponseStream::new(Box::pin(stream::pending()), context.clone());
         let response = task
-            .forward_decode(async { Ok(decode) }, context.clone())
+            .forward_decode(async { Ok(decode) }, context.clone(), false)
             .await
             .unwrap();
         context.stop_generating();
@@ -340,5 +403,69 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn receipt_precedes_first_decode_token_when_prefill_lands_late() {
+        let receipt = serde_json::json!({
+            "prompt_tokens": 300,
+            "cached_tokens": 128,
+            "cache_write_tokens": 160,
+            "cache_write_ttl_s": 1800,
+        });
+        let (tx, task) = pending_prefill_with_receipt(receipt.clone());
+        let context = Arc::new(Controller::default());
+        let decode: ManyOut<Annotated<LLMEngineOutput>> = ResponseStream::new(
+            Box::pin(stream::iter([
+                Annotated::from_data(LLMEngineOutput {
+                    token_ids: vec![7],
+                    ..Default::default()
+                }),
+                Annotated::from_data(LLMEngineOutput::length()),
+            ])),
+            context.clone(),
+        );
+        let mut response = task
+            .forward_decode(async { Ok(decode) }, context.clone(), true)
+            .await
+            .unwrap();
+        // First surfaced chunk must be the receipt, not the decode token:
+        // the HTTP layer needs W/C/a before the first SSE byte.
+        assert!(response.next().now_or_never().is_none());
+        tx.send(Ok(())).unwrap();
+        let first = response.next().await.unwrap().data.unwrap();
+        assert!(first.token_ids.is_empty());
+        assert_eq!(
+            first.engine_data.as_ref().unwrap().get("kv_cache_write"),
+            Some(&receipt)
+        );
+        assert_eq!(response.next().await.unwrap().data.unwrap().token_ids, [7]);
+    }
+
+    #[tokio::test]
+    async fn absent_receipt_yields_no_protection_chunk() {
+        let (tx, task) = pending_prefill();
+        let context = Arc::new(Controller::default());
+        let decode: ManyOut<Annotated<LLMEngineOutput>> = ResponseStream::new(
+            Box::pin(stream::iter([
+                Annotated::from_data(LLMEngineOutput {
+                    token_ids: vec![7],
+                    ..Default::default()
+                }),
+                Annotated::from_data(LLMEngineOutput::length()),
+            ])),
+            context.clone(),
+        );
+        let mut response = task
+            .forward_decode(async { Ok(decode) }, context.clone(), true)
+            .await
+            .unwrap();
+        tx.send(Ok(())).unwrap();
+        let first = response.next().await.unwrap().data.unwrap();
+        assert_eq!(first.token_ids, [7]);
+        assert!(first
+            .engine_data
+            .as_ref()
+            .is_none_or(|data| data.get("kv_cache_write").is_none()));
     }
 }

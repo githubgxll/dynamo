@@ -461,6 +461,29 @@ def prefill_dp_rank_kwargs(engine: Any, prefill_dp_rank: Any) -> dict[str, Any]:
         engine, {"disagg_prefill_dp_rank": int(prefill_dp_rank)}
     )
 
+def cache_retention_ttl_s_kwargs(engine: Any, cache_retention_ttl_s: Any) -> dict[str, Any]:
+    """Forward the admission-resolved prompt-cache retention hint, best-effort.
+
+    ``cache_retention_ttl_s`` (whole seconds; 0 = no protection) reaches the
+    scheduler only on SGLang builds that accept it. Older engines drop the
+    hint with a warning: the request still runs, and the worker must not
+    report protected writes it cannot honor (no ``cache_write_ttl_s`` receipt
+    reaches the HTTP layer, so no premium headers are emitted).
+    """
+    if cache_retention_ttl_s is None:
+        return {}
+    kwargs = filter_supported_async_generate_kwargs(
+        engine, {"cache_retention_ttl_s": int(cache_retention_ttl_s)}
+    )
+    if "cache_retention_ttl_s" not in kwargs:
+        logging.warning(
+            "cache_retention_ttl_s was requested but the installed SGLang "
+            "engine does not support per-request prompt-cache retention; "
+            "continuing without prefix protection"
+        )
+        return {}
+    return kwargs
+
 
 def require_reasoning_kwargs(
     engine: Any,
@@ -505,6 +528,7 @@ __all__ = [
     "ensure_sglang_top_level_exports",
     "ConfigArgumentMerger",
     "add_sglang_cli_compat",
+    "cache_retention_ttl_s_kwargs",
     "cache_salt_kwargs",
     "filter_supported_async_generate_kwargs",
     "get_encoder_preprocessor_modules",

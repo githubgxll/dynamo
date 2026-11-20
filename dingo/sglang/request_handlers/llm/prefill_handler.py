@@ -11,7 +11,11 @@ from dynamo._core import Context
 from dynamo.health_check import HEALTH_CHECK_KEY
 
 from dingo.common.backend import logprobs as _shared_logprobs
-from dingo.sglang._compat import cache_salt_kwargs, require_reasoning_kwargs
+from dingo.sglang._compat import (
+    cache_retention_ttl_s_kwargs,
+    cache_salt_kwargs,
+    require_reasoning_kwargs,
+)
 from dingo.sglang._disagg import validate_disagg_parallel_sampling
 from dingo.sglang.agent_session import agent_session_kwargs
 from dingo.sglang.args import Config
@@ -25,6 +29,7 @@ from dingo.sglang.publisher import DynamoSglangPublisher
 from dingo.sglang.request_handlers.handler_base import BaseWorkerHandler
 from dingo.sglang.request_handlers.llm.decode_handler import (
     _kv_cache_hit_engine_data,
+    _kv_cache_write_engine_data,
     _native_payload_is_batched,
     _ordered_cancellation_request_id,
     _preprocessed_stop_sampling_params,
@@ -36,7 +41,10 @@ from dingo.sglang.request_handlers.llm.mm_disagg_utils import (
     raise_if_unextracted_multimodal,
     reject_unconsumed_media,
 )
-from dingo.sglang.request_utils import request_cache_salt
+from dingo.sglang.request_utils import (
+    request_cache_retention_ttl_s,
+    request_cache_salt,
+)
 from dingo.sglang.thinking_budget import (
     apply_thinking_budget,
     thinking_budget_requested,
@@ -231,6 +239,7 @@ class PrefillWorkerHandler(BaseWorkerHandler):
                 routed_dp_rank=dp_rank,
                 lora_path=lora_path,
                 cache_salt=request_cache_salt(inner_request),
+                cache_retention_ttl_s=request_cache_retention_ttl_s(inner_request),
             )
             submitted_request_id = _ordered_cancellation_request_id(
                 sglang_request_id,
@@ -255,6 +264,9 @@ class PrefillWorkerHandler(BaseWorkerHandler):
             results = await self.engine.async_generate(
                 **input_param,
                 **logprob_kwargs,
+                **cache_retention_ttl_s_kwargs(
+                    self.engine, request_cache_retention_ttl_s(inner_request)
+                ),
                 **mm_kwargs,
                 **cache_salt_kwargs(self.engine, request_cache_salt(inner_request)),
                 sampling_params=sampling_params,
@@ -300,10 +312,20 @@ class PrefillWorkerHandler(BaseWorkerHandler):
         if final_meta_info is None:
             return
         # Bootstrap happens before prefill runs, so the cache-hit report for
-        # this attempt needs its own trailing chunk.
+        # this attempt needs its own trailing chunk. The cache-write receipt
+        # rides the same chunk: the prefill stream has already finished here,
+        # which is still before decode's first token, so the HTTP layer gets
+        # W/C/a before any SSE header is sent. Strictly engine-reported
+        # integers; absent fields emit nothing.
         kv_cache_hit = _kv_cache_hit_engine_data(final_meta_info)
-        if kv_cache_hit:
-            yield {"token_ids": [], "engine_data": {"kv_cache_hit": kv_cache_hit}}
+        kv_cache_write = _kv_cache_write_engine_data(final_meta_info)
+        if kv_cache_hit or kv_cache_write:
+            engine_data: Dict[str, Any] = {}
+            if kv_cache_hit:
+                engine_data["kv_cache_hit"] = kv_cache_hit
+            if kv_cache_write:
+                engine_data["kv_cache_write"] = kv_cache_write
+            yield {"token_ids": [], "engine_data": engine_data}
 
     async def _consume_results(
         self,
