@@ -3,6 +3,25 @@
 
 use serde_json::{Map, Value};
 
+/// HTTP correlation only: never use a client ID to key internal request state.
+pub(super) fn client_request_id(value: Option<&Value>) -> Result<Option<&str>, &'static str> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) if (6..=64).contains(&id.chars().count()) => Ok(Some(id)),
+        _ => Err("GLM-5.3 request_id must be a string of 6 to 64 characters"),
+    }
+}
+
+/// Acceptance follows the recorded GLM-5.3 API probes. The safe canonical
+/// values are our frontend policy, not a claim about the provider's internals.
+pub(super) fn compatible_temperature(value: Option<f32>) -> Option<f32> {
+    value.map(|v| if v.is_finite() && v < 0.0 { 0.01 } else { v })
+}
+
+pub(super) fn compatible_presence_penalty(value: Option<f32>, minimum: f32) -> Option<f32> {
+    value.map(|v| if v.is_finite() && v < minimum { 0.0 } else { v })
+}
+
 /// Non-boolean stream values verified against GLM-5.3 on 2026-11-19.
 /// Other representations retain typed decoding errors instead of guessing truthiness.
 pub(crate) fn compatible_stream(value: &Value) -> Option<bool> {
@@ -39,6 +58,47 @@ pub(super) fn project_response(response: &mut Map<String, Value>, request_id: &s
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn client_ids_validate_and_echo_without_replacing_internal_ids() {
+        for length in [6, 64] {
+            let value = json!("a".repeat(length));
+            let id = client_request_id(Some(&value)).unwrap().unwrap();
+            let mut response = json!({"id":"server-owned-id"}).as_object().unwrap().clone();
+            project_response(&mut response, id);
+            assert_eq!(response["request_id"], value);
+            assert_eq!(response["id"], "server-owned-id");
+        }
+        for value in [
+            json!("a".repeat(5)),
+            json!("a".repeat(65)),
+            json!(123),
+            json!({}),
+        ] {
+            assert!(client_request_id(Some(&value)).is_err());
+        }
+        assert_eq!(client_request_id(None).unwrap(), None);
+        assert_eq!(client_request_id(Some(&Value::Null)).unwrap(), None);
+    }
+
+    #[test]
+    fn negative_sampling_values_become_safe_backend_values() {
+        assert_eq!(compatible_temperature(Some(-1.0)), Some(0.01));
+        assert_eq!(compatible_presence_penalty(Some(-5.0), -2.0), Some(0.0));
+        for value in [None, Some(0.0), Some(0.7), Some(3.0), Some(f32::INFINITY)] {
+            assert_eq!(compatible_temperature(value), value);
+        }
+        for value in [
+            None,
+            Some(-2.0),
+            Some(-1.0),
+            Some(0.0),
+            Some(3.0),
+            Some(f32::NEG_INFINITY),
+        ] {
+            assert_eq!(compatible_presence_penalty(value, -2.0), value);
+        }
+    }
 
     #[test]
     fn stream_compatibility_only_converts_verified_values() {

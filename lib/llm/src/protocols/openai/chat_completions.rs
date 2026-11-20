@@ -216,6 +216,19 @@ pub struct NvCreateChatCompletionRequest {
 }
 
 impl NvCreateChatCompletionRequest {
+    /// Consume GLM's HTTP-only correlation field before unsupported-field
+    /// validation. It is neither serialized to Python nor used for routing.
+    pub(crate) fn take_glm53_request_id(&mut self) -> anyhow::Result<Option<String>> {
+        if !is_glm53_model_id(&self.inner.model) {
+            return Ok(None);
+        }
+        let id = glm53::client_request_id(self.unsupported_fields.get("request_id"))
+            .map_err(anyhow::Error::msg)?
+            .map(str::to_owned);
+        self.unsupported_fields.remove("request_id");
+        Ok(id)
+    }
+
     /// Canonicalize GLM-5.3 options accepted but ignored by the official API
     /// (2026-11-18 regression baseline). Do this before validation/worker dispatch.
     /// Other models retain OpenAI validation and valid values retain their semantics.
@@ -257,6 +270,7 @@ impl NvCreateChatCompletionRequest {
     pub fn normalize_sampling_controls(&mut self) {
         self.inner.temperature = self.get_temperature();
         self.inner.top_p = self.get_top_p();
+        self.inner.presence_penalty = self.get_presence_penalty();
         // Downstream adapters receive canonical sampling parameters, not a
         // backend-specific switch that could be ignored or rejected there.
         self.do_sample = None;
@@ -951,6 +965,8 @@ impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
     fn get_temperature(&self) -> Option<f32> {
         if self.do_sample == Some(false) {
             Some(0.0)
+        } else if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_temperature(self.inner.temperature)
         } else {
             self.inner.temperature
         }
@@ -972,7 +988,14 @@ impl OpenAISamplingOptionsProvider for NvCreateChatCompletionRequest {
 
     /// Retrieves the presence penalty parameter, if set.
     fn get_presence_penalty(&self) -> Option<f32> {
-        self.inner.presence_penalty
+        if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_presence_penalty(
+                self.inner.presence_penalty,
+                validate::MIN_PRESENCE_PENALTY,
+            )
+        } else {
+            self.inner.presence_penalty
+        }
     }
 
     /// Returns a reference to the optional `NvExt` extension, if available.
@@ -1256,7 +1279,7 @@ impl NvCreateChatCompletionRequest {
         // none for modalities
         // none for prediction
         // none for audio
-        validate::validate_presence_penalty(self.inner.presence_penalty)?;
+        validate::validate_presence_penalty(self.get_presence_penalty())?;
         validate::validate_response_format(&self.inner.response_format)?;
         // none for seed
         validate::validate_service_tier(&self.inner.service_tier)?;
@@ -1271,7 +1294,12 @@ impl NvCreateChatCompletionRequest {
         }
         // none for stream
         // none for stream_options
-        validate::validate_temperature(self.inner.temperature)?;
+        let temperature = if is_glm53_model_id(&self.inner.model) {
+            glm53::compatible_temperature(self.inner.temperature)
+        } else {
+            self.inner.temperature
+        };
+        validate::validate_temperature(temperature)?;
         validate::validate_top_p(self.compatible_top_p())?;
         // Responses-origin requests validate tool definitions through the
         // namespace-aware path (see `validated_effective_tools`): qualified
