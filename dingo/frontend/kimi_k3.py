@@ -338,6 +338,16 @@ def normalize_kimi_k3_request(
         level_by_tier if level_by_tier is not None else KIMI_K31_LEVEL_BY_TIER
     )
     messages = request.get("messages") or []
+    for message_index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part_index, part in enumerate(content):
+            if isinstance(part, dict) and part.get("type") == "video_url":
+                raise PreprocessError(
+                    f"messages[{message_index}].content[{part_index}]: "
+                    "Kimi-K3 supports image input only; video_url is not supported."
+                )
 
     dynamic = validate_kimi_k3_dynamic_tools(messages)
     raw_global = request.get("tools")

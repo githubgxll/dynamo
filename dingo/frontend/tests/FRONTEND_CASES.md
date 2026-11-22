@@ -132,6 +132,10 @@ How the frontend reports errors back to the client: `BackendError` for
 backend issues, `InternalError` for our bugs, engine errors mapped to
 HTTP-friendly shapes. Also covers deprecation warnings on legacy fields.
 
+For Kimi-K3/K3.1 chat, a `video_url` part in any message is an HTTP 400
+input error, including when `stream=true`. Reject it before dispatch or the
+first SSE event; text and image inputs remain supported.
+
 Examples: `TestMakeBackendError`, `TestMakeInternalError`,
 `TestHandleEngineError`, `TestDeprecationWarning`.
 

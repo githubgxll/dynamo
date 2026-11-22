@@ -50,6 +50,24 @@ def _fn(name: str) -> dict:
     }
 
 
+@pytest.mark.parametrize("stream", [True, False])
+def test_video_in_history_is_a_client_error(stream):  # FRONTEND.8
+    messages = [
+        {"role": "system", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this clip."},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        },
+        {"role": "assistant", "content": "Which part?"},
+        {"role": "user", "content": "The first frame."},
+    ]
+    with pytest.raises(PreprocessError, match=r"messages\[1\]\.content\[1\].*video_url"):
+        normalize_kimi_k3_request({"messages": messages, "stream": stream})
+
+
 # --- dynamic-tool legality (KVV dynamic_tools negatives) -------------------
 
 
