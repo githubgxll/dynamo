@@ -20,6 +20,7 @@ from dingo.frontend.frontend_args import FrontendArgGroup, FrontendConfig
 from dingo.frontend.sglang_processor import (
     SglangPreprocessWorkerResult,
     _deduct_uncounted_prompt_tokens,
+    _project_receipt_public_prompt_tokens,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.gpu_0, pytest.mark.pre_merge]
@@ -126,6 +127,51 @@ class TestUncountedPromptTokensDeduction:
         adjusted = _deduct_uncounted_prompt_tokens(usage, 3)
         assert adjusted["prompt_tokens"] == 39
         assert "total_tokens" not in adjusted
+
+class TestReceiptPublicPromptProjection:
+    """T12: the receipt's P is projected to the public metric once; C/W stay raw."""
+
+    def test_zero_deduction_is_identity(self):
+        receipt = {"prompt_tokens": 1002, "cached_tokens": 0,
+                   "cache_write_tokens": 960, "cache_write_ttl_s": 300}
+        assert _project_receipt_public_prompt_tokens(receipt, 0) is receipt
+
+    def test_projects_prompt_only(self):
+        receipt = {"prompt_tokens": 1002, "cached_tokens": 600,
+                   "cache_write_tokens": 384, "cache_write_ttl_s": 3600}
+        projected = _project_receipt_public_prompt_tokens(receipt, 2)
+        assert projected["prompt_tokens"] == 1000
+        assert projected["cached_tokens"] == 600
+        assert projected["cache_write_tokens"] == 384
+        assert projected["cache_write_ttl_s"] == 3600
+        # The engine's receipt is never mutated.
+        assert receipt["prompt_tokens"] == 1002
+
+    def test_clamps_at_zero_without_touching_parts(self):
+        receipt = {"prompt_tokens": 2, "cached_tokens": 2,
+                   "cache_write_tokens": 0, "cache_write_ttl_s": 300}
+        projected = _project_receipt_public_prompt_tokens(receipt, 3)
+        assert projected["prompt_tokens"] == 0
+        # No clamping of C/W into the C+W<=P identity: an out-of-contract
+        # breakdown must stay visible for the downstream validation to reject.
+        assert projected["cached_tokens"] == 2
+
+    def test_non_dict_receipt_passes_through_for_validation(self):
+        for invalid in (None, 7, "x", [1], True):
+            assert _project_receipt_public_prompt_tokens(invalid, 3) is invalid
+
+    def test_non_integer_prompt_passes_through(self):
+        receipt = {"prompt_tokens": None, "cached_tokens": 0,
+                   "cache_write_tokens": 0, "cache_write_ttl_s": 300}
+        assert _project_receipt_public_prompt_tokens(receipt, 3) is receipt
+        receipt = {"prompt_tokens": True, "cached_tokens": 0,
+                   "cache_write_tokens": 0, "cache_write_ttl_s": 300}
+        assert _project_receipt_public_prompt_tokens(receipt, 3) is receipt
+
+    def test_missing_prompt_field_passes_through(self):
+        receipt = {"cached_tokens": 0, "cache_write_tokens": 960,
+                   "cache_write_ttl_s": 300}
+        assert _project_receipt_public_prompt_tokens(receipt, 3) is receipt
 
 
 class TestWorkerResultCarriesPolicyMetadata:

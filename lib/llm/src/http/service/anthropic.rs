@@ -821,7 +821,7 @@ async fn anthropic_messages(
             super::openai::preflight_cache_meter(engine_stream, wants_cache_write, &ctx)
                 .await
                 .map_err(anthropic_backend_error_response)?;
-        let msh_headers = super::openai::msh_cache_write_headers(cache_meter.as_ref());
+        let msh_headers = super::openai::msh_usage_header_values(cache_meter.as_ref());
 
         stream_handle.arm();
 
@@ -953,30 +953,12 @@ async fn anthropic_messages(
         if let Some(keep_alive) = keep_alive {
             sse_stream = sse_stream.keep_alive(KeepAlive::default().interval(keep_alive));
         }
-        // Cache-write headers ride the same response that opens the SSE body;
-        // absent when no protected write was reported.
-        if let Some((five_m, one_h)) = msh_headers {
-            Ok((
-                axum::response::AppendHeaders([
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                        ),
-                        axum::http::HeaderValue::from(five_m),
-                    ),
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                        ),
-                        axum::http::HeaderValue::from(one_h),
-                    ),
-                ]),
-                sse_stream,
-            )
-                .into_response())
-        } else {
-            Ok(sse_stream.into_response())
-        }
+        // The four confirmed initial headers ride the same response that
+        // opens the SSE body; absent when no protected receipt was reported.
+        Ok(super::openai::with_msh_usage_headers(
+            msh_headers,
+            sse_stream.into_response(),
+        ))
     } else {
         // Non-streaming path: aggregate stream into single response
 
@@ -1023,26 +1005,14 @@ async fn anthropic_messages(
         inflight_guard.mark_ok();
 
         // Kimi customer contract: splice `cache_creation` into usage and emit
-        // the two cache-write headers when the engine receipt claimed a
-        // protected write. No receipt → no headers, no breakdown.
+        // the four confirmed initial headers when the engine receipt claimed
+        // protection. No receipt → no headers, no breakdown.
         let body = crate::protocols::anthropic::anthropic_response_with_cache_creation(
             response,
             cache_meter.as_ref(),
         );
-        let mut builder = Response::builder().status(StatusCode::OK);
-        if let Some(meter) = cache_meter.as_ref().filter(|m| m.is_protected()) {
-            let (five_m, one_h) = meter.msh_split();
-            builder = builder
-                .header(
-                    crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                    five_m,
-                )
-                .header(
-                    crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                    one_h,
-                );
-        }
-        Ok(builder
+        let json_response = Response::builder()
+            .status(StatusCode::OK)
             .header(axum::http::header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(serde_json::to_string(&body).map_err(
                 |e| {
@@ -1052,7 +1022,11 @@ async fn anthropic_messages(
                     )
                 },
             )?))
-            .unwrap_or_else(|_| Json(body).into_response()))
+            .unwrap_or_else(|_| Json(body).into_response());
+        Ok(super::openai::with_msh_usage_headers(
+            super::openai::msh_usage_header_values(cache_meter.as_ref()),
+            json_response,
+        ))
     }
 }
 
@@ -1900,5 +1874,46 @@ mod tests {
                 .build(),
         );
         assert!(find_invalid_argument_in_chain(private_error.as_ref()).is_none());
+    }
+
+    #[test]
+    fn anthropic_four_initial_headers_follow_shared_meter_contract() {
+        use crate::protocols::common::cache_meter::{
+            CacheWriteMeter, MSH_CACHE_WRITE_HEADER_1H, MSH_CACHE_WRITE_HEADER_5M,
+            MSH_CACHED_TOKENS_HEADER, MSH_PROMPT_TOKENS_HEADER,
+        };
+        // T16 fixture: P=1000, C=600, W=384, A=300. The Messages surface
+        // shares the one-receipt group with Chat/Responses: P is the total
+        // input (input+read+creation), never the Messages `input_tokens`
+        // remainder alone.
+        let meter = CacheWriteMeter::from_engine_data(Some(&serde_json::json!({
+            "kv_cache_write": {"prompt_tokens": 1000, "cached_tokens": 600,
+                "cache_write_tokens": 384, "cache_write_ttl_s": 300}
+        })))
+        .unwrap();
+        let (input, read, creation) = meter.anthropic_projection();
+        assert_eq!((input, read, creation), (16, 600, 384));
+        assert_eq!(input + read + creation, meter.prompt_tokens);
+
+        let response = super::super::openai::with_msh_usage_headers(
+            super::super::openai::msh_usage_header_values(Some(&meter)),
+            axum::response::Response::default(),
+        );
+        let map = response.headers();
+        assert_eq!(map.get(MSH_PROMPT_TOKENS_HEADER).unwrap(), "1000");
+        assert_eq!(map.get(MSH_CACHED_TOKENS_HEADER).unwrap(), "600");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_5M).unwrap(), "384");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_1H).unwrap(), "0");
+
+        // A=0 keeps real C/W in the body but must not claim protection.
+        let unprotected = CacheWriteMeter::from_engine_data(Some(&serde_json::json!({
+            "kv_cache_write": {"prompt_tokens": 1000, "cached_tokens": 600,
+                "cache_write_tokens": 384, "cache_write_ttl_s": 0}
+        })))
+        .unwrap();
+        assert_eq!(
+            super::super::openai::msh_usage_header_values(Some(&unprotected)),
+            None
+        );
     }
 }

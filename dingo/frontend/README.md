@@ -88,3 +88,21 @@ for initial rollout. Verify valid/invalid history, streaming, Responses and a
 tool-error/retry round trip before production rollout. Removing the option
 and restarting the frontend restores strict admission and the original
 template. Native `sglang serve` does not use this Dingo configuration.
+
+## Protected prompt-cache receipts
+
+For a confirmed protected prefix, Chat, Responses, and Messages return four
+HTTP headers, including on SSE responses:
+
+- `Msh-Usage-Prompt-Tokens`: total input on the same accounting basis as usage.
+- `Msh-Usage-Cached-Tokens`: input tokens read from cache.
+- `Msh-Usage-Cache-Write-Tokens-5m` and `Msh-Usage-Cache-Write-Tokens-1h`:
+  newly written tokens in each price band, including confirmed zeros.
+
+Messages splits total input into uncached, read, and newly written tokens.
+Its `usage.cache_creation` breakdown retains both integer buckets for a
+protected read with zero writes. Chat and Responses expose the applied TTL in
+`prompt_cache_options.ttl` on the response carrying usage. For Responses SSE,
+this is inside the terminal event's `response`. The TTL is the protection
+accepted by the backend, not a promise that resident GPU pages become
+unusable at expiration. Missing receipt headers are not evidence of zero writes.

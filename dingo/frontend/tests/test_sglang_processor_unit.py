@@ -4900,6 +4900,155 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         assert first["prefill_cache_write"] == terminal["prefill_cache_write"] == receipt
         assert terminal["usage"]["completion_tokens"] == 2
 
+    def test_kimi_receipt_projects_public_p_on_first_data_frame(self):
+        """T12: the delivered receipt carries the public P, C/W stay raw."""
+        receipt = {"prompt_tokens": 1002, "cached_tokens": 600,
+                   "cache_write_tokens": 384, "cache_write_ttl_s": 3600}
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": [], "engine_data": {"kv_cache_write": receipt}},
+                {"token_ids": list(b"A")},
+                {"token_ids": list(b"B"), "finish_reason": "stop",
+                 "completion_usage": {"prompt_tokens": 1002, "completion_tokens": 2,
+                                      "total_tokens": 1004}},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None, reasoning_parser=None
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 1002, post,
+                uncounted_prompt_tokens=2,
+            ) if "data" in item]
+
+        first, terminal = asyncio.run(collect())
+        # The first data frame carries the once-projected receipt: public P,
+        # raw C/W — one source for headers and final usage.
+        assert first["prefill_cache_write"] == {
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 3600,
+        }
+        assert terminal["prefill_cache_write"] == first["prefill_cache_write"]
+        # The final usage is the same public P (deducted), never physical.
+        assert terminal["usage"]["prompt_tokens"] == 1000
+        assert terminal["usage"]["total_tokens"] == 1002
+
+    def test_receipt_projection_happens_once_later_frames_never_revise(self):
+        """A producer revising the receipt after the first frame is out of
+        contract: the first verified receipt stays the delivered one."""
+        first_receipt = {"prompt_tokens": 1002, "cached_tokens": 600,
+                         "cache_write_tokens": 384, "cache_write_ttl_s": 300}
+        revised_receipt = {"prompt_tokens": 999, "cached_tokens": 700,
+                           "cache_write_tokens": 100, "cache_write_ttl_s": 3600}
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": [], "engine_data": {"kv_cache_write": first_receipt}},
+                {"token_ids": list(b"A")},
+                {"token_ids": [], "engine_data": {"kv_cache_write": revised_receipt}},
+                {"token_ids": list(b"B"), "finish_reason": "stop"},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None, reasoning_parser=None
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 1002, post,
+                uncounted_prompt_tokens=2,
+            ) if "data" in item]
+
+        first, _terminal = asyncio.run(collect())
+        assert first["prefill_cache_write"] == {
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 300,
+        }
+
+    def test_local_stop_usage_prefers_receipt_p_over_token_count(self):
+        """Without engine usage, the final P comes from the verified receipt
+        when one exists; the frontend token count stays a no-receipt fallback."""
+        receipt = {"prompt_tokens": 66, "cached_tokens": 0,
+                   "cache_write_tokens": 64, "cache_write_ttl_s": 300}
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": [], "engine_data": {"kv_cache_write": receipt}},
+                {"token_ids": list(b"A"), "finish_reason": "stop"},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None,
+            reasoning_parser=None, stop_strings={"A"},
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 90, post,
+            ) if "data" in item]
+
+        terminal = asyncio.run(collect())[0]
+        # Receipt P (66) wins over the physical prompt length (90); no
+        # receipt would have reported the token count here.
+        assert terminal["usage"]["prompt_tokens"] == 66
+
+    def test_local_stop_usage_without_receipt_keeps_token_count(self):
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": list(b"A"), "finish_reason": "stop"},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None,
+            reasoning_parser=None, stop_strings={"A"},
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 90, post,
+                uncounted_prompt_tokens=2,
+            ) if "data" in item]
+
+        terminal = asyncio.run(collect())[0]
+        assert terminal["usage"]["prompt_tokens"] == 88
+
+    def test_non_dict_receipt_is_forwarded_unchanged_for_validation(self):
+        """A malformed receipt must reach the downstream validation verbatim;
+        the processor neither repairs nor drops it."""
+        processor = SglangProcessor(
+            tokenizer=self.ByteTokenizer(),
+            routed_engine=FakeRoutedEngine(items=[
+                {"token_ids": [], "engine_data": {"kv_cache_write": "not-a-receipt"}},
+                {"token_ids": list(b"A"), "finish_reason": "stop"},
+            ]),
+            tool_call_parser_name=None, reasoning_parser_name=None, eos_token_ids=None,
+            stream_interval=1,
+        )
+        post = SglangStreamingPostProcessor(
+            tokenizer=self.ByteTokenizer(), tool_call_parser=None, reasoning_parser=None
+        )
+
+        async def collect():
+            return [item["data"] async for item in processor._generate_and_stream(
+                "r", {"model": "m"}, {}, [1] * 90, post,
+                uncounted_prompt_tokens=2,
+            ) if "data" in item]
+
+        first = asyncio.run(collect())[0]
+        assert first["prefill_cache_write"] == "not-a-receipt"
+
     @pytest.mark.parametrize("with_tool_parser", [False, True])
     def test_processor_finishes_locally_without_stopping_parent_context(
         self, with_tool_parser

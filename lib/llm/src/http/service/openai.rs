@@ -3826,19 +3826,56 @@ pub(super) async fn preflight_cache_meter(
     }
 }
 
-/// Build the two `msh-usage-cache-write-tokens-*` header values for a meter,
-/// or `None` when no protected write was reported (nothing may be invented).
-/// Shared by the Chat, Messages, and Responses handlers so all three surfaces
-/// agree on the band split.
-pub(super) fn msh_cache_write_headers(
+/// Build the four confirmed initial header values
+/// `(prompt, cached, write_5m, write_1h)` for a meter, or `None` when no
+/// protected receipt was reported (nothing may be invented). Shared by the
+/// Chat, Messages, and Responses handlers so all three surfaces agree on
+/// the same one-receipt projection: the P/C pair and the two band headers
+/// can never contradict each other or the body usage.
+pub(super) fn msh_usage_header_values(
     meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
-) -> Option<(u32, u32)> {
-    let meter = meter?;
-    if !meter.is_protected() {
-        return None;
-    }
-    let (five_m, one_h) = meter.msh_split();
-    Some((five_m, one_h))
+) -> Option<(u32, u32, u32, u32)> {
+    meter?.msh_usage_headers()
+}
+
+/// Apply the four confirmed initial headers (`msh-usage-prompt-tokens`,
+/// `msh-usage-cached-tokens` and the two cache-write price bands) to a
+/// response. All-or-nothing: a missing, malformed or unprotected (A=0)
+/// receipt adds none of them, while a protected receipt keeps measured
+/// zeros as explicit `0` values. Shared by the Chat, Messages and
+/// Responses handlers so every surface emits the identical group.
+pub(super) fn with_msh_usage_headers(
+    headers: Option<(u32, u32, u32, u32)>,
+    mut response: axum::response::Response,
+) -> axum::response::Response {
+    use crate::protocols::common::cache_meter::{
+        MSH_CACHE_WRITE_HEADER_1H, MSH_CACHE_WRITE_HEADER_5M, MSH_CACHED_TOKENS_HEADER,
+        MSH_PROMPT_TOKENS_HEADER,
+    };
+    let Some((prompt, cached, five_m, one_h)) = headers else {
+        return response;
+    };
+    let map = response.headers_mut();
+    // HeaderName/HeaderValue construction from unsigned ints is infallible
+    // for values already validated to the public range; insert (not append)
+    // keeps each name exactly once per response.
+    map.insert(
+        axum::http::HeaderName::from_static(MSH_PROMPT_TOKENS_HEADER),
+        axum::http::HeaderValue::from(prompt),
+    );
+    map.insert(
+        axum::http::HeaderName::from_static(MSH_CACHED_TOKENS_HEADER),
+        axum::http::HeaderValue::from(cached),
+    );
+    map.insert(
+        axum::http::HeaderName::from_static(MSH_CACHE_WRITE_HEADER_5M),
+        axum::http::HeaderValue::from(five_m),
+    );
+    map.insert(
+        axum::http::HeaderName::from_static(MSH_CACHE_WRITE_HEADER_1H),
+        axum::http::HeaderValue::from(one_h),
+    );
+    response
 }
 
 /// Inspect the first non-annotation event in the stream for a backend error.
@@ -4489,12 +4526,12 @@ async fn chat_completions(
             inflight_guard.mark_error(extract_error_type_from_response(err_response));
         })?;
 
-        // Kimi strict contract: decide the `msh-usage-cache-write-tokens-*`
+        // Kimi strict contract: decide the four `msh-usage-*`
         // headers before the first SSE byte. The transport guarantees the
         // prefill receipt is on the first data chunk; meter-or-absent is
         // decided there and the stream is released.
         let (cache_meter, stream) = preflight_cache_meter(stream, wants_cache_write, &ctx).await?;
-        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
+        let msh_headers = msh_usage_header_values(cache_meter.as_ref());
 
         let mut http_queue_guard = Some(http_queue_guard);
 
@@ -4651,30 +4688,10 @@ async fn chat_completions(
         if let Some(keep_alive) = keep_alive {
             sse_stream = sse_stream.keep_alive(KeepAlive::default().interval(keep_alive));
         }
-        // Cache-write headers decided by the preflight ride the SSE open; the
-        // per-chunk usage also carries `cache_write_tokens` via the converter.
-        if let Some((five_m, one_h)) = msh_headers {
-            Ok((
-                axum::response::AppendHeaders([
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                        ),
-                        axum::http::HeaderValue::from(five_m),
-                    ),
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                        ),
-                        axum::http::HeaderValue::from(one_h),
-                    ),
-                ]),
-                sse_stream,
-            )
-                .into_response())
-        } else {
-            Ok(sse_stream.into_response())
-        }
+        // The four confirmed initial headers decided by the preflight ride
+        // the SSE open; the per-chunk usage also carries `cache_write_tokens`
+        // via the converter.
+        Ok(with_msh_usage_headers(msh_headers, sse_stream.into_response()))
     } else {
         // Observe metrics as frames arrive, ahead of the backend-error preflight:
         // the preflight buffers leading annotation frames, so observing after it
@@ -4714,7 +4731,7 @@ async fn chat_completions(
                 })?;
 
         let cache_meter = response.cache_meter;
-        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
+        let msh_headers = msh_usage_header_values(cache_meter.as_ref());
         inflight_guard.mark_ok();
         // If the engine context was killed (client disconnect), the response was
         // assembled but never delivered. Override to cancelled.
@@ -4728,28 +4745,10 @@ async fn chat_completions(
             response,
             state.reasoning_field(),
         ));
-        if let Some((five_m, one_h)) = msh_headers {
-            Ok((
-                axum::response::AppendHeaders([
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                        ),
-                        axum::http::HeaderValue::from(five_m),
-                    ),
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                        ),
-                        axum::http::HeaderValue::from(one_h),
-                    ),
-                ]),
-                body,
-            )
-                .into_response())
-        } else {
-            Ok(body.into_response())
-        }
+        Ok(with_msh_usage_headers(
+            msh_headers,
+            body.into_response(),
+        ))
     }
 }
 
@@ -5155,10 +5154,6 @@ async fn responses(
         prompt_cache_key: request.inner.prompt_cache_key.clone(),
         prompt_cache_retention: request.inner.prompt_cache_retention,
         safety_identifier: request.inner.safety_identifier.clone(),
-        // Echo of the accepted Kimi prompt-cache options; WireOutput
-        // overrides this with the actually-applied values from engine
-        // receipts when present.
-        prompt_cache_options: request.prompt_cache_options.clone(),
     };
     let request_id = request.id().to_string();
     let (orig_request, context) = request.into_parts();
@@ -5303,12 +5298,12 @@ async fn responses(
             inflight_guard.mark_error(extract_error_type_from_response(err_response));
         })?;
 
-        // Kimi strict contract: decide the `msh-usage-cache-write-tokens-*`
+        // Kimi strict contract: decide the four `msh-usage-*`
         // headers before the first SSE byte. Meter-or-absent is decided at
         // the first data chunk (transport contract) and the stream released.
         let (cache_meter, engine_stream) =
             preflight_cache_meter(engine_stream, wants_cache_write, &ctx).await?;
-        let msh_headers = msh_cache_write_headers(cache_meter.as_ref());
+        let msh_headers = msh_usage_header_values(cache_meter.as_ref());
 
         // Streaming path: convert chat completion stream chunks to Responses API SSE events.
         // The engine yields Annotated<NvCreateChatCompletionStreamResponse>. We extract the
@@ -5428,28 +5423,7 @@ async fn responses(
         }
 
         // Cache-write headers decided by the preflight ride the SSE open.
-        if let Some((five_m, one_h)) = msh_headers {
-            Ok((
-                axum::response::AppendHeaders([
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                        ),
-                        axum::http::HeaderValue::from(five_m),
-                    ),
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                        ),
-                        axum::http::HeaderValue::from(one_h),
-                    ),
-                ]),
-                sse_stream,
-            )
-                .into_response())
-        } else {
-            Ok(sse_stream.into_response())
-        }
+        Ok(with_msh_usage_headers(msh_headers, sse_stream.into_response()))
     } else {
         // Non-streaming path: aggregate stream into single response
 
@@ -5508,30 +5482,12 @@ async fn responses(
             inflight_guard.mark_error(ErrorType::Cancelled);
         }
 
-        let msh_headers = msh_cache_write_headers(response.cache_meter.as_ref());
+        let msh_headers = msh_usage_header_values(response.cache_meter.as_ref());
         let body = Json(response);
-        if let Some((five_m, one_h)) = msh_headers {
-            Ok((
-                axum::response::AppendHeaders([
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_5M,
-                        ),
-                        axum::http::HeaderValue::from(five_m),
-                    ),
-                    (
-                        axum::http::HeaderName::from_static(
-                            crate::protocols::common::cache_meter::MSH_CACHE_WRITE_HEADER_1H,
-                        ),
-                        axum::http::HeaderValue::from(one_h),
-                    ),
-                ]),
-                body,
-            )
-                .into_response())
-        } else {
-            Ok(body.into_response())
-        }
+        Ok(with_msh_usage_headers(
+            msh_headers,
+            body.into_response(),
+        ))
     }
 }
 
@@ -13461,5 +13417,94 @@ mod tests {
                 serde_json::json!("t1")
             );
         }
+    }
+
+    fn meter_from_receipt(receipt: serde_json::Value) -> crate::protocols::common::cache_meter::CacheWriteMeter {
+        crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(Some(&serde_json::json!({
+            "kv_cache_write": receipt
+        })))
+        .expect("valid receipt")
+    }
+
+    #[test]
+    fn four_initial_headers_emit_as_one_group() {
+        use crate::protocols::common::cache_meter::{
+            MSH_CACHE_WRITE_HEADER_1H, MSH_CACHE_WRITE_HEADER_5M, MSH_CACHED_TOKENS_HEADER,
+            MSH_PROMPT_TOKENS_HEADER,
+        };
+        // T02 fixture: P=1000, C=600, W=384, A=3600 → P/C plus 1h band.
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 3600
+        }));
+        let headers = msh_usage_header_values(Some(&meter)).expect("protected receipt");
+        assert_eq!(headers, (1000, 600, 0, 384));
+        let response = with_msh_usage_headers(
+            msh_usage_header_values(Some(&meter)),
+            axum::response::Response::default(),
+        );
+        let map = response.headers();
+        assert_eq!(map.get(MSH_PROMPT_TOKENS_HEADER).unwrap(), "1000");
+        assert_eq!(map.get(MSH_CACHED_TOKENS_HEADER).unwrap(), "600");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_5M).unwrap(), "0");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_1H).unwrap(), "384");
+
+        // T01 fixture: cold 5m write → C=0 is a confirmed zero, not absent.
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 0,
+            "cache_write_tokens": 960, "cache_write_ttl_s": 300
+        }));
+        let response = with_msh_usage_headers(
+            msh_usage_header_values(Some(&meter)),
+            axum::response::Response::default(),
+        );
+        let map = response.headers();
+        assert_eq!(map.get(MSH_PROMPT_TOKENS_HEADER).unwrap(), "1000");
+        assert_eq!(map.get(MSH_CACHED_TOKENS_HEADER).unwrap(), "0");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_5M).unwrap(), "960");
+        assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_1H).unwrap(), "0");
+    }
+
+    #[test]
+    fn four_initial_headers_absent_without_receipt_or_protection() {
+        use crate::protocols::common::cache_meter::{
+            MSH_CACHE_WRITE_HEADER_1H, MSH_CACHE_WRITE_HEADER_5M, MSH_CACHED_TOKENS_HEADER,
+            MSH_PROMPT_TOKENS_HEADER,
+        };
+        // T09: no receipt at all → nothing, not zeros.
+        let response = with_msh_usage_headers(None, axum::response::Response::default());
+        let map = response.headers();
+        assert!(map.get(MSH_PROMPT_TOKENS_HEADER).is_none());
+        assert!(map.get(MSH_CACHED_TOKENS_HEADER).is_none());
+        assert!(map.get(MSH_CACHE_WRITE_HEADER_5M).is_none());
+        assert!(map.get(MSH_CACHE_WRITE_HEADER_1H).is_none());
+
+        // T11: valid receipt but A=0 → still no header group; the body keeps
+        // its real C/W, the headers claim no protection.
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        assert_eq!(msh_usage_header_values(Some(&meter)), None);
+        let response = with_msh_usage_headers(
+            msh_usage_header_values(Some(&meter)),
+            axum::response::Response::default(),
+        );
+        let map = response.headers();
+        assert!(map.get(MSH_PROMPT_TOKENS_HEADER).is_none());
+        assert!(map.get(MSH_CACHED_TOKENS_HEADER).is_none());
+        assert!(map.get(MSH_CACHE_WRITE_HEADER_5M).is_none());
+        assert!(map.get(MSH_CACHE_WRITE_HEADER_1H).is_none());
+
+        // T10: over-range receipt is rejected at parse, so no meter and no
+        // header group can exist for it (2147483648 > i32::MAX).
+        let rejected = crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(
+            Some(&serde_json::json!({
+                "kv_cache_write": {"prompt_tokens": 2147483648u64,
+                    "cached_tokens": 0, "cache_write_tokens": 0,
+                    "cache_write_ttl_s": 300}
+            })),
+        );
+        assert!(rejected.is_none());
     }
 }

@@ -78,8 +78,9 @@ pub struct NvCreateResponse {
 
     /// Kimi prompt-cache options, forwarded to the converted chat request's
     /// `prompt_cache_options` (same strict contract as Chat Completions)
-    /// and validated there. Echoed back in the response body so the client
-    /// can observe the actually applied options.
+    /// and validated there. Request-side only: the response body carries the
+    /// actually applied options derived from the engine receipt, never an
+    /// echo of this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub prompt_cache_options: Option<serde_json::Value>,
@@ -1142,8 +1143,6 @@ pub struct ResponseParams {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<PromptCacheRetention>,
     pub safety_identifier: Option<String>,
-    /// Accepted Kimi prompt-cache options, echoed on the response body.
-    pub prompt_cache_options: Option<serde_json::Value>,
 }
 
 /// Map a terminal Chat Completions reason that makes a Responses result non-success-like.
@@ -4325,5 +4324,153 @@ mod tests {
                 .max_thinking_tokens,
             Some(16)
         );
+    }
+
+    fn test_receipt_meter(
+        receipt: serde_json::Value,
+    ) -> crate::protocols::common::cache_meter::CacheWriteMeter {
+        crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(Some(
+            &serde_json::json!({"kv_cache_write": receipt}),
+        ))
+        .expect("fixture receipt must be valid")
+    }
+
+    /// Responses JSON body: the actual TTL and the usage cache fields come
+    /// from the engine receipt; the price band never rewrites the TTL string.
+    #[allow(deprecated)]
+    #[test]
+    fn test_nvresponse_serializes_actual_ttl_and_receipt_usage() {
+        let now = 1_726_000_000;
+        let meter = test_receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 1800
+        }));
+        let chat_resp = NvCreateChatCompletionResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionResponse {
+                id: "chatcmpl-ttl".into(),
+                choices: vec![],
+                created: now,
+                model: "test-model".into(),
+                service_tier: None,
+                system_fingerprint: None,
+                object: "chat.completion".to_string(),
+                usage: Some(dynamo_protocols::types::CompletionUsage {
+                    prompt_tokens: 1000,
+                    completion_tokens: 10,
+                    total_tokens: 1010,
+                    ..Default::default()
+                }),
+            },
+            prompt_logprobs: None,
+            cache_meter: Some(meter),
+            nvext: None,
+        };
+
+        let wrapped =
+            chat_completion_to_response(chat_resp, &ResponseParams::default(), None).unwrap();
+        let wire = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(
+            wire["prompt_cache_options"],
+            serde_json::json!({"mode": "implicit", "ttl": "30m"}),
+            "1800s bills at the 1h band but the body reports the actual 30m"
+        );
+        assert_eq!(wire["usage"]["input_tokens"], 1000);
+        assert_eq!(wire["usage"]["input_tokens_details"]["cached_tokens"], 600);
+        assert_eq!(wire["usage"]["input_tokens_details"]["cache_write_tokens"], 384);
+    }
+
+    /// Responses JSON body: an unprotected receipt (a=0) keeps the real C/W
+    /// but omits the protection claim; no receipt invents nothing.
+    #[allow(deprecated)]
+    #[test]
+    fn test_nvresponse_zero_ttl_and_missing_receipt_omit_the_claim() {
+        let now = 1_726_000_000;
+        let usage = dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 10,
+            total_tokens: 1010,
+            ..Default::default()
+        };
+        let base = |meter| NvCreateChatCompletionResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionResponse {
+                id: "chatcmpl-a0".into(),
+                choices: vec![],
+                created: now,
+                model: "test-model".into(),
+                service_tier: None,
+                system_fingerprint: None,
+                object: "chat.completion".to_string(),
+                usage: Some(usage.clone()),
+            },
+            prompt_logprobs: None,
+            cache_meter: meter,
+            nvext: None,
+        };
+
+        let meter = test_receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        let wrapped = chat_completion_to_response(
+            base(Some(meter)),
+            &ResponseParams::default(),
+            None,
+        )
+        .unwrap();
+        let wire = serde_json::to_value(&wrapped).unwrap();
+        assert!(wire.get("prompt_cache_options").is_none());
+        assert_eq!(wire["usage"]["input_tokens_details"]["cached_tokens"], 600);
+        assert_eq!(wire["usage"]["input_tokens_details"]["cache_write_tokens"], 384);
+
+        let wrapped =
+            chat_completion_to_response(base(None), &ResponseParams::default(), None).unwrap();
+        let wire = serde_json::to_value(&wrapped).unwrap();
+        assert!(wire.get("prompt_cache_options").is_none());
+        assert!(
+            wire["usage"].get("input_tokens_details").is_none()
+                || wire["usage"]["input_tokens_details"]
+                    .get("cache_write_tokens")
+                    .is_none(),
+            "no receipt → no cache write claim in usage"
+        );
+    }
+
+    /// A protected W=0 must surface as an explicit integer zero, never a
+    /// dropped field.
+    #[allow(deprecated)]
+    #[test]
+    fn test_nvresponse_confirmed_zero_write_is_explicit() {
+        let now = 1_726_000_000;
+        let meter = test_receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 1000,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 3600
+        }));
+        let chat_resp = NvCreateChatCompletionResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionResponse {
+                id: "chatcmpl-w0".into(),
+                choices: vec![],
+                created: now,
+                model: "test-model".into(),
+                service_tier: None,
+                system_fingerprint: None,
+                object: "chat.completion".to_string(),
+                usage: Some(dynamo_protocols::types::CompletionUsage {
+                    prompt_tokens: 1000,
+                    completion_tokens: 2,
+                    total_tokens: 1002,
+                    ..Default::default()
+                }),
+            },
+            prompt_logprobs: None,
+            cache_meter: Some(meter),
+            nvext: None,
+        };
+
+        let wrapped =
+            chat_completion_to_response(chat_resp, &ResponseParams::default(), None).unwrap();
+        let wire = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(wire["usage"]["input_tokens_details"]["cache_write_tokens"], 0);
+        assert_eq!(wire["usage"]["input_tokens_details"]["cached_tokens"], 1000);
+        assert_eq!(wire["prompt_cache_options"]["ttl"], "1h");
     }
 }

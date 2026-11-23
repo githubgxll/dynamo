@@ -144,6 +144,37 @@ def _deduct_uncounted_prompt_tokens(
     return adjusted
 
 
+def _project_receipt_public_prompt_tokens(
+    receipt: Any,
+    uncounted_prompt_tokens: int,
+) -> Any:
+    """Project the prefill receipt onto the public prompt-token metric.
+
+    The receipt's ``prompt_tokens`` is the physical prompt the engine
+    measured; the public usage for models with an uncounted generation stub
+    (Kimi K3) deducts that stub. The Rust ``CacheWriteMeter`` reads this
+    receipt to decide the P header and enforce the ``C+W<=P`` identity, so
+    the receipt's P must already be the public value — the same metric the
+    final usage reports, not an estimate from the request.
+
+    Only ``prompt_tokens`` is projected. ``cached_tokens`` and
+    ``cache_write_tokens`` stay the engine's raw measurements (the deduction
+    must not silently shrink C or W); when the stub crosses a page boundary
+    the raw parts can exceed the projected P, and the downstream receipt
+    validation rejects the receipt as out-of-contract instead of clamping it
+    into shape. A non-dict receipt or a non-integer ``prompt_tokens`` is
+    returned unchanged so the downstream validation still rejects it.
+    """
+    if uncounted_prompt_tokens <= 0 or not isinstance(receipt, dict):
+        return receipt
+    prompt_tokens = receipt.get("prompt_tokens")
+    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool):
+        return receipt
+    projected = dict(receipt)
+    projected["prompt_tokens"] = max(0, prompt_tokens - uncounted_prompt_tokens)
+    return projected
+
+
 def _continuous_usage_requested(request: dict[str, Any]) -> bool:
     options = request.get("stream_options") or {}
     return bool(
@@ -1141,7 +1172,27 @@ class SglangProcessor:
                 choice = post.process_output(mapped_response)
 
                 if post.locally_finished and pending_usage is None:
-                    reported_prompt = max(0, input_tokens - uncounted_prompt_tokens)
+                    # Without engine usage the reported P is the frontend's
+                    # token count, not a Worker measurement. When the
+                    # verified prefill receipt exists it is the real
+                    # measurement of the same public metric — prefer it so
+                    # the final usage P and the headers' P can never come
+                    # from two different sources. Physical length stays only
+                    # as the no-receipt fallback (no receipt = nothing
+                    # confirmed; the fallback reports ordinary usage, it
+                    # never claims cache protection).
+                    if isinstance(prefill_cache_write, dict):
+                        reported_prompt = prefill_cache_write.get("prompt_tokens")
+                        if not isinstance(reported_prompt, int) or isinstance(
+                            reported_prompt, bool
+                        ):
+                            reported_prompt = max(
+                                0, input_tokens - uncounted_prompt_tokens
+                            )
+                    else:
+                        reported_prompt = max(
+                            0, input_tokens - uncounted_prompt_tokens
+                        )
                     pending_usage = {
                         "prompt_tokens": reported_prompt,
                         "completion_tokens": cumulative_output_tokens,
@@ -1299,10 +1350,20 @@ class SglangProcessor:
                 # PD can send a metadata-only frame before the first token. The
                 # HTTP layer needs the receipt on the first emitted data frame,
                 # not just on the final usage frame or an opt-in nvext field.
+                # The first verified final prefill receipt decides the public
+                # P shared by the headers and the final usage: project its
+                # prompt_tokens onto the model's public counting contract
+                # (Kimi's uncounted generation stub) here, once. Later
+                # frames never revise it — a producer that changes the
+                # receipt after the first frame is out of contract, not
+                # re-projected.
                 if prefill_cache_write is None:
                     data = engine_response.get("engine_data")
                     if isinstance(data, dict):
-                        prefill_cache_write = data.get("kv_cache_write")
+                        prefill_cache_write = _project_receipt_public_prompt_tokens(
+                            data.get("kv_cache_write"),
+                            uncounted_prompt_tokens,
+                        )
 
                 new_ids = engine_response["token_ids"]
                 log_probs = engine_response.get("log_probs")

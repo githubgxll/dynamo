@@ -13,6 +13,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Upper bound of the public metering values: the four `msh-usage-*` HTTP
+/// headers and every public usage field this receipt projects onto carry
+/// `0..=2147483647` (the range agreed with the customer packages so both
+/// sides parse as signed 32-bit). A receipt with any P/C/W value above it
+/// is rejected as a whole — never clamped, wrapped or saturated into a
+/// billable substitute. The applied TTL (A) is not a public metering value
+/// and keeps its u32 seconds range.
+pub const MSH_USAGE_VALUE_MAX: u32 = 2147483647;
+
 /// Engine receipt shape. Every field is a required integer; anything else is
 /// rejected so a malformed receipt can never fabricate a protection claim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,11 +59,11 @@ impl CacheWriteMeter {
     /// Extract the meter from `engine_data.kv_cache_write`, the prefill
     /// receipt location agreed with the transport slice. Returns `None` when
     /// the object is absent — or **invalid**: any missing/non-integer field,
-    /// a value beyond the u32 wire formats, or a breakdown where
-    /// `cached + written > prompt` is rejected outright. A rejected receipt
-    /// reports nothing: no headers, no usage claims, no clamped or saturated
-    /// substitutes (an engine that overflows or contradicts itself must not
-    /// silently become a billable number).
+    /// a public value beyond the `0..=2147483647` header range, or a
+    /// breakdown where `cached + written > prompt` is rejected outright. A
+    /// rejected receipt reports nothing: no headers, no usage claims, no
+    /// clamped or saturated substitutes (an engine that overflows or
+    /// contradicts itself must not silently become a billable number).
     pub fn from_engine_data(engine_data: Option<&serde_json::Value>) -> Option<Self> {
         Self::from_receipt(engine_data?.get("kv_cache_write")?)
     }
@@ -78,9 +87,15 @@ impl CacheWriteMeter {
         let cached_tokens = u32::try_from(receipt.cached_tokens).ok()?;
         let write_tokens = u32::try_from(receipt.cache_write_tokens).ok()?;
         let applied_ttl_s = u32::try_from(receipt.cache_write_ttl_s).ok()?;
-        // The parts must be mutually consistent: reads and writes are disjoint
-        // subsets of the prompt, so their sum can never exceed it.
-        if u64::from(cached_tokens) + u64::from(write_tokens) > u64::from(prompt_tokens) {
+        // P/C/W are projected onto the public `msh-usage-*` headers and the
+        // usage fields, whose fixed range is 0..=2147483647. Any value above
+        // rejects the whole receipt: no header subset, no truncation. The
+        // applied TTL keeps the full u32 seconds range (bounded by request
+        // admission, not by this public wire range).
+        // C, W and the uncached remainder all fit when P fits and C+W <= P.
+        if prompt_tokens > MSH_USAGE_VALUE_MAX
+            || u64::from(cached_tokens) + u64::from(write_tokens) > u64::from(prompt_tokens)
+        {
             return None;
         }
         Some(Self {
@@ -111,6 +126,21 @@ impl CacheWriteMeter {
         } else {
             (0, self.write_tokens)
         }
+    }
+
+    /// The four confirmed initial headers for one protected request:
+    /// `(prompt_tokens, cached_tokens, write_5m, write_1h)`, all derived
+    /// from this one receipt so the P/C pair and the two band headers can
+    /// never contradict the body usage. The group exists only when the
+    /// receipt is valid **and** the engine claimed protection (`A > 0`):
+    /// a missing, malformed or unprotected receipt emits no header at all
+    /// — absence is never a zero and a measured zero is never dropped.
+    pub fn msh_usage_headers(&self) -> Option<(u32, u32, u32, u32)> {
+        if !self.is_protected() {
+            return None;
+        }
+        let (write_5m, write_1h) = self.msh_split();
+        Some((self.prompt_tokens, self.cached_tokens, write_5m, write_1h))
     }
 
     /// Project this receipt onto the Chat/Responses cache fields
@@ -152,6 +182,14 @@ pub fn applied_ttl_string(seconds: u32) -> String {
 /// HTTP response header names for the two cache-write price bands.
 pub const MSH_CACHE_WRITE_HEADER_5M: &str = "msh-usage-cache-write-tokens-5m";
 pub const MSH_CACHE_WRITE_HEADER_1H: &str = "msh-usage-cache-write-tokens-1h";
+
+/// HTTP response header for the public final input token count P — the same
+/// value the final usage reports (Kimi uncounted scaffold deducted at the
+/// producer), never the raw physical prompt length.
+pub const MSH_PROMPT_TOKENS_HEADER: &str = "msh-usage-prompt-tokens";
+/// HTTP response header for the real prefix-cache hit count C, before any
+/// downstream hit-rate rewrite.
+pub const MSH_CACHED_TOKENS_HEADER: &str = "msh-usage-cached-tokens";
 
 #[cfg(test)]
 mod tests {
@@ -351,5 +389,104 @@ mod tests {
         // The 5m band carries the measured zero explicitly: the split must
         // be (0, 0) *because W=0*, not because protection is absent.
         assert!(read_only.is_protected());
+    }
+
+    #[test]
+    fn four_header_group_is_all_or_nothing_by_protection() {
+        // T01/T02: a protected receipt yields the full P/C/band group from
+        // one source; the band split never leaks into the P/C pair.
+        let five_m = engine_data(json!({
+            "prompt_tokens": 1000, "cached_tokens": 0,
+            "cache_write_tokens": 960, "cache_write_ttl_s": 300
+        }));
+        let meter = CacheWriteMeter::from_engine_data(five_m.as_ref()).unwrap();
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 960, 0)));
+
+        let one_h = engine_data(json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 3600
+        }));
+        let meter = CacheWriteMeter::from_engine_data(one_h.as_ref()).unwrap();
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 600, 0, 384)));
+
+        // T03/T06: protected receipt with W=0 and/or C=0 keeps the group
+        // with confirmed zeros — a zero is never dropped to "absent".
+        let zeros = engine_data(json!({
+            "prompt_tokens": 1000, "cached_tokens": 960,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 300
+        }));
+        let meter = CacheWriteMeter::from_engine_data(zeros.as_ref()).unwrap();
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 960, 0, 0)));
+
+        let both_zero = engine_data(json!({
+            "prompt_tokens": 1000, "cached_tokens": 0,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 300
+        }));
+        let meter = CacheWriteMeter::from_engine_data(both_zero.as_ref()).unwrap();
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 0, 0)));
+
+        // T11: valid receipt but A=0 (precheck downgrade) — no header group
+        // at all, even though real C/W exist for the body.
+        let unprotected = engine_data(json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        let meter = CacheWriteMeter::from_engine_data(unprotected.as_ref()).unwrap();
+        assert_eq!(meter.openai_projection(), (600, 384));
+        assert_eq!(meter.msh_usage_headers(), None);
+    }
+
+    #[test]
+    fn public_i32_boundary_values_are_representable() {
+        // T10: 2147483646 and 2147483647 are valid public values and must be
+        // surfaced exactly (T02-style 1h band here).
+        let max = engine_data(json!({
+            "prompt_tokens": 2147483647, "cached_tokens": 2147483646,
+            "cache_write_tokens": 1, "cache_write_ttl_s": 3600
+        }));
+        let meter = CacheWriteMeter::from_engine_data(max.as_ref()).unwrap();
+        assert_eq!(meter.msh_usage_headers(), Some((2147483647, 2147483646, 0, 1)));
+        assert_eq!(meter.anthropic_projection(), (1, 2147483646, 1));
+    }
+
+    #[test]
+    fn public_i32_overflow_rejects_whole_receipt() {
+        // T10: 2147483648 and beyond must not output a confirmed receipt:
+        // no clamping to i32::MAX, no wrapping, no partial header group.
+        for over in [u64::from(MSH_USAGE_VALUE_MAX) + 1, u64::from(u32::MAX), u64::MAX] {
+            let over_p = engine_data(json!({
+                "prompt_tokens": over, "cached_tokens": 0,
+                "cache_write_tokens": 0, "cache_write_ttl_s": 300
+            }));
+            assert!(
+                CacheWriteMeter::from_engine_data(over_p.as_ref()).is_none(),
+                "P={over} must reject the whole receipt"
+            );
+            let over_c = engine_data(json!({
+                "prompt_tokens": 10, "cached_tokens": over,
+                "cache_write_tokens": 10, "cache_write_ttl_s": 300
+            }));
+            assert!(
+                CacheWriteMeter::from_engine_data(over_c.as_ref()).is_none(),
+                "C={over} must reject the whole receipt"
+            );
+            let over_w = engine_data(json!({
+                "prompt_tokens": 10, "cached_tokens": 0,
+                "cache_write_tokens": over, "cache_write_ttl_s": 300
+            }));
+            assert!(
+                CacheWriteMeter::from_engine_data(over_w.as_ref()).is_none(),
+                "W={over} must reject the whole receipt"
+            );
+        }
+        // The applied TTL is NOT part of the public i32 range: a large-but-u32
+        // TTL keeps the receipt billable in the band it selects.
+        let big_ttl = engine_data(json!({
+            "prompt_tokens": 10, "cached_tokens": 0,
+            "cache_write_tokens": 8, "cache_write_ttl_s": 2147483648u64
+        }));
+        let meter = CacheWriteMeter::from_engine_data(big_ttl.as_ref()).unwrap();
+        assert_eq!(meter.applied_ttl_s, 2147483648);
+        assert_eq!(meter.msh_usage_headers(), Some((10, 0, 0, 8)));
     }
 }

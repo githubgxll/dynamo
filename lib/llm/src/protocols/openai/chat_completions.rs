@@ -832,6 +832,28 @@ where
         }
     }
 
+    // Actual protection claim (customer contract): on every usage-bearing
+    // frame — JSON bodies and SSE usage chunks, `prompt_cache_options` at
+    // the top level next to `usage` — report the applied TTL strictly from
+    // the engine receipt, never an echo of the request options. A valid
+    // receipt with a=0 or no receipt at all omits the field: absence stays
+    // "unconfirmed", never a fabricated 5m. The final valid usage frame is
+    // a usage-bearing frame, so it always carries the claim.
+    if let Some(meter) = cache_meter
+        && meter.is_protected()
+        && map.get("usage").is_some_and(serde_json::Value::is_object)
+    {
+        map.insert(
+            "prompt_cache_options".to_string(),
+            serde_json::json!({
+                "mode": "implicit",
+                "ttl": crate::protocols::common::cache_meter::applied_ttl_string(
+                    meter.applied_ttl_s
+                ),
+            }),
+        );
+    }
+
     if let Some(prompt_logprobs) = prompt_logprobs {
         map.insert(
             "prompt_logprobs".to_string(),
@@ -3477,5 +3499,169 @@ mod tests {
             .extract_stop_conditions()
             .expect("Failed to extract stop conditions");
         assert_eq!(stop_conditions.max_thinking_tokens, None);
+    }
+
+    fn usage_stream_chunk(usage: Option<dynamo_protocols::types::CompletionUsage>) -> NvCreateChatCompletionStreamResponse {
+        NvCreateChatCompletionStreamResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
+                id: "chatcmpl-u".to_string(),
+                created: 0,
+                model: "test-model".to_string(),
+                object: "chat.completion.chunk".to_string(),
+                system_fingerprint: None,
+                choices: vec![],
+                service_tier: None,
+                usage,
+            },
+            nvext: None,
+            llm_metrics: None,
+            prompt_logprobs: None,
+            tool_call_completion: Vec::new(),
+            cache_meter: None,
+        }
+    }
+
+    fn unary_response_with_usage(usage: dynamo_protocols::types::CompletionUsage) -> NvCreateChatCompletionResponse {
+        NvCreateChatCompletionResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionResponse {
+                id: "chatcmpl-j".to_string(),
+                created: 0,
+                model: "test-model".to_string(),
+                object: "chat.completion".to_string(),
+                system_fingerprint: None,
+                choices: vec![],
+                service_tier: None,
+                usage: Some(usage),
+            },
+            nvext: None,
+            prompt_logprobs: None,
+            cache_meter: None,
+        }
+    }
+
+    fn meter_from_receipt(receipt: serde_json::Value) -> crate::protocols::common::cache_meter::CacheWriteMeter {
+        crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(Some(&json!({
+            "kv_cache_write": receipt
+        })))
+        .expect("fixture receipt must be valid")
+    }
+
+    #[test]
+    fn chat_actual_ttl_rides_usage_frames_not_content_deltas() {
+        // Protected receipt: the TTL claim rides usage-bearing frames only.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 300
+        }));
+
+        // JSON body: top-level prompt_cache_options next to usage.
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 10,
+            total_tokens: 1010,
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["prompt_cache_options"], json!({"mode": "implicit", "ttl": "5m"}));
+        assert_eq!(wire["usage"]["prompt_tokens"], 1000);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 600);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cache_write_tokens"], 384);
+
+        // SSE usage chunk: same top-level placement, same value.
+        let mut chunk = usage_stream_chunk(Some(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 4,
+            total_tokens: 1004,
+            ..Default::default()
+        }));
+        chunk.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(wire["prompt_cache_options"], json!({"mode": "implicit", "ttl": "5m"}));
+
+        // Content delta frame (no usage): no claim, even with a valid meter.
+        let mut delta = usage_stream_chunk(None);
+        delta.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&delta).unwrap();
+        assert!(wire.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
+    fn chat_actual_ttl_formats_real_seconds_never_price_band() {
+        // 1800s bills at the 1h band but the body reports the real 30m.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 1000, "cached_tokens": 0,
+            "cache_write_tokens": 960, "cache_write_ttl_s": 1800
+        }));
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 1,
+            total_tokens: 1001,
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["prompt_cache_options"]["ttl"], "30m");
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cache_write_tokens"], 960);
+
+        // Exact seconds: 90 → 90s.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 1000, "cached_tokens": 0,
+            "cache_write_tokens": 960, "cache_write_ttl_s": 90
+        }));
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["prompt_cache_options"]["ttl"], "90s");
+    }
+
+    #[test]
+    fn chat_zero_ttl_and_missing_receipt_omit_the_claim_but_keep_real_usage() {
+        // Valid receipt with a=0: real C/W stay in usage, but no protection
+        // may be claimed.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 5,
+            total_tokens: 1005,
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert!(wire.get("prompt_cache_options").is_none());
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 600);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cache_write_tokens"], 384);
+
+        // No receipt at all: the ordinary usage survives untouched and no
+        // claim is invented.
+        response.cache_meter = None;
+        let wire = serde_json::to_value(&response).unwrap();
+        assert!(wire.get("prompt_cache_options").is_none());
+        assert!(wire["usage"]
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("cache_write_tokens"))
+            .is_none());
+    }
+
+    #[test]
+    fn chat_confirmed_zero_write_is_an_explicit_zero() {
+        // Protected, W=0: a measured zero must serialize as 0, never drop.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 1000, "cached_tokens": 960,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 300
+        }));
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 1,
+            total_tokens: 1001,
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cache_write_tokens"], 0);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 960);
+        assert_eq!(wire["prompt_cache_options"]["ttl"], "5m");
     }
 }

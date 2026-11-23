@@ -2949,4 +2949,215 @@ mod tests {
             "reasoning_text"
         );
     }
+
+    fn receipt_meter(
+        receipt: serde_json::Value,
+    ) -> crate::protocols::common::cache_meter::CacheWriteMeter {
+        crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(Some(
+            &serde_json::json!({"kv_cache_write": receipt}),
+        ))
+        .expect("fixture receipt must be valid")
+    }
+
+    /// Extract the JSON data payload of an SSE `Event` from its Debug output
+    /// (axum hides the fields; same approach as `event_type` above).
+    fn event_data_json(event: &Result<Event, anyhow::Error>) -> serde_json::Value {
+        let debug = format!("{:?}", event.as_ref().expect("event serializes"));
+        let marker = "data: ";
+        let start = debug
+            .find(marker)
+            .map(|p| p + marker.len())
+            .expect("no 'data: ' in Event debug output");
+        let rest = &debug[start..];
+        let json_start = rest.find('{').expect("no JSON object after data:");
+        let bytes = rest.as_bytes();
+        let mut depth = 0i32;
+        let mut json_end = bytes.len();
+        for (i, b) in bytes.iter().enumerate().skip(json_start) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        json_end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let raw = rest[json_start..json_end].replace("\\\"", "\"");
+        serde_json::from_str(&raw).expect("valid JSON payload")
+    }
+
+    fn usage_only_chunk(usage: dynamo_protocols::types::CompletionUsage) -> NvCreateChatCompletionStreamResponse {
+        #[allow(deprecated)]
+        NvCreateChatCompletionStreamResponse {
+            inner: dynamo_protocols::types::CreateChatCompletionStreamResponse {
+                id: "chat-1".into(),
+                choices: vec![],
+                created: 0,
+                model: "test".into(),
+                service_tier: None,
+                system_fingerprint: None,
+                object: "chat.completion.chunk".into(),
+                usage: Some(usage),
+            },
+            nvext: None,
+            prompt_logprobs: None,
+            llm_metrics: None,
+            tool_call_completion: Vec::new(),
+            cache_meter: None,
+        }
+    }
+
+    /// Terminal `response.completed` carries the actual TTL from the engine
+    /// receipt — never the request echo — plus the receipt's C/W in usage.
+    #[test]
+    fn test_terminal_completed_carries_actual_ttl_and_receipt_usage() {
+        let mut conv = ResponseStreamConverter::new("test-model".into(), default_params());
+        let _ = conv.emit_start_events();
+
+        let meter = receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 300
+        }));
+        let mut chunk = usage_only_chunk(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 4,
+            total_tokens: 1004,
+            ..Default::default()
+        });
+        chunk.cache_meter = Some(meter);
+        let _ = conv.process_chunk(&chunk);
+
+        let events = conv.emit_end_events();
+        let json = event_data_json(
+            events
+                .iter()
+                .find(|e| event_type(e) == "response.completed")
+                .expect("response.completed present"),
+        );
+
+        assert_eq!(
+            json["response"]["prompt_cache_options"],
+            serde_json::json!({"mode": "implicit", "ttl": "5m"})
+        );
+        assert_eq!(json["response"]["usage"]["input_tokens_details"]["cached_tokens"], 600);
+        assert_eq!(json["response"]["usage"]["input_tokens_details"]["cache_write_tokens"], 384);
+    }
+
+    /// The TTL claim appears on the terminal completed/incomplete events only;
+    /// created/in_progress stay untouched even after the receipt arrived.
+    #[test]
+    fn test_non_terminal_events_never_carry_the_cache_claim() {
+        let mut conv = ResponseStreamConverter::new("test-model".into(), default_params());
+        let meter = receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 3600
+        }));
+        let mut chunk = usage_only_chunk(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 4,
+            total_tokens: 1004,
+            ..Default::default()
+        });
+        chunk.cache_meter = Some(meter);
+        let _ = conv.process_chunk(&chunk);
+
+        let response = conv.make_response(Status::InProgress, vec![]);
+        let event = ResponseStreamEvent::ResponseInProgress(ResponseInProgressEvent {
+            sequence_number: 0,
+            response,
+        });
+        let json = optimized_event_json(&conv, &event);
+        assert!(json["response"].get("prompt_cache_options").is_none());
+    }
+
+    /// A valid receipt with a=0, or no receipt at all, omits the TTL claim on
+    /// the terminal event; the ordinary usage survives untouched.
+    #[test]
+    fn test_terminal_event_omits_claim_for_zero_ttl_or_missing_receipt() {
+        let usage = dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 4,
+            total_tokens: 1004,
+            ..Default::default()
+        };
+
+        let meter = receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        let mut conv = ResponseStreamConverter::new("test-model".into(), default_params());
+        let mut chunk = usage_only_chunk(usage.clone());
+        chunk.cache_meter = Some(meter);
+        let _ = conv.process_chunk(&chunk);
+        let events = conv.emit_end_events();
+        let json = event_data_json(
+            events
+                .iter()
+                .find(|e| event_type(e) == "response.completed")
+                .expect("response.completed present"),
+        );
+        assert!(json["response"].get("prompt_cache_options").is_none());
+        assert_eq!(json["response"]["usage"]["input_tokens_details"]["cache_write_tokens"], 384);
+
+        let mut conv = ResponseStreamConverter::new("test-model".into(), default_params());
+        let _ = conv.process_chunk(&usage_only_chunk(usage));
+        let events = conv.emit_end_events();
+        let json = event_data_json(
+            events
+                .iter()
+                .find(|e| event_type(e) == "response.completed")
+                .expect("response.completed present"),
+        );
+        assert!(json["response"].get("prompt_cache_options").is_none());
+        assert!(
+            json["response"]["usage"].get("input_tokens_details").is_none()
+                || json["response"]["usage"]["input_tokens_details"]
+                    .get("cache_write_tokens")
+                    .is_none()
+        );
+    }
+
+    /// A protected W=0 keeps an explicit integer zero in the terminal usage
+    /// details, and the incomplete terminal carries the same claim (budget
+    /// termination keeps the real receipt, T22).
+    #[test]
+    fn test_terminal_zero_write_and_incomplete_terminal_carry_the_claim() {
+        let meter = receipt_meter(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 960,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 300
+        }));
+        let mut conv = ResponseStreamConverter::new("test-model".into(), default_params());
+        let mut chunk = usage_only_chunk(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 4,
+            total_tokens: 1004,
+            ..Default::default()
+        });
+        chunk.cache_meter = Some(meter);
+        let _ = conv.process_chunk(&chunk);
+        // max_output_tokens reached → response.incomplete, not completed.
+        let _ = conv.process_chunk(&with_finish_reason(
+            text_chunk("hi"),
+            FinishReason::Length,
+        ));
+
+        let events = conv.emit_end_events();
+        let json = event_data_json(
+            events
+                .iter()
+                .find(|e| event_type(e) == "response.incomplete")
+                .expect("response.incomplete present"),
+        );
+        assert_eq!(
+            json["response"]["prompt_cache_options"],
+            serde_json::json!({"mode": "implicit", "ttl": "5m"})
+        );
+        assert_eq!(json["response"]["usage"]["input_tokens_details"]["cache_write_tokens"], 0);
+        assert_eq!(json["response"]["usage"]["input_tokens_details"]["cached_tokens"], 960);
+        assert_eq!(json["response"]["status"], "incomplete");
+    }
 }

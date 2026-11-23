@@ -462,17 +462,20 @@ impl AnthropicStreamConverter {
         chunk: &NvCreateChatCompletionStreamResponse,
         events: &mut Vec<Result<Event, anyhow::Error>>,
     ) {
+        // Capture the engine's prefill cache-write receipt from the first
+        // chunk that carries one; strictly real receipts only (no zero-fill).
+        // This must precede `record_usage` so a chunk that carries both the
+        // first receipt and usage projects the whole breakdown from that one
+        // receipt instead of the legacy decode-side path.
+        if self.cache_meter.is_none() {
+            self.cache_meter = chunk.cache_meter;
+        }
+
         // Replace the initial estimate when the engine reports authoritative
         // usage (typically on the final chunk). This also applies Anthropic's
         // non-overlapping cached-token accounting.
         if let Some(usage) = &chunk.inner.usage {
             self.record_usage(usage);
-        }
-
-        // Capture the engine's prefill cache-write receipt from the first chunk
-        // that carries one; strictly real receipts only (no zero-fill).
-        if self.cache_meter.is_none() {
-            self.cache_meter = chunk.cache_meter;
         }
 
         // Fallback output-token accounting for backends that never populate
@@ -2652,5 +2655,137 @@ mod tests {
             event_types(&end),
             vec!["content_block_stop", "message_delta", "message_stop"]
         );
+    }
+
+    fn test_meter_from_receipt(
+        receipt: serde_json::Value,
+    ) -> crate::protocols::common::cache_meter::CacheWriteMeter {
+        crate::protocols::common::cache_meter::CacheWriteMeter::from_engine_data(Some(
+            &serde_json::json!({"kv_cache_write": receipt}),
+        ))
+        .expect("fixture receipt must be valid")
+    }
+    /// Extract the JSON data payload of an SSE `Event` from its Debug output
+    /// (same approach as the HTTP service tests: axum hides the fields).
+    fn sse_data_json(event: &Event) -> serde_json::Value {
+        let debug = format!("{event:?}");
+        let marker = "data: ";
+        let start = debug
+            .find(marker)
+            .map(|p| p + marker.len())
+            .expect("no 'data: ' in Event debug output");
+        let rest = &debug[start..];
+        let json_start = rest.find('{').expect("no JSON object after data:");
+        let bytes = rest.as_bytes();
+        let mut depth = 0i32;
+        let mut json_end = bytes.len();
+        for (i, b) in bytes.iter().enumerate().skip(json_start) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        json_end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let raw = rest[json_start..json_end].replace("\\\"", "\"");
+        serde_json::from_str(&raw).expect("valid JSON payload")
+    }
+
+    fn terminal_message_delta(conv: &mut AnthropicStreamConverter) -> serde_json::Value {
+        let events = conv.emit_end_events();
+        events
+            .iter()
+            .map(|e| e.as_ref().expect("event serializes"))
+            .find(|e| format!("{e:?}").contains("event: message_delta"))
+            .map(sse_data_json)
+            .expect("message_delta present")
+    }
+
+    /// A chunk carrying both the first prefill receipt and usage must project
+    /// the Messages breakdown from the receipt, not the legacy decode-side
+    /// path: `input_tokens + cache_read + cache_creation` sums back to the
+    /// receipt's P, and the confirmed W=0 stays an explicit zero bucket.
+    #[test]
+    fn test_receipt_and_usage_on_same_chunk_project_from_receipt() {
+        let meter = test_meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 0, "cache_write_ttl_s": 300
+        }));
+        let mut chunk = usage_chunk(1000, Some(600), 7);
+        chunk.cache_meter = Some(meter);
+
+        let mut conv = AnthropicStreamConverter::new("test-model".into(), 19);
+        let mut events = Vec::new();
+        conv.append_chunk_events(&chunk, &mut events);
+
+        assert_eq!(conv.usage.input_tokens, 400);
+        assert_eq!(conv.usage.cache_read_input_tokens, Some(600));
+        assert_eq!(conv.usage.cache_creation_input_tokens, Some(0));
+        assert_eq!(
+            conv.usage.input_tokens
+                + conv.usage.cache_read_input_tokens.unwrap_or(0)
+                + conv.usage.cache_creation_input_tokens.unwrap_or(0),
+            1000,
+            "the three Messages input buckets must sum to P"
+        );
+
+        // Terminal message_delta carries the same confirmed buckets plus the
+        // protected zero-write split (5m=0, 1h=0).
+        let data = terminal_message_delta(&mut conv);
+        assert_eq!(data["usage"]["input_tokens"], 400);
+        assert_eq!(data["usage"]["cache_read_input_tokens"], 600);
+        assert_eq!(data["usage"]["cache_creation_input_tokens"], 0);
+        assert_eq!(
+            data["usage"]["cache_creation"],
+            serde_json::json!({"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}),
+            "a protected W=0 must keep both confirmed zero buckets"
+        );
+    }
+
+    /// A valid receipt with a=0 (protection not granted) keeps the real C/W
+    /// in usage but must not claim the `cache_creation` band breakdown.
+    #[test]
+    fn test_unprotected_receipt_keeps_real_cw_without_band_claim() {
+        let meter = test_meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0
+        }));
+        let mut chunk = usage_chunk(1000, Some(600), 7);
+        chunk.cache_meter = Some(meter);
+
+        let mut conv = AnthropicStreamConverter::new("test-model".into(), 19);
+        let mut events = Vec::new();
+        conv.append_chunk_events(&chunk, &mut events);
+        assert_eq!(conv.usage.cache_read_input_tokens, Some(600));
+        assert_eq!(conv.usage.cache_creation_input_tokens, Some(384));
+        assert_eq!(conv.usage.input_tokens, 16);
+
+        let data = terminal_message_delta(&mut conv);
+
+        assert_eq!(data["usage"]["cache_read_input_tokens"], 600);
+        assert_eq!(data["usage"]["cache_creation_input_tokens"], 384);
+        assert!(
+            data["usage"].get("cache_creation").is_none(),
+            "a=0 must not claim the protected band breakdown"
+        );
+    }
+
+    /// No receipt at all: the legacy path keeps its explicit zero
+    /// `cache_creation_input_tokens` and claims no band breakdown.
+    #[test]
+    fn test_missing_receipt_makes_no_cache_claims() {
+        let mut conv = AnthropicStreamConverter::new("test-model".into(), 19);
+        let mut events = Vec::new();
+        conv.append_chunk_events(&usage_chunk(12, Some(11), 5), &mut events);
+        assert_eq!(conv.usage.cache_creation_input_tokens, Some(0));
+
+        let data = terminal_message_delta(&mut conv);
+        assert_eq!(data["usage"]["cache_creation_input_tokens"], 0);
+        assert!(data["usage"].get("cache_creation").is_none());
     }
 }
