@@ -1,12 +1,12 @@
 # Dingo Runtime 镜像自动化构建说明
 
-本文档说明 `DingoRouter-base` 分支当前的 Runtime 镜像构建流程。默认流程只构建
-基于 `lmsysorg/sglang:v0.5.16-cu130-runtime` 的 SGLang Runtime；standalone
-Dynamo 和 vLLM Runtime 构建能力继续保留，可在手动触发时选择。
+本文档说明 `DingoRouter-k31-1113` 分支当前的 Runtime 镜像构建流程。默认流程只构建
+基于 `registry.hd-04.alayanew.com:8443/openclaw/sglang:codex-bj09-eightfile-86624f14-k31-day0-fork-5a82498b` 的 SGLang Runtime；
+standalone Dynamo 和 vLLM Runtime 构建能力继续保留，可在手动触发时选择。
 
 ## 1. 构建流程
 
-代码推送到 `DingoRouter-base` 或手动触发工作流后，self-hosted Runner 会：
+代码推送到 `DingoRouter-*` 分支或手动触发工作流后，self-hosted Runner 会：
 
 1. 读取并校验 `.github/dingo-images.json`。
 2. 按触发参数生成镜像矩阵；默认配置只包含 SGLang。
@@ -25,7 +25,7 @@ Dynamo 和 vLLM Runtime 构建能力继续保留，可在手动触发时选择�
 6. 在 GitHub Actions Job Summary 中输出最终镜像地址。
 
 `sglang` 配置同时声明 `base_image` 和 `runtime_image`，生成的 Dockerfile 从
-`lmsysorg/sglang:v0.5.16-cu130-runtime` 继承框架环境。手动选择 standalone
+`registry.hd-04.alayanew.com:8443/openclaw/sglang:codex-bj09-eightfile-86624f14-k31-day0-fork-5a82498b` 继承框架环境。手动选择 standalone
 Dynamo 时，Dockerfile 才会直接从 NVIDIA CUDA 基础镜像构建。
 
 ## 2. 相关文件
