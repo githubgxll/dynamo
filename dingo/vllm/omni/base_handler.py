@@ -85,8 +85,11 @@ class BaseOmniHandler(BaseWorkerHandler[Dict[str, Any], Dict[str, Any]]):
         ):
             raise ValueError("explicit diffusion offload config conflicts with legacy offload flags")
         for field, value in dataclasses.asdict(config.diffusion).items():
-            if field == "layerwise_num_gpu_layers" and config.diffusion.diffusion_offload_config is not None:
-                continue  # Removed upstream ingress keyword; no layerwise policy is used.
+            if field == "layerwise_num_gpu_layers" and (
+                config.diffusion.diffusion_offload_config is not None
+                or not config.diffusion.enable_layerwise_offload
+            ):
+                continue  # Only the legacy layerwise policy consumes this keyword.
             if value is not None:
                 omni_kwargs[field] = value
 

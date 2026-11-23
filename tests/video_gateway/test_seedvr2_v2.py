@@ -67,6 +67,13 @@ def test_offload_kwargs_are_forwarded_without_removed_keyword():
     assert result['diffusion_offload_config']==value and 'layerwise_num_gpu_layers' not in result
     cfg.diffusion.enable_cpu_offload=True
     with pytest.raises(ValueError,match='conflicts'):env['_build_omni_kwargs'](None,cfg)
+    cfg.diffusion = C(None, False, False, 1)
+    disabled = env['_build_omni_kwargs'](None, cfg)
+    assert 'layerwise_num_gpu_layers' not in disabled
+    assert 'diffusion_offload_config' not in disabled
+    cfg.diffusion = C(None, False, True, 3)
+    legacy = env['_build_omni_kwargs'](None, cfg)
+    assert legacy['layerwise_num_gpu_layers'] == 3
 
 
 def test_measurement_declares_all_native_rank_sources(tmp_path):
