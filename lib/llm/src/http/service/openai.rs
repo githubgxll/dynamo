@@ -5221,6 +5221,8 @@ async fn chat_completions(
     if canonical != request.inner.model {
         request.inner.model = canonical;
     }
+    // Aliases may not identify the GLM profile at the initial HTTP parse boundary.
+    request.normalize_glm53_options();
     let model = request.inner.model.clone();
     let metric_model = state.manager().metric_model_for(&model).to_string();
 
