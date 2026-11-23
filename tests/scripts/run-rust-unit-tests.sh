@@ -13,6 +13,7 @@ ALL_TESTS=(
   "06-dynamo-kv-hashing|-p dynamo-kv-hashing --lib"
   "07-dynamo-kv-router|-p dynamo-kv-router --lib"
   "08-dynamo-llm|-p dynamo-llm --lib"
+  "08-dynamo-llm-alias|-p dynamo-llm --test http-service test_chat_glm53_alias_normalizes_options_before_validation -- --exact"
   "09-dynamo-memory|-p dynamo-memory --lib"
   "10-dynamo-mocker|-p dynamo-mocker --lib"
   "11-dynamo-mocker-backend|-p dynamo-mocker-backend --bins"

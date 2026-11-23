@@ -4556,3 +4556,95 @@ async fn test_reject_media_disabled_preserves_backend_422_through_http_middlewar
     assert_eq!(svc.engine.take_requests().await.len(), 1);
     svc.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_chat_glm53_alias_normalizes_options_before_validation() {
+    use serde_json::json;
+
+    for primary in ["glm-5.3", "qwen3-8b"] {
+        let chunk: NvCreateChatCompletionStreamResponse = serde_json::from_value(json!({
+            "id": "chatcmpl-alias-test", "object": "chat.completion.chunk",
+            "created": 0, "model": primary,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK"},
+                         "finish_reason": "stop"}]
+        }))
+        .unwrap();
+        let engine = Arc::new(scripted_chat_engine::ScriptedChatEngine::new(
+            (0..6).map(|_| Ok(vec![Annotated::from_data(chunk.clone())])),
+        ));
+        let (listener, port) = bind_random_port().await;
+        let service = HttpService::builder()
+            .port(port)
+            .enable_chat_endpoints(true)
+            .build()
+            .unwrap();
+        let card = ModelDeploymentCard::with_name_only(primary);
+        service
+            .model_manager()
+            .add_chat_completions_model(primary, card.mdcsum(), engine.clone())
+            .unwrap();
+        assert!(
+            service
+                .model_manager()
+                .register_alias("customer-model", primary)
+        );
+        let cancel = CancellationToken::new();
+        let task = service.spawn_with_listener(cancel.clone(), listener).await;
+        wait_for_service_ready(port).await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        for model in [primary, "customer-model"] {
+            for options in [
+                json!({"n": 0}),
+                json!({"logprobs": true, "top_logprobs": 21}),
+                json!({"stream": false, "stream_options": {"include_usage": true}}),
+            ] {
+                let mut body = json!({"model": model,
+                    "messages": [{"role": "user", "content": "hello"}]});
+                body.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                let response = client
+                    .post(format!("http://localhost:{port}/v1/chat/completions"))
+                    .json(&body)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let text = response.text().await.unwrap();
+                let expected = if primary == "glm-5.3" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::BAD_REQUEST
+                };
+                assert_eq!(status, expected, "{body}: {text}");
+                let requests = engine.take_requests().await;
+                if primary != "glm-5.3" {
+                    assert!(requests.is_empty());
+                    continue;
+                }
+                assert_eq!(requests.len(), 1);
+                let request = &requests[0];
+                assert_eq!(request.inner.model, primary);
+                if options.get("n").is_some() {
+                    assert_eq!(request.inner.n, Some(1));
+                } else if options.get("top_logprobs").is_some() {
+                    assert_eq!(request.inner.logprobs, Some(false));
+                    assert!(request.inner.top_logprobs.is_none());
+                } else {
+                    assert!(request.inner.stream_options.is_none());
+                }
+            }
+        }
+        cancel.cancel();
+        timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
