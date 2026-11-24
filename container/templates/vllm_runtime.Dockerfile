@@ -272,14 +272,14 @@ RUN --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.
 {% if device == "cuda" and target not in ("dev", "local-dev") %}
 # Replace upstream vLLM's bundled PyNvVideoCodec and imageio-ffmpeg artifacts
 # with the audited versions in requirements.vllm.txt. The base PyNvVideoCodec
-# wheel bundles a full FFmpeg stack; 2.2.3 is checked against the codec policy.
+# wheel bundles a full FFmpeg stack; check the replacement against the codec policy.
 RUN --mount=type=bind,source=./container/deps/requirements.vllm.txt,target=/tmp/requirements.vllm.txt \
     --mount=type=cache,id=uv-root-{{ context.dynamo.uv_version }},target=/root/.cache/uv,sharing=locked \
     export UV_CACHE_DIR=/root/.cache/uv && \
     uv pip install --system --force-reinstall --no-deps --requirement /tmp/requirements.vllm.txt
 
 RUN --mount=type=bind,source=./container/compliance,target=/tmp/compliance/compliance \
-    PYTHONPATH=/tmp/compliance python3 -m compliance.check_pynvvideocodec --pinned 2.2.3
+    PYTHONPATH=/tmp/compliance python3 -m compliance.check_pynvvideocodec --pinned 2.2.4
 {% endif %}
 
 # Launch-script examples use jq for readable curl output like the upstream omni
