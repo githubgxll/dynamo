@@ -1,0 +1,53 @@
+{
+  "schema": "ic-fa3-kernel/1",
+  "repo": "kernels-community/flash-attn3",
+  "repo_type": "kernel",
+  "revision": "c0a7c25685c2339ebc71a2a2d824b02f93cc725b",
+  "variant": "torch-stable-abi29-cu130-x86_64-linux",
+  "cache_repo": "kernels--kernels-community--flash-attn3",
+  "source_prefix": "https://huggingface.co/kernels/kernels-community/flash-attn3/resolve/c0a7c25685c2339ebc71a2a2d824b02f93cc725b/build/torch-stable-abi29-cu130-x86_64-linux/",
+  "linux_platform": "x86_64",
+  "torch_version": "2.14.0+cu130",
+  "cuda_version": "13.0",
+  "kernels_version": "0.16.1",
+  "license": "BSD-3-Clause",
+  "offline_archive": {
+    "sha256": "f7b0e25d60d786a3e26fd49eba36753edbeea43a50b3e85f837012fe1d515e83",
+    "bytes": 302835507
+  },
+  "files": {
+    "__init__.py": {
+      "bytes": 387,
+      "sha256": "29756640933e2a159cd94a9625eb2ea4268ffa6a80bd3c7bc86b9e1404e09471"
+    },
+    "_flash_attn3_cuda_0f52d9d.abi3.so": {
+      "bytes": 821408256,
+      "sha256": "3e7e7178a8d0c67e197101b4a0d52983a4891d0e4b970316582f4d37ddfb1bac"
+    },
+    "_ops.py": {
+      "bytes": 234,
+      "sha256": "b2410af2284e1fbd550a37edf2918188971d939091bc959c6fcd662fb6324104"
+    },
+    "flash_attn_config.py": {
+      "bytes": 952,
+      "sha256": "bb1a3e7b231c0e2b7fffc603692e11b64e414cc2b34d22bdb4e2938dd5957bfc"
+    },
+    "flash_attn_interface.py": {
+      "bytes": 41297,
+      "sha256": "cb46c3d89606305817ea20eb7b7cc9376b013eeabfd7637a328e7967e1d008d4"
+    },
+    "metadata.json": {
+      "bytes": 964,
+      "sha256": "26ccb38236596e4a53bff1ecc92dbd6c61e7dc1d5cfe6c0818d81ee6d9eb7ecc"
+    },
+    "metadata.json.sigstore": {
+      "bytes": 10427,
+      "sha256": "96c3fec83c06f79c31ccc0fc6d5fdf9ba2bbbd37e6db78ea630108d5ec9dbd96"
+    }
+  },
+  "upstream_license_notice": {
+    "url": "https://raw.githubusercontent.com/Dao-AILab/flash-attention/v2.8.3/LICENSE",
+    "sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+    "text": "BSD 3-Clause License\n\nCopyright (c) 2022, the respective contributors, as shown by the AUTHORS file.\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n* Redistributions of source code must retain the above copyright notice, this\n  list of conditions and the following disclaimer.\n\n* Redistributions in binary form must reproduce the above copyright notice,\n  this list of conditions and the following disclaimer in the documentation\n  and/or other materials provided with the distribution.\n\n* Neither the name of the copyright holder nor the names of its\n  contributors may be used to endorse or promote products derived from\n  this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n"
+  }
+}

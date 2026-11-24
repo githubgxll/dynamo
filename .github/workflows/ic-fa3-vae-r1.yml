@@ -1,0 +1,52 @@
+name: IC FA3 VAE r1 image
+run-name: "ic-fa3-vae-r1 | ${{ github.sha }}"
+on:
+  push:
+    branches: [Dingorouter-H3-vllm-omni-jirx]
+    paths:
+      - 'container/ic-fa3-vae-r1/**'
+      - '.github/scripts/ic_r1_image.py'
+      - '.github/workflows/ic-fa3-vae-r1.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ic-fa3-vae-r1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.event.head_commit.message == 'build IC FA3 VAE r1 [ic-fa3-vae-r1]'
+    runs-on: [self-hosted, linux, x64, dingo]
+    timeout-minutes: 150
+    env:
+      EVIDENCE: .ic-image-evidence/ic-r1-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/ic_r1_image.py
+            container/ic-fa3-vae-r1/
+          sparse-checkout-cone-mode: false
+          lfs: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: registry.hd-04.alayanew.com:8443
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          driver: docker
+      - name: Build or reuse the exact IC worker, validate offline and publish
+        run: python3 -B .github/scripts/ic_r1_image.py "$EVIDENCE"
+      - name: Preserve build and publication evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: ic-fa3-vae-r1-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE }}/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn
