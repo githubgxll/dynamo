@@ -170,6 +170,13 @@ jobs:
             --platform "${PLATFORM}" \
             --builder-image "${BUILDER_IMAGE}"
 
+      - name: Check codec pins in rendered Dockerfile
+        if: matrix.framework == 'vllm' || matrix.framework == 'sglang'
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: python3 tests/dependencies/test_pynvvideocodec_spec.py "${FRAMEWORK}" "${DOCKERFILE}"
+
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:

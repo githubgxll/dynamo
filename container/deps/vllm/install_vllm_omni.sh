@@ -21,7 +21,7 @@ trap cleanup EXIT
 
 # Print name==installed-version for each installed package named in a list file.
 freeze_installed() {
-python3 - "$1" <<'PY'
+python3 - "$1" "${VLLM_OMNI_VERSION}" <<'PY'
 import importlib.metadata as md
 from pathlib import Path
 import sys
