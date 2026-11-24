@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
@@ -76,6 +77,31 @@ DEFAULT_SGLANG_MAX_TOKENS: int = 8192
 # inside the response nvext; the Rust serializer promotes it to a top-level
 # `sglext` field on the wire. Clients never see this key.
 _INTERNAL_SGLEXT_KEY = "__dynamo_internal_sglext"
+
+# Only this Decode admission error is safe to expose. Other ValueErrors from
+# the routed stream can contain private backend diagnostics.
+_CONTEXT_OVERFLOW = re.compile(
+    r"InvalidRequest: ValueError: Requested token count exceeds the model's "
+    r"maximum context length of ([0-9]{1,20}) tokens\. "
+    r"You requested a total of ([0-9]{1,20}) tokens: "
+    r"([0-9]{1,20}) tokens from the input messages and "
+    r"([0-9]{1,20}) tokens for the completion\. "
+    r"Please reduce the number of tokens in the input messages or the "
+    r"completion to fit within the limit\."
+)
+
+
+def _public_context_overflow(exc: ValueError) -> str | None:
+    match = _CONTEXT_OVERFLOW.fullmatch(str(exc))
+    if match is None:
+        return None
+    limit, total, prompt, budget = map(int, match.groups())
+    if total != prompt + budget or total <= limit:
+        return None
+    return (
+        f"Requested {total} tokens ({prompt} input + {budget} completion); "
+        f"the model context limit is {limit}. Reduce the input or completion budget."
+    )
 
 
 def _cached_tokens_details_from_engine_data(
@@ -1320,7 +1346,20 @@ class SglangProcessor:
                 else:
                     yield envelope
 
-            async for dynamo_response in dynamo_stream:
+            iterator = aiter(dynamo_stream)
+            first_read = True
+            while True:
+                try:
+                    dynamo_response = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                except ValueError as exc:
+                    if first_read:
+                        message = _public_context_overflow(exc)
+                        if message is not None:
+                            raise InvalidArgument(message) from exc
+                    raise
+                first_read = False
                 if dynamo_response.is_error():
                     comments = dynamo_response.comments() or []
                     message = "; ".join(comments) or "unknown routed_engine error"

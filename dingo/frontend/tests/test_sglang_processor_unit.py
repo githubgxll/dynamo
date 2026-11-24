@@ -26,7 +26,7 @@ from _tool_guidance_parity import (
     parity_tool,
     tool_choice_value,
 )
-from dynamo.llm.exceptions import InvalidArgument
+from dynamo.llm.exceptions import InvalidArgument, Unknown
 from jinja2.exceptions import TemplateError, UndefinedError
 from sglang.srt.constrained.reasoner_grammar_backend import ReasonerGrammarObject
 from sglang.srt.constrained.xgrammar_backend import (
@@ -5473,6 +5473,62 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             assert str(error.value) == message
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
+
+        asyncio.run(check())
+
+    @pytest.mark.parametrize(
+        "total,budget,suffix,after_output,expected",
+        [
+            (1048602, 1048576, "", False, InvalidArgument),
+            (1048602, 1048576, " private backend detail", False, Unknown),
+            (1048601, 1048576, "", False, Unknown),  # inconsistent sum
+            (1048576, 1048550, "", False, Unknown),  # not over the limit
+            (1048602, 1048576, "", True, Unknown),
+        ],
+    )
+    def test_decode_context_overflow(self, total, budget, suffix, after_output, expected):
+        failure = ValueError(
+            "InvalidRequest: ValueError: Requested token count exceeds the model's "
+            f"maximum context length of 1048576 tokens. You requested a total of "
+            f"{total} tokens: 26 tokens from the input messages and {budget} tokens "
+            "for the completion. Please reduce the number of tokens in the input "
+            f"messages or the completion to fit within the limit.{suffix}"
+        )
+
+        class Engine:
+            async def generate(self, preprocessed, **kwargs):
+                async def responses():
+                    if after_output:
+                        yield FakeRoutedItem({"token_ids": [ord("A")]})
+                    raise failure
+
+                return responses()
+
+        async def check():
+            tok = self.ByteTokenizer()
+            processor = SglangProcessor(
+                tokenizer=tok,
+                routed_engine=Engine(),
+                tool_call_parser_name=None,
+                reasoning_parser_name=None,
+                eos_token_ids=None,
+            )
+            post = SglangStreamingPostProcessor(
+                tokenizer=tok, tool_call_parser=None, reasoning_parser=None
+            )
+            stream = processor._generate_and_stream(
+                "req", {"model": "test"}, {}, [], post
+            )
+            if after_output:
+                first = await anext(stream)
+                assert first["data"]["choices"][0]["delta"]["content"] == "A"
+            with pytest.raises(expected) as error:
+                await anext(stream)
+            if expected is InvalidArgument:
+                assert str(error.value) == (
+                    "Requested 1048602 tokens (26 input + 1048576 completion); "
+                    "the model context limit is 1048576. Reduce the input or completion budget."
+                )
 
         asyncio.run(check())
 

@@ -55,7 +55,10 @@ tool result. The router's reasoning parser alone does not resolve this.
 When validating requests without an explicit output limit, leave room for the
 8192-token default completion in the configured engine context window. An
 8192-token context plus a nonempty prompt can otherwise fail SGLang's length
-validation before generation starts.
+validation before generation starts. When Decode rejects the prompt plus the
+completion budget with its total-context-length error before the first result,
+the router returns HTTP 400 with the input count, completion budget and context
+limit. This also applies to streaming chat: no successful SSE stream is opened.
 
 ## GLM-5.3 malformed historical tool arguments
 
