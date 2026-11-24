@@ -641,6 +641,18 @@ assert eps, 'modelexpress vllm.general_plugins entry point not found'; \
 [ep.load()() for ep in eps]"
 {% endif %}
 
+{% if device == "cuda" and context.vllm[device_key].vllm_omni_ref == "v0.34.0" %}
+# Validate the H3-Image worker contract without loading weights or requiring a GPU.
+RUN python3 - <<'PYIMAGE'
+from importlib.metadata import version
+from vllm_omni.diffusion.model_metadata import get_diffusion_model_metadata
+
+for package in ("vllm", "vllm-omni"):
+    assert version(package).split("+")[0] == "0.34.0", (package, version(package))
+metadata = get_diffusion_model_metadata("MiniMaxH3ImagePipeline")
+assert metadata.supports_multimodal_inputs and metadata.max_multimodal_image_inputs == 16, metadata
+PYIMAGE
+{% endif %}
 {% if has_transformers_pin -%}
 # Check that later package layers preserve the Omni-compatible versions.
 RUN {{ python_executable }} - "${TRANSFORMERS_VERSION}" "${TOKENIZERS_VERSION}" <<'PY'
