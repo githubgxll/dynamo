@@ -456,8 +456,6 @@ RUN set -eu; \
 # Ref2VA requires the distro CLI's libx264rgb lossless path, not the
 # codec-restricted in-tree CLI checked above.
 ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
-RUN --mount=type=bind,source=./container/deps/vllm/validate_media_probe.py,target=/tmp/validate_media_probe.py,readonly \
-    python3 /tmp/validate_media_probe.py
 {% endif %}
 
 {% if device == "cuda" and variant != "enterprise" %}{# The enterprise base's own PyNvVideoCodec is kept as shipped. #}
