@@ -13,7 +13,7 @@ RUN --network=none /usr/bin/python3 -B /opt/ic-r1/verify_image.py --unpack /tmp/
 FROM parent
 COPY --from=payload /opt/ic-fa3-cache/ /opt/ic-fa3-cache/
 COPY --from=payload /opt/ic-r1/ /opt/ic-r1/
-ENV PYTHONPATH=/opt/ic-r1/source:${PYTHONPATH} \
+ENV PYTHONPATH=/opt/ic-r1/source \
     KERNELS_CACHE=/opt/ic-fa3-cache \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \

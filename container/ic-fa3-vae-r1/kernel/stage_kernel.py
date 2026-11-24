@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-from importlib import metadata
+from importlib import metadata, util
 import json
 import os
 from pathlib import Path
@@ -14,11 +14,16 @@ import sys
 from tempfile import TemporaryDirectory
 import zipfile
 
-from download import acquire, valid
-
-
 LOCK_PATH = Path(__file__).with_name("lock.json")
 LIBRARY = "_flash_attn3_cuda_0f52d9d.abi3.so"
+
+# The parent image enables Python safe-path mode. Load the shipped helper by
+# its exact file path, regardless of the working directory or PYTHONPATH.
+spec = util.spec_from_file_location("_ic_fa3_download", Path(__file__).resolve().with_name("download.py"))
+if spec is None or spec.loader is None:
+    raise ImportError("Cannot load the bundled FA3 downloader")
+download = util.module_from_spec(spec)
+spec.loader.exec_module(download)
 
 
 def require(value, message):
@@ -42,7 +47,7 @@ def cache_directory(path):
 
 def extract_archive(archive, directory, lock):
     source = lock["offline_archive"]
-    require(valid(archive, source["sha256"], source["bytes"]), "Local FA3 ZIP differs from the H100 probe archive")
+    require(download.valid(archive, source["sha256"], source["bytes"]), "Local FA3 ZIP differs from the H100 probe archive")
     with zipfile.ZipFile(archive) as package:
         infos = package.infolist()
         expected = lock["files"]
@@ -58,7 +63,7 @@ def verify_tree(path, lock):
     files = lock["files"]
     require({p.name for p in path.iterdir()} == set(files), "Unexpected files in kernel variant")
     for name, row in files.items():
-        require(valid(path / name, row["sha256"], row["bytes"]), "Incorrect FA3 file size or SHA256: " + name)
+        require(download.valid(path / name, row["sha256"], row["bytes"]), "Incorrect FA3 file size or SHA256: " + name)
     upstream = json.loads((path / "metadata.json").read_bytes())
     expected = {name: base64.b64encode(bytes.fromhex(row["sha256"])).decode("ascii")
                 for name, row in files.items() if name not in {"metadata.json", "metadata.json.sigstore"}}
@@ -81,7 +86,7 @@ def install(cache, lock, archive):
         staged.mkdir(mode=0o755)
         if archive is None:
             for name, row in lock["files"].items():
-                acquire(lock["source_prefix"] + name, staged / name, row["sha256"], row["bytes"])
+                download.acquire(lock["source_prefix"] + name, staged / name, row["sha256"], row["bytes"])
         else:
             extract_archive(archive, staged, lock)
         verify_tree(staged, lock)
