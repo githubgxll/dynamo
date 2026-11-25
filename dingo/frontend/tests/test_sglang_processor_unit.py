@@ -448,6 +448,68 @@ class TestBuildDynamoPreproc:  # FRONTEND.7 — worker subprocess preproc constr
         assert result["routing"] is None
 
     @pytest.mark.router
+    @pytest.mark.parametrize(
+        "constraints",
+        [
+            {"required_taints": ["lane/GL"]},
+            {"preferred_taints": {"lane/S": 0.5}},
+            {
+                "required_taints": ["lane/BL"],
+                "preferred_taints": {"capacity/fast": 0.25},
+            },
+            {},
+        ],
+    )
+    def test_routing_constraints_are_projected(self, constraints):
+        request = {
+            "nvext": {
+                "routing_constraints": constraints,
+                "prefill_worker_id": 7,
+                "prefill_dp_rank": 0,
+                "cache_salt": "tenant-a",
+                "agent_hints": {"priority": 10, "strict_priority": 2},
+            }
+        }
+        original = copy.deepcopy(request)
+
+        result = _build_dynamo_preproc(request, [1], "test", None)
+
+        assert result["routing"] == {
+            "routing_constraints": constraints,
+            "prefill_worker_id": 7,
+            "prefill_dp_rank": 0,
+            "cache_salt": "tenant-a",
+            "priority": 10,
+            "priority_jump": 10.0,
+            "strict_priority": 2,
+        }
+        assert json.loads(json.dumps(result))["routing"] == result["routing"]
+        assert request == original
+
+    @pytest.mark.router
+    def test_null_routing_constraints_are_omitted(self):
+        result = _build_dynamo_preproc(
+            {"nvext": {"routing_constraints": None}}, [1], "test", None
+        )
+        assert result["routing"] is None
+
+    @pytest.mark.router
+    def test_existing_routing_overrides_projected_constraints(self):
+        request = {
+            "nvext": {"routing_constraints": {"required_taints": ["lane/GL"]}},
+            "routing": {
+                "routing_constraints": {"required_taints": ["lane/S"]},
+                "decode_worker_id": 9,
+            },
+        }
+        original = copy.deepcopy(request)
+
+        result = _build_dynamo_preproc(request, [1], "test", None)
+
+        assert result["routing"] == request["routing"]
+        assert request == original
+
+    @pytest.mark.router
     def test_worker_routing_preserves_priority_and_explicit_overrides(self):
         request = {
             "nvext": {

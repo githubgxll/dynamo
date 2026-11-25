@@ -692,7 +692,7 @@ def _build_dynamo_preproc(
         _routing_from_agent_hints(nvext) if isinstance(nvext, dict) else None
     )
     if isinstance(nvext, dict):
-        # Preserve explicit targets for the router to resolve in the current phase.
+        # Preserve routing constraints and explicit targets for the current phase.
         # Rank zero is a valid target; only absent/null values are omitted.
         worker_routing = {
             key: nvext[key]
@@ -702,6 +702,7 @@ def _build_dynamo_preproc(
                 "prefill_worker_id",
                 "dp_rank",
                 "prefill_dp_rank",
+                "routing_constraints",
             )
             if nvext.get(key) is not None
         }

@@ -292,6 +292,7 @@ pub const HEADER_DP_RANK: &str = "x-dynamo-dp-rank";
 pub const HEADER_PREFILL_DP_RANK: &str = "x-dynamo-prefill-dp-rank";
 pub const HEADER_REQUEST_PRIORITY: &str = "x-dynamo-request-priority";
 pub const HEADER_REQUEST_STRICT_PRIORITY: &str = "x-dynamo-request-strict-priority";
+pub const HEADER_SMG_PRIORITY: &str = "x-smg-priority";
 pub const HEADER_TENANT_ID: &str = "x-tenant-id";
 // Compatibility aliases for the original unprefixed names. Future agents may remove these after
 // the deprecation window.
@@ -326,6 +327,7 @@ pub fn has_non_cache_salt_routing_headers(headers: &HeaderMap) -> bool {
         HEADER_PREFILL_DP_RANK_ALIAS,
         HEADER_REQUEST_PRIORITY,
         HEADER_REQUEST_STRICT_PRIORITY,
+        HEADER_SMG_PRIORITY,
     ]
     .iter()
     .any(|header| headers.contains_key(*header))
@@ -377,8 +379,10 @@ pub fn session_affinity_from_headers(headers: &HeaderMap) -> Option<SessionAffin
 /// - `x-dynamo-prefill-dp-rank` -> `prefill_dp_rank`
 /// - `x-dynamo-request-priority` -> `agent_hints.priority`
 /// - `x-dynamo-request-strict-priority` -> `agent_hints.strict_priority`
+/// - `x-smg-priority` -> `agent_hints.strict_priority` (fallback only)
 ///
-/// Routing headers take priority over existing nvext values when present.
+/// Native routing headers take priority over existing nvext values when present.
+/// The SMG alias fills only a missing strict priority after native header/body resolution.
 /// If no headers are present, returns the original nvext unchanged.
 pub fn apply_header_routing_overrides(nvext: Option<NvExt>, headers: &HeaderMap) -> Option<NvExt> {
     let worker_id = headers
@@ -417,12 +421,28 @@ pub fn apply_header_routing_overrides(nvext: Option<NvExt>, headers: &HeaderMap)
     // `resolve_request_priority`.
     let priority = priority_header.and_then(|s| s.trim().parse::<i32>().ok());
     let strict_priority = strict_priority_header.and_then(|s| s.trim().parse::<u32>().ok());
+    // Compatibility with the gateway's SMG interactive/default/bulk profile.
+    // Match SMG's case/whitespace handling and unknown-value fallback without allocating.
+    let smg_strict_priority = headers
+        .get(HEADER_SMG_PRIORITY)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            let value = value.trim();
+            if value.eq_ignore_ascii_case("interactive") {
+                2
+            } else if value.eq_ignore_ascii_case("bulk") {
+                0
+            } else {
+                1
+            }
+        });
     if worker_id.is_none()
         && prefill_id.is_none()
         && dp_rank.is_none()
         && prefill_dp_rank.is_none()
         && priority.is_none()
         && strict_priority.is_none()
+        && smg_strict_priority.is_none()
     {
         return nvext;
     }
@@ -441,7 +461,7 @@ pub fn apply_header_routing_overrides(nvext: Option<NvExt>, headers: &HeaderMap)
     if let Some(rank) = prefill_dp_rank {
         ext.prefill_dp_rank = Some(rank);
     }
-    if priority.is_some() || strict_priority.is_some() {
+    if priority.is_some() || strict_priority.is_some() || smg_strict_priority.is_some() {
         // Bake the effective header-over-body priority into the body.
         let resolved = resolve_request_priority(
             ext.agent_hints.as_ref(),
@@ -450,9 +470,34 @@ pub fn apply_header_routing_overrides(nvext: Option<NvExt>, headers: &HeaderMap)
         );
         let hints = ext.agent_hints.get_or_insert_with(AgentHints::default);
         hints.priority = resolved.priority;
-        hints.strict_priority = resolved.strict_priority;
+        hints.strict_priority = resolved.strict_priority.or(smg_strict_priority);
     }
     Some(ext)
+}
+
+/// Normalize the SMG-compatible top-level OpenAI `priority` into canonical hints.
+/// Native body priority wins; native HTTP headers are applied afterwards by the
+/// frontend NvExt policy. Null is absent; other values must fit a signed i32.
+/// Consume the alias so neither processor forwards it as an unsupported field.
+pub fn normalize_smg_body_priority(
+    nvext: &mut Option<NvExt>,
+    unsupported_fields: &mut HashMap<String, serde_json::Value>,
+) -> anyhow::Result<()> {
+    let Some(value) = unsupported_fields.remove("priority") else {
+        return Ok(());
+    };
+    let priority = serde_json::from_value::<Option<i32>>(value).map_err(|err| {
+        anyhow::anyhow!("priority must be a signed 32-bit integer or null: {err}")
+    })?;
+    if let Some(priority) = priority {
+        nvext
+            .get_or_insert_with(NvExt::default)
+            .agent_hints
+            .get_or_insert_with(AgentHints::default)
+            .priority
+            .get_or_insert(priority);
+    }
+    Ok(())
 }
 
 /// Apply the `x-tenant-id` cache-salt override independently of other NvExt features.
@@ -1365,6 +1410,155 @@ mod tests {
         assert_eq!(hints.priority, Some(-3));
         assert_eq!(hints.strict_priority, Some(2));
         assert_eq!(hints.osl, Some(99));
+    }
+
+    #[test]
+    fn smg_priority_header_classes_and_fallback() {
+        for (value, expected) in [
+            ("interactive", 2),
+            ("default", 1),
+            ("bulk", 0),
+            (" INTERACTIVE ", 2),
+            ("BuLk", 0),
+            ("unknown", 1),
+            ("", 1),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(HEADER_SMG_PRIORITY, value.parse().unwrap());
+            let ext = apply_frontend_nvext_policy(None, &headers, true).unwrap();
+            let hints = ext.agent_hints.unwrap();
+            assert_eq!(hints.strict_priority, Some(expected), "{value}");
+            assert_eq!(hints.priority, None);
+            assert!(has_non_cache_salt_routing_headers(&headers));
+            assert!(apply_frontend_nvext_policy(None, &headers, false).is_none());
+        }
+        assert!(apply_header_routing_overrides(None, &HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn smg_priority_native_strict_priority_wins_per_field() {
+        for (body, header, expected) in [
+            (None, None, 2),
+            (Some(0), None, 0),
+            (Some(4), Some("0"), 0),
+            (Some(4), Some("7"), 7),
+            (Some(4), Some("invalid"), 4),
+            (None, Some("-1"), 2),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(HEADER_SMG_PRIORITY, "interactive".parse().unwrap());
+            headers.insert(HEADER_REQUEST_PRIORITY, "-3".parse().unwrap());
+            if let Some(header) = header {
+                headers.insert(HEADER_REQUEST_STRICT_PRIORITY, header.parse().unwrap());
+            }
+            let ext = NvExt {
+                agent_hints: Some(AgentHints {
+                    strict_priority: body,
+                    priority: Some(5),
+                    osl: Some(99),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let hints = apply_header_routing_overrides(Some(ext), &headers)
+                .unwrap()
+                .agent_hints
+                .unwrap();
+            assert_eq!(hints.strict_priority, Some(expected));
+            assert_eq!(hints.priority, Some(-3));
+            assert_eq!(hints.osl, Some(99));
+        }
+    }
+
+    #[test]
+    fn smg_priority_body_validates_type_and_range() {
+        use serde_json::json;
+
+        for value in [
+            json!(10),
+            json!(5),
+            json!(0),
+            json!(i32::MIN),
+            json!(i32::MAX),
+        ] {
+            let mut fields = HashMap::from([("priority".to_string(), value.clone())]);
+            let mut ext = None;
+            normalize_smg_body_priority(&mut ext, &mut fields).unwrap();
+            assert!(fields.is_empty());
+            let ext = ext.unwrap();
+            assert_eq!(
+                ext.agent_hints.unwrap().priority,
+                value.as_i64().map(|p| p as i32)
+            );
+        }
+        for value in [
+            json!(2147483648_i64),
+            json!(-2147483649_i64),
+            json!(1.5),
+            json!("10"),
+            json!(true),
+            json!([]),
+            json!({}),
+        ] {
+            let mut fields = HashMap::from([("priority".to_string(), value)]);
+            let mut ext = None;
+            assert!(normalize_smg_body_priority(&mut ext, &mut fields).is_err());
+            assert!(ext.is_none());
+        }
+        for mut fields in [
+            HashMap::new(),
+            HashMap::from([("priority".to_string(), json!(null))]),
+        ] {
+            let mut ext = None;
+            normalize_smg_body_priority(&mut ext, &mut fields).unwrap();
+            assert!(ext.is_none());
+            assert!(fields.is_empty());
+        }
+    }
+
+    #[test]
+    fn smg_priority_body_native_precedence_and_nvext_gate() {
+        use serde_json::json;
+
+        for native in [None, Some(0), Some(5)] {
+            for header in [None, Some("-3"), Some("invalid")] {
+                for enabled in [true, false] {
+                    let mut ext = Some(NvExt {
+                        cache_salt: Some("tenant-a".to_string()),
+                        agent_hints: Some(AgentHints {
+                            priority: native,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    });
+                    let mut fields = HashMap::from([
+                        ("priority".to_string(), json!(10)),
+                        ("unrelated".to_string(), json!(true)),
+                    ]);
+                    normalize_smg_body_priority(&mut ext, &mut fields).unwrap();
+                    assert!(!fields.contains_key("priority"));
+                    assert_eq!(fields.get("unrelated"), Some(&json!(true)));
+                    let mut headers = HeaderMap::new();
+                    headers.insert(HEADER_SMG_PRIORITY, "interactive".parse().unwrap());
+                    if let Some(header) = header {
+                        headers.insert(HEADER_REQUEST_PRIORITY, header.parse().unwrap());
+                    }
+                    let ext = apply_frontend_nvext_policy(ext, &headers, enabled).unwrap();
+                    assert_eq!(ext.cache_salt.as_deref(), Some("tenant-a"));
+                    if enabled {
+                        let expected = header
+                            .and_then(|h| h.parse::<i32>().ok())
+                            .or(native)
+                            .unwrap_or(10);
+                        let encoded = serde_json::to_value(&ext).unwrap();
+                        assert_eq!(encoded["agent_hints"]["priority"], expected);
+                        assert_eq!(encoded["agent_hints"]["strict_priority"], 2);
+                    } else {
+                        assert!(!ext.has_non_cache_salt_fields());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -66,12 +66,40 @@ Routing fields can also be set via HTTP headers, which take priority over `nvext
 | `x-dynamo-prefill-instance-id` | `prefill_worker_id` |
 | `x-dynamo-dp-rank` | `dp_rank` |
 | `x-dynamo-prefill-dp-rank` | `prefill_dp_rank` |
+| `x-dynamo-request-priority` | `agent_hints.priority` |
+| `x-dynamo-request-strict-priority` | `agent_hints.strict_priority` |
 | `x-tenant-id` | `cache_salt` |
 
 > [!WARNING]
 > The unprefixed forms (`x-worker-instance-id`, `x-prefill-instance-id`, `x-dp-rank`,
 > `x-data-parallel-rank`, and `x-prefill-dp-rank`) are compatibility aliases planned for future
 > deprecation. Use the `x-dynamo-*` headers for new integrations.
+
+### SMG priority compatibility
+
+On `/v1/chat/completions` and `/v1/completions`, a top-level `"priority": 10`
+is normalized to `nvext.agent_hints.priority` before either the Dynamo or Python
+processor runs. Values must fit a signed 32-bit integer; `null` means omitted.
+Invalid values return HTTP 400, including when a native priority is also present.
+
+The `x-smg-priority` header supplies a fallback `agent_hints.strict_priority`:
+
+| Header value | Strict priority |
+|---|---|
+| `interactive` | `2` |
+| `default` | `1` |
+| `bulk` | `0` |
+
+Values are case-insensitive and trimmed. Unknown values, including an empty value,
+use `1`; an absent header leaves the tier unchanged. This compatibility profile
+covers the three gateway traffic classes above.
+
+Precedence is independent for each field: a valid `x-dynamo-request-*` header wins,
+then the native `nvext.agent_hints` field, then the SMG-compatible input. Both aliases
+obey the frontend NvExt switch; disabling NvExt drops their scheduling effects.
+They reuse Dynamo's existing queue and backend priority behavior. Queueing must be
+enabled with a priority-aware policy (`fcfs` or `wspt`); `edf` ignores strict tiers.
+The aliases do not add SMG reserved capacity or preemption.
 
 ### Cache salt and tenant isolation
 

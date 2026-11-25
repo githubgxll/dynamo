@@ -67,7 +67,8 @@ use crate::preprocessor::{
 use crate::protocols::common::extensions::{
     AGENT_CONTEXT_CONTEXT_KEY, AgentContext, InputTrigger, NvExt as CommonNvExt,
     SESSION_AFFINITY_CONTEXT_KEY, SessionAffinityId, agent_context_from_headers,
-    apply_frontend_nvext_policy, has_non_cache_salt_routing_headers, session_affinity_from_headers,
+    apply_frontend_nvext_policy, has_non_cache_salt_routing_headers, normalize_smg_body_priority,
+    session_affinity_from_headers,
 };
 use crate::protocols::common::input_trigger::{
     classify_chat_request, classify_completion_request, classify_response_request,
@@ -2047,6 +2048,8 @@ async fn handler_completions(
 ) -> Result<Response, ErrorResponse> {
     let body = read_json_request_body(&headers, body).await?;
     let mut request: NvCreateCompletionRequest = parse_json_request("completions", &body)?;
+    normalize_smg_body_priority(&mut request.nvext, &mut request.unsupported_fields)
+        .map_err(ErrorMessage::bad_request)?;
     if *FORCE_INCLUDE_USAGE && request.inner.stream.unwrap_or(false) {
         delta_common::force_include_usage(&mut request.inner.stream_options);
     }
@@ -3398,6 +3401,13 @@ async fn handler_chat_completions(
                 return Err(error);
             }
         };
+    if let Err(error) =
+        normalize_smg_body_priority(&mut request.nvext, &mut request.unsupported_fields)
+    {
+        let error = ErrorMessage::bad_request(error);
+        terminal.finish(terminal_outcome_for_error_response(&error));
+        return Err(error);
+    }
     request.normalize_glm53_options();
     if *FORCE_INCLUDE_USAGE && request.inner.stream.unwrap_or(false) {
         delta_common::force_include_usage(&mut request.inner.stream_options);
@@ -7934,6 +7944,70 @@ pub fn audios_router(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smg_priority_chat_and_completion_ingress_normalize_before_processors() {
+        use serde_json::json;
+
+        // Both engine paths receive the same canonical request. Serializing it is
+        // also the boundary used to hand requests to a Python processor.
+        for chat in [true, false] {
+            for enabled in [true, false] {
+                for native in [false, true] {
+                    let mut payload = if chat {
+                        json!({"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]})
+                    } else {
+                        json!({"model": "kimi-k3", "prompt": "hi"})
+                    };
+                    payload["priority"] = json!(10);
+                    payload["nvext"] = json!({"cache_salt": "tenant-a"});
+                    if native {
+                        payload["nvext"]["agent_hints"] =
+                            json!({"priority": 0, "strict_priority": 0});
+                    }
+                    let mut headers = HeaderMap::new();
+                    headers.insert("x-smg-priority", "interactive".parse().unwrap());
+                    let check =
+                        |nvext: &mut Option<NvExt>,
+                         fields: &mut HashMap<String, serde_json::Value>| {
+                            normalize_smg_body_priority(nvext, fields).unwrap();
+                            assert!(!fields.contains_key("priority"));
+                            let ext = apply_frontend_nvext_policy(nvext.take(), &headers, enabled)
+                                .unwrap();
+                            assert_eq!(ext.cache_salt.as_deref(), Some("tenant-a"));
+                            if enabled {
+                                let hints = ext.agent_hints.as_ref().unwrap();
+                                assert_eq!(hints.priority, Some(if native { 0 } else { 10 }));
+                                assert_eq!(hints.strict_priority, Some(if native { 0 } else { 2 }));
+                            } else {
+                                assert!(ext.agent_hints.is_none());
+                            }
+                            *nvext = Some(ext);
+                        };
+                    let serialized = if chat {
+                        let mut request: NvCreateChatCompletionRequest =
+                            serde_json::from_value(payload).unwrap();
+                        check(&mut request.nvext, &mut request.unsupported_fields);
+                        assert!(request.validate().is_ok());
+                        serde_json::to_value(request).unwrap()
+                    } else {
+                        let mut request: NvCreateCompletionRequest =
+                            serde_json::from_value(payload).unwrap();
+                        check(&mut request.nvext, &mut request.unsupported_fields);
+                        assert!(request.validate().is_ok());
+                        serde_json::to_value(request).unwrap()
+                    };
+                    assert!(serialized.get("priority").is_none());
+                    if enabled {
+                        assert_eq!(
+                            serialized["nvext"]["agent_hints"]["priority"],
+                            if native { 0 } else { 10 }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn glm53_report_option_regressions() {
         use crate::engines::ValidateRequest;
