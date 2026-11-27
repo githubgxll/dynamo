@@ -15,6 +15,7 @@ from dingo.common.configuration.groups.frontend_decoding_args import (
 )
 from dingo.common.configuration.utils import add_argument, add_negatable_bool_argument
 from dingo.common.constants import EmbeddingTransferMode
+from dingo.common.model_taints import resolve_startup_model_taints
 
 from . import __version__
 
@@ -56,6 +57,18 @@ class DynamoSGLangArgGroup(ArgGroup):
         )
 
         g = parser.add_argument_group("Dynamo SGLang Options")
+
+        add_argument(
+            g,
+            flag_name="--model-taints",
+            env_var="DYN_MODEL_TAINTS",
+            default=None,
+            help="Initial model routing taints: a JSON string array, an exact "
+            "POD_NAME-to-array JSON map, or '@/path/to/taints.json'. Applied "
+            "before model registration on every worker start. A map requires "
+            "POD_NAME and an entry for this Pod. Runtime taint updates do not "
+            "write back to this startup configuration.",
+        )
 
         add_negatable_bool_argument(
             g,
@@ -217,6 +230,9 @@ class DynamoSGLangConfig(ConfigBase):
 
     use_sglang_tokenizer: bool
     gateway_workers: Optional[int] = None
+    model_taints: Optional[str] = None
+    # Validated startup snapshot; None preserves existing unconfigured behavior.
+    startup_model_taints: Optional[List[str]] = None
     # Internal roles derived from the canonical multimodal arguments in args.py.
     multimodal_encode_worker: bool = False
     multimodal_worker: bool = False
@@ -243,6 +259,7 @@ class DynamoSGLangConfig(ConfigBase):
 
     def validate(self) -> None:
         _reject_removed_multimodal_env_vars()
+        self.startup_model_taints = resolve_startup_model_taints(self.model_taints)
         if self.rerank_worker and (
             self.embedding_worker
             or self.image_diffusion_worker

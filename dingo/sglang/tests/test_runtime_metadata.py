@@ -278,6 +278,7 @@ def test_runtime_config_publishes_supported_disagg_capabilities(
     )
     dynamo_args = register.DynamoConfig()
     dynamo_args.enable_local_indexer = False
+    dynamo_args.startup_model_taints = ["lane/GL", "capacity/long"]
     for name, value in worker_flags.items():
         setattr(dynamo_args, name, value)
     capacity = SimpleNamespace(
@@ -322,6 +323,9 @@ def test_runtime_config_publishes_supported_disagg_capabilities(
         register.get_runtime_config(engine, server_args, dynamo_args)
     )
 
+    # Both engine-backed and engine-less registrations carry taints immediately,
+    # including the early return for workers without an engine.
+    assert runtime_config.taints == {"lane/GL", "capacity/long"}
     assert (
         TOKEN_BUDGET_RUNTIME_KEY in runtime_config.runtime_data
     ) is runtime_supported
@@ -453,6 +457,7 @@ async def test_hicache_publish_failure_preserves_core_capacity(
 
     runtime_config = await register.get_runtime_config(engine, server_args, dynamo_args)
 
+    assert runtime_config.taints == set()
     assert runtime_config.total_kv_blocks == 64
     assert runtime_config.max_num_batched_tokens == 1024
     assert json.loads(runtime_config.runtime_data[TOKEN_BUDGET_RUNTIME_KEY]) == {

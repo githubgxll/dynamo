@@ -622,6 +622,15 @@ async def get_runtime_config(
         ModelRuntimeConfig with extracted values, or None if extraction fails.
     """
     runtime_config = ModelRuntimeConfig()
+    # Include caller-managed taints in the first discovery registration, so a
+    # recreated worker never becomes routable before its lane is restored.
+    if dynamo_args.startup_model_taints is not None:
+        runtime_config.taints = runtime_config.taints | set(
+            dynamo_args.startup_model_taints
+        )
+        logging.info(
+            "Initial model routing taints: %s", sorted(runtime_config.taints)
+        )
     runtime_config.kv_state_endpoint = dynamo_args.kv_state_endpoint
     runtime_config.context_length = server_args.context_length
     llm_handler = not dynamo_args.enable_multimodal
