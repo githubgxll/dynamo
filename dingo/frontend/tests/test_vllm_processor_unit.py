@@ -2812,9 +2812,9 @@ class TestToolCallGuidedDecoding:
         assert request.tools[0].function.strict is None
         assert parser.requests[0].messages is request.messages
 
-    # In auto schema mode, omitted strict is schema-enforced. Only an explicit
-    # strict:false opts out.
-    def test_auto_schema_enforces_omitted_strict(self, tokenizer):
+    # In auto schema mode, omitted strict is not schema-enforced; only an
+    # explicit strict:true opts in. strict:false opts out.
+    def test_auto_schema_defaults_omitted_strict_to_false(self, tokenizer):
         parser = _FakeStructuralTagParser()
         guided = build_tool_call_guided_decoding(
             self._request(tokenizer),
@@ -2824,7 +2824,7 @@ class TestToolCallGuidedDecoding:
             structural_tag_schema="auto",
         )
 
-        assert guided == {"structural_tag": {"format": {"strict": [True]}}}
+        assert guided == {"structural_tag": {"format": {"strict": [False]}}}
 
     def test_auto_schema_preserves_explicit_strict_false(self, tokenizer):
         parser = _FakeStructuralTagParser()
@@ -3019,7 +3019,7 @@ class TestToolCallGuidedDecoding:
             structural_tag_scope="always",
         )
 
-        assert guided == {"structural_tag": {"format": {"strict": [True]}}}
+        assert guided == {"structural_tag": {"format": {"strict": [False]}}}
         assert len(parser.requests) == 1
 
     # Parser-created grammar must survive preprocessing as guided decoding.
@@ -3355,7 +3355,13 @@ class TestToolCallGuidedDecoding:
         parser = hermes_cls(tokenizer, request.tools)
 
         guided = build_tool_call_guided_decoding(
-            request, parser, structural_tag_mode="on"
+            request,
+            parser,
+            structural_tag_mode="on",
+            # The regression under test is tool_choice normalization, not the
+            # strict policy; pinned so the real registry still receives a
+            # strict schema for its model_dump() path.
+            structural_tag_schema="strict",
         )
 
         assert guided is not None

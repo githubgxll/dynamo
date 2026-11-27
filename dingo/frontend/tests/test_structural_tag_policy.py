@@ -48,7 +48,7 @@ def test_structural_tag_activation_policy(
 @pytest.mark.parametrize(
     ("request_strict", "schema_mode", "expected"),
     [
-        (None, "auto", True),
+        (None, "auto", False),
         (True, "auto", True),
         (False, "auto", False),
         (False, "strict", True),

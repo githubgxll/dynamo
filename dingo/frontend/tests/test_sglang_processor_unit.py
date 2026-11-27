@@ -2420,7 +2420,7 @@ class TestBuildToolCallGuidedDecoding:  # FRONTEND.3 — guided-decoding setup f
     @pytest.mark.parametrize(
         ("request_strict", "include_strict", "schema_mode", "expected_strict"),
         [
-            (None, False, "auto", True),
+            (None, False, "auto", False),
             (True, True, "auto", True),
             (False, True, "auto", False),
             (False, True, "strict", True),

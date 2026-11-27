@@ -45,8 +45,10 @@ def should_attempt_structural_tag(
 def effective_tool_strict(request_strict: bool | None, schema_mode: str) -> bool:
     """Resolve request strictness for grammar construction.
 
-    In ``auto`` schema mode, omitted ``strict`` is schema-enforced and only an
-    explicit ``strict: false`` opts out. ``strict`` schema mode overrides that
-    request-level opt-out.
+    In ``auto`` schema mode, omitted ``strict`` is not schema-enforced; only
+    an explicit ``strict: true`` opts in. ``strict`` schema mode forces
+    strictness regardless of the request.
     """
-    return schema_mode == "strict" or request_strict is not False
+    if schema_mode == "strict":
+        return True
+    return request_strict is True
