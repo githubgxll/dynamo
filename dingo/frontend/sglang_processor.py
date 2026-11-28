@@ -140,6 +140,16 @@ def _cached_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
     return cached_tokens if isinstance(cached_tokens, int) else None
 
 
+def _template_prefix_hits(ranges: tuple[tuple[int, int], ...], cached: int) -> int:
+    """Intersect ordered, disjoint template spans with the actual prefix hit."""
+    total = 0
+    for start, end in ranges:
+        if start >= cached:
+            break
+        total += min(end, cached) - start
+    return total
+
+
 def _deduct_uncounted_prompt_tokens(
     usage: dict[str, Any],
     uncounted_prompt_tokens: int,
@@ -582,6 +592,7 @@ class SglangPreprocessWorkerResult:
     # ``preprocess_chat_request``; the processor deducts it from usage only,
     # never from the physical prompt sent to the worker.
     uncounted_prompt_tokens: int = 0
+    template_token_ranges: tuple[tuple[int, int], ...] | None = None
 
 
 def _init_worker(
@@ -665,6 +676,7 @@ def _preprocess_worker(
         named_zero_arg_tool=pre.named_zero_arg_tool,
         effective_tools=pre.effective_tools,
         uncounted_prompt_tokens=pre.uncounted_prompt_tokens,
+        template_token_ranges=pre.template_token_ranges,
     )
 
 
@@ -1010,6 +1022,7 @@ class SglangProcessor:
             post,
             context=context,
             uncounted_prompt_tokens=pre.uncounted_prompt_tokens,
+            template_token_ranges=pre.template_token_ranges,
         ):
             yield item
 
@@ -1116,6 +1129,7 @@ class SglangProcessor:
             post,
             context=context,
             uncounted_prompt_tokens=preproc_result.uncounted_prompt_tokens,
+            template_token_ranges=preproc_result.template_token_ranges,
         ):
             yield item
 
@@ -1128,6 +1142,7 @@ class SglangProcessor:
         post: SglangStreamingPostProcessor,
         context: Any | None = None,
         uncounted_prompt_tokens: int = 0,
+        template_token_ranges: tuple[tuple[int, int], ...] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Shared streaming logic for both single-process and pool paths."""
         token_count = 0
@@ -1163,6 +1178,23 @@ class SglangProcessor:
             image_count = len(_mm_counts.get("image_url", []))
             video_count = len(_mm_counts.get("video_url", []))
             audio_count = len(_mm_counts.get("audio_url", []))
+            last_raw_hit: int | None = None
+            last_template_hit: int | None = None
+
+            def template_hit(prompt: Any, raw: Any) -> int | None:
+                nonlocal last_raw_hit, last_template_hit
+                if (
+                    template_token_ranges is None
+                    or type(raw) is not int
+                    or type(prompt) is not int
+                    or not 0 <= raw <= prompt <= 2147483647
+                    or prompt + uncounted_prompt_tokens != input_tokens
+                ):
+                    return None
+                if raw != last_raw_hit:
+                    last_template_hit = _template_prefix_hits(template_token_ranges, raw)
+                    last_raw_hit = raw
+                return last_template_hit
 
             def flush_pending(
                 *,
@@ -1253,6 +1285,13 @@ class SglangProcessor:
                             }
                     if pending_usage and (terminal or continuous_usage):
                         dynamo_out["usage"] = pending_usage
+                        if template_token_ranges is not None:
+                            hits = template_hit(
+                                pending_usage.get("prompt_tokens"),
+                                _cached_tokens_from_usage(pending_usage),
+                            )
+                            if hits is not None:
+                                dynamo_out["prefill_template_cached_tokens"] = hits
                     if prefill_cache_write is not None and (
                         not receipt_sent or terminal or "usage" in dynamo_out
                     ):
@@ -1403,6 +1442,18 @@ class SglangProcessor:
                             data.get("kv_cache_write"),
                             uncounted_prompt_tokens,
                         )
+                        if template_token_ranges is not None and isinstance(
+                            prefill_cache_write, dict
+                        ):
+                            hits = template_hit(
+                                prefill_cache_write.get("prompt_tokens"),
+                                prefill_cache_write.get("cached_tokens"),
+                            )
+                            if hits is not None:
+                                prefill_cache_write = {
+                                    **prefill_cache_write,
+                                    "template_cached_tokens": hits,
+                                }
 
                 new_ids = engine_response["token_ids"]
                 log_probs = engine_response.get("log_probs")

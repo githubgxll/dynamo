@@ -50,6 +50,7 @@ from .structural_tag_policy import (
     effective_tool_strict,
     should_attempt_structural_tag,
 )
+from .kimi_k3_provenance import render_kimi_k3_prompt_with_provenance
 from .thinking import apply_default_thinking_mode_to_template_kwargs
 from .utils import (
     PreprocessError,
@@ -94,7 +95,10 @@ class SglangPreprocessResult:
     named_zero_arg_tool: str | None = None
     effective_tools: list[SglangTool] | None = None
     uncounted_prompt_tokens: int = 0
-
+    # Half-open [start, end) ranges into prompt_token_ids covering the
+    # server-template tokens (Kimi K3/K3.1 only). ``None`` = not measured;
+    # consumers must treat it as "missing", never zero.
+    template_token_ranges: tuple[tuple[int, int], ...] | None = None
 
 # --- force_reasoning detection (mirrors sglang's template_manager) -------
 #
@@ -1489,14 +1493,29 @@ def preprocess_chat_request(
         else:
             template_messages = _normalize_messages_for_template(messages, tokenizer)
 
+        template_token_ranges: tuple[tuple[int, int], ...] | None = None
         try:
-            rendered = tokenizer.apply_chat_template(
-                template_messages, **template_kwargs
+            provenance = (
+                render_kimi_k3_prompt_with_provenance(
+                    tokenizer, template_messages, template_kwargs
+                )
+                if is_kimi
+                else None
             )
-        except (TemplateError, TypeError) as exc:
-            # Jinja filters such as tojson can raise TypeError for invalid inputs.
-            raise PreprocessError(str(exc)) from exc
-        prompt_token_ids = _normalize_prompt_token_ids(rendered)
+        except Exception:  # noqa: BLE001 - measurement must never break serving
+            logger.exception("Kimi-K3 template provenance failed; serving continues")
+            provenance = None
+        if provenance is not None:
+            prompt_token_ids, template_token_ranges = provenance
+        else:
+            try:
+                rendered = tokenizer.apply_chat_template(
+                    template_messages, **template_kwargs
+                )
+            except (TemplateError, TypeError) as exc:
+                # Jinja filters such as tojson can raise TypeError for invalid inputs.
+                raise PreprocessError(str(exc)) from exc
+            prompt_token_ids = _normalize_prompt_token_ids(rendered)
 
     response_format_guided_decoding = build_response_format_guided_decoding(request)
     tool_call_guided_decoding = build_tool_call_guided_decoding(
@@ -1587,6 +1606,7 @@ def preprocess_chat_request(
         reasoning_parser=reasoning_parser,
         guided_decoding=guided_decoding,
         request=request,
+        template_token_ranges=template_token_ranges,
         force_reasoning=force_reasoning,
         response_format_guided_active=response_format_guided_active,
         tool_guided_active=tool_guided_active,

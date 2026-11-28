@@ -165,6 +165,10 @@ pub struct DeltaAggregator {
     /// unary response so the protocol output converters and the
     /// `msh-usage-cache-write-tokens-*` headers keep working non-streaming.
     cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    /// Trusted Python-producer template annotation (AGDC2-97), captured like
+    /// the meter from the first chunk that carried one, so the aggregated
+    /// non-streaming body projects `template_cached_tokens` into its usage.
+    template_cached_tokens: Option<u32>,
 }
 
 /// Represents the accumulated state of a single chat choice during streaming aggregation.
@@ -441,6 +445,7 @@ impl DeltaAggregator {
             nvext: None,
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -514,6 +519,11 @@ impl DeltaAggregator {
                     // chunks reuse it (the generator stamps every chunk).
                     if aggregator.cache_meter.is_none() {
                         aggregator.cache_meter = delta.cache_meter;
+                    }
+
+                    // Template annotation follows the same first-wins rule.
+                    if aggregator.template_cached_tokens.is_none() {
+                        aggregator.template_cached_tokens = delta.template_cached_tokens;
                     }
 
                     // Aggregate choices incrementally.
@@ -908,6 +918,7 @@ impl DeltaAggregator {
             },
             prompt_logprobs: aggregator.prompt_logprobs,
             cache_meter: aggregator.cache_meter,
+            template_cached_tokens: aggregator.template_cached_tokens,
             nvext: aggregator.nvext,
         };
 
@@ -1151,6 +1162,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
 
         Annotated {
@@ -1202,6 +1214,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         Annotated {
             data: Some(data),
@@ -1326,6 +1339,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         let annotated = Annotated {
             data: Some(data),
@@ -1387,6 +1401,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         Annotated {
             data: Some(data),
@@ -2038,6 +2053,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
 
         // Wrap it in Annotated and create a stream

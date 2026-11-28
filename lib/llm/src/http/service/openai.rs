@@ -3826,33 +3826,37 @@ pub(super) async fn preflight_cache_meter(
     }
 }
 
-/// Build the four confirmed initial header values
-/// `(prompt, cached, write_5m, write_1h)` for a meter, or `None` when no
-/// protected receipt was reported (nothing may be invented). Shared by the
-/// Chat, Messages, and Responses handlers so all three surfaces agree on
-/// the same one-receipt projection: the P/C pair and the two band headers
-/// can never contradict each other or the body usage.
+/// Build the confirmed initial header values for a meter:
+/// `(prompt, cached, write_5m, write_1h)` plus the optional template-cached
+/// value T, or `None` when no protected receipt was reported (nothing may
+/// be invented). Shared by the Chat, Messages, and Responses handlers so
+/// all three surfaces agree on the same one-receipt projection: the P/C
+/// pair, the two band headers and T can never contradict each other or the
+/// body usage. The T slot is `Some` only when the receipt carried a valid
+/// template annotation (AGDC2-97); it never creates the group on its own.
 pub(super) fn msh_usage_header_values(
     meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
-) -> Option<(u32, u32, u32, u32)> {
+) -> Option<(u32, u32, u32, u32, Option<u32>)> {
     meter?.msh_usage_headers()
 }
 
-/// Apply the four confirmed initial headers (`msh-usage-prompt-tokens`,
-/// `msh-usage-cached-tokens` and the two cache-write price bands) to a
-/// response. All-or-nothing: a missing, malformed or unprotected (A=0)
-/// receipt adds none of them, while a protected receipt keeps measured
-/// zeros as explicit `0` values. Shared by the Chat, Messages and
-/// Responses handlers so every surface emits the identical group.
+/// Apply the confirmed initial headers (`msh-usage-prompt-tokens`,
+/// `msh-usage-cached-tokens`, the two cache-write price bands and, only
+/// when annotated, `msh-usage-template-cached-tokens`) to a response.
+/// All-or-nothing: a missing, malformed or unprotected (A=0) receipt adds
+/// none of them, while a protected receipt keeps measured zeros as explicit
+/// `0` values. The template header rides the group only with a valid
+/// annotation — never alone. Shared by the Chat, Messages and Responses
+/// handlers so every surface emits the identical group.
 pub(super) fn with_msh_usage_headers(
-    headers: Option<(u32, u32, u32, u32)>,
+    headers: Option<(u32, u32, u32, u32, Option<u32>)>,
     mut response: axum::response::Response,
 ) -> axum::response::Response {
     use crate::protocols::common::cache_meter::{
         MSH_CACHE_WRITE_HEADER_1H, MSH_CACHE_WRITE_HEADER_5M, MSH_CACHED_TOKENS_HEADER,
-        MSH_PROMPT_TOKENS_HEADER,
+        MSH_PROMPT_TOKENS_HEADER, MSH_TEMPLATE_CACHED_HEADER,
     };
-    let Some((prompt, cached, five_m, one_h)) = headers else {
+    let Some((prompt, cached, five_m, one_h, template)) = headers else {
         return response;
     };
     let map = response.headers_mut();
@@ -3875,6 +3879,15 @@ pub(super) fn with_msh_usage_headers(
         axum::http::HeaderName::from_static(MSH_CACHE_WRITE_HEADER_1H),
         axum::http::HeaderValue::from(one_h),
     );
+    // AGDC2-97: the template hit T only ever rides the five-header group —
+    // annotated `Some` (zero included, an explicit measured zero is kept),
+    // never emitted without the other four.
+    if let Some(template) = template {
+        map.insert(
+            axum::http::HeaderName::from_static(MSH_TEMPLATE_CACHED_HEADER),
+            axum::http::HeaderValue::from(template),
+        );
+    }
     response
 }
 
@@ -10145,6 +10158,7 @@ mod tests {
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
                 cache_meter: None,
+                template_cached_tokens: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -10798,6 +10812,7 @@ mod tests {
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
                 cache_meter: None,
+                template_cached_tokens: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -10891,6 +10906,7 @@ mod tests {
                 llm_metrics: None,
                 tool_call_completion: Vec::new(),
                 cache_meter: None,
+                template_cached_tokens: None,
             }),
             id: Some("msg-1".to_string()),
             event: None,
@@ -11305,6 +11321,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         Annotated {
             id: Some("test-id".to_string()),
@@ -11942,6 +11959,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -13438,7 +13456,7 @@ mod tests {
             "cache_write_tokens": 384, "cache_write_ttl_s": 3600
         }));
         let headers = msh_usage_header_values(Some(&meter)).expect("protected receipt");
-        assert_eq!(headers, (1000, 600, 0, 384));
+        assert_eq!(headers, (1000, 600, 0, 384, None));
         let response = with_msh_usage_headers(
             msh_usage_header_values(Some(&meter)),
             axum::response::Response::default(),
@@ -13448,6 +13466,53 @@ mod tests {
         assert_eq!(map.get(MSH_CACHED_TOKENS_HEADER).unwrap(), "600");
         assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_5M).unwrap(), "0");
         assert_eq!(map.get(MSH_CACHE_WRITE_HEADER_1H).unwrap(), "384");
+        // No annotation → no template header, group intact.
+        assert!(map.get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER).is_none());
+
+        // AGDC2-97: annotated receipt (T=0 explicit, and T=R) rides the same
+        // group; T never appears without the other four headers.
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 3600,
+            "template_cached_tokens": 0
+        }));
+        let response = with_msh_usage_headers(
+            msh_usage_header_values(Some(&meter)),
+            axum::response::Response::default(),
+        );
+        let map = response.headers();
+        assert_eq!(
+            map.get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER).unwrap(),
+            "0"
+        );
+
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 64
+        }));
+        let headers = msh_usage_header_values(Some(&meter)).expect("protected receipt");
+        assert_eq!(headers, (92, 64, 28, 0, Some(64)));
+        let response = with_msh_usage_headers(
+            Some(headers),
+            axum::response::Response::default(),
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER)
+                .unwrap(),
+            "64"
+        );
+
+        // Invalid annotation (T > R): header dropped, the four remain.
+        let meter = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 65
+        }));
+        let headers = msh_usage_header_values(Some(&meter)).expect("protected receipt");
+        assert_eq!(headers, (92, 64, 28, 0, None));
 
         // T01 fixture: cold 5m write → C=0 is a confirmed zero, not absent.
         let meter = meter_from_receipt(serde_json::json!({
@@ -13495,6 +13560,31 @@ mod tests {
         assert!(map.get(MSH_CACHED_TOKENS_HEADER).is_none());
         assert!(map.get(MSH_CACHE_WRITE_HEADER_5M).is_none());
         assert!(map.get(MSH_CACHE_WRITE_HEADER_1H).is_none());
+        assert!(map.get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER).is_none());
+
+        // T11b: valid receipt, valid annotation, but A=0 → the template
+        // header must not appear without the group.
+        let unprotected = meter_from_receipt(serde_json::json!({
+            "prompt_tokens": 1000, "cached_tokens": 600,
+            "cache_write_tokens": 384, "cache_write_ttl_s": 0,
+            "template_cached_tokens": 64
+        }));
+        let response = with_msh_usage_headers(
+            msh_usage_header_values(Some(&unprotected)),
+            axum::response::Response::default(),
+        );
+        assert!(response
+            .headers()
+            .get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER)
+            .is_none());
+
+        // T12: no receipt at all → the template header can never appear
+        // alone, even if a later producer bug tried to annotate.
+        let response = with_msh_usage_headers(None, axum::response::Response::default());
+        assert!(response
+            .headers()
+            .get(crate::protocols::common::cache_meter::MSH_TEMPLATE_CACHED_HEADER)
+            .is_none());
 
         // T10: over-range receipt is rejected at parse, so no meter and no
         // header group can exist for it (2147483648 > i32::MAX).

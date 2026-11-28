@@ -109,3 +109,14 @@ protected read with zero writes. Chat and Responses expose the applied TTL in
 this is inside the terminal event's `response`. The TTL is the protection
 accepted by the backend, not a promise that resident GPU pages become
 unusable at expiration. Missing receipt headers are not evidence of zero writes.
+
+On Kimi K3.1 Chat, `Msh-Usage-Template-Cached-Tokens` reports how many of
+the tokens actually read from cache belong to the server template. When
+Chat already returns usage, its body representation is
+`usage.prompt_tokens_details.template_cached_tokens`, including for requests
+without protected-cache headers. Both representations are optional: zero is a
+measurement; absence is not. Caller-supplied messages and tool definitions
+are not template text. `cached_tokens` and all four receipt headers retain
+their original meanings. Consumers can subtract the measured template count
+from the raw read count once; never subtract a fixed page size. A stream with
+`include_usage: false` does not gain a usage frame.

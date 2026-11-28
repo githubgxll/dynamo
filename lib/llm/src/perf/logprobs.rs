@@ -982,6 +982,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -1027,6 +1028,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -1375,6 +1377,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
 
         let logprobs = response.extract_logprobs_by_choice();
@@ -1596,6 +1599,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 

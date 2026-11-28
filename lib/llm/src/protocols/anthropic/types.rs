@@ -1354,6 +1354,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -1417,6 +1418,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -1483,6 +1485,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -1524,6 +1527,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: Some(serde_json::json!({
                 "worker_id": {"decode_worker_id": 1}
             })),
@@ -2634,6 +2638,7 @@ mod anthropic_types_tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
         chat_completion_to_anthropic_response(chat_resp, "test-model", None)

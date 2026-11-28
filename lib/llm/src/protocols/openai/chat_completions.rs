@@ -720,6 +720,24 @@ pub struct NvCreateChatCompletionResponse {
     /// `prompt_tokens_details.cache_write_tokens`.
     #[serde(skip)]
     pub cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    /// Trusted Python-producer template annotation (AGDC2-97): the
+    /// server-template tokens T among this request's raw prefix hit R,
+    /// deserialized from the private top-level frame field
+    /// `prefill_template_cached_tokens` (set alongside `usage`). Kept
+    /// private like the meter: never serialized as its own field — it only
+    /// projects into `usage.prompt_tokens_details.template_cached_tokens`
+    /// when the body usage carries a valid raw hit R. A malformed annotation
+    /// (missing, null, non-integer, beyond range) rejects to `None` here;
+    /// usage and receipt stay intact. Bound to the receipt annotation's T
+    /// when both exist: the receipt's is authoritative for the headers, and
+    /// the surviving single value is enforced `T <= R` before use.
+    #[serde(
+        default,
+        rename(deserialize = "prefill_template_cached_tokens"),
+        deserialize_with = "crate::protocols::common::cache_meter::CacheWriteMeter::deserialize_template_cached_tokens",
+        skip_serializing
+    )]
+    pub template_cached_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nvext: Option<serde_json::Value>,
 }
@@ -762,6 +780,21 @@ pub struct NvCreateChatCompletionStreamResponse {
         skip_serializing
     )]
     pub cache_meter: Option<crate::protocols::common::cache_meter::CacheWriteMeter>,
+    /// Trusted Python-producer template annotation (AGDC2-97): the
+    /// server-template tokens T among this request's raw prefix hit R,
+    /// deserialized from the private top-level frame field
+    /// `prefill_template_cached_tokens` (set alongside `usage`). Kept
+    /// private: never serialized as its own field — it only projects into
+    /// `usage.prompt_tokens_details.template_cached_tokens` when the frame
+    /// carries an ordinary usage with a valid raw hit R. A malformed
+    /// annotation rejects to `None` without touching usage or receipt.
+    #[serde(
+        default,
+        rename(deserialize = "prefill_template_cached_tokens"),
+        deserialize_with = "crate::protocols::common::cache_meter::CacheWriteMeter::deserialize_template_cached_tokens",
+        skip_serializing
+    )]
+    pub template_cached_tokens: Option<u32>,
     /// Internal transport evidence; the HTTP chat converter removes it before SSE serialization.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_call_completion: Vec<ToolCallCompletion>,
@@ -780,6 +813,7 @@ fn serialize_chat_completion_response<S, Inner>(
     prompt_logprobs: Option<&crate::protocols::common::llm_backend::PromptLogprobs>,
     tool_call_completion: &[ToolCallCompletion],
     cache_meter: Option<&crate::protocols::common::cache_meter::CacheWriteMeter>,
+    template_cached_tokens: Option<u32>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -832,6 +866,23 @@ where
         }
     }
 
+    // If a receipt exists, both wire representations use its annotation,
+    // including absence. Only receipt-less usage takes the frame's value.
+    let template = match cache_meter {
+        Some(meter) => meter.template_cached_tokens,
+        None => template_cached_tokens,
+    };
+    if let Some(template) = template
+        && let Some(usage) = map.get_mut("usage").and_then(|u| u.as_object_mut())
+        && let Some(prompt) = usage.get("prompt_tokens").and_then(|p| p.as_u64())
+        && prompt <= u64::from(crate::protocols::common::cache_meter::MSH_USAGE_VALUE_MAX)
+        && let Some(details) = usage.get_mut("prompt_tokens_details").and_then(|d| d.as_object_mut())
+        && let Some(raw) = details.get("cached_tokens").and_then(|r| r.as_u64())
+        && u64::from(template) <= raw && raw <= prompt
+    {
+        details.insert("template_cached_tokens".into(), template.into());
+    }
+
     // Actual protection claim (customer contract): on every usage-bearing
     // frame — JSON bodies and SSE usage chunks, `prompt_cache_options` at
     // the top level next to `usage` — report the applied TTL strictly from
@@ -882,6 +933,7 @@ impl Serialize for NvCreateChatCompletionResponse {
             self.prompt_logprobs.as_deref(),
             &[],
             self.cache_meter.as_ref(),
+            self.template_cached_tokens,
             serializer,
         )
     }
@@ -897,6 +949,7 @@ impl Serialize for NvCreateChatCompletionStreamResponse {
             None,
             &self.tool_call_completion,
             self.cache_meter.as_ref(),
+            self.template_cached_tokens,
             serializer,
         )
     }
@@ -1767,6 +1820,7 @@ mod tests {
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1797,6 +1851,7 @@ mod tests {
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -1823,6 +1878,7 @@ mod tests {
             nvext: Some(json!({INTERNAL_SGLEXT_KEY: payload})),
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
         };
         let wire = serde_json::to_value(&response).unwrap();
         let obj = wire.as_object().unwrap();
@@ -3518,6 +3574,7 @@ mod tests {
             prompt_logprobs: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -3536,6 +3593,7 @@ mod tests {
             nvext: None,
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -3663,5 +3721,158 @@ mod tests {
         assert_eq!(wire["usage"]["prompt_tokens_details"]["cache_write_tokens"], 0);
         assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 960);
         assert_eq!(wire["prompt_cache_options"]["ttl"], "5m");
+    }
+
+    #[test]
+    fn chat_template_cached_tokens_ride_usage_with_raw_hit() {
+        // Usage-frame annotation (no receipt at all — the unprotected path
+        // where only the body carries R): T projects into the details when
+        // the usage's own R covers it.
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 4,
+            total_tokens: 104,
+            prompt_tokens_details: Some(dynamo_protocols::types::PromptTokensDetails {
+                cached_tokens: Some(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        response.template_cached_tokens = Some(64);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 64);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["template_cached_tokens"], 64);
+        // The private channel never leaks as its own top-level field.
+        assert!(wire.get("prefill_template_cached_tokens").is_none());
+
+        // Explicit zero is a measurement: keep it, never drop to absent.
+        response.template_cached_tokens = Some(0);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["template_cached_tokens"], 0);
+
+        // T > R in the usage body: invalid, dropped without touching usage.
+        response.template_cached_tokens = Some(65);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert!(wire["usage"]["prompt_tokens_details"]
+            .get("template_cached_tokens")
+            .is_none());
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 64);
+
+        // No usage R at all: nothing to project onto, field stays absent.
+        let mut bare = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 4,
+            total_tokens: 104,
+            ..Default::default()
+        });
+        bare.template_cached_tokens = Some(64);
+        let wire = serde_json::to_value(&bare).unwrap();
+        assert!(wire["usage"]
+            .get("prompt_tokens_details")
+            .and_then(|details| details.get("template_cached_tokens"))
+            .is_none());
+    }
+
+    #[test]
+    fn chat_receipt_template_annotation_is_authoritative_for_body() {
+        // Receipt path: the meter (from the receipt) projects C and its own
+        // annotation T into the same details object — header and body carry
+        // one consistent R/T pair.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 100, "cached_tokens": 64,
+            "cache_write_tokens": 36, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 64
+        }));
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 1,
+            total_tokens: 101,
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 64);
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["template_cached_tokens"], 64);
+
+        // Both present: the receipt's T wins (they are the same measurement;
+        // the usage annotation only covers the no-receipt path).
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 100, "cached_tokens": 64,
+            "cache_write_tokens": 36, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 32
+        }));
+        let mut response = unary_response_with_usage(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 1,
+            total_tokens: 101,
+            prompt_tokens_details: Some(dynamo_protocols::types::PromptTokensDetails {
+                cached_tokens: Some(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        response.cache_meter = Some(meter);
+        response.template_cached_tokens = Some(64);
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["template_cached_tokens"], 32);
+
+        // SSE usage chunk: identical projection on the streaming surface.
+        let meter = meter_from_receipt(json!({
+            "prompt_tokens": 100, "cached_tokens": 64,
+            "cache_write_tokens": 36, "cache_write_ttl_s": 0,
+            "template_cached_tokens": 64
+        }));
+        let mut chunk = usage_stream_chunk(Some(dynamo_protocols::types::CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 1,
+            total_tokens: 101,
+            prompt_tokens_details: Some(dynamo_protocols::types::PromptTokensDetails {
+                cached_tokens: Some(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        chunk.cache_meter = Some(meter);
+        let wire = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["template_cached_tokens"], 64);
+
+        // Content delta frame (no usage): no usage is invented for T.
+        let mut delta = usage_stream_chunk(None);
+        delta.template_cached_tokens = Some(64);
+        let wire = serde_json::to_value(&delta).unwrap();
+        assert!(wire.get("usage").is_none());
+    }
+
+    #[test]
+    fn chat_template_annotation_malformed_rejects_to_none() {
+        // The private field tolerates absent/null/type-malformed values:
+        // the frame parses, T is None, usage and receipt stay intact.
+        let frame = json!({
+            "id": "r", "object": "chat.completion.chunk", "created": 0,
+            "model": "m", "choices": [],
+            "usage": {"prompt_tokens": 130, "completion_tokens": 1, "total_tokens": 131,
+                "prompt_tokens_details": {"cached_tokens": 64}},
+            "prefill_template_cached_tokens": "64"
+        });
+        let parsed: NvCreateChatCompletionStreamResponse =
+            serde_json::from_value(frame).unwrap();
+        assert_eq!(parsed.template_cached_tokens, None);
+        let wire = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(wire["usage"]["prompt_tokens_details"]["cached_tokens"], 64);
+        assert!(wire["usage"]["prompt_tokens_details"]
+            .get("template_cached_tokens")
+            .is_none());
+
+        // Over-range annotation rejects to None as well.
+        let frame = json!({
+            "id": "r", "object": "chat.completion.chunk", "created": 0,
+            "model": "m", "choices": [],
+            "usage": {"prompt_tokens": 130, "completion_tokens": 1, "total_tokens": 131,
+                "prompt_tokens_details": {"cached_tokens": 64}},
+            "prefill_template_cached_tokens": 2147483648u64
+        });
+        let parsed: NvCreateChatCompletionStreamResponse =
+            serde_json::from_value(frame).unwrap();
+        assert_eq!(parsed.template_cached_tokens, None);
     }
 }

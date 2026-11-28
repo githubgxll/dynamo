@@ -3228,6 +3228,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3290,6 +3291,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3365,6 +3367,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
         let params = ResponseParams {
@@ -3570,6 +3573,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3608,6 +3612,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3638,6 +3643,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3665,6 +3671,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -3833,6 +3840,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
             nvext: None,
         }
     }
@@ -4363,6 +4371,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: Some(meter),
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -4404,6 +4413,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: meter,
+            template_cached_tokens: None,
             nvext: None,
         };
 
@@ -4463,6 +4473,7 @@ mod tests {
             },
             prompt_logprobs: None,
             cache_meter: Some(meter),
+            template_cached_tokens: None,
             nvext: None,
         };
 

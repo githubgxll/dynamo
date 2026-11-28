@@ -63,6 +63,14 @@ pub struct DeltaGenerator {
     /// HTTP layer can emit the `msh-usage-cache-write-tokens-*` headers before
     /// the first client-visible SSE event.
     cache_meter: Option<common::cache_meter::CacheWriteMeter>,
+    /// Template annotation (AGDC2-97): the server-template tokens T among
+    /// this request's raw prefix hit R, carried inside the receipt's
+    /// `template_cached_tokens` when the producer annotated it. Mirrored
+    /// out of the first-captured meter and stamped onto every generated
+    /// stream chunk so downstream converters and the non-streaming
+    /// aggregation can project it alongside the meter. `None` when the
+    /// receipt carried no valid annotation.
+    template_cached_tokens: Option<u32>,
 }
 
 impl DeltaGenerator {
@@ -80,6 +88,7 @@ impl DeltaGenerator {
             should_return_prompt_logprobs: false,
             prompt_logprobs: None,
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -208,6 +217,7 @@ impl DeltaGenerator {
             prompt_logprobs: None,
             llm_metrics: None,
             cache_meter: self.cache_meter,
+            template_cached_tokens: self.template_cached_tokens,
             tool_call_completion: Vec::new(),
         }
     }
@@ -235,6 +245,7 @@ impl DeltaGenerator {
             prompt_logprobs: None,
             llm_metrics: None,
             cache_meter: self.cache_meter,
+            template_cached_tokens: self.template_cached_tokens,
             tool_call_completion: Vec::new(),
         }
     }
@@ -275,6 +286,17 @@ impl crate::protocols::openai::DeltaGeneratorExt<NvCreateChatCompletionStreamRes
         if self.cache_meter.is_none() {
             self.cache_meter =
                 common::cache_meter::CacheWriteMeter::from_engine_data(delta.engine_data.as_ref());
+        }
+
+        // AGDC2-97: the template annotation rides the receipt itself
+        // (`engine_data.kv_cache_write.template_cached_tokens`), so the
+        // first-captured meter already carries it when annotated. Keep the
+        // separate generator slot for frames whose producer annotated the
+        // usage only; first-wins mirrors the meter.
+        if self.template_cached_tokens.is_none() {
+            self.template_cached_tokens = self
+                .cache_meter
+                .and_then(|meter| meter.template_cached_tokens);
         }
 
         let logprobs = self.create_logprobs(

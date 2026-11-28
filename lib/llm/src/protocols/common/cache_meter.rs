@@ -24,12 +24,21 @@ pub const MSH_USAGE_VALUE_MAX: u32 = 2147483647;
 
 /// Engine receipt shape. Every field is a required integer; anything else is
 /// rejected so a malformed receipt can never fabricate a protection claim.
+/// `template_cached_tokens` is the optional template-annotation the trusted
+/// producer may attach: a measured non-negative integer T with `T <= R`.
+/// An absent or malformed annotation never invalidates the otherwise valid
+/// receipt — T is then simply unknown and nothing is projected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KvCacheWriteReceipt {
     pub prompt_tokens: u64,
     pub cached_tokens: u64,
     pub cache_write_tokens: u64,
     pub cache_write_ttl_s: u64,
+    #[serde(
+        default,
+        deserialize_with = "CacheWriteMeter::deserialize_lenient_template_u64"
+    )]
+    pub template_cached_tokens: Option<u64>,
 }
 
 /// The applied cache-write meter for one request, derived strictly from the
@@ -49,6 +58,14 @@ pub struct CacheWriteMeter {
     pub write_tokens: u32,
     /// Post-precheck applied protection TTL in seconds (a). 0 = unprotected.
     pub applied_ttl_s: u32,
+    /// Template hit token count (T) from the trusted producer's annotation:
+    /// the server-template tokens among the prefix hit `[0, cached_tokens)`.
+    /// Valid range `0..=cached_tokens` — a wider or negative-looking value is
+    /// an invalid annotation and dropped, never clamped. `None` = not
+    /// annotated (missing, malformed, or beyond the receipt's raw hit R):
+    /// absence is never a zero. Invalid annotations never invalidate the
+    /// receipt: P/C/W and the raw R projection stay intact.
+    pub template_cached_tokens: Option<u32>,
 }
 
 /// Price-band boundary: writes at or below 300 s bill at the 5m band,
@@ -67,7 +84,6 @@ impl CacheWriteMeter {
     pub fn from_engine_data(engine_data: Option<&serde_json::Value>) -> Option<Self> {
         Self::from_receipt(engine_data?.get("kv_cache_write")?)
     }
-
     /// The Python SGLang processor bypasses the Rust delta generator. Accept
     /// its raw receipt under the same validation rules, not caller-supplied
     /// accounting. Malformed receipts suppress metering, not generation.
@@ -79,6 +95,41 @@ impl CacheWriteMeter {
     {
         let value = serde_json::Value::deserialize(deserializer)?;
         Ok(Self::from_receipt(&value))
+    }
+
+    /// Decode the optional usage-frame measurement without rejecting a
+    /// malformed annotation's otherwise valid frame. The raw R bound is
+    /// checked against the final usage being serialized.
+    pub(crate) fn deserialize_template_cached_tokens<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<u32>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::deserialize_lenient_template_u64(deserializer)?
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value <= MSH_USAGE_VALUE_MAX))
+    }
+
+    fn deserialize_lenient_template_u64<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<u64>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(value.as_u64())
+    }
+
+    /// Validate a trusted-producer template annotation T against a valid
+    /// receipt's raw prefix hit R. `None` when absent, malformed, or out of
+    /// the `0..=R` range — never clamped, never a reason to reject the
+    /// receipt itself (an invalid annotation drops only T; the receipt's own
+    /// P/C/W and raw R stay intact).
+    fn parse_template_annotation(receipt: &KvCacheWriteReceipt, cached_tokens: u32) -> Option<u32> {
+        let template = receipt.template_cached_tokens?;
+        let template = u32::try_from(template).ok()?;
+        (template <= MSH_USAGE_VALUE_MAX && template <= cached_tokens).then_some(template)
     }
 
     fn from_receipt(receipt: &serde_json::Value) -> Option<Self> {
@@ -98,11 +149,16 @@ impl CacheWriteMeter {
         {
             return None;
         }
+        // T is optional: an annotation beyond the public range or the raw
+        // hit R is an invalid annotation, dropped on its own — the four
+        // original meter fields stay untouched either way.
+        let template_cached_tokens = Self::parse_template_annotation(&receipt, cached_tokens);
         Some(Self {
             prompt_tokens,
             cached_tokens,
             write_tokens,
             applied_ttl_s,
+            template_cached_tokens,
         })
     }
 
@@ -128,19 +184,28 @@ impl CacheWriteMeter {
         }
     }
 
-    /// The four confirmed initial headers for one protected request:
-    /// `(prompt_tokens, cached_tokens, write_5m, write_1h)`, all derived
-    /// from this one receipt so the P/C pair and the two band headers can
-    /// never contradict the body usage. The group exists only when the
-    /// receipt is valid **and** the engine claimed protection (`A > 0`):
-    /// a missing, malformed or unprotected receipt emits no header at all
-    /// — absence is never a zero and a measured zero is never dropped.
-    pub fn msh_usage_headers(&self) -> Option<(u32, u32, u32, u32)> {
+    /// The five confirmed initial headers for one protected request:
+    /// `(prompt_tokens, cached_tokens, write_5m, write_1h, template_cached)`.
+    /// The first four are derived from this one receipt so the P/C pair and
+    /// the two band headers can never contradict the body usage. The fifth
+    /// rides along only when the receipt carried a valid template annotation
+    /// (T is optional inside the receipt; its absence does not suppress the
+    /// group). The group exists only when the receipt is valid **and** the
+    /// engine claimed protection (`A > 0`): a missing, malformed or
+    /// unprotected receipt emits no header at all — absence is never a zero
+    /// and a measured zero is never dropped.
+    pub fn msh_usage_headers(&self) -> Option<(u32, u32, u32, u32, Option<u32>)> {
         if !self.is_protected() {
             return None;
         }
         let (write_5m, write_1h) = self.msh_split();
-        Some((self.prompt_tokens, self.cached_tokens, write_5m, write_1h))
+        Some((
+            self.prompt_tokens,
+            self.cached_tokens,
+            write_5m,
+            write_1h,
+            self.template_cached_tokens,
+        ))
     }
 
     /// Project this receipt onto the Chat/Responses cache fields
@@ -190,7 +255,11 @@ pub const MSH_PROMPT_TOKENS_HEADER: &str = "msh-usage-prompt-tokens";
 /// HTTP response header for the real prefix-cache hit count C, before any
 /// downstream hit-rate rewrite.
 pub const MSH_CACHED_TOKENS_HEADER: &str = "msh-usage-cached-tokens";
-
+/// HTTP response header for the server-template token count T among the raw
+/// prefix hit R (AGDC2-97). Emitted only as part of the five-header group —
+/// never on its own, never without a valid protected receipt, and only when
+/// the receipt carried a valid annotation.
+pub const MSH_TEMPLATE_CACHED_HEADER: &str = "msh-usage-template-cached-tokens";
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +281,91 @@ mod tests {
         assert_eq!(meter.write_tokens, 6016);
         assert_eq!(meter.applied_ttl_s, 300);
         assert_eq!(meter.msh_split(), (6016, 0));
+    }
+
+    #[test]
+    fn template_annotation_rides_receipt_with_bounds() {
+        // T=0 on a receipt with R=64 is a valid explicit measurement.
+        let data = engine_data(json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 0
+        }));
+        let meter = CacheWriteMeter::from_engine_data(data.as_ref()).unwrap();
+        assert_eq!(meter.template_cached_tokens, Some(0));
+        assert_eq!(
+            meter.msh_usage_headers(),
+            Some((92, 64, 28, 0, Some(0)))
+        );
+
+        // Full template hit: T == R == 64, mixed page remainder in W.
+        let data = engine_data(json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 64
+        }));
+        let meter = CacheWriteMeter::from_engine_data(data.as_ref()).unwrap();
+        assert_eq!(meter.template_cached_tokens, Some(64));
+        assert_eq!(meter.msh_usage_headers(), Some((92, 64, 28, 0, Some(64))));
+        // The four original fields and raw R are untouched by the annotation.
+        assert_eq!(meter.cached_tokens, 64);
+        assert_eq!(meter.openai_projection(), (64, 28));
+
+        // T > R is an invalid annotation: dropped, receipt intact.
+        let data = engine_data(json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 65
+        }));
+        let meter = CacheWriteMeter::from_engine_data(data.as_ref()).unwrap();
+        assert_eq!(meter.template_cached_tokens, None);
+        assert_eq!(meter.msh_usage_headers(), Some((92, 64, 28, 0, None)));
+        assert_eq!(meter.cached_tokens, 64);
+
+        // Beyond the public range is invalid too, even when R is large.
+        let data = engine_data(json!({
+            "prompt_tokens": 2147483647u64, "cached_tokens": 2147483646u64,
+            "cache_write_tokens": 1, "cache_write_ttl_s": 300,
+            "template_cached_tokens": 2147483648u64
+        }));
+        let meter = CacheWriteMeter::from_engine_data(data.as_ref()).unwrap();
+        assert_eq!(meter.template_cached_tokens, None);
+        assert_eq!(meter.msh_usage_headers().unwrap().0, 2147483647);
+    }
+
+    #[test]
+    fn template_annotation_malformed_or_missing_never_invalidates_receipt() {
+        // Type-malformed annotation degrades to None; the receipt stays
+        // valid with its four original fields.
+        for bad in [
+            json!("64"),
+            json!(-1),
+            json!(64.5),
+            json!(true),
+            json!(null),
+        ] {
+            let data = engine_data(json!({
+                "prompt_tokens": 92, "cached_tokens": 64,
+                "cache_write_tokens": 28, "cache_write_ttl_s": 300,
+                "template_cached_tokens": bad
+            }));
+            let meter = CacheWriteMeter::from_engine_data(data.as_ref())
+                .unwrap_or_else(|| panic!("receipt must stay valid for {bad}"));
+            assert_eq!(meter.template_cached_tokens, None);
+            assert_eq!(meter.prompt_tokens, 92);
+            assert_eq!(meter.cached_tokens, 64);
+            assert_eq!(meter.write_tokens, 28);
+            assert_eq!(meter.msh_usage_headers(), Some((92, 64, 28, 0, None)));
+        }
+
+        // Absent annotation: T simply unknown, group intact.
+        let data = engine_data(json!({
+            "prompt_tokens": 92, "cached_tokens": 64,
+            "cache_write_tokens": 28, "cache_write_ttl_s": 300
+        }));
+        let meter = CacheWriteMeter::from_engine_data(data.as_ref()).unwrap();
+        assert_eq!(meter.template_cached_tokens, None);
+        assert_eq!(meter.msh_usage_headers(), Some((92, 64, 28, 0, None)));
     }
 
     #[test]
@@ -400,14 +554,14 @@ mod tests {
             "cache_write_tokens": 960, "cache_write_ttl_s": 300
         }));
         let meter = CacheWriteMeter::from_engine_data(five_m.as_ref()).unwrap();
-        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 960, 0)));
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 960, 0, None)));
 
         let one_h = engine_data(json!({
             "prompt_tokens": 1000, "cached_tokens": 600,
             "cache_write_tokens": 384, "cache_write_ttl_s": 3600
         }));
         let meter = CacheWriteMeter::from_engine_data(one_h.as_ref()).unwrap();
-        assert_eq!(meter.msh_usage_headers(), Some((1000, 600, 0, 384)));
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 600, 0, 384, None)));
 
         // T03/T06: protected receipt with W=0 and/or C=0 keeps the group
         // with confirmed zeros — a zero is never dropped to "absent".
@@ -416,14 +570,14 @@ mod tests {
             "cache_write_tokens": 0, "cache_write_ttl_s": 300
         }));
         let meter = CacheWriteMeter::from_engine_data(zeros.as_ref()).unwrap();
-        assert_eq!(meter.msh_usage_headers(), Some((1000, 960, 0, 0)));
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 960, 0, 0, None)));
 
         let both_zero = engine_data(json!({
             "prompt_tokens": 1000, "cached_tokens": 0,
             "cache_write_tokens": 0, "cache_write_ttl_s": 300
         }));
         let meter = CacheWriteMeter::from_engine_data(both_zero.as_ref()).unwrap();
-        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 0, 0)));
+        assert_eq!(meter.msh_usage_headers(), Some((1000, 0, 0, 0, None)));
 
         // T11: valid receipt but A=0 (precheck downgrade) — no header group
         // at all, even though real C/W exist for the body.
@@ -445,7 +599,7 @@ mod tests {
             "cache_write_tokens": 1, "cache_write_ttl_s": 3600
         }));
         let meter = CacheWriteMeter::from_engine_data(max.as_ref()).unwrap();
-        assert_eq!(meter.msh_usage_headers(), Some((2147483647, 2147483646, 0, 1)));
+        assert_eq!(meter.msh_usage_headers(), Some((2147483647, 2147483646, 0, 1, None)));
         assert_eq!(meter.anthropic_projection(), (1, 2147483646, 1));
     }
 
@@ -487,6 +641,6 @@ mod tests {
         }));
         let meter = CacheWriteMeter::from_engine_data(big_ttl.as_ref()).unwrap();
         assert_eq!(meter.applied_ttl_s, 2147483648);
-        assert_eq!(meter.msh_usage_headers(), Some((10, 0, 0, 8)));
+        assert_eq!(meter.msh_usage_headers(), Some((10, 0, 0, 8, None)));
     }
 }

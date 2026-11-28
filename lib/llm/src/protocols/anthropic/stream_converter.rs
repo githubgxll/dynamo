@@ -1153,6 +1153,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -1199,6 +1200,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -1628,6 +1630,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 
@@ -2327,6 +2330,7 @@ mod tests {
             llm_metrics: None,
             tool_call_completion: Vec::new(),
             cache_meter: None,
+            template_cached_tokens: None,
         }
     }
 

@@ -4924,6 +4924,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
             return [item["data"] async for item in processor._generate_and_stream(
                 "r", {"model": "m"}, {}, [1] * 1002, post,
                 uncounted_prompt_tokens=2,
+                template_token_ranges=((0, 9), (512, 633), (900, 910)),
             ) if "data" in item]
 
         first, terminal = asyncio.run(collect())
@@ -4932,6 +4933,7 @@ class TestIncrementalDetokenization:  # FRONTEND.6 — token-id stream → text
         assert first["prefill_cache_write"] == {
             "prompt_tokens": 1000, "cached_tokens": 600,
             "cache_write_tokens": 384, "cache_write_ttl_s": 3600,
+            "template_cached_tokens": 97,  # [0,9) and [512,600) of the actual hit.
         }
         assert terminal["prefill_cache_write"] == first["prefill_cache_write"]
         # The final usage is the same public P (deducted), never physical.
